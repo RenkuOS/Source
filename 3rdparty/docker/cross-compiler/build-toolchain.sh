@@ -20,6 +20,9 @@ SECONDARY_ARCH=$4
 # original behaviour exactly.
 HAIKU_REPO=${5:-https://review.haiku-os.org/haiku}
 BUILDTOOLS_REPO=${6:-https://review.haiku-os.org/buildtools}
+# Revision to use when no hrev tag is reachable. Haiku's own
+# determine_haiku_revision falls back to "0", so that is the default here too.
+HAIKU_REVISION_PIN=${7:-0}
 
 # Clone $1 at revision $2 into $3. The revision may be a branch, a tag, or a
 # full commit SHA: `git clone --branch` accepts only the first two, so fall
@@ -58,10 +61,22 @@ if [ ! "$(git describe --dirty --tags --match=hrev* --abbrev=1)" ]; then
 	# fetch_repo leaves behind, so only use it when the clone really is shallow.
 	if [ -f "$(git rev-parse --git-dir)/shallow" ]; then
 		git fetch --unshallow
-	else
-		git fetch --tags
 	fi
+	git fetch --tags || true
 fi
+
+# The hrev tags live only on Haiku's Gerrit: the github.com/haiku/haiku mirror
+# carries none of them, so neither does any fork made from it. Without a tag
+# the build aborts with "you are using a Haiku clone without tags". Rather than
+# require every fork to mirror 57k tags, set the revision explicitly -- which
+# is what that error message asks for, and what FileRules honours by writing
+# HAIKU_REVISION straight out instead of consulting git.
+if [ ! "$(git describe --dirty --tags --match=hrev* --abbrev=1)" ]; then
+	echo "no hrev tag reachable; using HAIKU_REVISION=$HAIKU_REVISION_PIN"
+	export HAIKU_REVISION="$HAIKU_REVISION_PIN"
+	echo "HAIKU_REVISION = \"$HAIKU_REVISION_PIN\" ;" > build/jam/UserBuildConfig
+fi
+cd "$TOP"
 
 # Scale up cores to speed up, but don't go crazy since Jam starts
 # to lose its mind at 8+
