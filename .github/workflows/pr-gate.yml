@@ -90,6 +90,41 @@ jobs:
       - name: Pull toolchain
         run: docker pull --quiet "${{ steps.img.outputs.image }}"
 
+      # build/jam/UserBuildConfig is in .gitignore, so CI can generate it per
+      # build and no tracked file is touched. Two settings matter here:
+      #
+      #   HAIKU_IMAGE_LABEL  the volume label burned into the image. Defaults to
+      #                      "Haiku" via HAIKU_DEFAULT_IMAGE_LABEL, and
+      #                      common-tail uses ?= so ours wins. Shipping a volume
+      #                      labelled "Haiku" would use their trademark.
+      #   HAIKU_REVISION     bypasses `git describe --match=hrev*` entirely
+      #                      (FileRules:379 short-circuits to writing this
+      #                      verbatim), so we get our own build numbering rather
+      #                      than inheriting upstream's hrev counter.
+      #
+      # The image FILENAME cannot be set this way: for anyboot-image the
+      # variable is HAIKU_ANYBOOT_NAME, and MiscRules assigns it with ?= after
+      # the build profile has already supplied "haiku-nightly-anyboot.iso", so
+      # the profile always wins. Renaming after the build (see below) is simpler
+      # than defining a parallel profile just to change a string.
+      - name: Brand the build
+        id: brand
+        run: |
+          set -euo pipefail
+          # Two forms, deliberately: the bare build number goes in the ISO
+          # filename where a SHA would just be noise, while HAIKU_REVISION keeps
+          # the SHA so an About box or a bug report maps back to a commit.
+          BUILD="build$(printf '%05d' "${{ github.run_number }}")"
+          REV="${BUILD}-g$(git rev-parse --short=7 HEAD)"
+          cat > build/jam/UserBuildConfig <<EOF
+          HAIKU_IMAGE_LABEL = "RenkuOS" ;
+          HAIKU_REVISION = "${REV}" ;
+          EOF
+          echo "build=${BUILD}" >> "$GITHUB_OUTPUT"
+          echo "revision=${REV}" >> "$GITHUB_OUTPUT"
+          echo "Build ${BUILD}, revision ${REV}"
+          cat build/jam/UserBuildConfig
+
       # The build fetches prebuilt dependency packages from the upstream Haiku
       # package repository, so it needs network and is not hermetic. Once D2
       # gives us our own signed repository this should point at that instead.
@@ -132,7 +167,13 @@ jobs:
           set -uo pipefail
           ISO="$(find "generated.${{ matrix.arch }}" -maxdepth 1 -name '*anyboot*.iso' | head -1)"
           if [ -n "${ISO}" ]; then
+            # The build emits haiku-nightly-anyboot.iso, which we must not ship
+            # under that name. Rename to the RenkuOS convention.
+            WANT="generated.${{ matrix.arch }}/RenkuOS-${{ matrix.arch }}-$(date -u +%Y%m%d)-${{ steps.brand.outputs.build }}.iso"
+            mv "${ISO}" "${WANT}"
+            ISO="${WANT}"
             echo "path=${ISO}" >> "$GITHUB_OUTPUT"
+            echo "name=$(basename "${ISO}")" >> "$GITHUB_OUTPUT"
             echo "size=$(du -h "${ISO}" | cut -f1)" >> "$GITHUB_OUTPUT"
           fi
           echo "tree_size=$(du -sh "generated.${{ matrix.arch }}" 2>/dev/null | cut -f1)" >> "$GITHUB_OUTPUT"
@@ -160,7 +201,8 @@ jobs:
             echo "|---|---|"
             echo "| Toolchain | \`${{ steps.img.outputs.image }}\` |"
             echo "| Build time | ${{ steps.build.outputs.seconds || 'n/a' }} s |"
-            echo "| Image | ${{ steps.iso.outputs.size || 'not produced' }} |"
+            echo "| Revision | \`${{ steps.brand.outputs.revision || 'n/a' }}\` |"
+            echo "| Image | ${{ steps.iso.outputs.name || 'not produced' }} (${{ steps.iso.outputs.size || '-' }}) |"
             echo "| Build tree | ${{ steps.iso.outputs.tree_size || 'n/a' }} |"
             echo "| Disk free before / after | ${DISK_BEFORE_BUILD:-n/a} / ${{ steps.iso.outputs.disk_left || 'n/a' }} |"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -216,9 +258,11 @@ jobs:
           SETTLE_SECONDS: 120
         run: |
           set -uo pipefail
-          ISO="$(find . -maxdepth 2 -name '*anyboot*.iso' | head -1)"
+          # Matches the renamed artifact, not the build's own output name.
+          ISO="$(find . -maxdepth 2 -name 'RenkuOS-*.iso' | head -1)"
           if [ -z "${ISO}" ]; then
-            echo "::error::No anyboot image found in the artifact."
+            echo "::error::No RenkuOS image found in the artifact."
+            find . -maxdepth 2 -type f | head -20
             exit 1
           fi
           echo "Booting ${ISO} ($(du -h "${ISO}" | cut -f1)) under TCG"
