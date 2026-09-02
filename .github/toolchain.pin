@@ -1,0 +1,4 @@
+# Revisions the cross-compiler images are built from.
+# Branch or tag names only — see KNOWN LIMITATIONS in workflows/toolchain.yml.
+BUILDTOOLS_REV=master
+HAIKU_REV=master

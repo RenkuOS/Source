@@ -1,0 +1,179 @@
+# Builds the cross-compiler container images that every other build job consumes.
+#
+# Why this exists: building the cross-toolchain from buildtools is the dominant
+# cost of a from-scratch build and would likely blow the 6-hour job cap on a
+# 4-vCPU runner. We pay it here, on a schedule, and never in the hot path. The
+# resulting image carries /tools/cross-tools-<arch>, which the OS build then
+# consumes via `configure --cross-tools-prefix` instead of rebuilding it.
+#
+# The image is the upstream one from 3rdparty/docker/cross-compiler, unmodified.
+# See KNOWN LIMITATIONS at the bottom of this file.
+name: toolchain
+
+on:
+  workflow_dispatch:
+    inputs:
+      buildtools_rev:
+        description: 'buildtools branch or tag (blank = read .github/toolchain.pin)'
+        required: false
+        default: ''
+      haiku_rev:
+        description: 'haiku branch or tag (blank = read .github/toolchain.pin)'
+        required: false
+        default: ''
+      push:
+        description: 'Push to GHCR (uncheck to build only)'
+        type: boolean
+        default: true
+  schedule:
+    # Mondays, early. Minutes are unmetered on a public repo, so a slow
+    # weekly job costs nothing.
+    - cron: '17 4 * * 1'
+  push:
+    branches: [main]
+    paths:
+      - '3rdparty/docker/cross-compiler/**'
+      - '.github/toolchain.pin'
+      - '.github/workflows/toolchain.yml'
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: toolchain-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: ${{ matrix.tag }}
+    runs-on: ubuntu-latest
+    # Under the 6-hour hard cap with room to spare.
+    timeout-minutes: 330
+    strategy:
+      # x86 is the unverified half of D4. Do not let it take x86_64 down with it.
+      fail-fast: false
+      matrix:
+        include:
+          - tag: x86_64
+            architecture: x86_64
+            secondary: ''
+          # D4 drops gcc2, so our 32-bit Tier 1 is a plain modern-GCC x86 build.
+          # configure lists x86 in supportedTargetArchs and the first
+          # --build-cross-tools is the primary, so this is a legal config.
+          # Whether the OS builds all the way through this way is what we are
+          # finding out.
+          - tag: x86
+            architecture: x86
+            secondary: ''
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Inlined rather than using a third-party disk-reclaim action on purpose:
+      # this job holds packages:write, so a compromised action here could push a
+      # poisoned toolchain that every later build silently trusts. Fewer moving
+      # parts in this workflow than in any other.
+      - name: Reclaim disk space
+        run: |
+          set -uo pipefail
+          echo "Before:"; df -h / | tail -1
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /usr/local/share/boost \
+            /usr/local/lib/node_modules \
+            /usr/share/swift \
+            "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}" || true
+          sudo docker image prune --all --force >/dev/null 2>&1 || true
+          sudo apt-get clean
+          echo "After:"; df -h / | tail -1
+
+      - name: Resolve revisions and image name
+        id: cfg
+        run: |
+          set -euo pipefail
+          BT="${{ inputs.buildtools_rev }}"
+          HR="${{ inputs.haiku_rev }}"
+          if [ -f .github/toolchain.pin ]; then
+            # shellcheck disable=SC1091
+            . .github/toolchain.pin
+          fi
+          BT="${BT:-${BUILDTOOLS_REV:-master}}"
+          HR="${HR:-${HAIKU_REV:-master}}"
+
+          # GHCR requires a lowercase path.
+          OWNER="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
+          IMAGE="ghcr.io/${OWNER}/cross-compiler"
+
+          echo "buildtools_rev=${BT}" >> "$GITHUB_OUTPUT"
+          echo "haiku_rev=${HR}"      >> "$GITHUB_OUTPUT"
+          echo "image=${IMAGE}"       >> "$GITHUB_OUTPUT"
+          echo "Building ${IMAGE}:${{ matrix.tag }}-${BT} (haiku=${HR})"
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Skipped on a build-only run so the job needs no registry credentials.
+      - uses: docker/login-action@v3
+        if: inputs.push != false
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: 3rdparty/docker/cross-compiler
+          file: 3rdparty/docker/cross-compiler/Dockerfile
+          push: ${{ inputs.push != false }}
+          provenance: false
+          build-args: |
+            BUILDTOOLS_REV=${{ steps.cfg.outputs.buildtools_rev }}
+            HAIKU_REV=${{ steps.cfg.outputs.haiku_rev }}
+            ARCHITECTURE=${{ matrix.architecture }}
+            SECONDARY_ARCHITECTURE=${{ matrix.secondary }}
+          tags: |
+            ${{ steps.cfg.outputs.image }}:${{ matrix.tag }}-${{ steps.cfg.outputs.buildtools_rev }}
+            ${{ steps.cfg.outputs.image }}:${{ matrix.tag }}-latest
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Toolchain image — ${{ matrix.tag }}"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Image | \`${{ steps.cfg.outputs.image }}:${{ matrix.tag }}-${{ steps.cfg.outputs.buildtools_rev }}\` |"
+            echo "| Architecture | \`${{ matrix.architecture }}\` |"
+            echo "| buildtools | \`${{ steps.cfg.outputs.buildtools_rev }}\` |"
+            echo "| haiku | \`${{ steps.cfg.outputs.haiku_rev }}\` |"
+            echo "| Digest | \`${{ steps.build.outputs.digest || 'n/a' }}\` |"
+            echo "| Pushed | ${{ inputs.push != false }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+# ---------------------------------------------------------------------------
+# KNOWN LIMITATIONS — both need a follow-up patch, neither blocks first use.
+#
+# 1. The image is built from UPSTREAM sources, not ours.
+#    3rdparty/docker/cross-compiler/build-toolchain.sh hardcodes
+#      git clone https://review.haiku-os.org/haiku
+#      git clone https://review.haiku-os.org/buildtools
+#    so BUILDTOOLS_REV/HAIKU_REV select a revision of *Haiku's* repos, not of
+#    RenkuOS/Source. That is tolerable to start with — the toolchain is
+#    architecture-specific rather than fork-specific — but D1 says our pin
+#    should be ours. Fix: patch build-toolchain.sh to take the repository URLs
+#    as arguments and add matching ARGs to the Dockerfile.
+#
+# 2. The pin cannot be a commit SHA.
+#    build-toolchain.sh uses `git clone --depth=1 --branch $REV`, and --branch
+#    only accepts a branch or tag name. Real SHA pinning needs the same patch
+#    as (1). Until then .github/toolchain.pin holds a branch or tag.
+#
+# 3. The docker/* actions are pinned to major version tags, not commit SHAs.
+#    In a workflow holding packages:write, SHA pinning is the correct hardening
+#    step. Do it once the digests are recorded somewhere reviewable.
+# ---------------------------------------------------------------------------

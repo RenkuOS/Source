@@ -1,0 +1,302 @@
+# The gate the repository cannot open without (D6). Builds both Tier 1 targets
+# on every pull request and produces a bootable image for each.
+#
+# Runs on GitHub-hosted runners only, and always will: a pull request can be
+# opened by anyone, so nothing it triggers may touch our own hardware. See
+# ci-design.md 2. This file must never gain a trigger other than pull_request.
+#
+# Prerequisite: the toolchain images from toolchain.yml must exist. Until the
+# first toolchain run succeeds, this workflow fails on the pull step, which is
+# the correct and obvious failure.
+name: pr-gate
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  # Needed only while RenkuOS/Source and its packages are private. Once the
+  # repo is public the cross-compiler package should be made public too, at
+  # which point this and the login step below can go — a pull request from a
+  # fork cannot authenticate to a private registry.
+  packages: read
+
+concurrency:
+  group: pr-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build ${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    # Generous on purpose: the real figure is unmeasured (ci-design.md 11) and
+    # the summary step below records it. The hard cap is 6 hours.
+    timeout-minutes: 240
+    strategy:
+      # A 32-bit failure must not hide a 64-bit result, or vice versa. D4 makes
+      # both blocking, but they should fail independently and visibly.
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            triple: x86_64-unknown-haiku
+          # x86 and x86_gcc2 share the i586-pc-haiku triple — only the
+          # cross-tools directory differs. Verified in configure.
+          - arch: x86
+            triple: i586-pc-haiku
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Deliberately NOT using a job-level `container:`. Every step would then
+      # run inside the image, and this reclaim would delete the container's
+      # files rather than the host's — leaving the build to run out of disk on
+      # the host it actually writes to. So: reclaim here, then `docker run`.
+      - name: Reclaim host disk space
+        run: |
+          set -uo pipefail
+          echo "before: $(df -h --output=avail / | tail -1 | tr -d ' ') free on /"
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /usr/local/share/boost \
+            /usr/local/lib/node_modules \
+            /usr/share/swift \
+            "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}" || true
+          sudo apt-get clean
+          AVAIL="$(df -h --output=avail / | tail -1 | tr -d ' ')"
+          echo "after:  ${AVAIL} free on /"
+          echo "DISK_BEFORE_BUILD=${AVAIL}" >> "$GITHUB_ENV"
+
+      - name: Resolve toolchain image
+        id: img
+        run: |
+          set -euo pipefail
+          if [ -f .github/toolchain.pin ]; then
+            # shellcheck disable=SC1091
+            . .github/toolchain.pin
+          fi
+          REV="${BUILDTOOLS_REV:-master}"
+          OWNER="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
+          echo "image=ghcr.io/${OWNER}/cross-compiler:${{ matrix.arch }}-${REV}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull toolchain
+        run: docker pull --quiet "${{ steps.img.outputs.image }}"
+
+      # The build fetches prebuilt dependency packages from the upstream Haiku
+      # package repository, so it needs network and is not hermetic. Once D2
+      # gives us our own signed repository this should point at that instead.
+      - name: Configure and build
+        id: build
+        env:
+          IMAGE: ${{ steps.img.outputs.image }}
+          ARCH: ${{ matrix.arch }}
+          TRIPLE: ${{ matrix.triple }}
+        run: |
+          set -euo pipefail
+          START=$(date +%s)
+          docker run --rm \
+            -v "${PWD}:/src" -w /src \
+            -e ARCH -e TRIPLE -e HOME=/tmp -e TERM=dumb \
+            "${IMAGE}" \
+            bash -euo pipefail -c '
+              mkdir -p "generated.${ARCH}"
+              cd "generated.${ARCH}"
+              # --distro-compatibility default is required, not cosmetic: we are
+              # not the official Haiku distribution and must not generate files
+              # claiming their trademarks.
+              ../configure \
+                --cross-tools-prefix "/tools/cross-tools-${ARCH}/bin/${TRIPLE}-" \
+                --distro-compatibility default
+              jam -q -j"$(nproc)" @nightly-anyboot
+            '
+          echo "seconds=$(( $(date +%s) - START ))" >> "$GITHUB_OUTPUT"
+
+      # docker ran as root, so the tree is root-owned. Hand it back before
+      # anything else tries to read it.
+      - name: Restore ownership
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" . || true
+
+      - name: Locate image
+        id: iso
+        if: always()
+        run: |
+          set -uo pipefail
+          ISO="$(find "generated.${{ matrix.arch }}" -maxdepth 1 -name '*anyboot*.iso' | head -1)"
+          if [ -n "${ISO}" ]; then
+            echo "path=${ISO}" >> "$GITHUB_OUTPUT"
+            echo "size=$(du -h "${ISO}" | cut -f1)" >> "$GITHUB_OUTPUT"
+          fi
+          echo "tree_size=$(du -sh "generated.${{ matrix.arch }}" 2>/dev/null | cut -f1)" >> "$GITHUB_OUTPUT"
+          echo "disk_left=$(df -h --output=avail / | tail -1 | tr -d ' ')" >> "$GITHUB_OUTPUT"
+
+      - name: Upload image
+        if: steps.iso.outputs.path != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: renku-${{ matrix.arch }}-pr${{ github.event.pull_request.number }}
+          path: ${{ steps.iso.outputs.path }}
+          retention-days: 7
+          # An ISO is already compressed; zipping it again just burns minutes.
+          compression-level: 0
+
+      # These four figures are the open measurements in ci-design.md 11.
+      # The first green run answers them, so record them where they are visible.
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### ${{ matrix.arch }}"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Toolchain | \`${{ steps.img.outputs.image }}\` |"
+            echo "| Build time | ${{ steps.build.outputs.seconds || 'n/a' }} s |"
+            echo "| Image | ${{ steps.iso.outputs.size || 'not produced' }} |"
+            echo "| Build tree | ${{ steps.iso.outputs.tree_size || 'n/a' }} |"
+            echo "| Disk free before / after | ${DISK_BEFORE_BUILD:-n/a} / ${{ steps.iso.outputs.disk_left || 'n/a' }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # Boots the image that was just built and asserts on the serial console.
+  #
+  # NOT a smoke pass. It proves the kernel boots and does not die — which is
+  # the highest-value signal available on a free runner, because hosted runners
+  # have no /dev/kvm and QEMU therefore runs in software emulation. Reaching the
+  # desktop and launching applications belongs to the post-merge and nightly
+  # jobs, where slowness is free. See ci-design.md 6.
+  #
+  # Every string matched below was verified against the kernel source rather
+  # than assumed. Two traps worth knowing about:
+  #   * A healthy boot prints "Welcome to kernel debugger output!" while KDL
+  #     entry prints "Welcome to Kernel Debugging Land...". Matching loosely on
+  #     "kernel debug" would fail every single build.
+  #   * main.cpp's TRACE() macro is compiled out (//#define TRACE_BOOT), so
+  #     "launch_daemon started" never reaches serial. Do not assert on it.
+  boot:
+    name: boot ${{ matrix.arch }}
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # Non-blocking on purpose, for now. TCG boot time for Haiku is unmeasured
+    # (ci-design.md 11), so the timeouts below are estimates. A gate that fails
+    # on a bad guess teaches people to ignore CI — the project's own argument in
+    # ci-design.md 8. Watch a few real runs, tune the timeouts, then delete this
+    # line and let it block.
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, x86]
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: renku-${{ matrix.arch }}-pr${{ github.event.pull_request.number }}
+
+      - name: Install QEMU
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-system-x86
+          qemu-system-x86_64 --version | head -1
+
+      - name: Boot and watch the serial console
+        id: boot
+        env:
+          # Generous because this is software emulation, not KVM.
+          BANNER_TIMEOUT: 420
+          SETTLE_SECONDS: 120
+        run: |
+          set -uo pipefail
+          ISO="$(find . -maxdepth 2 -name '*anyboot*.iso' | head -1)"
+          if [ -z "${ISO}" ]; then
+            echo "::error::No anyboot image found in the artifact."
+            exit 1
+          fi
+          echo "Booting ${ISO} ($(du -h "${ISO}" | cut -f1)) under TCG"
+          : > serial.log
+
+          qemu-system-x86_64 \
+            -machine pc \
+            -accel tcg,thread=multi \
+            -smp "$(nproc)" \
+            -m 2048 \
+            -cdrom "${ISO}" -boot d \
+            -display none \
+            -serial file:serial.log \
+            -no-reboot &
+          QEMU=$!
+          # shellcheck disable=SC2064
+          trap "kill ${QEMU} 2>/dev/null || true" EXIT
+
+          # Verified in src/system/kernel/main.cpp and debug/debug.cpp.
+          fail_re='Kernel Debugging Land|^PANIC:|error starting "|main2: find_directory\(\) failed|main2: constructing path'
+          banner='Haiku revision:'
+
+          seen_banner=0
+          banner_at=0
+          elapsed=0
+          while :; do
+            if grep -qE "${fail_re}" serial.log 2>/dev/null; then
+              echo "::error::Guest failed. Matching serial lines:"
+              grep -nE "${fail_re}" serial.log | head -20
+              exit 1
+            fi
+            if [ "${seen_banner}" -eq 0 ] && grep -qF "${banner}" serial.log 2>/dev/null; then
+              seen_banner=1
+              banner_at=${elapsed}
+              echo "Kernel banner at ${banner_at}s: $(grep -F "${banner}" serial.log | head -1)"
+            fi
+            if [ "${seen_banner}" -eq 1 ] \
+               && [ $(( elapsed - banner_at )) -ge "${SETTLE_SECONDS}" ]; then
+              echo "Survived ${SETTLE_SECONDS}s past the banner with no failure marker."
+              echo "banner_at=${banner_at}" >> "$GITHUB_OUTPUT"
+              echo "lines=$(wc -l < serial.log)" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if ! kill -0 "${QEMU}" 2>/dev/null; then
+              # The guest exiting on its own is not yet expected: nothing in the
+              # image shuts it down. Treat it as a failure worth looking at.
+              echo "::error::QEMU exited after ${elapsed}s without a clean result."
+              tail -40 serial.log
+              exit 1
+            fi
+            if [ "${seen_banner}" -eq 0 ] && [ "${elapsed}" -ge "${BANNER_TIMEOUT}" ]; then
+              echo "::error::No kernel banner within ${BANNER_TIMEOUT}s. Last serial output:"
+              tail -40 serial.log
+              exit 1
+            fi
+            sleep 5
+            elapsed=$(( elapsed + 5 ))
+          done
+
+      # Always upload it: on failure it is the only evidence, and on success it
+      # is how the timeouts above get tuned into something worth blocking on.
+      - name: Upload serial log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: serial-${{ matrix.arch }}-pr${{ github.event.pull_request.number }}
+          path: serial.log
+          retention-days: 7
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### boot ${{ matrix.arch }}"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Kernel banner at | ${{ steps.boot.outputs.banner_at || 'never' }} s |"
+            echo "| Serial lines | ${{ steps.boot.outputs.lines || 'n/a' }} |"
+            echo "| Acceleration | TCG (no /dev/kvm on hosted runners) |"
+          } >> "$GITHUB_STEP_SUMMARY"

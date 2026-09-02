@@ -1,0 +1,185 @@
+# Mechanical enforcement of policy we have already written down:
+#   DECISIONS.md   D3  — SPDX identifier on new code
+#   CONTRIBUTING.md §1 — Signed-off-by / Assisted-by / Ported-from trailers
+#   REVIEW.md      §2  — pull request size caps
+#
+# Design note: this job fails only on things a machine can judge. Where the policy
+# calls for human judgement ("a sentence explaining why it is not smaller", a council
+# licence exception) it annotates instead of blocking. A gate that fails on judgement
+# calls trains people to merge past red.
+name: lint
+
+on:
+  pull_request:
+
+# A pull request from a fork must never see a secret or a writable token.
+permissions:
+  contents: read
+
+concurrency:
+  group: lint-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: policy checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Resolve the merge base explicitly. Relying on the event payload's base.sha
+      # is fragile when the base branch has moved on since the PR was opened.
+      - name: Resolve merge base
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin \
+            "+refs/heads/${GITHUB_BASE_REF}:refs/remotes/origin/${GITHUB_BASE_REF}"
+          BASE="$(git merge-base "origin/${GITHUB_BASE_REF}" HEAD)"
+          echo "BASE=${BASE}" >> "$GITHUB_ENV"
+          echo "Merge base: ${BASE}"
+
+      # ---------------------------------------------------------------- D3
+      # Only ADDED files are checked. Everything already in the tree is
+      # grandfathered by D3 ("MIT only, unless already used"), and demanding
+      # headers on inherited files would fail on the first pull request.
+      - name: SPDX identifier on added files
+        run: |
+          set -uo pipefail
+          fail=0
+          added="$(git diff --diff-filter=A --name-only "${BASE}" HEAD \
+                   | grep -Ei '\.(c|cc|cpp|cxx|h|hh|hpp|hxx|s|asm)$' || true)"
+          if [ -z "${added}" ]; then
+            echo "No added source files."
+            exit 0
+          fi
+          while IFS= read -r f; do
+            [ -f "$f" ] || continue
+            id="$(grep -m1 -o 'SPDX-License-Identifier:[[:space:]]*[^[:space:]*/]*' "$f" \
+                  | sed 's/.*:[[:space:]]*//' || true)"
+            if [ -z "${id}" ]; then
+              echo "::error file=$f,line=1::New file has no SPDX-License-Identifier. D3 requires one on new code."
+              fail=1
+            elif [ "${id}" != "MIT" ]; then
+              # Not a hard failure: a council exception may have been granted (D3).
+              echo "::warning file=$f,line=1::SPDX is '${id}', not MIT. D3 needs a stated reason and a council decision for non-MIT new code."
+            fi
+          done <<< "${added}"
+          exit "${fail}"
+
+      # ------------------------------------------------- CONTRIBUTING.md §1
+      - name: Commit trailers
+        run: |
+          set -uo pipefail
+          fail=0
+          for sha in $(git rev-list --no-merges "${BASE}"..HEAD); do
+            subject="$(git log -1 --format=%s "$sha")"
+            body="$(git log -1 --format=%B "$sha")"
+            short="$(git rev-parse --short "$sha")"
+
+            # Required: DCO sign-off.
+            if ! printf '%s' "$body" | grep -qiE '^Signed-off-by:[[:space:]]+.+<.+@.+>'; then
+              echo "::error::${short} has no valid Signed-off-by. Use 'git commit -s'. (CONTRIBUTING.md 1.1)"
+              fail=1
+            fi
+
+            # Ported-from and Ported-from-license travel together, or the licence
+            # question in D3 cannot be answered at review time.
+            has_from=$(printf '%s' "$body" | grep -ciE '^Ported-from:' || true)
+            has_lic=$(printf '%s' "$body" | grep -ciE '^Ported-from-license:' || true)
+            if [ "$has_from" -gt 0 ] && [ "$has_lic" -eq 0 ]; then
+              echo "::error::${short} has Ported-from: but no Ported-from-license:. (CONTRIBUTING.md 1.3)"
+              fail=1
+            fi
+            if [ "$has_lic" -gt 0 ] && [ "$has_from" -eq 0 ]; then
+              echo "::error::${short} has Ported-from-license: but no Ported-from:. (CONTRIBUTING.md 1.3)"
+              fail=1
+            fi
+
+            # Assisted-by is optional. Disclosure must never be penalised
+            # (REVIEW.md 0.3) — so a malformed value is a nudge, not a failure.
+            if printf '%s' "$body" | grep -qiE '^Assisted-by:[[:space:]]*$'; then
+              echo "::warning::${short} has an empty Assisted-by:. Name the tool, or drop the line."
+            fi
+
+            # Style, not correctness — annotate only.
+            if [ "${#subject}" -ge 72 ]; then
+              echo "::warning::${short} subject is ${#subject} chars; keep it under 72."
+            fi
+            if ! printf '%s' "$subject" | grep -qE '^[a-z0-9_./+-]+: '; then
+              echo "::warning::${short} subject has no 'subsystem: ' prefix."
+            fi
+          done
+          exit "${fail}"
+
+      # ------------------------------------------------------- REVIEW.md §2
+      - name: Pull request size
+        env:
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          set -uo pipefail
+          exempt=0
+          case ",${LABELS}," in
+            *,oversize-approved,*|*,size-exempt,*) exempt=1 ;;
+          esac
+
+          # Vendored and generated code is not hand-reviewed, so it does not
+          # count against the cap.
+          lines=$(git diff --numstat "${BASE}" HEAD \
+            | grep -vE $'^[0-9-]+\t[0-9-]+\t(3rdParty|3rdparty|vendor)/' \
+            | awk -F'\t' '$1 ~ /^[0-9]+$/ { a += $1 + $2 } END { print a+0 }')
+
+          # A "subsystem" is the first two path segments under src/, else the first.
+          subs=$(git diff --name-only "${BASE}" HEAD \
+            | awk -F/ '/^src\// { print $1"/"$2; next } { print $1 }' \
+            | sort -u | wc -l)
+
+          echo "Hand-reviewable lines changed: ${lines}"
+          echo "Subsystems touched: ${subs}"
+          {
+            echo "### Pull request size"
+            echo ""
+            echo "| Metric | Value | Cap (REVIEW.md 2) |"
+            echo "|---|---|---|"
+            echo "| Hand-reviewable lines | ${lines} | 400 routine, 1000 hard |"
+            echo "| Subsystems touched | ${subs} | 2 |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "${exempt}" -eq 1 ]; then
+            echo "::notice::Size caps waived by label. (REVIEW.md 2, exempt classes)"
+            exit 0
+          fi
+
+          fail=0
+          if [ "${lines}" -gt 1000 ]; then
+            echo "::error::${lines} changed lines exceeds the 1000-line cap. Agree a splitting plan with the area maintainer, or have one applied the 'oversize-approved' label. (REVIEW.md 2)"
+            fail=1
+          elif [ "${lines}" -gt 400 ]; then
+            echo "::notice::${lines} changed lines. Over 400 needs a sentence in the description explaining why it is not smaller. (REVIEW.md 2)"
+          fi
+          if [ "${subs}" -gt 2 ]; then
+            echo "::error::Touches ${subs} subsystems. More than two is over the cap regardless of line count — split it and land the enabling parts first. (REVIEW.md 2)"
+            fail=1
+          fi
+          exit "${fail}"
+
+      # Skips cleanly until a .clang-format exists, so this file can land before it.
+      - name: Format changed lines
+        run: |
+          set -uo pipefail
+          if [ ! -f .clang-format ]; then
+            echo "::notice::No .clang-format at the tree root yet — skipping. See engineering-charter.md 4."
+            exit 0
+          fi
+          sudo apt-get update -qq && sudo apt-get install -y -qq clang-format
+          diff="$(git clang-format --diff --extensions c,cc,cpp,cxx,h,hh,hpp,hxx "${BASE}" 2>/dev/null || true)"
+          case "${diff}" in
+            ""|*"no modified files"*|*"did not modify"*)
+              echo "Formatting clean." ;;
+            *)
+              printf '%s\n' "${diff}"
+              echo "::error::Formatting differs on changed lines. Run: git clang-format ${BASE}"
+              exit 1 ;;
+          esac
