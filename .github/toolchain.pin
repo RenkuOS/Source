@@ -1,4 +1,15 @@
-# Revisions the cross-compiler images are built from.
-# Branch or tag names only — see KNOWN LIMITATIONS in workflows/toolchain.yml.
+# Revisions and repositories the cross-compiler images are built from.
+# Sourced by the workflows; also passed to the Dockerfile as build args.
+#
+# Any of these revisions may now be a branch, a tag, or a full commit SHA --
+# build-toolchain.sh falls back to a full clone plus a detached checkout when
+# a shallow clone by name fails.
+
+# Our own tree. Note: main, not master.
+HAIKU_REPO=https://github.com/RenkuOS/Source.git
+HAIKU_REV=main
+
+# Still upstream: there is no RenkuOS/buildtools fork yet. Point this at ours
+# when there is one.
+BUILDTOOLS_REPO=https://github.com/haiku/buildtools.git
 BUILDTOOLS_REV=master
-HAIKU_REV=master

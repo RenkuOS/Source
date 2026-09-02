@@ -101,16 +101,22 @@ jobs:
             . .github/toolchain.pin
           fi
           BT="${BT:-${BUILDTOOLS_REV:-master}}"
-          HR="${HR:-${HAIKU_REV:-master}}"
+          HR="${HR:-${HAIKU_REV:-main}}"
+          HREPO="${HAIKU_REPO:-https://review.haiku-os.org/haiku}"
+          BREPO="${BUILDTOOLS_REPO:-https://review.haiku-os.org/buildtools}"
 
           # GHCR requires a lowercase path.
           OWNER="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
           IMAGE="ghcr.io/${OWNER}/cross-compiler"
 
-          echo "buildtools_rev=${BT}" >> "$GITHUB_OUTPUT"
-          echo "haiku_rev=${HR}"      >> "$GITHUB_OUTPUT"
-          echo "image=${IMAGE}"       >> "$GITHUB_OUTPUT"
-          echo "Building ${IMAGE}:${{ matrix.tag }}-${BT} (haiku=${HR})"
+          echo "buildtools_rev=${BT}"   >> "$GITHUB_OUTPUT"
+          echo "haiku_rev=${HR}"        >> "$GITHUB_OUTPUT"
+          echo "haiku_repo=${HREPO}"    >> "$GITHUB_OUTPUT"
+          echo "buildtools_repo=${BREPO}" >> "$GITHUB_OUTPUT"
+          echo "image=${IMAGE}"         >> "$GITHUB_OUTPUT"
+          echo "Building ${IMAGE}:${{ matrix.tag }}-${BT}"
+          echo "  haiku      ${HREPO} @ ${HR}"
+          echo "  buildtools ${BREPO} @ ${BT}"
 
       - uses: docker/setup-buildx-action@v3
 
@@ -135,6 +141,8 @@ jobs:
             HAIKU_REV=${{ steps.cfg.outputs.haiku_rev }}
             ARCHITECTURE=${{ matrix.architecture }}
             SECONDARY_ARCHITECTURE=${{ matrix.secondary }}
+            HAIKU_REPO=${{ steps.cfg.outputs.haiku_repo }}
+            BUILDTOOLS_REPO=${{ steps.cfg.outputs.buildtools_repo }}
           tags: |
             ${{ steps.cfg.outputs.image }}:${{ matrix.tag }}-${{ steps.cfg.outputs.buildtools_rev }}
             ${{ steps.cfg.outputs.image }}:${{ matrix.tag }}-latest
@@ -156,24 +164,20 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
 # ---------------------------------------------------------------------------
-# KNOWN LIMITATIONS — both need a follow-up patch, neither blocks first use.
+# KNOWN LIMITATIONS
 #
-# 1. The image is built from UPSTREAM sources, not ours.
-#    3rdparty/docker/cross-compiler/build-toolchain.sh hardcodes
-#      git clone https://review.haiku-os.org/haiku
-#      git clone https://review.haiku-os.org/buildtools
-#    so BUILDTOOLS_REV/HAIKU_REV select a revision of *Haiku's* repos, not of
-#    RenkuOS/Source. That is tolerable to start with — the toolchain is
-#    architecture-specific rather than fork-specific — but D1 says our pin
-#    should be ours. Fix: patch build-toolchain.sh to take the repository URLs
-#    as arguments and add matching ARGs to the Dockerfile.
-#
-# 2. The pin cannot be a commit SHA.
-#    build-toolchain.sh uses `git clone --depth=1 --branch $REV`, and --branch
-#    only accepts a branch or tag name. Real SHA pinning needs the same patch
-#    as (1). Until then .github/toolchain.pin holds a branch or tag.
-#
-# 3. The docker/* actions are pinned to major version tags, not commit SHAs.
+# 1. The docker/* actions are pinned to major version tags, not commit SHAs.
 #    In a workflow holding packages:write, SHA pinning is the correct hardening
-#    step. Do it once the digests are recorded somewhere reviewable.
+#    step: a compromised action here could push a poisoned toolchain that every
+#    later build silently trusts. Do it once the digests are recorded somewhere
+#    reviewable.
+#
+# 2. The image tag encodes only the buildtools revision. If the haiku pin moves
+#    while buildtools does not, the tag is unchanged and the old image is
+#    overwritten. Fine while both track a branch; revisit if either is ever
+#    pinned to a SHA.
+#
+# Previously listed here and now fixed: build-toolchain.sh took its repository
+# URLs from hardcoded Gerrit paths and could not accept a commit SHA. Both are
+# parameters as of the fork's own change to that script.
 # ---------------------------------------------------------------------------
