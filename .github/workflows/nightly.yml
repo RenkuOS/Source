@@ -1,0 +1,291 @@
+# Nightly images, published where anyone can download them.
+#
+# A TRUSTED workflow: schedule and manual dispatch only. It must never gain a
+# pull_request trigger — it holds contents: write and publishes releases, so a
+# fork must not be able to reach it. See ci-design.md 2.
+#
+# Deliberately does NOT run a stress suite yet. The boot check is the whole
+# verification here, and defining the stress suite is a separate exercise.
+name: nightly
+
+on:
+  schedule:
+    # 05:00 UTC daily. GitHub delays scheduled runs under load, and disables
+    # schedules on repos with no activity for 60 days — neither matters yet.
+    - cron: '0 5 * * *'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish to the nightly release (uncheck for a dry run)'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build ${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            triple: x86_64-unknown-haiku
+          - arch: x86
+            triple: i586-pc-haiku
+    outputs:
+      build: ${{ steps.brand.outputs.build }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reclaim host disk space
+        run: |
+          set -uo pipefail
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/share/boost /usr/local/lib/node_modules /usr/share/swift \
+            "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}" || true
+          sudo apt-get clean
+          df -h --output=avail / | tail -1 | tr -d ' ' | sed 's/^/free on \/: /'
+
+      - name: Resolve toolchain image
+        id: img
+        run: |
+          set -euo pipefail
+          if [ -f .github/toolchain.pin ]; then . .github/toolchain.pin; fi
+          OWNER="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
+          echo "image=ghcr.io/${OWNER}/cross-compiler:${{ matrix.arch }}-${BUILDTOOLS_REV:-master}" >> "$GITHUB_OUTPUT"
+
+      - name: Brand the build
+        id: brand
+        run: |
+          set -euo pipefail
+          BUILD="build$(printf '%05d' "${{ github.run_number }}")"
+          REV="${BUILD}-g$(git rev-parse --short=7 HEAD)"
+          cat > build/jam/UserBuildConfig <<EOF
+          HAIKU_IMAGE_LABEL = "RenkuOS" ;
+          HAIKU_REVISION = "${REV}" ;
+          EOF
+          echo "build=${BUILD}" >> "$GITHUB_OUTPUT"
+          echo "revision=${REV}" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Configure and build
+        env:
+          IMAGE: ${{ steps.img.outputs.image }}
+          ARCH: ${{ matrix.arch }}
+          TRIPLE: ${{ matrix.triple }}
+        run: |
+          set -euo pipefail
+          docker run --rm -v "${PWD}:/src" -w /src \
+            -e ARCH -e TRIPLE -e HOME=/tmp -e TERM=dumb "${IMAGE}" \
+            bash -euo pipefail -c '
+              mkdir -p "generated.${ARCH}"
+              cd "generated.${ARCH}"
+              ../configure \
+                --cross-tools-prefix "/tools/cross-tools-${ARCH}/bin/${TRIPLE}-" \
+                --distro-compatibility default
+              jam -q -j"$(nproc)" @nightly-anyboot
+            '
+
+      - name: Restore ownership
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" . || true
+
+      - name: Name and checksum the image
+        id: iso
+        run: |
+          set -euo pipefail
+          SRC="$(find "generated.${{ matrix.arch }}" -maxdepth 1 -name '*anyboot*.iso' | head -1)"
+          NAME="RenkuOS-${{ matrix.arch }}-${{ steps.brand.outputs.date }}-${{ steps.brand.outputs.build }}.iso"
+          mkdir -p out
+          mv "${SRC}" "out/${NAME}"
+          ( cd out && sha256sum "${NAME}" > "${NAME}.sha256" )
+          echo "name=${NAME}" >> "$GITHUB_OUTPUT"
+          echo "size=$(du -h "out/${NAME}" | cut -f1)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image-${{ matrix.arch }}
+          path: out/
+          retention-days: 3
+          compression-level: 0
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### build ${{ matrix.arch }}"
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Image | ${{ steps.iso.outputs.name || 'not produced' }} (${{ steps.iso.outputs.size || '-' }}) |"
+            echo "| Revision | \`${{ steps.brand.outputs.revision }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Same assertions as the pull request gate: the kernel comes up and does not
+  # die. Blocking here, unlike on a pull request, because an image that fails to
+  # boot must not reach the release page. A wrong timeout costs us a missed
+  # nightly, which is the safe direction to fail in.
+  boot:
+    name: boot ${{ matrix.arch }}
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, x86]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: image-${{ matrix.arch }}
+
+      - name: Install QEMU
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-system-x86
+
+      - name: Boot and watch the serial console
+        env:
+          BANNER_TIMEOUT: 420
+          SETTLE_SECONDS: 120
+        run: |
+          set -uo pipefail
+          ISO="$(find . -maxdepth 2 -name 'RenkuOS-*.iso' | head -1)"
+          if [ -z "${ISO}" ]; then
+            echo "::error::No RenkuOS image in the artifact."; find . -maxdepth 2 -type f | head; exit 1
+          fi
+          : > serial.log
+          qemu-system-x86_64 -machine pc -accel tcg,thread=multi -smp "$(nproc)" \
+            -m 2048 -cdrom "${ISO}" -boot d -display none \
+            -serial file:serial.log -no-reboot &
+          QEMU=$!
+          # shellcheck disable=SC2064
+          trap "kill ${QEMU} 2>/dev/null || true" EXIT
+          fail_re='Kernel Debugging Land|^PANIC:|error starting "|main2: find_directory\(\) failed'
+          seen=0; at=0; t=0
+          while :; do
+            if grep -qE "${fail_re}" serial.log 2>/dev/null; then
+              echo "::error::Guest failed:"; grep -nE "${fail_re}" serial.log | head -20; exit 1
+            fi
+            if [ "${seen}" -eq 0 ] && grep -qF 'Haiku revision:' serial.log 2>/dev/null; then
+              seen=1; at=${t}; echo "banner at ${at}s"
+            fi
+            if [ "${seen}" -eq 1 ] && [ $(( t - at )) -ge "${SETTLE_SECONDS}" ]; then
+              echo "booted cleanly"; exit 0
+            fi
+            if ! kill -0 "${QEMU}" 2>/dev/null; then
+              echo "::error::QEMU exited after ${t}s."; tail -40 serial.log; exit 1
+            fi
+            if [ "${seen}" -eq 0 ] && [ "${t}" -ge "${BANNER_TIMEOUT}" ]; then
+              echo "::error::No banner within ${BANNER_TIMEOUT}s."; tail -40 serial.log; exit 1
+            fi
+            sleep 5; t=$(( t + 5 ))
+          done
+
+      # A pass marker, so the publish job can ship the arches that booted
+      # without being blocked by one that did not. x86 is the unverified half
+      # of D4; x86_64 nightlies should not stop because of it.
+      - name: Mark pass
+        run: |
+          mkdir -p pass && echo ok > "pass/${{ matrix.arch }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: boot-pass-${{ matrix.arch }}
+          path: pass/
+          retention-days: 3
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: serial-${{ matrix.arch }}
+          path: serial.log
+          retention-days: 7
+
+  publish:
+    name: publish
+    needs: [build, boot]
+    # Runs even if one arch failed, so a good arch still ships.
+    if: ${{ !cancelled() && inputs.publish != false }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Collect images that booted
+        id: collect
+        run: |
+          set -uo pipefail
+          mkdir -p staging
+          published=""
+          for arch in x86_64 x86; do
+            if gh run download "${{ github.run_id }}" --repo "${{ github.repository }}" \
+                 --name "boot-pass-${arch}" --dir "/tmp/pass-${arch}" 2>/dev/null; then
+              gh run download "${{ github.run_id }}" --repo "${{ github.repository }}" \
+                 --name "image-${arch}" --dir "staging" 2>/dev/null || continue
+              published="${published} ${arch}"
+              echo "including ${arch}"
+            else
+              echo "::warning::${arch} did not pass the boot check; not publishing it."
+            fi
+          done
+          echo "arches=${published# }" >> "$GITHUB_OUTPUT"
+          ls -la staging || true
+          [ -n "$(ls -A staging 2>/dev/null)" ] || { echo "::error::Nothing passed; no release."; exit 1; }
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # A single rolling tag, so there is one obvious place to get the latest
+      # image. Old assets are removed first: filenames carry the date and build
+      # number, so uploading without clearing would accumulate for ever.
+      - name: Publish the nightly release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          SHA="$(git rev-parse --short=7 HEAD)"
+          BUILD="build$(printf '%05d' "${{ github.run_number }}")"
+
+          {
+            echo "Automated nightly build. **Not a release** — expect breakage."
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Build | \`${BUILD}\` |"
+            echo "| Revision | \`${BUILD}-g${SHA}\` |"
+            echo "| Commit | ${{ github.sha }} |"
+            echo "| Architectures | ${{ steps.collect.outputs.arches }} |"
+            echo "| Built | $(date -u '+%Y-%m-%d %H:%M UTC') |"
+            echo ""
+            echo "Every image here booted under emulation without entering the kernel"
+            echo "debugger. That is the extent of the automated testing so far — it is"
+            echo "not evidence that anything else works."
+            echo ""
+            echo "Verify a download with the matching \`.sha256\` file."
+          } > notes.md
+
+          if gh release view nightly --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            for a in $(gh release view nightly --repo "${{ github.repository }}" \
+                        --json assets --jq '.assets[].name'); do
+              gh release delete-asset nightly "${a}" --repo "${{ github.repository }}" --yes
+            done
+            gh release edit nightly --repo "${{ github.repository }}" \
+              --notes-file notes.md --title "Nightly ${BUILD}" --prerelease
+          else
+            gh release create nightly --repo "${{ github.repository }}" \
+              --notes-file notes.md --title "Nightly ${BUILD}" --prerelease --latest=false
+          fi
+          gh release upload nightly staging/* --repo "${{ github.repository }}" --clobber
+
+          {
+            echo "### Published"
+            echo ""
+            echo "https://github.com/${{ github.repository }}/releases/tag/nightly"
+            echo ""
+            for f in staging/*.iso; do echo "- \`$(basename "$f")\` ($(du -h "$f" | cut -f1))"; done
+          } >> "$GITHUB_STEP_SUMMARY"
