@@ -131,7 +131,7 @@ jobs:
 
       # Skipped on a build-only run so the job needs no registry credentials.
       - uses: docker/login-action@v3
-        if: inputs.push != false
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.push }}
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -143,7 +143,7 @@ jobs:
         with:
           context: 3rdparty/docker/cross-compiler
           file: 3rdparty/docker/cross-compiler/Dockerfile
-          push: ${{ inputs.push != false }}
+          push: ${{ github.event_name != 'workflow_dispatch' || inputs.push }}
           provenance: false
           build-args: |
             BUILDTOOLS_REV=${{ steps.cfg.outputs.buildtools_rev }}
@@ -169,7 +169,7 @@ jobs:
             echo "| buildtools | \`${{ steps.cfg.outputs.buildtools_rev }}\` |"
             echo "| haiku | \`${{ steps.cfg.outputs.haiku_rev }}\` |"
             echo "| Digest | \`${{ steps.build.outputs.digest || 'n/a' }}\` |"
-            echo "| Pushed | ${{ inputs.push != false }} |"
+            echo "| Pushed | ${{ github.event_name != 'workflow_dispatch' || inputs.push }} |"
           } >> "$GITHUB_STEP_SUMMARY"
 
 # ---------------------------------------------------------------------------

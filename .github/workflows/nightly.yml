@@ -227,7 +227,7 @@ jobs:
     name: publish
     needs: [build, boot]
     # Runs even if one arch failed, so a good arch still ships.
-    if: ${{ !cancelled() && inputs.publish != false }}
+    if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || inputs.publish) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
