@@ -65,26 +65,6 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      # Deliberately NOT using a job-level `container:`. Every step would then
-      # run inside the image, and this reclaim would delete the container's
-      # files rather than the host's — leaving the build to run out of disk on
-      # the host it actually writes to. So: reclaim here, then `docker run`.
-      - name: Reclaim host disk space
-        run: |
-          set -uo pipefail
-          echo "before: $(df -h --output=avail / | tail -1 | tr -d ' ') free on /"
-          sudo rm -rf \
-            /usr/share/dotnet \
-            /usr/local/lib/android \
-            /opt/ghc \
-            /usr/local/share/boost \
-            /usr/local/lib/node_modules \
-            /usr/share/swift \
-            "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}" || true
-          sudo apt-get clean
-          AVAIL="$(df -h --output=avail / | tail -1 | tr -d ' ')"
-          echo "after:  ${AVAIL} free on /"
-          echo "DISK_BEFORE_BUILD=${AVAIL}" >> "$GITHUB_ENV"
 
       - name: Resolve toolchain image
         id: img
@@ -240,7 +220,7 @@ jobs:
             echo "| Revision | \`${{ steps.brand.outputs.revision || 'n/a' }}\` |"
             echo "| Image | ${{ steps.iso.outputs.name || 'not produced' }} (${{ steps.iso.outputs.size || '-' }}) |"
             echo "| Build tree | ${{ steps.iso.outputs.tree_size || 'n/a' }} |"
-            echo "| Disk free before / after | ${DISK_BEFORE_BUILD:-n/a} / ${{ steps.iso.outputs.disk_left || 'n/a' }} |"
+            echo "| Disk free after build | ${{ steps.iso.outputs.disk_left || 'n/a' }} |"
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ---------------------------------------------------------------------------

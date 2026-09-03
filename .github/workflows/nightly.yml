@@ -69,14 +69,6 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Reclaim host disk space
-        run: |
-          set -uo pipefail
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
-            /usr/local/share/boost /usr/local/lib/node_modules /usr/share/swift \
-            "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}" || true
-          sudo apt-get clean
-          df -h --output=avail / | tail -1 | tr -d ' ' | sed 's/^/free on \/: /'
 
       - name: Resolve toolchain image
         id: img
