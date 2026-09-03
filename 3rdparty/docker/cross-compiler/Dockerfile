@@ -20,13 +20,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   libssl-dev \
   libzstd-dev \
   make \
+  mtools \
   nasm \
   ninja-build \
   python3 \
   texinfo \
+  unzip \
   vim \
   wget \
+  xorriso \
   xz-utils \
+  zip \
   zlib1g-dev; \
   if [ $(uname -m) = "x86_64" ]; then apt-get install -y g++-multilib; fi
 
