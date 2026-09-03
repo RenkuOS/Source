@@ -154,7 +154,7 @@ jobs:
     name: boot ${{ matrix.arch }}
     needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -171,8 +171,8 @@ jobs:
 
       - name: Boot and watch the serial console
         env:
-          BANNER_TIMEOUT: 420
-          SETTLE_SECONDS: 120
+          BANNER_TIMEOUT: 1200
+          SETTLE_SECONDS: 300
         run: |
           set -uo pipefail
           ISO="$(find . -maxdepth 2 -name 'RenkuOS-*.iso' | head -1)"

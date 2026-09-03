@@ -238,7 +238,7 @@ jobs:
     name: boot ${{ matrix.arch }}
     needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     # Non-blocking on purpose, for now. TCG boot time for Haiku is unmeasured
     # (ci-design.md 11), so the timeouts below are estimates. A gate that fails
     # on a bad guess teaches people to ignore CI — the project's own argument in
@@ -265,8 +265,8 @@ jobs:
         id: boot
         env:
           # Generous because this is software emulation, not KVM.
-          BANNER_TIMEOUT: 420
-          SETTLE_SECONDS: 120
+          BANNER_TIMEOUT: 1200
+          SETTLE_SECONDS: 300
         run: |
           set -uo pipefail
           # Matches the renamed artifact, not the build's own output name.
