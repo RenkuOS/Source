@@ -21,7 +21,12 @@ on:
         default: true
 
 permissions:
+  # contents: write to create and update the release.
+  # actions: read because the publish job downloads this run's artifacts via
+  # the Actions API. Declaring `permissions` at all replaces the default set,
+  # so anything omitted here is 'none' -- and the publish job would 403.
   contents: write
+  actions: read
 
 concurrency:
   group: nightly
@@ -55,8 +60,6 @@ jobs:
         include:
           - arch: x86_64
             triple: x86_64-unknown-haiku
-    outputs:
-      build: ${{ steps.brand.outputs.build }}
     steps:
       - uses: actions/checkout@v4
 
