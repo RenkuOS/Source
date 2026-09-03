@@ -90,9 +90,16 @@ jobs:
           HAIKU_IMAGE_LABEL = "RenkuOS" ;
           HAIKU_REVISION = "${REV}" ;
           EOF
+          # Belt and braces. The UserBuildConfig above is the documented
+          # route, but it demonstrably did not reach jam, whereas exporting
+          # does -- build-toolchain.sh relies on the export and works.
+          echo "HAIKU_REVISION=${REV}" >> "$GITHUB_ENV"
+          echo "HAIKU_IMAGE_LABEL=RenkuOS" >> "$GITHUB_ENV"
           echo "build=${BUILD}" >> "$GITHUB_OUTPUT"
           echo "revision=${REV}" >> "$GITHUB_OUTPUT"
           echo "date=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
+          echo "Build ${BUILD}, revision ${REV}"
+          cat build/jam/UserBuildConfig
 
       - name: Configure and build
         env:
@@ -102,8 +109,13 @@ jobs:
         run: |
           set -euo pipefail
           docker run --rm -v "${PWD}:/src" -w /src \
-            -e ARCH -e TRIPLE -e HOME=/tmp -e TERM=dumb "${IMAGE}" \
+            -e ARCH -e TRIPLE -e HOME=/tmp -e TERM=dumb \
+            -e HAIKU_REVISION -e HAIKU_IMAGE_LABEL \
+            "${IMAGE}" \
             bash -euo pipefail -c '
+              # The workspace is bind-mounted and owned by the runner user,
+              # while the container runs as root, so git refuses to touch it.
+              git config --global --add safe.directory /src
               mkdir -p "generated.${ARCH}"
               cd "generated.${ARCH}"
               ../configure \
