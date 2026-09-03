@@ -13,13 +13,10 @@ name: pr-gate
 on:
   pull_request:
 
+# A pull request from a fork gets no secrets and no writable token, and needs
+# none: it reads public code and pulls a public container.
 permissions:
   contents: read
-  # Needed only while RenkuOS/Source and its packages are private. Once the
-  # repo is public the cross-compiler package should be made public too, at
-  # which point this and the login step below can go — a pull request from a
-  # fork cannot authenticate to a private registry.
-  packages: read
 
 concurrency:
   group: pr-gate-${{ github.event.pull_request.number }}
@@ -78,11 +75,6 @@ jobs:
           OWNER="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
           echo "image=ghcr.io/${OWNER}/cross-compiler:${{ matrix.arch }}-${REV}" >> "$GITHUB_OUTPUT"
 
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Pull toolchain
         run: docker pull --quiet "${{ steps.img.outputs.image }}"
