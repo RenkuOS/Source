@@ -78,6 +78,21 @@ jobs:
           OWNER="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
           echo "image=ghcr.io/${OWNER}/cross-compiler:${{ matrix.arch }}-${BUILDTOOLS_REV:-master}" >> "$GITHUB_OUTPUT"
 
+      # The package set is determined entirely by the repository definition
+      # file, and its sha256 is literally the snapshot URL, so hashing that file
+      # is a correct cache key by construction rather than by convention.
+      # restore-keys matters more than the exact key: when upstream bumps the
+      # package set, a partial cache still lands and jam fetches only the
+      # difference. After the first run this removes the dependency on
+      # eu.hpkg.haiku-os.org being up.
+      - name: Cache dependency packages
+        uses: actions/cache@v4
+        with:
+          path: generated.${{ matrix.arch }}/download
+          key: hpkg-${{ matrix.arch }}-${{ hashFiles(format('build/jam/repositories/HaikuPorts/{0}', matrix.arch)) }}
+          restore-keys: |
+            hpkg-${{ matrix.arch }}-
+
       - name: Brand the build
         id: brand
         run: |
@@ -124,6 +139,13 @@ jobs:
               # The workspace is bind-mounted and owned by the runner user,
               # while the container runs as root, so git refuses to touch it.
               git config --global --add safe.directory /src
+              # Harden every download the build makes. The wget call belongs to
+              # the Haiku build and cannot be edited from here, and switching
+              # mirrors is not possible either: the mirror URL lives inside
+              # build/jam/repositories/HaikuPorts/<arch>, whose sha256 IS the
+              # snapshot key, so changing it gives a 404. But wget reads
+              # $HOME/.wgetrc, and HOME is /tmp in this container.
+              printf "tries = 10\nwaitretry = 5\ntimeout = 60\nretry_connrefused = on\n" > /tmp/.wgetrc
               mkdir -p "generated.${ARCH}"
               cd "generated.${ARCH}"
               ../configure \
