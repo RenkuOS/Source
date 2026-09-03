@@ -131,8 +131,17 @@ jobs:
             | grep -vE $'^[0-9-]+\t[0-9-]+\t(3rdParty|3rdparty|vendor)/' \
             | awk -F'\t' '$1 ~ /^[0-9]+$/ { a += $1 + $2 } END { print a+0 }')
 
-          # A "subsystem" is the first two path segments under src/, else the first.
+          # A "subsystem" is the first two path segments under src/, else the
+          # first. Infrastructure, documentation, translations and vendored code
+          # are excluded: REVIEW.md 2's cap is about reviewer attention on CODE,
+          # and a change that fixes a bug, adjusts CI to test it and updates a
+          # doc should not be blocked for spanning "three subsystems". Root-level
+          # files are skipped for the same reason -- each would otherwise count
+          # as a subsystem of its own.
           subs=$(git diff --name-only "${BASE}" HEAD \
+            | grep -vE '^(\.github|docs|3rdparty|3rdParty|vendor)/' \
+            | grep -vE '^data/catalogs/' \
+            | grep -E '/' \
             | awk -F/ '/^src\// { print $1"/"$2; next } { print $1 }' \
             | sort -u | wc -l)
 
