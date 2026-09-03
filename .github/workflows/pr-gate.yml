@@ -58,6 +58,12 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history and tags: the revision comes from `git describe`
+          # against upstream's hrev tags, and the package version is built from
+          # it. Depth-1 leaves no tags and an unusable revision.
+          fetch-depth: 0
+          fetch-tags: true
 
       # Deliberately NOT using a job-level `container:`. Every step would then
       # run inside the image, and this reclaim would delete the container's
@@ -126,7 +132,17 @@ jobs:
           # filename where a SHA would just be noise, while HAIKU_REVISION keeps
           # the SHA so an About box or a bug report maps back to a commit.
           BUILD="build$(printf '%05d' "${{ github.run_number }}")"
-          REV="${BUILD}-g$(git rev-parse --short=7 HEAD)"
+          # Mirror determine_haiku_revision: strip the -g<sha> suffix and turn
+          # remaining hyphens into plus signs. HaikuPorts packages require
+          # haiku >= r1~beta6_hrev59866_5-1 and that version is built from this
+          # string, so it must be hrev-shaped. Temporary -- see ci-design.md
+          # 12.1 and DECISIONS.md D2.
+          REV="$(git describe --dirty --tags --match='hrev*' --abbrev=1 \
+                 | sed 's/-g[0-9a-z]\+//' | sed 's/-/+/g')"
+          if [ -z "${REV}" ]; then
+            echo "::error::no hrev tag reachable; checkout is missing tags"
+            exit 1
+          fi
           cat > build/jam/UserBuildConfig <<EOF
           HAIKU_IMAGE_LABEL = "RenkuOS" ;
           HAIKU_REVISION = "${REV}" ;
