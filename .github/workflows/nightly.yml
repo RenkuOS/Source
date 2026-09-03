@@ -152,6 +152,11 @@ jobs:
                 --cross-tools-prefix "/tools/cross-tools-${ARCH}/bin/${TRIPLE}-" \
                 --distro-compatibility default
               jam -q -j"$(nproc)" @nightly-anyboot
+              # The package repository: repo, repo.info, repo.sha256 and the
+              # system hpkgs. This is what pkgman and HaikuDepot would update
+              # from, as opposed to the ISO which is for installing. Built as
+              # an artifact only for now -- see DECISIONS.md D2 for hosting.
+              jam -q -j"$(nproc)" "<repository>Haiku"
             '
 
       - name: Restore ownership
@@ -170,6 +175,32 @@ jobs:
           echo "name=${NAME}" >> "$GITHUB_OUTPUT"
           echo "size=$(du -h "out/${NAME}" | cut -f1)" >> "$GITHUB_OUTPUT"
 
+      - name: Collect the package repository
+        id: repo
+        run: |
+          set -uo pipefail
+          SRC="generated.${{ matrix.arch }}/objects/haiku/${{ matrix.arch }}/packaging/repositories/Haiku"
+          if [ ! -d "${SRC}" ]; then
+            echo "::warning::no repository tree at ${SRC}"
+            exit 0
+          fi
+          mkdir -p repo-out
+          cp -r "${SRC}" "repo-out/${{ matrix.arch }}"
+          echo "size=$(du -sh repo-out | cut -f1)" >> "$GITHUB_OUTPUT"
+          echo "packages=$(find repo-out -name '*.hpkg' | wc -l)" >> "$GITHUB_OUTPUT"
+          echo "  tree:"; find repo-out -maxdepth 3 -not -name '*.hpkg' | sed 's/^/    /'
+          echo "  largest packages:"
+          find repo-out -name '*.hpkg' -printf '%s %p\n' | sort -rn | head -5 \
+            | awk '{ printf "    %6.1f MB  %s\n", $1/1048576, $2 }'
+
+      - uses: actions/upload-artifact@v4
+        if: steps.repo.outputs.packages != ''
+        with:
+          name: package-repo-${{ matrix.arch }}
+          path: repo-out/
+          retention-days: 7
+          compression-level: 0
+
       - uses: actions/upload-artifact@v4
         with:
           name: image-${{ matrix.arch }}
@@ -186,6 +217,7 @@ jobs:
             echo "|---|---|"
             echo "| Image | ${{ steps.iso.outputs.name || 'not produced' }} (${{ steps.iso.outputs.size || '-' }}) |"
             echo "| Revision | \`${{ steps.brand.outputs.revision }}\` |"
+            echo "| Package repo | ${{ steps.repo.outputs.packages || '0' }} packages, ${{ steps.repo.outputs.size || '-' }} |"
           } >> "$GITHUB_STEP_SUMMARY"
 
   # Same assertions as the pull request gate: the kernel comes up and does not
