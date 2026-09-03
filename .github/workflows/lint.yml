@@ -127,9 +127,14 @@ jobs:
 
           # Vendored and generated code is not hand-reviewed, so it does not
           # count against the cap.
-          lines=$(git diff --numstat "${BASE}" HEAD \
-            | grep -vE $'^[0-9-]+\t[0-9-]+\t(3rdParty|3rdparty|vendor)/' \
-            | awk -F'\t' '$1 ~ /^[0-9]+$/ { a += $1 + $2 } END { print a+0 }')
+          # All filtering in awk, deliberately. GitHub runs this under `bash -e`,
+          # and with pipefail a grep that matches nothing exits 1 and kills the
+          # step -- which is exactly what happened when every changed file was
+          # excluded. awk exits 0 on empty input.
+          lines=$(git diff --numstat "${BASE}" HEAD | awk -F'\t' '
+            $3 ~ /^(3rdParty|3rdparty|vendor)\// { next }
+            $1 ~ /^[0-9]+$/ { a += $1 + $2 }
+            END { print a+0 }')
 
           # A "subsystem" is the first two path segments under src/, else the
           # first. Infrastructure, documentation, translations and vendored code
@@ -138,12 +143,12 @@ jobs:
           # doc should not be blocked for spanning "three subsystems". Root-level
           # files are skipped for the same reason -- each would otherwise count
           # as a subsystem of its own.
-          subs=$(git diff --name-only "${BASE}" HEAD \
-            | grep -vE '^(\.github|docs|3rdparty|3rdParty|vendor)/' \
-            | grep -vE '^data/catalogs/' \
-            | grep -E '/' \
-            | awk -F/ '/^src\// { print $1"/"$2; next } { print $1 }' \
-            | sort -u | wc -l)
+          subs=$(git diff --name-only "${BASE}" HEAD | awk -F/ '
+            /^(\.github|docs|3rdparty|3rdParty|vendor)\// { next }
+            /^data\/catalogs\// { next }
+            NF < 2 { next }
+            /^src\// { print $1"/"$2; next }
+            { print $1 }' | sort -u | wc -l)
 
           echo "Hand-reviewable lines changed: ${lines}"
           echo "Subsystems touched: ${subs}"
