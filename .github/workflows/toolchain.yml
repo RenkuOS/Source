@@ -51,20 +51,29 @@ jobs:
     # Under the 6-hour hard cap with room to spare.
     timeout-minutes: 330
     strategy:
-      # x86 is the unverified half of D4. Do not let it take x86_64 down with it.
+      # TEMPORARY — x86 removed from the matrix, 2026-09-03.
+      #
+      # Not a D4 decision: D4 still says Tier 1 is x86 and x86_64, and this
+      # divergence is deliberate and visible rather than a quiet policy change.
+      #
+      # Why: Haiku fetches build dependencies from
+      #   <url>/build-packages/<sha256 of build/jam/repositories/HaikuPorts/x86>/repo
+      # (RepositoryRules:168). Only snapshots upstream has uploaded exist, and
+      # they have not touched the pure-x86 definition since 2018-05-21, so its
+      # pinned 2016-era packages now 404. Refreshing those pins cannot help:
+      # any edit changes the checksum and therefore the URL, so the result is
+      # still a 404. Verified -- the hash in the failing URL is exactly the
+      # sha256 of that file.
+      #
+      # Restore when one of: we publish our own build-packages snapshot (D2),
+      # or we adopt the x86_gcc2h hybrid whose snapshot upstream does publish,
+      # or the council demotes x86 in D4 for real.
+      # Kept even with a single leg, so adding one back cannot mask a failure.
       fail-fast: false
       matrix:
         include:
           - tag: x86_64
             architecture: x86_64
-            secondary: ''
-          # D4 drops gcc2, so our 32-bit Tier 1 is a plain modern-GCC x86 build.
-          # configure lists x86 in supportedTargetArchs and the first
-          # --build-cross-tools is the primary, so this is a legal config.
-          # Whether the OS builds all the way through this way is what we are
-          # finding out.
-          - tag: x86
-            architecture: x86
             secondary: ''
 
     steps:

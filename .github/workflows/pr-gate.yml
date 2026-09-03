@@ -33,17 +33,28 @@ jobs:
     # the summary step below records it. The hard cap is 6 hours.
     timeout-minutes: 240
     strategy:
-      # A 32-bit failure must not hide a 64-bit result, or vice versa. D4 makes
-      # both blocking, but they should fail independently and visibly.
+      # TEMPORARY — x86 removed from the matrix, 2026-09-03.
+      #
+      # Not a D4 decision: D4 still says Tier 1 is x86 and x86_64, and this
+      # divergence is deliberate and visible rather than a quiet policy change.
+      #
+      # Why: Haiku fetches build dependencies from
+      #   <url>/build-packages/<sha256 of build/jam/repositories/HaikuPorts/x86>/repo
+      # (RepositoryRules:168). Only snapshots upstream has uploaded exist, and
+      # they have not touched the pure-x86 definition since 2018-05-21, so its
+      # pinned 2016-era packages now 404. Refreshing those pins cannot help:
+      # any edit changes the checksum and therefore the URL, so the result is
+      # still a 404. Verified -- the hash in the failing URL is exactly the
+      # sha256 of that file.
+      #
+      # Restore when one of: we publish our own build-packages snapshot (D2),
+      # or we adopt the x86_gcc2h hybrid whose snapshot upstream does publish,
+      # or the council demotes x86 in D4 for real.
       fail-fast: false
       matrix:
         include:
           - arch: x86_64
             triple: x86_64-unknown-haiku
-          # x86 and x86_gcc2 share the i586-pc-haiku triple — only the
-          # cross-tools directory differs. Verified in configure.
-          - arch: x86
-            triple: i586-pc-haiku
 
     steps:
       - uses: actions/checkout@v4
@@ -237,7 +248,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: [x86_64, x86]
+        arch: [x86_64]
 
     steps:
       - uses: actions/download-artifact@v4

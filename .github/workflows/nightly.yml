@@ -33,13 +33,28 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 240
     strategy:
+      # TEMPORARY — x86 removed from the matrix, 2026-09-03.
+      #
+      # Not a D4 decision: D4 still says Tier 1 is x86 and x86_64, and this
+      # divergence is deliberate and visible rather than a quiet policy change.
+      #
+      # Why: Haiku fetches build dependencies from
+      #   <url>/build-packages/<sha256 of build/jam/repositories/HaikuPorts/x86>/repo
+      # (RepositoryRules:168). Only snapshots upstream has uploaded exist, and
+      # they have not touched the pure-x86 definition since 2018-05-21, so its
+      # pinned 2016-era packages now 404. Refreshing those pins cannot help:
+      # any edit changes the checksum and therefore the URL, so the result is
+      # still a 404. Verified -- the hash in the failing URL is exactly the
+      # sha256 of that file.
+      #
+      # Restore when one of: we publish our own build-packages snapshot (D2),
+      # or we adopt the x86_gcc2h hybrid whose snapshot upstream does publish,
+      # or the council demotes x86 in D4 for real.
       fail-fast: false
       matrix:
         include:
           - arch: x86_64
             triple: x86_64-unknown-haiku
-          - arch: x86
-            triple: i586-pc-haiku
     outputs:
       build: ${{ steps.brand.outputs.build }}
     steps:
@@ -140,7 +155,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: [x86_64, x86]
+        arch: [x86_64]
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -223,7 +238,7 @@ jobs:
           set -uo pipefail
           mkdir -p staging
           published=""
-          for arch in x86_64 x86; do
+          for arch in x86_64; do
             if gh run download "${{ github.run_id }}" --repo "${{ github.repository }}" \
                  --name "boot-pass-${arch}" --dir "/tmp/pass-${arch}" 2>/dev/null; then
               gh run download "${{ github.run_id }}" --repo "${{ github.repository }}" \
