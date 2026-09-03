@@ -1546,12 +1546,12 @@ AboutView::_CreateCreditsView()
 		fCreditsView, B_WILL_DRAW | B_FRAME_EVENTS, false, true,
 		B_PLAIN_BORDER);
 
-	// Haiku copyright
+	// RenkuOS copyright
 	BFont font(be_bold_font);
 	font.SetSize(font.Size() + 4);
 
 	fCreditsView->SetFontAndColor(&font, B_FONT_ALL, &fHaikuGreenColor);
-	fCreditsView->Insert("Haiku\n");
+	fCreditsView->Insert("RenkuOS\n");
 
 	time_t time = ::time(NULL);
 	struct tm* tm = localtime(&time);
