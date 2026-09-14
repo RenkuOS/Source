@@ -1,0 +1,3 @@
+[submodule "intel_bluetooth_firmwares"]
+	path = intel_bluetooth_firmwares
+	url = https://github.com/hisuiki/intel_bluetooth_firmwares.git
