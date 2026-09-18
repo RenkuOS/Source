@@ -226,6 +226,16 @@ if $(HAIKU_CC_IS_LEGACY_GCC_$(architecture)) = 1 {
 SEARCH on haiku-2019.pub = [ FDirName $(HAIKU_TOP) data trust_db ] ;
 AddFilesToPackage data trust_db : haiku-2019.pub ;
 
+# RenkuOS build stamp, read by the About window. CI sets RENKUOS_BUILD in the
+# generated build/jam/UserBuildConfig; a build without it is a developer build
+# and says so. The number is part of the target name so that changing it yields
+# a different target and jam rebuilds the stamp, while the name inside the
+# package stays "build".
+local renkuOSBuild = $(RENKUOS_BUILD:E=local) ;
+local renkuOSBuildStamp = $(renkuOSBuild:G=renkuos-build) ;
+CreateRenkuOSBuildStamp $(renkuOSBuildStamp) : $(renkuOSBuild) ;
+AddFilesToPackage data renkuos : $(renkuOSBuildStamp) : build ;
+
 # servers
 AddFilesToPackage servers : $(SYSTEM_SERVERS) ;
 

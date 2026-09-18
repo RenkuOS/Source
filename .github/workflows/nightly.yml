@@ -112,12 +112,14 @@ jobs:
           cat > build/jam/UserBuildConfig <<EOF
           HAIKU_IMAGE_LABEL = "RenkuOS" ;
           HAIKU_REVISION = "${REV}" ;
+          RENKUOS_BUILD = "${BUILD}" ;
           EOF
           # Belt and braces. The UserBuildConfig above is the documented
           # route, but it demonstrably did not reach jam, whereas exporting
           # does -- build-toolchain.sh relies on the export and works.
           echo "HAIKU_REVISION=${REV}" >> "$GITHUB_ENV"
           echo "HAIKU_IMAGE_LABEL=RenkuOS" >> "$GITHUB_ENV"
+          echo "RENKUOS_BUILD=${BUILD}" >> "$GITHUB_ENV"
           echo "build=${BUILD}" >> "$GITHUB_OUTPUT"
           echo "revision=${REV}" >> "$GITHUB_OUTPUT"
           echo "date=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
@@ -133,7 +135,7 @@ jobs:
           set -euo pipefail
           docker run --rm -v "${PWD}:/src" -w /src \
             -e ARCH -e TRIPLE -e HOME=/tmp -e TERM=dumb \
-            -e HAIKU_REVISION -e HAIKU_IMAGE_LABEL \
+            -e HAIKU_REVISION -e HAIKU_IMAGE_LABEL -e RENKUOS_BUILD \
             "${IMAGE}" \
             bash -euo pipefail -c '
               # The workspace is bind-mounted and owned by the runner user,

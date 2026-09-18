@@ -93,7 +93,7 @@ static const float kWindowWidth = 500.0f;
 static const float kWindowHeight = 300.0f;
 
 static const float kSysInfoMinWidth = 163.0f;
-static const float kSysInfoMinHeight = 193.0f;
+static const float kSysInfoMinHeight = 232.0f;
 
 static const float kDraggerMargin = 6.0f;
 
@@ -268,6 +268,7 @@ private:
 
 			BString			_GetOSVersion();
 			BString			_GetABIVersion();
+			BString			_GetBuildNumber();
 			BString			_GetCPUCount(system_info*);
 			BString			_GetCPUInfo();
 			BString			_GetCPUFrequency();
@@ -281,6 +282,7 @@ private:
 private:
 			BStringView*	fVersionLabelView;
 			BStringView*	fVersionInfoView;
+			BStringView*	fBuildNumberView;
 			BStringView*	fCPULabelView;
 			BStringView*	fCPUInfoView;
 			BStringView*	fMemSizeView;
@@ -297,8 +299,8 @@ private:
 			float			fCachedBaseHeight;
 			float			fCachedMinHeight;
 
-	static const uint8		kLabelCount = 5;
-	static const uint8		kSubtextCount = 5;
+	static const uint8		kLabelCount = 6;
+	static const uint8		kSubtextCount = 6;
 };
 
 
@@ -591,6 +593,7 @@ SysInfoView::SysInfoView()
 	BView("AboutSystem", B_WILL_DRAW | B_PULSE_NEEDED),
 	fVersionLabelView(NULL),
 	fVersionInfoView(NULL),
+	fBuildNumberView(NULL),
 	fCPULabelView(NULL),
 	fCPUInfoView(NULL),
 	fMemSizeView(NULL),
@@ -612,6 +615,10 @@ SysInfoView::SysInfoView()
 	// OS Version / ABI
 	fVersionLabelView = _CreateLabel("oslabel", _GetOSVersion());
 	fVersionInfoView = _CreateSubtext("ostext", _GetABIVersion());
+
+	// RenkuOS build number
+	BStringView* buildLabel = _CreateLabel("buildlabel", B_TRANSLATE("Build:"));
+	fBuildNumberView = _CreateSubtext("buildtext", _GetBuildNumber());
 
 	// CPU count, type and clock speed
 	fCPULabelView = _CreateLabel("cpulabel", _GetCPUCount(&sysInfo));
@@ -641,6 +648,10 @@ SysInfoView::SysInfoView()
 		// Version:
 		.Add(fVersionLabelView)
 		.Add(fVersionInfoView)
+		.AddStrut(offset)
+		// Build:
+		.Add(buildLabel)
+		.Add(fBuildNumberView)
 		.AddStrut(offset)
 		// Processors:
 		.Add(fCPULabelView)
@@ -1022,6 +1033,38 @@ SysInfoView::_GetABIVersion()
 	abiVersion << " (" << B_HAIKU_ABI_NAME << ")";
 
 	return abiVersion;
+}
+
+
+BString
+SysInfoView::_GetBuildNumber()
+{
+	// Our own build counter, stamped into the haiku package at build time by
+	// CreateRenkuOSBuildStamp. It is carried separately from the revision
+	// above rather than folded into it: the revision string becomes the
+	// package version, and every HaikuPorts package requires an hrev-shaped
+	// one, so our counter cannot go there while we consume their repository.
+	BString build;
+
+	BPath path;
+	if (find_directory(B_SYSTEM_DATA_DIRECTORY, &path) == B_OK
+		&& path.Append("renkuos/build") == B_OK) {
+		BFile file;
+		if (file.SetTo(path.Path(), B_READ_ONLY) == B_OK) {
+			char buffer[64];
+			ssize_t bytesRead = file.Read(buffer, sizeof(buffer) - 1);
+			if (bytesRead > 0) {
+				buffer[bytesRead] = '\0';
+				build.SetTo(buffer);
+				build.Trim();
+			}
+		}
+	}
+
+	if (build.IsEmpty())
+		build = B_TRANSLATE("Unknown");
+
+	return build;
 }
 
 
