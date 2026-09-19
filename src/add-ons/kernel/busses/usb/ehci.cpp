@@ -417,6 +417,22 @@ EHCI::EHCI(pci_info *info, pci_device_module_info* pci, pci_device* device, Stac
 		}
 	}
 
+	// Refuse a BAR that cannot be a register window before the device is
+	// touched at all. BAR 0 is otherwise mapped unconditionally, and nothing
+	// below reads anything that identifies the controller before the first
+	// write -- so a BAR the firmware never assigned turns the halt/reset
+	// writes into writes to whatever the address really is, including RAM.
+	if ((fPCIInfo->u.h0.base_register_flags[0] & PCI_address_space) != 0
+		|| fPCIInfo->u.h0.base_registers[0] == 0
+		|| fPCIInfo->u.h0.base_register_sizes[0] < EHCI_HCSP_PORTROUTE) {
+		TRACE_ERROR("BAR 0 is not a usable register window (address 0x%08"
+			B_PRIx32 ", size 0x%" B_PRIx32 ", flags 0x%02x)\n",
+			fPCIInfo->u.h0.base_registers[0],
+			fPCIInfo->u.h0.base_register_sizes[0],
+			fPCIInfo->u.h0.base_register_flags[0]);
+		return;
+	}
+
 	// enable busmaster and memory mapped access
 	uint16 command = fPci->read_pci_config(fDevice, PCI_command, 2);
 	command &= ~PCI_command_io;
@@ -445,7 +461,35 @@ EHCI::EHCI(pci_info *info, pci_device_module_info* pci, pci_device* device, Stac
 	}
 
 	fCapabilityRegisters += offset;
-	fOperationalRegisters = fCapabilityRegisters + ReadCapReg8(EHCI_CAPLENGTH);
+
+	// Confirm an EHCI controller actually answers at this address before the
+	// first write, reading only the capability registers. OHCI and XHCI get
+	// this from their revision checks; EHCI had none. A defective card whose
+	// BAR 0 came up inside system RAM had USBINTR and USBCMD written into that
+	// RAM before reset failed. Every field checked here is fixed by the EHCI
+	// specification, so random memory is very unlikely to pass. The extended
+	// capability pointer is checked too, because it is used below as an
+	// offset for PCI config-space WRITES: below 0x40 it would land in the
+	// standard header (command register, BARs).
+	uint8 capLength = ReadCapReg8(EHCI_CAPLENGTH);
+	uint16 interfaceVersion = ReadCapReg16(EHCI_HCIVERSION);
+	uint32 portCount = ReadCapReg32(EHCI_HCSPARAMS) & 0x0f;
+	uint32 capPointer = (ReadCapReg32(EHCI_HCCPARAMS) >> EHCI_ECP_SHIFT)
+		& EHCI_ECP_MASK;
+	uint32 registerSpan = capLength + EHCI_PORTSC + 4 * portCount;
+	if (interfaceVersion < 0x0095 || interfaceVersion > 0x01ff
+		|| capLength < EHCI_HCSP_PORTROUTE || portCount == 0
+		|| registerSpan > fPCIInfo->u.h0.base_register_sizes[0]
+		|| (capPointer != 0 && capPointer < 0x40)) {
+		TRACE_ERROR("no EHCI controller answers at 0x%08" B_PRIx32
+			" (HCIVERSION 0x%04x, CAPLENGTH 0x%02x, ports %" B_PRIu32
+			", EECP 0x%02" B_PRIx32 ", BAR size 0x%" B_PRIx32 ")\n",
+			fPCIInfo->u.h0.base_registers[0], interfaceVersion, capLength,
+			portCount, capPointer, fPCIInfo->u.h0.base_register_sizes[0]);
+		return;
+	}
+
+	fOperationalRegisters = fCapabilityRegisters + capLength;
 	TRACE("mapped capability registers: 0x%p\n", fCapabilityRegisters);
 	TRACE("mapped operational registers: 0x%p\n", fOperationalRegisters);
 
