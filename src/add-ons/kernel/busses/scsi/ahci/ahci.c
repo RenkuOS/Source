@@ -4,6 +4,7 @@
  */
 
 #include "ahci_defs.h"
+#include "util.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -259,9 +260,92 @@ ahci_supports_device(device_node *parent)
 }
 
 
+/*!	Determine the highest physical address this HBA can DMA to.
+
+	B_DMA_HIGH_ADDRESS used to be a fixed 4 GiB for every controller, with a
+	TODO noting that CAP_S64A says whether 64-bit addressing is supported.
+	With that ceiling, any S/G entry above 4 GiB fails is_sg_list_dma_safe()
+	in the SCSI bus manager, and the request is diverted through a single
+	per-device bounce buffer (scsi_get_dma_buffer()). On any machine with
+	physical memory above 4 GiB, which includes 4 GB machines where the PCI
+	hole moves RAM upward, that serialises much of the disk traffic.
+
+	The PRD table already stores a full 64-bit address (AHCIPort::FillPrdTable
+	writes both dba and dbau), so only the advertised limit has to change.
+
+	CAP is read directly from the HBA's memory-mapped BAR5, enabling memory
+	decoding first as AHCIController::Init() does. Any failure falls back to
+	the conservative 4 GiB value, so a controller that cannot be probed
+	behaves exactly as before.
+*/
+static uint64
+ahci_dma_high_address(device_node *parent)
+{
+	const uint64 kConservativeLimit = 0x100000000ULL;
+	pci_device_module_info *pci;
+	pci_device *device;
+	pci_info info;
+	volatile uint32 *hbaCap;
+	area_id area;
+	uint16 pcicmd;
+	uint32 cap;
+
+	if (gDeviceManager->get_driver(parent, (driver_module_info **)&pci,
+			(void **)&device) != B_OK) {
+		TRACE("dma_high_address: no PCI parent, keeping the 4 GiB limit\n");
+		return kConservativeLimit;
+	}
+
+	pci->get_pci_info(device, &info);
+
+	// Require only the one register we read, NOT sizeof(ahci_hba). That struct
+	// declares the architectural maximum of 32 ports, while a real BAR5 is
+	// sized to the ports actually implemented (an ICH10 reports 0x800 for its
+	// 6), so demanding the whole struct would reject real controllers.
+	if (info.u.h0.base_registers[5] == 0
+		|| info.u.h0.base_register_sizes[5] < sizeof(uint32)) {
+		TRACE("dma_high_address: BAR5 unusable (addr %#" B_PRIxPHYSADDR
+			", size %" B_PRIu32 "), keeping the 4 GiB limit\n",
+			(phys_addr_t)info.u.h0.base_registers[5],
+			(uint32)info.u.h0.base_register_sizes[5]);
+		return kConservativeLimit;
+	}
+
+	pcicmd = pci->read_pci_config(device, PCI_command, 2);
+	if ((pcicmd & PCI_command_memory) == 0) {
+		pci->write_pci_config(device, PCI_command, 2,
+			pcicmd | PCI_command_memory);
+	}
+
+	// CAP is the first register of the HBA's generic host control block, so a
+	// single uint32 at BAR5+0 is all this probe needs.
+	area = map_mem((void **)&hbaCap, info.u.h0.base_registers[5],
+		sizeof(uint32), B_KERNEL_READ_AREA, "AHCI HBA cap probe");
+	if (area < B_OK) {
+		TRACE("dma_high_address: mapping BAR5 failed, keeping the 4 GiB limit\n");
+		return kConservativeLimit;
+	}
+
+	cap = *hbaCap;
+	delete_area(area);
+
+	if ((cap & CAP_S64A) == 0) {
+		TRACE("controller does not support 64 bit addressing, limiting DMA to "
+			"4 GiB\n");
+		return kConservativeLimit;
+	}
+
+	TRACE("controller supports 64 bit addressing (CAP_S64A), lifting the 4 GiB "
+		"DMA limit\n");
+	return ~(uint64)0;
+}
+
+
 static status_t
 ahci_register_device(device_node *parent)
 {
+	uint64 highAddress = ahci_dma_high_address(parent);
+
 	device_attr attrs[] = {
 		{ SCSI_DEVICE_MAX_TARGET_COUNT, B_UINT32_TYPE,
 			{ .ui32 = 33 }},
@@ -277,10 +361,8 @@ ahci_register_device(device_node *parent)
 		{ B_DMA_MAX_SEGMENT_BLOCKS, B_UINT32_TYPE, { .ui32 = 0x10000 }},
 		{ B_DMA_MAX_SEGMENT_COUNT, B_UINT32_TYPE,
 			{ .ui32 = 32 /* whatever... */ }},
-		{ B_DMA_HIGH_ADDRESS, B_UINT64_TYPE, { .ui64 = 0x100000000LL }},
-			// TODO: We don't know at this point whether 64 bit addressing is
-			// supported. That's indicated by a capability flag. Play it safe
-			// for now.
+		// Probed from CAP_S64A; see ahci_dma_high_address() above.
+		{ B_DMA_HIGH_ADDRESS, B_UINT64_TYPE, { .ui64 = highAddress }},
 		{ NULL }
 	};
 
