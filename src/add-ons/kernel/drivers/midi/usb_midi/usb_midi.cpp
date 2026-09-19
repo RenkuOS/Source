@@ -682,8 +682,13 @@ usb_midi_write(driver_cookie* cookie, off_t position,
 			DPRINTF_DEBUG((MY_ID "using packet data (code %x -- %d bytes)"
 				" %x %x %x\n", pkt->cin, CINbytes[pkt->cin],
 				midiseq[0], midiseq[1], midiseq[2]));
-			if (user_memcpy(pkt->midi, midiseq, pkt_bytes) != B_OK)
+			if (user_memcpy(pkt->midi, midiseq, pkt_bytes) != B_OK) {
+				/* sem_send was acquired above and is otherwise only released
+				   by the write callback; the aborted transfer will never
+				   trigger it, so release it here or all later writes hang. */
+				release_sem(midiDevice->sem_send);
 				return B_BAD_ADDRESS;
+			}
 			DPRINTF_DEBUG((MY_ID "built packet %p %x:%d %x %x %x\n",
 				pkt, pkt->cin, pkt->cn,
 				pkt->midi[0], pkt->midi[1], pkt->midi[2]));
@@ -702,6 +707,10 @@ usb_midi_write(driver_cookie* cookie, off_t position,
 		if (status != B_OK) {
 			DPRINTF_ERR((MY_ID "midi write queue_bulk() error 0x%" B_PRIx32
 				"\n", status));
+			/* A failed queue_bulk produces no callback, so the send buffer
+			   would never be released. Do it here: a single transient
+			   queue_bulk failure must not deadlock the port's output. */
+			release_sem(midiDevice->sem_send);
 			return B_ERROR;
 		}
 	}
