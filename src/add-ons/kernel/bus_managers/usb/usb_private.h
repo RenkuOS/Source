@@ -180,6 +180,18 @@ public:
 
 		void							Explore();
 
+		// Wake the explore thread now instead of letting it wait out
+		// USB_DELAY_HUB_EXPLORE. A host controller calls this when it has
+		// done something that moves a device onto a bus the current explore
+		// pass has already walked -- notably an EHCI companion handing port
+		// ownership to a UHCI/OHCI controller that sorts earlier in
+		// fBusManagers, which otherwise costs the device a full extra second.
+		// Safe to call from inside Explore(): the semaphore is drained before
+		// the root-hub loop, so a release issued during that loop survives to
+		// the next acquire and triggers one more pass immediately.
+		void							TriggerExplore()
+											{ release_sem(fExploreSem); }
+
 private:
 static	int32							ExploreThread(void *data);
 

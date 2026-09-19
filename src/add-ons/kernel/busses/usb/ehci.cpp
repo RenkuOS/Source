@@ -1487,6 +1487,11 @@ EHCI::ResetPort(uint8 index)
 		// we give the ownership to a companion controller.
 		WriteOpReg(portRegister, portStatus | EHCI_PORTSC_PORTOWNER);
 		fPortResetChange |= (1 << index);
+		// The device is now on a companion controller which this explore
+		// pass may already have walked (UHCI sorts before EHCI in
+		// fBusManagers on ICH-class chipsets), so without this it waits out a
+		// full USB_DELAY_HUB_EXPLORE before anyone looks at it.
+		fStack->TriggerExplore();
 		return B_OK;
 	}
 
@@ -1511,6 +1516,13 @@ EHCI::ResetPort(uint8 index)
 		// the port was not enabled, this means that no high speed device is
 		// attached to this port. we give up ownership to a companion controler
 		WriteOpReg(portRegister, portStatus | EHCI_PORTSC_PORTOWNER);
+		// Same as the lowspeed path above: the device has just moved to a
+		// companion controller that this explore pass has probably already
+		// visited, so ask for another pass rather than letting it wait a full
+		// second. Some devices do not survive that wait: a cold MidiSport 2x2
+		// gives the host only ~780 ms after its warm re-attach before it
+		// re-asserts DISCON.
+		fStack->TriggerExplore();
 	}
 
 	fPortResetChange |= (1 << index);
