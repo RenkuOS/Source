@@ -43,7 +43,13 @@ Hub::Hub(Object *parent, int8 hubAddress, uint8 hubPort,
 
 	TRACE("getting hub descriptor...\n");
 	size_t actualLength;
-	status_t status = GetDescriptor(USB_DESCRIPTOR_HUB, 0, 0,
+	// A SuperSpeed hub answers descriptor type 0x2A and is required by the
+	// USB 3 spec to STALL a request for the 2.0 type, so asking for the wrong
+	// one loses the hub entirely. The two layouts share their first seven
+	// bytes, which covers every field read below.
+	uint8 hubDescriptorType = (Speed() >= USB_SPEED_SUPERSPEED)
+		? USB_DESCRIPTOR_SS_HUB : USB_DESCRIPTOR_HUB;
+	status_t status = GetDescriptor(hubDescriptorType, 0, 0,
 		(void *)&fHubDescriptor, sizeof(usb_hub_descriptor), &actualLength);
 
 	// we need at least 8 bytes
@@ -65,6 +71,36 @@ Hub::Hub(Object *parent, int8 hubAddress, uint8 hubPort,
 		TRACE_ALWAYS("hub supports more ports than we do (%d vs. %d)\n",
 			fHubDescriptor.num_ports, USB_MAX_PORT_COUNT);
 		fHubDescriptor.num_ports = USB_MAX_PORT_COUNT;
+	}
+
+	// A SuperSpeed hub must be told where it sits in the topology before it
+	// can interpret the route string a downstream device's slot context
+	// carries. Skip it without this and the hub itself works, but every
+	// Address Device for a device behind it fails with a USB transaction
+	// error and the port retries forever.
+	//
+	// Depth is the number of hubs between this one and the root hub, so a hub
+	// on a root port is depth 0. Count the hub ancestors and drop the root hub
+	// from the tally (Linux computes the same value as level - 1).
+	if (!isRootHub && Speed() >= USB_SPEED_SUPERSPEED) {
+		uint16 hubDepth = 0;
+		for (Object *ancestor = Parent(); ancestor != NULL;
+				ancestor = ancestor->Parent()) {
+			if ((ancestor->Type() & USB_OBJECT_HUB) != 0)
+				hubDepth++;
+		}
+		if (hubDepth > 0)
+			hubDepth--;
+
+		status_t depthStatus = DefaultPipe()->SendRequest(
+			USB_REQTYPE_DEVICE_OUT | USB_REQTYPE_CLASS,
+			USB_REQUEST_SET_HUB_DEPTH, hubDepth, 0, 0, NULL, 0, NULL);
+		if (depthStatus < B_OK) {
+			TRACE_ERROR("failed to set hub depth %u: %s\n", hubDepth,
+				strerror(depthStatus));
+			return;
+		}
+		TRACE_ALWAYS("SuperSpeed hub depth set to %u\n", hubDepth);
 	}
 
 	usb_interface_list *list = Configuration()->interface;

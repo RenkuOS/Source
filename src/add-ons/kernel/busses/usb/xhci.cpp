@@ -1830,10 +1830,18 @@ XHCI::AllocateDevice(Hub *parent, int8 hubAddress, uint8 hubPort,
 		TRACE("getting the hub descriptor\n");
 		size_t actualLength = 0;
 		usb_hub_descriptor hubDescriptor;
+		// A SuperSpeed hub answers descriptor type 0x2A and must STALL a
+		// request for the 2.0 type (USB 3 spec), so asking for the wrong one
+		// fails enumeration and the hub is lost -- its USB 2.0 half still
+		// works, so the visible symptom is a USB 3 hub silently running at
+		// 480 Mbps. The two layouts share their first seven bytes, which is
+		// everything read below.
+		uint8 hubDescriptorType = (speed >= USB_SPEED_SUPERSPEED)
+			? USB_DESCRIPTOR_SS_HUB : USB_DESCRIPTOR_HUB;
 		status = pipe.SendRequest(
 			USB_REQTYPE_DEVICE_IN | USB_REQTYPE_CLASS,			// type
 			USB_REQUEST_GET_DESCRIPTOR,							// request
-			USB_DESCRIPTOR_HUB << 8,							// value
+			hubDescriptorType << 8,								// value
 			0,													// index
 			sizeof(usb_hub_descriptor),							// length
 			(void *)&hubDescriptor,								// buffer

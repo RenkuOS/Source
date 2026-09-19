@@ -222,10 +222,18 @@ XHCIRootHub::ProcessTransfer(XHCI *xhci, Transfer *transfer)
 					break;
 				}
 
-				case USB_DESCRIPTOR_HUB: {
+				// This root hub declares itself USB 3.0 (sXHCIRootHubDevice),
+				// so the stack asks it for the SuperSpeed hub descriptor.
+				// Answering only 0x29 would make the root hub stall itself and
+				// the whole xHCI bus would fail to initialise.
+				case USB_DESCRIPTOR_HUB:
+				case USB_DESCRIPTOR_SS_HUB: {
 					actualLength = MIN(sizeof(usb_hub_descriptor),
 						transfer->DataLength());
 					sXHCIRootHubConfig.hub.num_ports = xhci->PortCount();
+					// Report back whichever type was asked for.
+					sXHCIRootHubConfig.hub.descriptor_type
+						= request->Value >> 8;
 					memcpy(transfer->Data(), (void *)&sXHCIRootHubConfig.hub,
 						actualLength);
 					status = B_OK;

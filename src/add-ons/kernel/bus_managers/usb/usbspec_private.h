@@ -70,6 +70,21 @@ struct usb_hub_descriptor {
 
 #define USB_DESCRIPTOR_HUB 0x29
 
+/* SuperSpeed hubs answer a different descriptor type and are required by the
+   USB 3 spec to STALL a request for 0x29. Its first seven bytes are laid out
+   exactly like the 2.0 descriptor above -- length, type, num_ports,
+   characteristics, power_on_to_power_good, max_power -- which is everything
+   this stack actually reads, so usb_hub_descriptor is reused for both. The
+   full SuperSpeed descriptor is 12 bytes; only ever request sizeof() of the
+   9-byte struct, never the true length. */
+#define USB_DESCRIPTOR_SS_HUB 0x2a
+
+/* Hub class request. A SuperSpeed hub must be told its depth in the topology
+   before it can interpret the route string in a downstream device's slot
+   context; without it every Address Device for a device behind the hub fails
+   with a transaction error. USB 3.2 spec 10.14.2.7. */
+#define USB_REQUEST_SET_HUB_DEPTH 12
+
 
 struct usb_endpoint_ss_companion_descriptor {
 	uint8	length;
