@@ -86,6 +86,8 @@ for architectureObject in [ MultiArchSubDirSetup ] {
 			LayoutUtils.cpp
 			ListItem.cpp
 			ListView.cpp
+			MarkdownView.cpp
+			md4c.c
 			Menu.cpp
 			MenuBar.cpp
 			MenuField.cpp

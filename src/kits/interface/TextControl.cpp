@@ -577,7 +577,10 @@ BTextControl::SetText(const char* text)
 const char*
 BTextControl::Text() const
 {
-	return fText->Text();
+    if (fText == NULL)
+		return "";
+    return static_cast<BPrivate::_BTextInput_*>(fText)->RealText();
+    
 }
 
 
@@ -1106,6 +1109,29 @@ BTextControl::_InitData(const char* label, const BMessage* archive)
 	fLook = 0;
 }
 
+void
+BTextControl::Mask(bool enable)
+{
+	if (fText != NULL) {
+		static_cast<BPrivate::_BTextInput_*>(fText)->SetMasked(enable);
+		fText->Invalidate();
+	}
+}
+
+bool
+BTextControl::IsMasked() const
+{
+    if (fText != NULL)
+        return static_cast<BPrivate::_BTextInput_*>(fText)->IsMasked();
+    return false;
+}
+
+void
+BTextControl::SetMaskChar(char c)
+{
+    if (fText != NULL)
+        static_cast<BPrivate::_BTextInput_*>(fText)->SetMaskChar(c);
+}
 
 void
 BTextControl::_InitText(const char* initialText, const BMessage* archive)

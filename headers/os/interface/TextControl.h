@@ -68,6 +68,10 @@ public:
 	virtual	void				GetPreferredSize(float* _width,
 									float* _height);
 	virtual	void				ResizeToPreferred();
+	
+			void				Mask(bool enable);
+			bool				IsMasked() const;
+			void				SetMaskChar(char c);
 
 	virtual	void				MessageReceived(BMessage* message);
 	virtual	BHandler*			ResolveSpecifier(BMessage* message,

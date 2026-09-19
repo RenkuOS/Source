@@ -196,6 +196,11 @@ SimpleTest WindowStackTest :
 	: be [ TargetLibsupc++ ]
 	;
 
+SimpleTest MarkdownText :
+	TestMarkdownView.cpp
+	: be [ TargetLibsupc++ ]
+	;
+
 SEARCH on [ FGristFiles
 		ScrollView.cpp CheckBox.cpp ChannelSlider.cpp ChannelControl.cpp
 		Slider.cpp Control.cpp

@@ -30,11 +30,15 @@ virtual					~_BTextInput_();
 static	BArchivable*	Instantiate(BMessage *data);
 virtual	status_t		Archive(BMessage *data, bool deep = true) const;
 
+void					SetMasked(bool enable);// { fMasked = enable; }
+bool					IsMasked() const { return fMasked; }
+void					SetMaskChar(char c) { fMaskChar = c; }
+const char*				RealText() const { return fMasked ? fRealText.String() : Text(); }
+
 virtual	void			MouseDown(BPoint where);
 virtual	void			FrameResized(float width, float height);
 virtual	void			KeyDown(const char *bytes, int32 numBytes);
 virtual	void			MakeFocus(bool focusState = true);
-
 virtual	BSize			MinSize();
 
 		void			SetInitialText();
@@ -53,6 +57,9 @@ private:
 
 		char			*fPreviousText;
 		bool			fInMouseDown;
+		bool				fMasked;
+		char				fMaskChar;
+		BString				fRealText;
 };
 
 }	// namespace BPrivate
