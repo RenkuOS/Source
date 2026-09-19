@@ -708,6 +708,22 @@ intel_needs_firmware(const usb_device_descriptor* descriptor)
 }
 
 
+static void
+intel_clear_halted_pipe(const usb_endpoint_info* endpoint)
+{
+	if (endpoint == NULL)
+		return;
+
+	usb->cancel_queued_transfers(endpoint->handle);
+	status_t status = usb->clear_feature(endpoint->handle,
+		USB_FEATURE_ENDPOINT_HALT);
+	if (status != B_OK) {
+		ERROR("clearing halt on Intel Bluetooth pipe failed: %s\n",
+			strerror(status));
+	}
+}
+
+
 status_t
 intel_load_firmware(bt_usb_dev* bdev)
 {
@@ -731,6 +747,13 @@ intel_load_firmware(bt_usb_dev* bdev)
 		status = setup_controller(loader);
 
 	stop_rx(loader);
+	if (status == B_OK && loader->booted) {
+		// Rebooting into firmware can halt the bulk pipes that were receiving
+		// events. Clear them only after an actual boot; clearing an operational
+		// controller's pipes can desynchronize its USB data toggles.
+		intel_clear_halted_pipe(bdev->bulk_in_ep);
+		intel_clear_halted_pipe(bdev->bulk_out_ep);
+	}
 
 	// A receive callback can still use the loader, so keep it.
 	if (atomic_get(&loader->pendingRx) > 0)
