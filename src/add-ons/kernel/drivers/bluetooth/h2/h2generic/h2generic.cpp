@@ -57,6 +57,9 @@ usb_support_descriptor supported_devices[] = {
 	// Generic Bluetooth USB device
 	// Class, SubClass, and Protocol codes that describe a Bluetooth device
 	{ UDCLASS_WIRELESS, UDSUBCLASS_RF, UDPROTO_BLUETOOTH, 0, 0 },
+	// Intel Bluetooth functions which require secure-boot firmware.
+	{ 0, 0, 0, 0x8087, 0x0a2b },
+	{ 0, 0, 0, 0x8087, 0x0032 }, // AX210
 
 	// Broadcom BCM2035
 	{ 0, 0, 0, 0x0a5c, 0x200a },
@@ -921,7 +924,8 @@ init_driver(void)
 	}
 
 	// Note: After here device_added and publish devices hooks are called
-	usb->register_driver(BLUETOOTH_DEVICE_DEVFS_NAME, supported_devices, 1, NULL);
+	usb->register_driver(BLUETOOTH_DEVICE_DEVFS_NAME, supported_devices,
+		B_COUNT_OF(supported_devices), NULL);
 	usb->install_notify(BLUETOOTH_DEVICE_DEVFS_NAME, &notify_hooks);
 
 	add_debugger_command("bth2generic", &dump_driver,
