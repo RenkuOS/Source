@@ -379,6 +379,68 @@ smp_init_other_cpus(void)
 }
 
 
+static const uint32 kIPIDeliveryTimeout = 1000000;
+static const uint32 kApStartupTimeoutMs = 500;
+static const uint32 kApStartupAttempts = 3;
+
+
+/*!	Whether to bound the AP start-up waits and retry the INIT/SIPI sequence,
+	instead of spinning in them until the AP answers.
+
+	Restricted to the 32-bit Intel Atom (Bonnell) parts where this was found:
+	GenuineIntel, family 6, model 0x1c, with no long mode. Those are the
+	only ones known to need it, and an unbounded wait that has worked
+	everywhere else for twenty years is not worth disturbing on a guess.
+
+	The long-mode test is what makes this "32-bit": the Atom Z520 in a Sony
+	VAIO P reads CPUID 0x80000001 EDX as 0x00100000 -- NX set, LM (bit 29)
+	clear -- so it can only ever run a 32-bit Haiku, while other model 0x1c
+	parts (Atom 230/330 and friends) do have long mode and are left alone.
+*/
+static bool
+smp_cpu_wants_bounded_startup(void)
+{
+	cpuid_info info;
+	if (get_current_cpuid(&info, 0, 0) != B_OK)
+		return false;
+	if (memcmp(info.eax_0.vendor_id, "GenuineIntel", 12) != 0)
+		return false;
+
+	if (get_current_cpuid(&info, 1, 0) != B_OK)
+		return false;
+	if (info.eax_1.family != 6 || info.eax_1.extended_family != 0)
+		return false;
+	if (info.eax_1.model != 0xc || info.eax_1.extended_model != 1)
+		return false;
+
+	if (get_current_cpuid(&info, 0x80000001, 0) != B_OK)
+		return false;
+
+	// IA32_FEATURE_AMD_EXT_LONG, bit 29 of the extended feature EDX.
+	return (info.regs.edx & (1 << 29)) == 0;
+}
+
+
+/*!	Waits for the local APIC to finish delivering the IPI just written.
+
+	With \a bounded false this is the original unbounded spin and always
+	returns true; with it true the wait gives up after kIPIDeliveryTimeout
+	reads and returns false.
+*/
+static bool
+smp_wait_for_ipi_delivery(bool bounded)
+{
+	uint32 timeout = kIPIDeliveryTimeout;
+	while ((apic_read(APIC_INTR_COMMAND_1) & APIC_DELIVERY_STATUS) != 0) {
+		asm volatile ("pause;");
+		if (bounded && --timeout == 0)
+			return false;
+	}
+
+	return true;
+}
+
+
 void
 smp_boot_other_cpus(void (*entryFunc)(void))
 {
@@ -405,6 +467,9 @@ smp_boot_other_cpus(void (*entryFunc)(void))
 	memcpy((char *)trampolineCode, (const void*)&smp_trampoline,
 		(uint32)&smp_trampoline_end - (uint32)&smp_trampoline);
 
+	const bool bounded = smp_cpu_wants_bounded_startup();
+	const uint32 attempts = bounded ? kApStartupAttempts : 1;
+
 	// boot the cpus
 	for (uint32 i = 1; i < gKernelArgs.num_cpus; i++) {
 		uint32 *finalStack;
@@ -422,100 +487,144 @@ smp_boot_other_cpus(void (*entryFunc)(void))
 				/ sizeof(uint32)) - 1;
 		*tempStack = (uint32)entryFunc;
 
-		// set the trampoline stack up
-		tempStack = (uint32 *)(trampolineStack + B_PAGE_SIZE - 4);
-		// final location of the stack
-		*tempStack = ((uint32)finalStack) + KERNEL_STACK_SIZE
-			+ KERNEL_STACK_GUARD_PAGES * B_PAGE_SIZE - sizeof(uint32);
-		tempStack--;
-		// page dir
-		*tempStack = x86_read_cr3() & 0xfffff000;
+		// Where bounded startup applies, run the whole INIT/SIPI/wait
+		// sequence more than once: the HT sibling of an Atom Z520 takes no
+		// visible action on the first attempt and comes up on a later one.
+		// Everywhere else this is one pass with the original unbounded
+		// waits, exactly as before.
+		bool started = false;
 
-		// put a gdt descriptor at the bottom of the stack
-		*((uint16 *)trampolineStack) = 0x18 - 1; // LIMIT
-		*((uint32 *)(trampolineStack + 2)) = trampolineStack + 8;
+		for (uint32 attempt = 0; attempt < attempts && !started; attempt++) {
+			// Set the trampoline stack up. Redone on every attempt: an
+			// attempt whose wait expired may still have consumed the values
+			// afterwards.
+			tempStack = (uint32 *)(trampolineStack + B_PAGE_SIZE - 4);
+			// final location of the stack
+			*tempStack = ((uint32)finalStack) + KERNEL_STACK_SIZE
+				+ KERNEL_STACK_GUARD_PAGES * B_PAGE_SIZE - sizeof(uint32);
+			tempStack--;
+			// page dir
+			*tempStack = x86_read_cr3() & 0xfffff000;
 
-		// construct a temporary gdt at the bottom
-		segment_descriptor* tempGDT
-			= (segment_descriptor*)&((uint32 *)trampolineStack)[2];
-		clear_segment_descriptor(&tempGDT[0]);
-		set_segment_descriptor(&tempGDT[1], 0, 0xffffffff, DT_CODE_READABLE,
-			DPL_KERNEL);
-		set_segment_descriptor(&tempGDT[2], 0, 0xffffffff, DT_DATA_WRITEABLE,
-			DPL_KERNEL);
+			// put a gdt descriptor at the bottom of the stack
+			*((uint16 *)trampolineStack) = 0x18 - 1; // LIMIT
+			*((uint32 *)(trampolineStack + 2)) = trampolineStack + 8;
 
-		/* clear apic errors */
-		if (gKernelArgs.arch_args.cpu_apic_version[i] & 0xf0) {
-			apic_write(APIC_ERROR_STATUS, 0);
-			apic_read(APIC_ERROR_STATUS);
-		}
+			// construct a temporary gdt at the bottom
+			segment_descriptor* tempGDT
+				= (segment_descriptor*)&((uint32 *)trampolineStack)[2];
+			clear_segment_descriptor(&tempGDT[0]);
+			set_segment_descriptor(&tempGDT[1], 0, 0xffffffff,
+				DT_CODE_READABLE, DPL_KERNEL);
+			set_segment_descriptor(&tempGDT[2], 0, 0xffffffff,
+				DT_DATA_WRITEABLE, DPL_KERNEL);
 
-		/* send (aka assert) INIT IPI */
-		TRACE(("assert INIT\n"));
-		config = (apic_read(APIC_INTR_COMMAND_2) & APIC_INTR_COMMAND_2_MASK)
-			| (gKernelArgs.arch_args.cpu_apic_id[i] << 24);
-		apic_write(APIC_INTR_COMMAND_2, config); /* set target pe */
-		config = (apic_read(APIC_INTR_COMMAND_1) & 0xfff00000)
-			| APIC_TRIGGER_MODE_LEVEL | APIC_INTR_COMMAND_1_ASSERT
-			| APIC_DELIVERY_MODE_INIT;
-		apic_write(APIC_INTR_COMMAND_1, config);
+			/* clear apic errors */
+			if (gKernelArgs.arch_args.cpu_apic_version[i] & 0xf0) {
+				apic_write(APIC_ERROR_STATUS, 0);
+				apic_read(APIC_ERROR_STATUS);
+			}
 
-		// wait for pending to end
-		TRACE(("wait for delivery\n"));
-		while ((apic_read(APIC_INTR_COMMAND_1) & APIC_DELIVERY_STATUS) != 0)
-			asm volatile ("pause;");
-
-		/* deassert INIT */
-		TRACE(("deassert INIT\n"));
-		config = (apic_read(APIC_INTR_COMMAND_2) & APIC_INTR_COMMAND_2_MASK)
-			| (gKernelArgs.arch_args.cpu_apic_id[i] << 24);
-		apic_write(APIC_INTR_COMMAND_2, config);
-		config = (apic_read(APIC_INTR_COMMAND_1) & 0xfff00000)
-			| APIC_TRIGGER_MODE_LEVEL | APIC_DELIVERY_MODE_INIT;
-		apic_write(APIC_INTR_COMMAND_1, config);
-
-		// wait for pending to end
-		TRACE(("wait for delivery\n"));
-		while ((apic_read(APIC_INTR_COMMAND_1) & APIC_DELIVERY_STATUS) != 0)
-			asm volatile ("pause;");
-
-		/* wait 10ms */
-		spin(10000);
-
-		/* is this a local apic or an 82489dx ? */
-		numStartups = (gKernelArgs.arch_args.cpu_apic_version[i] & 0xf0)
-			? 2 : 0;
-		TRACE(("num startups = %d\n", numStartups));
-
-		for (j = 0; j < numStartups; j++) {
-			/* it's a local apic, so send STARTUP IPIs */
-			TRACE(("send STARTUP\n"));
-			apic_write(APIC_ERROR_STATUS, 0);
-
-			/* set target pe */
-			config = (apic_read(APIC_INTR_COMMAND_2) & APIC_INTR_COMMAND_2_MASK)
+			/* send (aka assert) INIT IPI */
+			TRACE(("assert INIT\n"));
+			config = (apic_read(APIC_INTR_COMMAND_2)
+					& APIC_INTR_COMMAND_2_MASK)
 				| (gKernelArgs.arch_args.cpu_apic_id[i] << 24);
-			apic_write(APIC_INTR_COMMAND_2, config);
-
-			/* send the IPI */
-			config = (apic_read(APIC_INTR_COMMAND_1) & 0xfff0f800)
-				| APIC_DELIVERY_MODE_STARTUP | (trampolineCode >> 12);
+			apic_write(APIC_INTR_COMMAND_2, config); /* set target pe */
+			config = (apic_read(APIC_INTR_COMMAND_1) & 0xfff00000)
+				| APIC_TRIGGER_MODE_LEVEL | APIC_INTR_COMMAND_1_ASSERT
+				| APIC_DELIVERY_MODE_INIT;
 			apic_write(APIC_INTR_COMMAND_1, config);
 
-			/* wait */
-			spin(200);
-
+			// wait for pending to end
 			TRACE(("wait for delivery\n"));
-			while ((apic_read(APIC_INTR_COMMAND_1) & APIC_DELIVERY_STATUS) != 0)
-				asm volatile ("pause;");
+			if (!smp_wait_for_ipi_delivery(bounded)) {
+				dprintf("smp: timeout asserting INIT for cpu %" B_PRIu32
+					" (apic id %u)\n", i,
+					gKernelArgs.arch_args.cpu_apic_id[i]);
+				continue;
+			}
+
+			/* deassert INIT */
+			TRACE(("deassert INIT\n"));
+			config = (apic_read(APIC_INTR_COMMAND_2)
+					& APIC_INTR_COMMAND_2_MASK)
+				| (gKernelArgs.arch_args.cpu_apic_id[i] << 24);
+			apic_write(APIC_INTR_COMMAND_2, config);
+			config = (apic_read(APIC_INTR_COMMAND_1) & 0xfff00000)
+				| APIC_TRIGGER_MODE_LEVEL | APIC_DELIVERY_MODE_INIT;
+			apic_write(APIC_INTR_COMMAND_1, config);
+
+			// wait for pending to end
+			TRACE(("wait for delivery\n"));
+			if (!smp_wait_for_ipi_delivery(bounded)) {
+				dprintf("smp: timeout deasserting INIT for cpu %" B_PRIu32
+					" (apic id %u)\n", i,
+					gKernelArgs.arch_args.cpu_apic_id[i]);
+				continue;
+			}
+
+			/* wait 10ms */
+			spin(10000);
+
+			/* is this a local apic or an 82489dx ? */
+			numStartups = (gKernelArgs.arch_args.cpu_apic_version[i] & 0xf0)
+				? 2 : 0;
+			TRACE(("num startups = %d\n", numStartups));
+
+			bool sipiTimedOut = false;
+			for (j = 0; j < numStartups; j++) {
+				/* it's a local apic, so send STARTUP IPIs */
+				TRACE(("send STARTUP\n"));
+				apic_write(APIC_ERROR_STATUS, 0);
+
+				/* set target pe */
+				config = (apic_read(APIC_INTR_COMMAND_2)
+						& APIC_INTR_COMMAND_2_MASK)
+					| (gKernelArgs.arch_args.cpu_apic_id[i] << 24);
+				apic_write(APIC_INTR_COMMAND_2, config);
+
+				/* send the IPI */
+				config = (apic_read(APIC_INTR_COMMAND_1) & 0xfff0f800)
+					| APIC_DELIVERY_MODE_STARTUP | (trampolineCode >> 12);
+				apic_write(APIC_INTR_COMMAND_1, config);
+
+				/* wait */
+				spin(200);
+
+				TRACE(("wait for delivery\n"));
+				if (!smp_wait_for_ipi_delivery(bounded)) {
+					dprintf("smp: timeout sending STARTUP to cpu %" B_PRIu32
+						" (apic id %u)\n", i,
+						gKernelArgs.arch_args.cpu_apic_id[i]);
+					sipiTimedOut = true;
+					break;
+				}
+			}
+
+			if (sipiTimedOut)
+				continue;
+
+			// Wait for the trampoline code to clear the final stack location.
+			// This serves as a notification for us that it has loaded the
+			// address and it is safe for us to overwrite it to trampoline the
+			// next CPU.
+			tempStack++;
+			uint32 waitMs = kApStartupTimeoutMs;
+			while (*tempStack != 0) {
+				spin(1000);
+				if (bounded && --waitMs == 0)
+					break;
+			}
+
+			started = *tempStack == 0;
 		}
 
-		// Wait for the trampoline code to clear the final stack location.
-		// This serves as a notification for us that it has loaded the address
-		// and it is safe for us to overwrite it to trampoline the next CPU.
-		tempStack++;
-		while (*tempStack != 0)
-			spin(1000);
+		if (!started) {
+			dprintf("smp: cpu %" B_PRIu32 " (apic id %u) did not start after "
+				"%" B_PRIu32 " attempt(s); continuing without it\n", i,
+				gKernelArgs.arch_args.cpu_apic_id[i], attempts);
+		}
 	}
 
 	TRACE(("done trampolining\n"));
