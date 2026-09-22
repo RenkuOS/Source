@@ -565,8 +565,29 @@ UHCI::UHCI(pci_info *info, pci_device_module_info* pci, pci_device* device, Stac
 	WriteReg16(UHCI_USBINTR, 0);
 
 	// make sure we gain control of the UHCI controller instead of the BIOS
-	fPci->write_pci_config(fDevice, PCI_LEGSUP, 2, PCI_LEGSUP_USBPIRQDEN
-		| PCI_LEGSUP_CLEAR_SMI);
+	// -- except on Intel SCH (Poulsbo/US15W) companions: they don't
+	// implement the USBLEGSUP config register at 0xC0 at all, and writing
+	// there corrupts the controller's transfer engine in bizarre ways --
+	// schedules run but TDs execute wrong (ActLen stuck at 0x7ff, transfers
+	// trampling memory past their buffers) and no device ever enumerates.
+	// The coreboot/SeaBIOS port to this chipset hit the exact same thing:
+	// https://www.seabios.org/pipermail/seabios/2012-August/004327.html
+	// There's no USB legacy support to take over there anyway.
+	//
+	// The SCH is a 32-bit-only chipset, so the test -- and with it any
+	// change to what this driver writes -- is confined to x86 32-bit.
+	// Every other architecture keeps writing the register unconditionally,
+	// exactly as before.
+#ifdef __i386__
+	const bool isPoulsbo = fPCIInfo->vendor_id == 0x8086
+		&& fPCIInfo->device_id >= 0x8114 && fPCIInfo->device_id <= 0x8116;
+#else
+	const bool isPoulsbo = false;
+#endif
+	if (!isPoulsbo) {
+		fPci->write_pci_config(fDevice, PCI_LEGSUP, 2, PCI_LEGSUP_USBPIRQDEN
+			| PCI_LEGSUP_CLEAR_SMI);
+	}
 
 	// do a global and host reset
 	GlobalReset();
@@ -778,8 +799,21 @@ UHCI::Start()
 	TRACE("usbcmd reg 0x%04x, usbsts reg 0x%04x\n",
 		ReadReg16(UHCI_USBCMD), ReadReg16(UHCI_USBSTS));
 
-	// Set the run bit in the command register
-	WriteReg16(UHCI_USBCMD, ReadReg16(UHCI_USBCMD) | UHCI_USBCMD_RS);
+	// Set the run bit in the command register.
+	uint16 command = ReadReg16(UHCI_USBCMD) | UHCI_USBCMD_RS;
+
+#ifdef __i386__
+	// On x86 32-bit also set the Configure Flag and 64-byte reclamation
+	// packet size, matching what Linux's uhci-hcd programs on every start:
+	// CF is nominally informational per the UHCI spec, but this driver's
+	// schedule was observed never being fetched at all on Intel SCH
+	// (Poulsbo) companions -- frame counter running, bus mastering enabled,
+	// zero memory cycles issued -- and CF is one of the few programming
+	// differences from a known-working driver on that hardware.
+	command |= UHCI_USBCMD_CF | UHCI_USBCMD_MAXP;
+#endif
+
+	WriteReg16(UHCI_USBCMD, command);
 
 	bool running = false;
 	for (int32 i = 0; i < 10; i++) {
