@@ -118,6 +118,13 @@ acpi_lid_read(void* _cookie, off_t position, void *buf, size_t* num_bytes)
 	if (*num_bytes < 1)
 		return B_IO_ERROR;
 
+	// Deliberately no "position > 0 means EOF" check here. The consumer
+	// (power_daemon's LidMonitor) keeps a single descriptor open and reads
+	// from it once per notification, so its file position keeps advancing.
+	// With an EOF check, every read after the first one returned 0 bytes
+	// without ever clearing "updated" below, leaving the select pool
+	// permanently signalled -- which spun power_daemon at 100% CPU from the
+	// first lid-open onwards. acpi_button has always worked this way.
 	if (user_memcpy(buf, &device->last_status, sizeof(uint8)) < B_OK)
 		return B_BAD_ADDRESS;
 
