@@ -122,6 +122,7 @@ private:
 		// Controller resets
 		void						GlobalReset();
 		status_t					ControllerReset();
+		void						RecoverFromHalt();
 
 		// Interrupt functions
 static	int32						InterruptHandler(void *data);
@@ -212,10 +213,16 @@ inline	uint32						ReadReg32(uint32 reg);
 		pci_device*					fDevice;
 		Stack *						fStack;
 		uint32						fEnabledInterrupts;
+		bool						fControllerHalted;
+		bool						fControllerGaveUpOnHalts;
+		bigtime_t					fLastHaltTime;
+		int32						fHaltRecoveryCount;
+		int32						fLateRecoveryCount;
 
 		// Frame list memory
 		area_id						fFrameArea;
 		uint32 *					fFrameList;
+		phys_addr_t					fFrameListPhysical;
 
 		// fFrameBandwidth[n] holds the available bandwidth
 		// of the nth frame in microseconds
