@@ -299,8 +299,16 @@ Hub::PowerCyclePort(uint8 index)
 	// keyboard, and quite possibly the volume this system booted from.
 	// Recovering one unresponsive device is not worth that trade, so a hub
 	// that cannot do it per port simply does not get this recovery step.
+	//
+	// Note this rules out every root hub: all four host controller drivers
+	// report hub characteristics 0x0000, i.e. ganged power. So this step
+	// only ever applies to an external hub that switches power per port,
+	// and a device on a root port -- which is where this was needed -- gets
+	// the retry cap, the cooldown and the re-arm instead. TRACE, not
+	// TRACE_ALWAYS: it is a fixed property of the hub, not an event, and it
+	// would otherwise print on every failed round.
 	if ((fHubDescriptor.characteristics & 0x3) != 0x1) {
-		TRACE_ALWAYS("hub does not switch port power individually "
+		TRACE("hub does not switch port power individually "
 			"(characteristics 0x%04x); not power cycling port %u\n",
 			fHubDescriptor.characteristics, index);
 		return B_NOT_SUPPORTED;
@@ -331,30 +339,48 @@ Hub::Explore(change_item **changeList)
 {
 	for (int32 i = 0; i < fHubDescriptor.num_ports; i++) {
 		if (kBoundedPortRetries && fIgnoredUntil[i] != 0) {
-			if (fIgnoredUntil[i] == B_INFINITE_TIMEOUT
+			// Read the status even while ignoring the port. Skipping it
+			// before the read would mean a port written off for the rest of
+			// the boot never reaches the disconnect handling below, so
+			// pulling the broken device out and plugging a good one in
+			// would do nothing until a reboot. Reading does not clear the
+			// change bits, so the normal handling below still sees them.
+			if (UpdatePortStatus(i) < B_OK)
+				continue;
+
+			if ((fPortStatus[i].status & PORT_STATUS_CONNECTION) == 0) {
+				// Nothing is connected any more. That is the strongest
+				// "start over" signal there is -- stronger than the bare
+				// change bit the cooldown path looks for -- so forget
+				// everything about this port, ignore included, and let the
+				// next device in have a full set of attempts.
+				fIgnoredUntil[i] = 0;
+				fFailedAttempts[i] = 0;
+				fPowerCycleAttempts[i] = 0;
+				fRearmCount[i] = 0;
+			} else if (fIgnoredUntil[i] == B_INFINITE_TIMEOUT
 					|| system_time() < fIgnoredUntil[i]) {
+				// Still the same broken device, still inside the cooldown
+				// (or written off for good): leave it alone.
 				continue;
-			}
-
-			// The cooldown has expired. Only a fresh connection event --
-			// something actually changed electrically since we gave up,
-			// e.g. an EC power request finally bringing an internal
-			// device properly alive -- earns the port another chance; a
-			// stale "still connected, still broken" state does not.
-			// (Reading the status doesn't clear change bits, so falling
-			// through to the normal handling below still sees them.)
-			if (UpdatePortStatus(i) < B_OK
-					|| (fPortStatus[i].change & PORT_STATUS_CONNECTION) == 0) {
+			} else if ((fPortStatus[i].change & PORT_STATUS_CONNECTION) == 0) {
+				// The cooldown expired, but nothing has changed
+				// electrically since we gave up -- a stale "still
+				// connected, still broken" state does not earn another
+				// round.
 				continue;
+			} else {
+				// A fresh connection event on a port that is still
+				// occupied: something did change, e.g. an EC power request
+				// finally bringing an internal device properly alive.
+				fRearmCount[i]++;
+				fIgnoredUntil[i] = 0;
+				fFailedAttempts[i] = 0;
+				fPowerCycleAttempts[i] = 0;
+				TRACE_ALWAYS("port %" B_PRId32 ": new connection event after "
+					"cooldown, giving the port another chance (%u of %u)\n",
+					i, fRearmCount[i], kMaxPortRearms);
 			}
-
-			fRearmCount[i]++;
-			fIgnoredUntil[i] = 0;
-			fFailedAttempts[i] = 0;
-			fPowerCycleAttempts[i] = 0;
-			TRACE_ALWAYS("port %" B_PRId32 ": new connection event after "
-				"cooldown, giving the port another chance (%u of %u)\n", i,
-				fRearmCount[i], kMaxPortRearms);
 		}
 
 		status_t result = UpdatePortStatus(i);
@@ -381,23 +407,7 @@ Hub::Explore(change_item **changeList)
 				USB_REQUEST_CLEAR_FEATURE, C_PORT_CONNECTION, i + 1,
 				0, NULL, 0, NULL);
 
-			if (kBoundedPortRetries
-					&& (fPortStatus[i].status & PORT_STATUS_CONNECTION) != 0
-					&& fFailedAttempts[i] >= kMaxPortFailedAttempts) {
-				// This port has failed device setup repeatedly. Some flaky
-				// or failing internal devices don't just sit there
-				// "connected but broken" -- they genuinely bounce, raising a
-				// fresh disconnect/reconnect (and thus a fresh status change
-				// bit) on every single cycle. Deliberately do NOT reset the
-				// failure count just because this is a fresh connection
-				// event: for a bouncing device that would defeat the
-				// counter (it would never accumulate past 1) and this port
-				// would flood the bus with resets and address attempts
-				// forever, starving other USB traffic (and, on controllers
-				// sharing a legacy IRQ line, non-USB traffic too). Once a
-				// port has racked up enough consecutive failures, stop
-				// servicing it until it manages one full successful setup.
-			} else if (fPortStatus[i].status & PORT_STATUS_CONNECTION) {
+			if (fPortStatus[i].status & PORT_STATUS_CONNECTION) {
 				// new device attached!
 				TRACE_ALWAYS("port %" B_PRId32 ": new device connected\n", i);
 

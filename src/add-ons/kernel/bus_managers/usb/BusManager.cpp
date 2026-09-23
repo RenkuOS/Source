@@ -136,59 +136,6 @@ BusManager::AllocateDevice(Hub *parent, int8 hubAddress, uint8 hubPort,
 
 	defaultPipe->SetHubInfo(hubAddress, hubPort);
 
-#ifdef __i386__
-	// Probe the device at address 0 before addressing it. This isn't
-	// required by the USB spec (SET_ADDRESS can be sent first), but it's
-	// what most host stacks do in practice, and some non-strictly-compliant
-	// devices rely on seeing a request at address 0 before they'll accept
-	// SET_ADDRESS. It also gives us a device class/subclass/protocol to log
-	// for devices that fail addressing entirely, which otherwise leave no
-	// trace of what they were.
-	//
-	// The probe is diagnostic only: its result is deliberately not used to
-	// cut the SET_ADDRESS retries below. A device that won't answer the
-	// simplest possible request looks like a device that isn't there, but
-	// GET_DESCRIPTOR at address 0 is not something the spec requires a
-	// device to answer, so shortcutting on it would stop a device that only
-	// ever accepts SET_ADDRESS first from enumerating anywhere. The time
-	// that was meant to save is already bounded by Hub::Explore()'s
-	// per-port failure counter.
-	//
-	// Confined to x86 32-bit along with the rest of this change, so the
-	// extra control transfer per enumeration is not added to architectures
-	// where none of it has been exercised.
-	{
-		usb_device_descriptor probeDescriptor;
-		size_t probeLength = 0;
-		status_t probeStatus = defaultPipe->SendRequest(
-			USB_REQTYPE_DEVICE_IN | USB_REQTYPE_STANDARD,
-			USB_REQUEST_GET_DESCRIPTOR,
-			USB_DESCRIPTOR_DEVICE << 8,
-			0,
-			8,
-			(void *)&probeDescriptor,
-			8,
-			&probeLength);
-
-		// hubAddress/hubPort identify the transaction translator a
-		// split transaction would go through, not where the device is
-		// plugged in -- on a root hub they read 0/255 -- so they are not
-		// worth logging here.
-		if (probeStatus >= B_OK && probeLength == 8) {
-			TRACE_ALWAYS("device at address 0: class 0x%02x subclass 0x%02x "
-				"protocol 0x%02x max_packet_size_0 %d\n",
-				probeDescriptor.device_class,
-				probeDescriptor.device_subclass,
-				probeDescriptor.device_protocol,
-				probeDescriptor.max_packet_size_0);
-		} else {
-			TRACE_ALWAYS("device at address 0: did not respond to "
-				"GET_DESCRIPTOR (status 0x%08" B_PRIx32 ")\n",
-				(uint32)probeStatus);
-		}
-	}
-#endif
-
 	status_t result = B_ERROR;
 	for (int32 i = 0; i < 3; i++) {
 		// Set the address of the device USB 1.1 spec p202
