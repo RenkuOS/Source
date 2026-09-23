@@ -1979,12 +1979,25 @@ UHCI::RecoverFromHalt()
 
 		while (transfer != NULL) {
 			transfer_data *next = transfer->link;
-			transfer->transfer->Finished(B_CANCELED, 0);
-			// Unlink this transfer's queue head from the schedule -- this
-			// is the step the earlier, buggy version of this recovery
-			// skipped.
+
+			// A cancelled entry has already had its callback made and its
+			// Transfer deleted by CancelQueuedTransfers(), which leaves
+			// transfer->transfer NULL and the entry in the list for the
+			// finish thread to reap. Touching it here would dereference
+			// NULL in kernel context, and the window is exactly when a
+			// halt is most likely: the misbehaving device that halts the
+			// controller is also the one drivers time out and cancel on.
+			// FinishTransfers() guards the same way.
+			if (!transfer->canceled) {
+				transfer->transfer->Finished(B_CANCELED, 0);
+				delete transfer->transfer;
+			}
+
+			// Unlink the queue head from the schedule either way -- this is
+			// the step the earlier, buggy version of this recovery skipped,
+			// and a cancelled entry's queue head is just as linked as any
+			// other.
 			transfer->queue->RemoveTransfer(transfer->transfer_queue);
-			delete transfer->transfer;
 			AddToFreeList(transfer);
 			transfer = next;
 		}
