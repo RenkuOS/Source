@@ -441,6 +441,39 @@ smp_wait_for_ipi_delivery(bool bounded)
 }
 
 
+/*!	Sends \a cpu a bare INIT with no STARTUP behind it, leaving it waiting
+	for a startup vector that never arrives.
+
+	Needed on a CPU the start-up loop has given up on. trampolineStack is one
+	fixed address shared by every application processor, so a CPU that wakes
+	up late -- after its own attempts have timed out and the loop has moved
+	on -- would read the next CPU's page directory and final stack pointer
+	out of it, and two CPUs would run on one kernel stack.
+*/
+static void
+smp_park_cpu(uint32 cpu)
+{
+	uint32 config;
+
+	config = (apic_read(APIC_INTR_COMMAND_2) & APIC_INTR_COMMAND_2_MASK)
+		| (gKernelArgs.arch_args.cpu_apic_id[cpu] << 24);
+	apic_write(APIC_INTR_COMMAND_2, config);
+	config = (apic_read(APIC_INTR_COMMAND_1) & 0xfff00000)
+		| APIC_TRIGGER_MODE_LEVEL | APIC_INTR_COMMAND_1_ASSERT
+		| APIC_DELIVERY_MODE_INIT;
+	apic_write(APIC_INTR_COMMAND_1, config);
+	smp_wait_for_ipi_delivery(true);
+
+	config = (apic_read(APIC_INTR_COMMAND_2) & APIC_INTR_COMMAND_2_MASK)
+		| (gKernelArgs.arch_args.cpu_apic_id[cpu] << 24);
+	apic_write(APIC_INTR_COMMAND_2, config);
+	config = (apic_read(APIC_INTR_COMMAND_1) & 0xfff00000)
+		| APIC_TRIGGER_MODE_LEVEL | APIC_DELIVERY_MODE_INIT;
+	apic_write(APIC_INTR_COMMAND_1, config);
+	smp_wait_for_ipi_delivery(true);
+}
+
+
 void
 smp_boot_other_cpus(void (*entryFunc)(void))
 {
@@ -621,9 +654,36 @@ smp_boot_other_cpus(void (*entryFunc)(void))
 		}
 
 		if (!started) {
+			// Park it, so it cannot wake up later into a trampoline stack
+			// that now belongs to another CPU, and stop counting it:
+			// gKernelArgs.num_cpus reaches the kernel unchanged and
+			// smp_cpu_rendezvous() in main() waits for exactly that many
+			// CPUs, so leaving the count alone would only move the hang out
+			// of the loader and into the kernel.
+			//
+			// Only the tail of the list can be dropped this way.
+			// cpu_apic_id, cpu_apic_version and cpu_kstack are indexed by
+			// CPU number, and compacting them around a hole is a bigger
+			// change than this is worth -- so a failure stops the loop and
+			// every CPU after it is dropped as well, whether or not it
+			// would have started. On the machine this was written for that
+			// is exactly one CPU, the Hyper-Threading sibling, and it is
+			// the last in the list.
+			smp_park_cpu(i);
+
 			dprintf("smp: cpu %" B_PRIu32 " (apic id %u) did not start after "
-				"%" B_PRIu32 " attempt(s); continuing without it\n", i,
-				gKernelArgs.arch_args.cpu_apic_id[i], attempts);
+				"%" B_PRIu32 " attempt(s); parked it and continuing with %"
+				B_PRIu32 " cpu(s)\n", i,
+				gKernelArgs.arch_args.cpu_apic_id[i], attempts, i);
+
+			for (uint32 j = i + 1; j < gKernelArgs.num_cpus; j++) {
+				dprintf("smp: dropping cpu %" B_PRIu32 " (apic id %u) too; "
+					"only the tail of the list can be dropped\n", j,
+					gKernelArgs.arch_args.cpu_apic_id[j]);
+			}
+
+			gKernelArgs.num_cpus = i;
+			break;
 		}
 	}
 
