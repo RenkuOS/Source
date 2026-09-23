@@ -500,6 +500,24 @@ Queue::PrintToStream()
 //
 
 
+/*!	An Intel SCH (Poulsbo/US15W) UHCI companion controller, device IDs
+	0x8114-0x8116. Everything keyed off this is a workaround for that one
+	chipset, which only ever shipped in 32-bit x86 machines -- so on every
+	other architecture this is false and the driver behaves exactly as it
+	always has.
+*/
+static bool
+uhci_is_intel_sch(const pci_info* info)
+{
+#ifdef __i386__
+	return info->vendor_id == 0x8086 && info->device_id >= 0x8114
+		&& info->device_id <= 0x8116;
+#else
+	return false;
+#endif
+}
+
+
 UHCI::UHCI(pci_info *info, pci_device_module_info* pci, pci_device* device, Stack *stack,
 	device_node* node)
 	:	BusManager(stack, node),
@@ -573,18 +591,7 @@ UHCI::UHCI(pci_info *info, pci_device_module_info* pci, pci_device* device, Stac
 	// The coreboot/SeaBIOS port to this chipset hit the exact same thing:
 	// https://www.seabios.org/pipermail/seabios/2012-August/004327.html
 	// There's no USB legacy support to take over there anyway.
-	//
-	// The SCH is a 32-bit-only chipset, so the test -- and with it any
-	// change to what this driver writes -- is confined to x86 32-bit.
-	// Every other architecture keeps writing the register unconditionally,
-	// exactly as before.
-#ifdef __i386__
-	const bool isPoulsbo = fPCIInfo->vendor_id == 0x8086
-		&& fPCIInfo->device_id >= 0x8114 && fPCIInfo->device_id <= 0x8116;
-#else
-	const bool isPoulsbo = false;
-#endif
-	if (!isPoulsbo) {
+	if (!uhci_is_intel_sch(fPCIInfo)) {
 		fPci->write_pci_config(fDevice, PCI_LEGSUP, 2, PCI_LEGSUP_USBPIRQDEN
 			| PCI_LEGSUP_CLEAR_SMI);
 	}
@@ -802,16 +809,18 @@ UHCI::Start()
 	// Set the run bit in the command register.
 	uint16 command = ReadReg16(UHCI_USBCMD) | UHCI_USBCMD_RS;
 
-#ifdef __i386__
-	// On x86 32-bit also set the Configure Flag and 64-byte reclamation
-	// packet size, matching what Linux's uhci-hcd programs on every start:
-	// CF is nominally informational per the UHCI spec, but this driver's
-	// schedule was observed never being fetched at all on Intel SCH
-	// (Poulsbo) companions -- frame counter running, bus mastering enabled,
-	// zero memory cycles issued -- and CF is one of the few programming
-	// differences from a known-working driver on that hardware.
-	command |= UHCI_USBCMD_CF | UHCI_USBCMD_MAXP;
-#endif
+	if (uhci_is_intel_sch(fPCIInfo)) {
+		// On the SCH companions also set the Configure Flag and 64-byte
+		// reclamation packet size, the way Linux's uhci-hcd programs them on
+		// every start. CF is nominally informational per the UHCI spec, but
+		// this driver's schedule was observed never being fetched at all on
+		// these controllers -- frame counter running, bus mastering enabled,
+		// zero memory cycles issued -- and CF is one of the few programming
+		// differences from a known-working driver on that hardware. Kept to
+		// the same device IDs as the USBLEGSUP skip above: it has only been
+		// tried there, so it has no business on every other UHCI controller.
+		command |= UHCI_USBCMD_CF | UHCI_USBCMD_MAXP;
+	}
 
 	WriteReg16(UHCI_USBCMD, command);
 
