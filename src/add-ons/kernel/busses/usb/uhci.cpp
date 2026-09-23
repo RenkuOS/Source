@@ -500,28 +500,20 @@ Queue::PrintToStream()
 //
 
 
-/*!	An Intel SCH (Poulsbo/US15W) UHCI companion controller, device IDs
-	0x8114-0x8116. Everything keyed off this is a workaround for that one
-	chipset, which only ever shipped in 32-bit x86 machines -- so on every
-	other architecture this is false and the driver behaves exactly as it
-	always has.
-*/
-static bool
-uhci_is_intel_sch(const pci_info* info)
-{
-#ifdef __i386__
-	return info->vendor_id == 0x8086 && info->device_id >= 0x8114
-		&& info->device_id <= 0x8116;
-#else
-	return false;
-#endif
-}
-
-
 UHCI::UHCI(pci_info *info, pci_device_module_info* pci, pci_device* device, Stack *stack,
 	device_node* node)
 	:	BusManager(stack, node),
 		fPCIInfo(info),
+		// The Intel SCH (Poulsbo/US15W) UHCI companions, device IDs
+		// 0x8114-0x8116. The chipset only ever shipped in 32-bit x86
+		// machines, so outside __i386__ this stays false and the driver
+		// behaves exactly as it always has.
+#ifdef __i386__
+		fIsPoulsbo(info->vendor_id == 0x8086 && info->device_id >= 0x8114
+			&& info->device_id <= 0x8116),
+#else
+		fIsPoulsbo(false),
+#endif
 		fPci(pci),
 		fDevice(device),
 		fStack(stack),
@@ -591,7 +583,7 @@ UHCI::UHCI(pci_info *info, pci_device_module_info* pci, pci_device* device, Stac
 	// The coreboot/SeaBIOS port to this chipset hit the exact same thing:
 	// https://www.seabios.org/pipermail/seabios/2012-August/004327.html
 	// There's no USB legacy support to take over there anyway.
-	if (!uhci_is_intel_sch(fPCIInfo)) {
+	if (!fIsPoulsbo) {
 		fPci->write_pci_config(fDevice, PCI_LEGSUP, 2, PCI_LEGSUP_USBPIRQDEN
 			| PCI_LEGSUP_CLEAR_SMI);
 	}
