@@ -806,23 +806,8 @@ UHCI::Start()
 	TRACE("usbcmd reg 0x%04x, usbsts reg 0x%04x\n",
 		ReadReg16(UHCI_USBCMD), ReadReg16(UHCI_USBSTS));
 
-	// Set the run bit in the command register.
-	uint16 command = ReadReg16(UHCI_USBCMD) | UHCI_USBCMD_RS;
-
-	if (uhci_is_intel_sch(fPCIInfo)) {
-		// On the SCH companions also set the Configure Flag and 64-byte
-		// reclamation packet size, the way Linux's uhci-hcd programs them on
-		// every start. CF is nominally informational per the UHCI spec, but
-		// this driver's schedule was observed never being fetched at all on
-		// these controllers -- frame counter running, bus mastering enabled,
-		// zero memory cycles issued -- and CF is one of the few programming
-		// differences from a known-working driver on that hardware. Kept to
-		// the same device IDs as the USBLEGSUP skip above: it has only been
-		// tried there, so it has no business on every other UHCI controller.
-		command |= UHCI_USBCMD_CF | UHCI_USBCMD_MAXP;
-	}
-
-	WriteReg16(UHCI_USBCMD, command);
+	// Set the run bit in the command register
+	WriteReg16(UHCI_USBCMD, ReadReg16(UHCI_USBCMD) | UHCI_USBCMD_RS);
 
 	bool running = false;
 	for (int32 i = 0; i < 10; i++) {
