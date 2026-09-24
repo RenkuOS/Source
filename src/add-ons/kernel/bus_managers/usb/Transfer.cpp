@@ -258,7 +258,10 @@ Transfer::Finished(uint32 status, size_t actualLength)
 status_t
 Transfer::_CalculateBandwidth()
 {
-	uint16 bandwidthNS;
+	// Nanoseconds, so this must be 32-bit: a low speed transfer alone starts
+	// at over 64000 and every term below adds to it, and the isochronous
+	// terms scale with the transfer length.
+	uint32 bandwidthNS;
 	uint32 type = fPipe->Type();
 
 	switch (fPipe->Speed()) {
@@ -266,11 +269,11 @@ Transfer::_CalculateBandwidth()
 		{
 			// Direction doesn't matter for highspeed
 			if (type & USB_OBJECT_ISO_PIPE)
-				bandwidthNS = (uint16)((38 * 8 * 2.083)
+				bandwidthNS = (uint32)((38 * 8 * 2.083)
 					+ (2.083 * ((uint32)(3.167 * (1.1667 * 8 * fData.length))))
 					+ USB_BW_HOST_DELAY);
 			else
-				bandwidthNS = (uint16)((55 * 8 * 2.083)
+				bandwidthNS = (uint32)((55 * 8 * 2.083)
 					+ (2.083 * ((uint32)(3.167 * (1.1667 * 8 * fData.length))))
 					+ USB_BW_HOST_DELAY);
 			break;
@@ -279,12 +282,12 @@ Transfer::_CalculateBandwidth()
 		{
 			// Direction does matter this time for isochronous
 			if (type & USB_OBJECT_ISO_PIPE)
-				bandwidthNS = (uint16)
+				bandwidthNS = (uint32)
 					(((fPipe->Direction() == Pipe::In) ? 7268 : 6265)
 					+ (83.54 * ((uint32)(3.167 + (1.1667 * 8 * fData.length))))
 					+ USB_BW_HOST_DELAY);
 			else
-				bandwidthNS = (uint16)(9107
+				bandwidthNS = (uint32)(9107
 					+ (83.54 * ((uint32)(3.167 + (1.1667 * 8 * fData.length))))
 					+ USB_BW_HOST_DELAY);
 			break;
@@ -292,11 +295,11 @@ Transfer::_CalculateBandwidth()
 		case USB_SPEED_LOWSPEED:
 		{
 			if (fPipe->Direction() == Pipe::In)
-				bandwidthNS = (uint16) (64060 + (2 * USB_BW_SETUP_LOW_SPEED_PORT_DELAY)
+				bandwidthNS = (uint32) (64060 + (2 * USB_BW_SETUP_LOW_SPEED_PORT_DELAY)
 					+ (676.67 * ((uint32)(3.167 + (1.1667 * 8 * fData.length))))
 					+ USB_BW_HOST_DELAY);
 			else
-				bandwidthNS = (uint16)(64107 + (2 * USB_BW_SETUP_LOW_SPEED_PORT_DELAY)
+				bandwidthNS = (uint32)(64107 + (2 * USB_BW_SETUP_LOW_SPEED_PORT_DELAY)
 					+ (667.0 * ((uint32)(3.167 + (1.1667 * 8 * fData.length))))
 					+ USB_BW_HOST_DELAY);
 			break;
