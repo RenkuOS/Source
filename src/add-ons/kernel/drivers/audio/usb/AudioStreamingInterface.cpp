@@ -41,23 +41,52 @@ static struct RatePair {
 //	Audio Stream information entities
 //
 //
-ASInterfaceDescriptor::ASInterfaceDescriptor(
+ASInterfaceDescriptor::ASInterfaceDescriptor(uint16 specReleaseNumber,
 		usb_audio_streaming_interface_descriptor* Descriptor)
 	:
+	fIsR2(specReleaseNumber >= 0x200),
 	fTerminalLink(0),
 	fDelay(0),
-	fFormatTag(0)
+	fFormatTag(0),
+	fFormatType(USB_AUDIO_FORMAT_TYPE_UNDEFINED),
+	fBmFormats(0),
+	fChannelsCount(0),
+	fChannelConfig(0)
 {
-// TODO: what aboput rev 2???????
 	fTerminalLink = Descriptor->terminal_link;
-	fDelay = Descriptor->r1.delay;
-	fFormatTag = Descriptor->r1.format_tag;
 
-	TRACE(UAC, "fTerminalLink:%d\n", fTerminalLink);
-	TRACE(UAC, "fDelay:%d\n", fDelay);
-	TRACE(UAC, "fFormatTag:%#06x\n", fFormatTag);
+	// The fixed part (through bTerminalLink) is 4 bytes; the R1 or R2 body
+	// follows. Validate the whole descriptor fits before reading it, since it
+	// is attacker-controlled input.
+	if (specReleaseNumber < 0x200) {
+		if (Descriptor->length < 4 + sizeof(Descriptor->r1)) {
+			TRACE(ERR, "AS general (R1) descriptor too short: %d\n",
+				Descriptor->length);
+			return;
+		}
+		fDelay = Descriptor->r1.delay;
+		fFormatTag = Descriptor->r1.format_tag;
 
-	// fStatus = B_OK;
+		TRACE(UAC, "fTerminalLink:%d\n", fTerminalLink);
+		TRACE(UAC, "fDelay:%d\n", fDelay);
+		TRACE(UAC, "fFormatTag:%#06x\n", fFormatTag);
+	} else {
+		if (Descriptor->length < 4 + sizeof(Descriptor->r2)) {
+			TRACE(ERR, "AS general (R2) descriptor too short: %d\n",
+				Descriptor->length);
+			return;
+		}
+		fFormatType = Descriptor->r2.format_type;
+		fBmFormats = Descriptor->r2.bm_formats;
+		fChannelsCount = Descriptor->r2.nr_channels;
+		fChannelConfig = Descriptor->r2.channel_config;
+
+		TRACE(UAC, "fTerminalLink:%d\n", fTerminalLink);
+		TRACE(UAC, "fFormatType:%d\n", fFormatType);
+		TRACE(UAC, "fBmFormats:%#08x\n", fBmFormats);
+		TRACE(UAC, "fChannelsCount:%d\n", fChannelsCount);
+		TRACE(UAC, "fChannelConfig:%#08x\n", fChannelConfig);
+	}
 }
 
 
@@ -130,7 +159,7 @@ _ASFormatDescriptor::GetSamFreq(uint32 samplingRate)
 }
 
 
-TypeIFormatDescriptor::TypeIFormatDescriptor(
+TypeIFormatDescriptor::TypeIFormatDescriptor(uint16 specReleaseNumber,
 		usb_audio_format_descriptor* Descriptor)
 	:
 	_ASFormatDescriptor(Descriptor),
@@ -139,7 +168,7 @@ TypeIFormatDescriptor::TypeIFormatDescriptor(
 	fBitResolution(0),
 	fSampleFrequencyType(0)
 {
-	/*fStatus =*/ Init(Descriptor);
+	/*fStatus =*/ Init(specReleaseNumber, Descriptor);
 }
 
 
@@ -149,8 +178,29 @@ TypeIFormatDescriptor::~TypeIFormatDescriptor()
 
 
 status_t
-TypeIFormatDescriptor::Init(usb_audio_format_descriptor* Descriptor)
+TypeIFormatDescriptor::Init(uint16 specReleaseNumber,
+	usb_audio_format_descriptor* Descriptor)
 {
+	if (specReleaseNumber >= 0x200) {
+		// R2 Type I Format Type descriptor carries only bSubslotSize and
+		// bBitResolution (Frmts20 Table 2-2). The channel count is taken from
+		// the AS general descriptor and the sample rates from the Clock Source,
+		// so fNumChannels / fSampleFrequencies stay unset here.
+		if (Descriptor->length < 4 + sizeof(Descriptor->typeI_r2)) {
+			TRACE(ERR, "Type I (R2) format descriptor too short: %d\n",
+				Descriptor->length);
+			return B_BAD_VALUE;
+		}
+
+		fSubframeSize = Descriptor->typeI_r2.subslot_size;
+		fBitResolution = Descriptor->typeI_r2.bit_resolution;
+
+		TRACE(UAC, "fSubframeSize:%d\n", fSubframeSize);
+		TRACE(UAC, "fBitResolution:%d\n", fBitResolution);
+
+		return B_OK;
+	}
+
 	fNumChannels = Descriptor->typeI.nr_channels;
 	fSubframeSize = Descriptor->typeI.subframe_size;
 	fBitResolution = Descriptor->typeI.bit_resolution;
@@ -195,10 +245,10 @@ TypeIIFormatDescriptor::~TypeIIFormatDescriptor()
 }
 
 
-TypeIIIFormatDescriptor::TypeIIIFormatDescriptor(
+TypeIIIFormatDescriptor::TypeIIIFormatDescriptor(uint16 specReleaseNumber,
 		usb_audio_format_descriptor* Descriptor)
 	:
-	TypeIFormatDescriptor(Descriptor)
+	TypeIFormatDescriptor(specReleaseNumber, Descriptor)
 {
 }
 
@@ -311,11 +361,25 @@ AudioStreamAlternate::GetSamplingRateIds()
 		for (int i = 0; i < frequencies.Count(); i++) {
 			if (frequencies[i] < min || frequencies[i] > max)
 				continue;
+			if (gMaxRate != 0 && frequencies[i] > gMaxRate)
+				continue;
 			rates |= GetSamplingRateId(frequencies[i]);
 		}
 	} else
+		for (int i = 0; i < frequencies.Count(); i++) {
+			if (gMaxRate != 0 && frequencies[i] > gMaxRate)
+				continue;
+			rates |= GetSamplingRateId(frequencies[i]);
+		}
+
+	// Never advertise nothing: an empty rate list makes the stream unopenable,
+	// which is a worse outcome than ignoring the cap.
+	if (rates == 0 && gMaxRate != 0) {
+		TRACE(ERR, "max_rate %lu excluded every rate; ignoring the cap.\n",
+			(unsigned long)gMaxRate);
 		for (int i = 0; i < frequencies.Count(); i++)
 			rates |= GetSamplingRateId(frequencies[i]);
+	}
 
 	return rates;
 }
@@ -334,6 +398,34 @@ AudioStreamAlternate::GetFormatId()
 	}
 
 	uint32 formats = 0;
+
+	if (Interface()->fIsR2) {
+		// R2 advertises supported formats as a bitmap (Frmts20 Table A-2); the
+		// PCM sample size comes from the Format Type descriptor's bit resolution.
+		uint32 bmFormats = Interface()->fBmFormats;
+		if ((bmFormats & USB_AUDIO_R2_FORMAT_PCM8) != 0)
+			formats |= B_FMT_8BIT_U;
+		if ((bmFormats & USB_AUDIO_R2_FORMAT_IEEE_FLOAT) != 0)
+			formats |= B_FMT_FLOAT;
+		if ((bmFormats & USB_AUDIO_R2_FORMAT_PCM) != 0) {
+			switch (format->fBitResolution) {
+				case 8: formats |= B_FMT_8BIT_S; break;
+				case 16: formats |= B_FMT_16BIT; break;
+				case 18: formats |= B_FMT_18BIT; break;
+				case 20: formats |= B_FMT_20BIT; break;
+				case 24: formats |= B_FMT_24BIT; break;
+				case 32: formats |= B_FMT_32BIT; break;
+				default:
+					TRACE(ERR, "Ignore unsupported "
+						"bit resolution %d for alternate.\n",
+						format->fBitResolution);
+					break;
+			}
+		}
+
+		return formats;
+	}
+
 	switch (Interface()->fFormatTag) {
 		case USB_AUDIO_FORMAT_PCM8:
 			formats = B_FMT_8BIT_U;
@@ -404,6 +496,9 @@ AudioStreamingInterface::AudioStreamingInterface(
 {
 	TRACE(ERR, "if[%d]:alt_count:%d\n", interface, List->alt_count);
 
+	// The AudioControl header's bcdADC selects the R1 vs R2 descriptor layout.
+	uint16 specReleaseNumber = fControlInterface->SpecReleaseNumber();
+
 	for (size_t alt = 0; alt < List->alt_count; alt++) {
 		ASInterfaceDescriptor*	ASInterface	= NULL;
 		ASEndpointDescriptor*	ASEndpoint	= NULL;
@@ -422,7 +517,7 @@ AudioStreamingInterface::AudioStreamingInterface(
 					case USB_AUDIO_AS_GENERAL:
 						if (ASInterface == 0)
 							ASInterface = new(std::nothrow)
-								ASInterfaceDescriptor(
+								ASInterfaceDescriptor(specReleaseNumber,
 								(usb_audio_streaming_interface_descriptor*)Header);
 						else
 							TRACE(ERR, "Duplicate AStream interface ignored.\n");
@@ -430,6 +525,7 @@ AudioStreamingInterface::AudioStreamingInterface(
 					case USB_AUDIO_AS_FORMAT_TYPE:
 						if (ASFormat == 0)
 							ASFormat = new(std::nothrow) TypeIFormatDescriptor(
+								specReleaseNumber,
 								(usb_audio_format_descriptor*) Header);
 						else
 							TRACE(ERR, "Duplicate AStream format ignored.\n");
@@ -455,6 +551,15 @@ AudioStreamingInterface::AudioStreamingInterface(
 
 			TRACE(ERR, "Ignore Audio Stream of "
 				"unknown descriptor type %#04x.\n",	Header->descriptor_type);
+		}
+
+		// In R2 the channel count lives in the AS general descriptor rather
+		// than the Format Type descriptor; propagate it so downstream buffer
+		// sizing and channel enumeration see the real value.
+		if (specReleaseNumber >= 0x200 && ASInterface != NULL
+				&& ASFormat != NULL) {
+			static_cast<TypeIFormatDescriptor*>(ASFormat)->fNumChannels
+				= ASInterface->fChannelsCount;
 		}
 
 		fAlternates.Add(new(std::nothrow) AudioStreamAlternate(alt, ASInterface,

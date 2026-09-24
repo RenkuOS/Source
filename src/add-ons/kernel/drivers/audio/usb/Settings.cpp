@@ -19,6 +19,14 @@
 
 
 uint32 gTraceMask = ERR;
+bool gSkipInputStreams = false;
+bool gSkipFeedback = false;
+bool gTestTone = false;
+uint32 gTestToneLevel = 0x04;
+bool gRearmAlternate = false;
+bool gRejectUnverifiedRate = true;
+int32 gForceAlternate = -1;
+uint32 gMaxRate = 0;
 bool gTruncateLogFile = false;
 bool gAddTimeStamp = true;
 static char* gLogFilePath = NULL;
@@ -46,6 +54,48 @@ void load_settings()
 		return;
 
 	gTraceMask = strtoul(get_driver_parameter(handle, "trace", "1", "0"), 0, 0);
+	gSkipInputStreams = get_driver_boolean_parameter(handle, "no_input",
+						gSkipInputStreams, true);
+	gSkipFeedback = get_driver_boolean_parameter(handle, "no_feedback",
+						gSkipFeedback, true);
+	gTestTone = get_driver_boolean_parameter(handle, "test_tone",
+						gTestTone, true);
+
+	// Clamped, not trusted: a fat-fingered level here goes straight into
+	// somebody's monitors at whatever gain the device is set to. The ceiling is
+	// the level this used to ship with, which was measured as far too loud.
+	gTestToneLevel = strtoul(get_driver_parameter(handle, "test_tone_level",
+						"4", "4"), 0, 0);
+	if (gTestToneLevel < 1)
+		gTestToneLevel = 1;
+	if (gTestToneLevel > 0x40)
+		gTestToneLevel = 0x40;
+
+	// Re-select the streaming alternate after programming a UAC1 endpoint's
+	// sampling frequency (see Stream::_SetDeviceSamplingRate).
+	gRearmAlternate = get_driver_boolean_parameter(handle, "rearm_alternate",
+						gRearmAlternate, true);
+
+	// Whether a sampling rate the device did not confirm is rejected outright
+	// (see Stream::_SetDeviceSamplingRate). Default on, matching the shipped
+	// behaviour; set false to let the stream run anyway and find out whether a
+	// device that answers GET_CUR with nonsense still plays correctly.
+	gRejectUnverifiedRate = get_driver_boolean_parameter(handle,
+						"reject_unverified_rate", gRejectUnverifiedRate, true);
+	// Override the streaming alternate _ChooseAlternate would have picked.
+	// Selection scores channels*100 + bitResolution and ignores sample rate, so
+	// a device advertising a rate on every alternate always gets its heaviest
+	// one - even if only a lighter alternate really implements that rate.
+	// -1 keeps the automatic choice.
+	gForceAlternate = strtol(get_driver_parameter(handle, "force_alternate",
+						"-1", "-1"), 0, 0);
+
+	// Highest sampling rate to advertise to the media kit, in Hz (0 = no cap).
+	// The media kit selects the highest rate offered, so a device that lists a
+	// rate it cannot actually take gets that rate programmed on every attach.
+	// Capping keeps the unusable rate out of the negotiation entirely.
+	gMaxRate = strtoul(get_driver_parameter(handle, "max_rate", "0", "0"), 0, 0);
+
 	gTruncateLogFile = get_driver_boolean_parameter(handle,	"truncate_logfile",
 						gTruncateLogFile, true);
 	gAddTimeStamp = get_driver_boolean_parameter(handle, "add_timestamp",
