@@ -138,7 +138,17 @@ Device::Device(Object* parent, int8 hubAddress, uint8 hubPort,
 
 		usb_interface_info* currentInterface = NULL;
 		uint32 descriptorStart = sizeof(usb_configuration_descriptor);
-		while (descriptorStart < actualLength) {
+		while (descriptorStart + 1 < actualLength) {
+			// Every descriptor starts with its length and type. Reject a zero
+			// length (which would never advance the loop) or one running past
+			// the buffer, so a malformed device can't hang us or overread.
+			uint8 descriptorLength = configData[descriptorStart];
+			if (descriptorLength == 0
+					|| descriptorStart + descriptorLength > actualLength) {
+				TRACE_ERROR("invalid descriptor length in configuration\n");
+				break;
+			}
+
 			switch (configData[descriptorStart + 1]) {
 				case USB_DESCRIPTOR_INTERFACE:
 				{
@@ -312,7 +322,7 @@ Device::Device(Object* parent, int8 hubAddress, uint8 hubPort,
 					break;
 			}
 
-			descriptorStart += configData[descriptorStart];
+			descriptorStart += descriptorLength;
 		}
 	}
 
