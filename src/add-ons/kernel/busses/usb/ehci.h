@@ -192,6 +192,10 @@ static int32						FinishIsochronousThread(void *data);
 										bool *nextDataToggle);
 		size_t						WriteIsochronousDescriptorChain(
 										isochronous_transfer_data *transfer);
+		int32						GetIsoAnchor(Pipe *pipe);
+		void						SetIsoAnchor(Pipe *pipe, int32 frame);
+		void						ClearIsoAnchor(Pipe *pipe);
+
 		size_t						ReadIsochronousDescriptorChain(
 										isochronous_transfer_data *transfer);
 
@@ -237,6 +241,19 @@ inline	uint32						ReadCapReg32(uint32 reg);
 		thread_id					fCleanupThread;
 		bool						fStopThreads;
 		int32						fNextStartingFrame;
+
+		// Per-pipe isochronous chaining anchors. Concurrent isochronous
+		// streams -- an audio data OUT endpoint and its feedback IN endpoint
+		// -- must not share one next-frame anchor: every submit of one
+		// stream pushes the other stream's next transfer past the frames it
+		// should have filled.
+		struct iso_anchor {
+			Pipe *					pipe;
+			int32					next_frame;
+		};
+		static const int			kIsoAnchorCount = 8;
+		iso_anchor					fIsoAnchors[kIsoAnchorCount];
+		int32						fIsoAnchorEvict;
 
 		// fFrameBandwidth[n] holds the available bandwidth
 		// of the nth frame in microseconds

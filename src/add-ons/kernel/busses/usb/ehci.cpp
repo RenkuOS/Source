@@ -343,6 +343,7 @@ EHCI::EHCI(pci_info *info, pci_device_module_info* pci, pci_device* device, Stac
 		fCleanupThread(-1),
 		fStopThreads(false),
 		fNextStartingFrame(-1),
+		fIsoAnchorEvict(0),
 		fFrameBandwidth(NULL),
 		fFirstIsochronousTransfer(NULL),
 		fLastIsochronousTransfer(NULL),
@@ -361,6 +362,8 @@ EHCI::EHCI(pci_info *info, pci_device_module_info* pci, pci_device* device, Stac
 	// B_SPINLOCK_INITIALIZER is a brace initializer whose shape changes
 	// with B_DEBUG_SPINLOCK_CONTENTION.
 	B_INITIALIZE_SPINLOCK(&fInterruptLock);
+
+	memset(fIsoAnchors, 0, sizeof(fIsoAnchors));
 
 	// Create a lock for the isochronous transfer list
 	mutex_init(&fIsochronousLock, "EHCI isochronous lock");
@@ -1253,8 +1256,11 @@ EHCI::SubmitIsochronous(Transfer *transfer)
 	if ((isochronousData->flags & USB_ISO_ASAP) != 0 ||
 		isochronousData->starting_frame_number == NULL) {
 
-		if (fFirstIsochronousTransfer != NULL && fNextStartingFrame != -1)
-			currentFrame = fNextStartingFrame;
+		// Chain off THIS pipe's previous transfer, not a controller-global
+		// anchor: see the iso_anchor comment in the header.
+		int32 anchor = GetIsoAnchor(pipe);
+		if (fFirstIsochronousTransfer != NULL && anchor != -1)
+			currentFrame = anchor;
 		else {
 			uint32 threshold = fThreshold;
 			TRACE("threshold: %" B_PRIu32 "\n", threshold);
@@ -1401,7 +1407,7 @@ EHCI::SubmitIsochronous(Transfer *transfer)
 
 	TRACE("appended isochronous transfer by starting at frame number %d\n",
 		currentFrame);
-	fNextStartingFrame = currentFrame + 1;
+	SetIsoAnchor(pipe, currentFrame + 1);
 
 	// Wake up the isochronous finisher thread
 	release_sem_etc(fFinishIsochronousTransfersSem, 1 /*frameCount*/,
@@ -1915,6 +1921,10 @@ EHCI::CancelQueuedIsochronousTransfers(Pipe *pipe, bool force)
 
 		current = current->link;
 	}
+
+	// The pipe's stream is over: its next submit must find a fresh slot near
+	// the controller rather than chaining off a stale frame.
+	ClearIsoAnchor(pipe);
 
 	TRACE_ERROR("no isochronous transfer found!\n");
 	return B_ERROR;
@@ -3160,6 +3170,52 @@ EHCI::ReadActualLength(ehci_qtd *topDescriptor, bool *nextDataToggle)
 	TRACE("read actual length (%ld bytes)\n", actualLength);
 	*nextDataToggle = dataToggle > 0 ? true : false;
 	return actualLength;
+}
+
+
+int32
+EHCI::GetIsoAnchor(Pipe *pipe)
+{
+	for (int i = 0; i < kIsoAnchorCount; i++) {
+		if (fIsoAnchors[i].pipe == pipe)
+			return fIsoAnchors[i].next_frame;
+	}
+	return -1;
+}
+
+
+void
+EHCI::SetIsoAnchor(Pipe *pipe, int32 frame)
+{
+	int free = -1;
+	for (int i = 0; i < kIsoAnchorCount; i++) {
+		if (fIsoAnchors[i].pipe == pipe) {
+			fIsoAnchors[i].next_frame = frame;
+			return;
+		}
+		if (fIsoAnchors[i].pipe == NULL && free < 0)
+			free = i;
+	}
+
+	if (free < 0) {
+		free = fIsoAnchorEvict;
+		fIsoAnchorEvict = (fIsoAnchorEvict + 1) % kIsoAnchorCount;
+	}
+
+	fIsoAnchors[free].pipe = pipe;
+	fIsoAnchors[free].next_frame = frame;
+}
+
+
+void
+EHCI::ClearIsoAnchor(Pipe *pipe)
+{
+	for (int i = 0; i < kIsoAnchorCount; i++) {
+		if (fIsoAnchors[i].pipe == pipe) {
+			fIsoAnchors[i].pipe = NULL;
+			fIsoAnchors[i].next_frame = -1;
+		}
+	}
 }
 
 
