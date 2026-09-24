@@ -140,6 +140,10 @@ typedef struct ehci_itd {
 	struct ehci_itd	*next;
 	struct ehci_itd	*prev;
 	uint32		last_token;
+	// The periodic-schedule frame this itd is linked into, so a descriptor
+	// can be detached from its own frame chain. Written at submit time;
+	// meaningless once unlinked.
+	uint32		frame;
 } ehci_itd;
 
 #define EHCI_ITD_TOFFSET(x)		((x) & 0x0fff)
