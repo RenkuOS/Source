@@ -1206,6 +1206,21 @@ EHCI::SubmitTransfer(Transfer *transfer)
 }
 
 
+// Microframe slots between consecutive packets within an iTD, derived from the
+// endpoint's bInterval (2^(bInterval-1) microframes, capped at the 8 an iTD
+// spans). Every walk over an iTD's tokens must use the same stride the fill
+// used, or unprogrammed slots are mapped onto packet descriptors and reported
+// as failed packets.
+static inline uint32
+itd_slot_stride(Pipe *pipe)
+{
+	uint32 stride = 1;
+	if (pipe != NULL && pipe->Interval() > 1)
+		stride = 1u << (pipe->Interval() - 1);
+	return stride > 8 ? 8 : stride;
+}
+
+
 status_t
 EHCI::SubmitIsochronous(Transfer *transfer)
 {
@@ -1239,8 +1254,21 @@ EHCI::SubmitIsochronous(Transfer *transfer)
 	// isochronous request. It is used to quickly remove all the isochronous
 	// descriptors from the frame list, as descriptors are not link to each
 	// other in a queue like for every other transfer.
+	// Size this by the descriptors the fill loop below will actually create,
+	// not by packet_count. packetSize is an integer division, so a length that
+	// is not a multiple of packet_count leaves a remainder that becomes one
+	// extra short packet -- and with one packet per service interval that
+	// extra packet needs an extra iTD. (Stock placed 8 packets per iTD, where
+	// the spare slots absorbed it.)
+	const uint32 packetsPerItd = 8 / itd_slot_stride(pipe);
+	const size_t packetsNeeded = packetSize > 0
+		? (transfer->DataLength() + packetSize - 1) / packetSize
+		: isochronousData->packet_count;
+	const uint32 itdCount
+		= (uint32)((packetsNeeded + packetsPerItd - 1) / packetsPerItd);
+
 	ehci_itd **isoRequest
-		= new(std::nothrow) ehci_itd *[isochronousData->packet_count];
+		= new(std::nothrow) ehci_itd *[itdCount];
 	if (isoRequest == NULL) {
 		TRACE("failed to create isoRequest array!\n");
 		return B_NO_MEMORY;
@@ -1341,8 +1369,23 @@ EHCI::SubmitIsochronous(Transfer *transfer)
 	}
 
 	phys_addr_t currentPhy = bufferPhy;
+	// Place one packet per SERVICE INTERVAL rather than one per microframe. An
+	// iTD spans 8 microframes, so an endpoint with bInterval 4 (2^3 = 8
+	// microframes = 1 ms) gets a single packet in slot 0 and its next packet
+	// goes in the next frame-list frame. Filling all 8 slots regardless hands
+	// such a device eight packets per service interval and leaves its clock
+	// recovery to reassemble them. bInterval 0 or 1 keeps all 8 slots, which is
+	// byte-identical to the previous behaviour.
+	uint32 uframeStride = itd_slot_stride(pipe);
+	uint32 frameStride = 1;
+	if (pipe->Interval() > 1 && (1u << (pipe->Interval() - 1)) > 8) {
+		// Longer than one frame-list frame: one packet per iTD, and whole
+		// frames are skipped between descriptors.
+		frameStride = (1u << (pipe->Interval() - 1)) / 8;
+	}
+
 	uint32 frameCount = 0;
-	while (dataLength > 0) {
+	while (dataLength > 0 && itdIndex < itdCount) {
 		ehci_itd* itd = CreateItdDescriptor();
 		isoRequest[itdIndex++] = itd;
 		uint16 pg = 0;
@@ -1350,7 +1393,8 @@ EHCI::SubmitIsochronous(Transfer *transfer)
 		uint32 offset = currentPhy & 0xfff;
 		TRACE("isochronous created itd, filling it with phy %" B_PRIxPHYSADDR
 			"\n", currentPhy);
-		for (int32 i = 0; i < 8 && dataLength > 0; i++) {
+		for (int32 i = 0; i < 8 && dataLength > 0;
+				i += (int32)uframeStride) {
 			size_t length = min_c(dataLength, packetSize);
 			itd->token[i] = EHCI_ITD_STATUS(EHCI_ITD_STATUS_ACTIVE)
 				| EHCI_ITD_TLENGTH(length) | EHCI_ITD_PG(pg) | EHCI_ITD_TOFFSET(offset);
@@ -1387,7 +1431,8 @@ EHCI::SubmitIsochronous(Transfer *transfer)
 		LinkITDescriptors(itd, &fItdEntries[currentFrame]);
 		UnlockIsochronous();
 		fFrameBandwidth[currentFrame] -= bandwidth;
-		currentFrame = (currentFrame + 1) & (EHCI_VFRAMELIST_ENTRIES_COUNT - 1);
+		currentFrame = (currentFrame + frameStride)
+			& (EHCI_VFRAMELIST_ENTRIES_COUNT - 1);
 		frameCount++;
 	}
 
@@ -3244,10 +3289,14 @@ EHCI::ReadIsochronousDescriptorChain(isochronous_transfer_data *transfer)
 	size_t packetSize = transfer->transfer->DataLength();
 	packetSize /= isochronousData->packet_count;
 
+	// Walk the slots the fill actually programmed (see itd_slot_stride).
+	const uint32 slotStride
+		= itd_slot_stride(transfer->transfer->TransferPipe());
+
 	for (uint32 i = 0; i <= transfer->last_to_process; i++) {
 		ehci_itd *itd = transfer->descriptors[i];
 		for (uint32 j = 0; j <= itd->last_token
-			&& packet < isochronousData->packet_count; j++) {
+			&& packet < isochronousData->packet_count; j += slotStride) {
 
 			size_t bufferSize = EHCI_ITD_TLENGTH_GET(itd->token[j]);
 			if (EHCI_ITD_STATUS_GET(itd->token[j]) != 0)
