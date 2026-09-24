@@ -26,6 +26,18 @@
 device_manager_info* gDeviceManager;
 static usb_for_controller_interface* gUSB;
 
+// Recovering a halted host controller is enabled only on x86 32-bit. The
+// halts it exists for come from old 32-bit-only chipsets (the Intel SCH
+// companions in the Sony VAIO P), and that is the only hardware the reset
+// and schedule-restart sequence has been exercised on. Everywhere else the
+// interrupt handler keeps doing what it always did: mask interrupts and
+// leave the controller alone.
+#ifdef __i386__
+static const bool kHaltRecovery = true;
+#else
+static const bool kHaltRecovery = false;
+#endif
+
 
 #define UHCI_PCI_DEVICE_MODULE_NAME "busses/usb/uhci/pci/driver_v1"
 #define UHCI_PCI_USB_BUS_MODULE_NAME "busses/usb/uhci/device_v1"
@@ -508,8 +520,14 @@ UHCI::UHCI(pci_info *info, pci_device_module_info* pci, pci_device* device, Stac
 		fDevice(device),
 		fStack(stack),
 		fEnabledInterrupts(0),
+		fControllerHalted(false),
+		fControllerGaveUpOnHalts(false),
+		fLastHaltTime(0),
+		fHaltRecoveryCount(0),
+		fLateRecoveryCount(0),
 		fFrameArea(-1),
 		fFrameList(NULL),
+		fFrameListPhysical(0),
 		fFrameBandwidth(NULL),
 		fFirstIsochronousDescriptor(NULL),
 		fLastIsochronousDescriptor(NULL),
@@ -584,6 +602,8 @@ UHCI::UHCI(pci_info *info, pci_device_module_info* pci, pci_device* device, Stac
 		TRACE_ERROR("unable to create an area for the frame pointer list\n");
 		return;
 	}
+
+	fFrameListPhysical = physicalAddress;
 
 	// Set base pointer and reset frame number
 	WriteReg32(UHCI_FRBASEADD, (uint32)physicalAddress);
@@ -1486,7 +1506,35 @@ void
 UHCI::FinishTransfers()
 {
 	while (!fStopThreads) {
-		if (acquire_sem(fFinishTransfersSem) < B_OK)
+		if (kHaltRecovery && fControllerGaveUpOnHalts
+				&& fLateRecoveryCount < 3) {
+			// The controller was given up on after re-halting in a tight
+			// loop -- but that loop can be caused by interaction with a
+			// device that simply wasn't powered yet (observed on the Sony
+			// VAIO P: its EC powers the internal Bluetooth module only
+			// ~10 seconds into the boot, and enumeration attempts against
+			// the half-powered module are what halted the controller in
+			// the first place). Interrupts are off in this state, so no
+			// sem will ever arrive on its own; instead wait out a
+			// cooldown and then grant the controller one more recovery.
+			// If it immediately re-halts, the tight-loop counter above
+			// puts it right back here -- at most 3 late retries total.
+			status_t status = acquire_sem_etc(fFinishTransfersSem, 1,
+				B_RELATIVE_TIMEOUT, 5000000);
+			if (status == B_TIMED_OUT) {
+				fLateRecoveryCount++;
+				fControllerGaveUpOnHalts = false;
+				fControllerHalted = false;
+				fHaltRecoveryCount = 0;
+				TRACE_ALWAYS("halt recovery: giving the given-up "
+					"controller another chance after cooldown (late "
+					"attempt %" B_PRId32 " of 3)\n", fLateRecoveryCount);
+				RecoverFromHalt();
+				continue;
+			}
+			if (status < B_OK)
+				continue;
+		} else if (acquire_sem(fFinishTransfersSem) < B_OK)
 			continue;
 
 		// eat up sems that have been released by multiple interrupts
@@ -1494,6 +1542,44 @@ UHCI::FinishTransfers()
 		get_sem_count(fFinishTransfersSem, &semCount);
 		if (semCount > 0)
 			acquire_sem_etc(fFinishTransfersSem, semCount, B_RELATIVE_TIMEOUT, 0);
+
+		if (fControllerHalted) {
+			fControllerHalted = false;
+
+			if (fControllerGaveUpOnHalts) {
+				// Already established this controller re-halts no matter
+				// what we do; interrupts are already off from the ISR, so
+				// there's nothing left to do here.
+				continue;
+			}
+
+			// If halts keep recurring in a tight loop (observed on some
+			// hardware: the controller re-halts immediately on schedule
+			// restart, with no device activity in between at all -- not a
+			// stuck-descriptor problem recovery can fix), retrying forever
+			// just pegs the CPU in an endless reset loop. Bound it: after a
+			// handful of recoveries within a couple seconds of each other,
+			// stop trying and fall back to the original safe behavior
+			// (leave interrupts off, give up on this controller).
+			bigtime_t now = system_time();
+			if (now - fLastHaltTime < 2000000)
+				fHaltRecoveryCount++;
+			else
+				fHaltRecoveryCount = 1;
+			fLastHaltTime = now;
+
+			if (fHaltRecoveryCount > 3) {
+				TRACE_ALWAYS("halt recovery: controller re-halted %" B_PRId32
+					" times in under 2 seconds each with no sign it's "
+					"actually working; giving up on recovering it\n",
+					fHaltRecoveryCount);
+				fControllerGaveUpOnHalts = true;
+				continue;
+			}
+
+			RecoverFromHalt();
+			continue;
+		}
 
 		if (!Lock())
 			continue;
@@ -1862,6 +1948,104 @@ UHCI::ControllerReset()
 }
 
 
+/*!	Called from the finish thread after the interrupt handler observes
+	UHCI_USBSTS_HCHALT. Previously the interrupt handler just masked
+	interrupts and left the controller (and everything attached to it)
+	permanently unusable for the rest of the boot.
+
+	An earlier version of this recovery cancelled the software-side
+	transfer_data bookkeeping but never unlinked the corresponding queue
+	head/descriptors from the schedule (frame list). HCRESET doesn't touch
+	that software-owned memory, so the still-linked, still-failing
+	descriptor chain got re-executed the instant the schedule restarted,
+	re-halting the controller immediately and pegging the CPU in a tight
+	loop. Properly removing each transfer from its queue (the same
+	queue->RemoveTransfer() the normal completion path uses) before
+	resetting is what actually breaks that cycle.
+*/
+void
+UHCI::RecoverFromHalt()
+{
+	TRACE_ALWAYS("attempting to recover from host controller halt\n");
+
+	// Cancel all pending regular transfers -- they were in flight when the
+	// controller halted and will never complete on their own now that the
+	// schedule is about to be reset out from under them.
+	if (Lock()) {
+		transfer_data *transfer = fFirstTransfer;
+		fFirstTransfer = NULL;
+		fLastTransfer = NULL;
+		Unlock();
+
+		while (transfer != NULL) {
+			transfer_data *next = transfer->link;
+
+			// A cancelled entry has already had its callback made and its
+			// Transfer deleted by CancelQueuedTransfers(), which leaves
+			// transfer->transfer NULL and the entry in the list for the
+			// finish thread to reap. Touching it here would dereference
+			// NULL in kernel context, and the window is exactly when a
+			// halt is most likely: the misbehaving device that halts the
+			// controller is also the one drivers time out and cancel on.
+			// FinishTransfers() guards the same way.
+			if (!transfer->canceled) {
+				transfer->transfer->Finished(B_CANCELED, 0);
+				delete transfer->transfer;
+			}
+
+			// Unlink the queue head from the schedule either way -- this is
+			// the step the earlier, buggy version of this recovery skipped,
+			// and a cancelled entry's queue head is just as linked as any
+			// other.
+			transfer->queue->RemoveTransfer(transfer->transfer_queue);
+			AddToFreeList(transfer);
+			transfer = next;
+		}
+	}
+
+	// UHCI's SubmitTransfer() doesn't actually support isochronous transfers
+	// (it unconditionally returns B_NOT_SUPPORTED for them), so
+	// fFirstIsochronousTransfer should always be empty here in practice.
+	// Clear it defensively anyway, mirroring the simpler cleanup the
+	// destructor already does for a full teardown.
+	if (LockIsochronous()) {
+		isochronous_transfer_data *isoTransfer = fFirstIsochronousTransfer;
+		fFirstIsochronousTransfer = NULL;
+		fLastIsochronousTransfer = NULL;
+		UnlockIsochronous();
+
+		while (isoTransfer != NULL) {
+			isochronous_transfer_data *next = isoTransfer->link;
+			delete isoTransfer;
+			isoTransfer = next;
+		}
+	}
+
+	if (ControllerReset() < B_OK) {
+		TRACE_MODULE_ERROR("halt recovery: controller reset failed, giving "
+			"up on this controller\n");
+		return;
+	}
+
+	// HCRESET doesn't touch the root hub object or the pipes/devices
+	// already known to the bus manager -- only the host controller's own
+	// internal schedule state -- so re-arm the frame list and restart the
+	// schedule rather than redoing the whole of Start() (which would try
+	// to allocate a second root hub).
+	WriteReg32(UHCI_FRBASEADD, (uint32)fFrameListPhysical);
+	WriteReg16(UHCI_FRNUM, 0);
+
+	fEnabledInterrupts = UHCI_USBSTS_USBINT | UHCI_USBSTS_ERRINT
+		| UHCI_USBSTS_HOSTERR | UHCI_USBSTS_HCPRERR | UHCI_USBSTS_HCHALT;
+	WriteReg16(UHCI_USBINTR, UHCI_USBINTR_CRC | UHCI_USBINTR_IOC
+		| UHCI_USBINTR_SHORT);
+
+	WriteReg16(UHCI_USBCMD, ReadReg16(UHCI_USBCMD) | UHCI_USBCMD_RS);
+
+	TRACE_ALWAYS("host controller halt recovery complete\n");
+}
+
+
 status_t
 UHCI::GetPortStatus(uint8 index, usb_port_status *status)
 {
@@ -2059,10 +2243,17 @@ UHCI::Interrupt()
 
 	if (status & UHCI_USBSTS_HCHALT) {
 		TRACE_MODULE_ERROR("host controller halted\n");
-		// at least disable interrupts so we do not flood the system
+		// Disable interrupts immediately so we do not flood the system with
+		// halt notifications while the controller sits idle. The actual
+		// reset/restart can't happen here (interrupt context can't snooze()
+		// or wait on register writes settling), so hand it off to the
+		// finish thread instead of just leaving the controller stuck.
 		WriteReg16(UHCI_USBINTR, 0);
 		fEnabledInterrupts = 0;
-		// ToDo: cancel all transfers and reset the host controller
+		if (kHaltRecovery) {
+			fControllerHalted = true;
+			finishTransfers = true;
+		}
 		// acknowledge not needed
 	}
 
