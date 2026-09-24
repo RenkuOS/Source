@@ -1295,6 +1295,20 @@ EHCI::SubmitIsochronous(Transfer *transfer)
 	// doing anything. Every isochronous OUT transfer has therefore sent the
 	// zeros from the memset above.
 	if (!directionIn) {
+		// Make the caller's vectors reachable from kernel space before
+		// copying: a user-space isochronous OUT (via usb_raw, say) is
+		// otherwise an unmapped source address. usb_audio hands over kernel
+		// buffers, where this is a no-op, but the copy has to be correct for
+		// any submitter.
+		status_t accessStatus = transfer->PrepareKernelAccess();
+		if (accessStatus != B_OK) {
+			TRACE_ERROR("failed to prepare kernel access for isochronous "
+				"out data\n");
+			fStack->FreeChunk(bufferLog, bufferPhy, dataLength);
+			delete[] isoRequest;
+			return accessStatus;
+		}
+
 		generic_io_vec *vector = transfer->Vector();
 		size_t vectorCount = transfer->VectorCount();
 		const bool physical = transfer->IsPhysical();
