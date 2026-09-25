@@ -1632,7 +1632,7 @@ AboutView::_CreateCreditsView()
 
 	fCreditsView->SetFontAndColor(be_plain_font, B_FONT_ALL, &fLinkColor);
 	fCreditsView->InsertHyperText(B_TRANSLATE("Visit the RenkuOS website"),
-		new URLAction("https://github.com/RenkuOS/"));
+		new URLAction("https://renkuos.org/"));
 	fCreditsView->Insert("\n");
 	fCreditsView->InsertHyperText(B_TRANSLATE("Based on Haiku"),
 		new URLAction("https://www.haiku-os.org/"));
