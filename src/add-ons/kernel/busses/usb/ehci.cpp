@@ -2356,6 +2356,12 @@ EHCI::FinishIsochronousTransfers()
 						status = transfer->transfer->PrepareKernelAccess();
 						if (status == B_OK)
 							actualLength = ReadIsochronousDescriptorChain(transfer);
+					} else {
+						// Report what the controller did with an OUT transfer
+						// too; nothing used to touch the packet descriptors in
+						// this direction.
+						actualLength
+							= WriteIsochronousDescriptorChain(transfer);
 					}
 
 					// Remove the transfer
@@ -3275,8 +3281,53 @@ EHCI::ClearIsoAnchor(Pipe *pipe)
 size_t
 EHCI::WriteIsochronousDescriptorChain(isochronous_transfer_data *transfer)
 {
-	// TODO implement
-	return 0;
+	// An isochronous OUT transfer used to complete with every packet
+	// descriptor exactly as the submitter filled it in -- actual_length 0 and
+	// an untouched status -- because this was a stub. A driver watching those
+	// fields therefore saw a flawless stream whatever the controller did on
+	// the wire, which is how a device that is playing nothing can be "ruled
+	// out" as healthy.
+	//
+	// The controller does not write back a transmitted byte count for OUT
+	// transactions: the transaction length field keeps the value we
+	// programmed. It does clear the Active bit once the transaction has run,
+	// and it records babble, transaction and data-buffer errors. So report the
+	// programmed length for every packet that came back clean, and zero with
+	// an error status for the rest.
+	usb_isochronous_data *isochronousData
+		= transfer->transfer->IsochronousData();
+	uint32 packet = 0;
+	size_t totalLength = 0;
+
+	// Walk the slots the fill actually programmed (see itd_slot_stride).
+	const uint32 slotStride
+		= itd_slot_stride(transfer->transfer->TransferPipe());
+
+	for (uint32 i = 0; i <= transfer->last_to_process; i++) {
+		ehci_itd *itd = transfer->descriptors[i];
+		for (uint32 j = 0; j <= itd->last_token
+			&& packet < isochronousData->packet_count;
+			j += slotStride, packet++) {
+
+			size_t length = EHCI_ITD_TLENGTH_GET(itd->token[j]);
+			uint32 status = EHCI_ITD_STATUS_GET(itd->token[j]);
+			if (status != 0) {
+				// Still active means the controller never reached this
+				// transaction before its frame passed.
+				isochronousData->packet_descriptors[packet].actual_length = 0;
+				isochronousData->packet_descriptors[packet].status
+					= (status & EHCI_ITD_STATUS_ACTIVE) != 0
+						? B_DEV_TIMEOUT : B_DEV_CRC_ERROR;
+				continue;
+			}
+
+			isochronousData->packet_descriptors[packet].actual_length = length;
+			isochronousData->packet_descriptors[packet].status = B_OK;
+			totalLength += length;
+		}
+	}
+
+	return totalLength;
 }
 
 
