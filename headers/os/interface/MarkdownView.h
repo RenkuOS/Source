@@ -19,7 +19,14 @@ public:
 
 	// Supporto per BMessage/Archiving (se usato da LayoutBuilder / InterfaceKit)
 	static	BArchivable*	Instantiate(BMessage* archive);
-
+	
+	void					InsertRaw(const char* text);
+	void					InsertRaw(const char* text, int32 length);
+	void					InsertRaw(int32 offset, const char* text,
+									int32 length);
+	int32					RawTextLength() const;
+	
+	const char*				RawText() const;
 	// Imposta il testo Markdown ed esegue il parsing
 	status_t				SetMarkdown(const char* markdownText);
 	status_t				SetMarkdown(const BString& markdownText);
