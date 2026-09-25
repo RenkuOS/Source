@@ -2214,6 +2214,14 @@ EHCI::FinishIsochronousTransfers()
 			if (!LockIsochronous())
 				continue;
 
+			// Transfers that complete in this pass are collected here and
+			// finished after the lock is released; see the loop below.
+			static const uint32 kMaxFinished = 64;
+			isochronous_transfer_data *finished[kMaxFinished];
+			status_t finishedStatus[kMaxFinished];
+			size_t finishedLength[kMaxFinished];
+			uint32 finishedCount = 0;
+
 			// Process the frame till it has isochronous descriptors in it.
 			while (!(itd->next_phy & EHCI_ITEM_TERMINATE) && itd->prev != NULL) {
 				TRACE("FinishIsochronousTransfers checking itd %p last_token"
@@ -2264,21 +2272,22 @@ EHCI::FinishIsochronousTransfers()
 					}
 					transfer->link = NULL;
 
-					transfer->transfer->Finished(status, actualLength);
+					// Do not call back from here: the callback runs
+					// after UnlockIsochronous() below.
+					if (finishedCount < kMaxFinished) {
+						finished[finishedCount] = transfer;
+						finishedStatus[finishedCount] = status;
+						finishedLength[finishedCount] = actualLength;
+						finishedCount++;
+					} else {
+						// Never expected: it would take kMaxFinished streams
+						// completing in one frame. Leave it linked; the next
+						// pass over this frame picks it up.
+						TRACE_ERROR("FinishIsochronousTransfers: more than %"
+							B_PRIu32 " transfers in one frame\n", kMaxFinished);
+					}
 
 					itd = itd->prev;
-
-					for (uint32 i = 0; i <= transfer->last_to_process; i++)
-						FreeDescriptor(transfer->descriptors[i]);
-
-					TRACE("FinishIsochronousTransfers descriptors freed\n");
-
-					delete [] transfer->descriptors;
-					delete transfer->transfer;
-					fStack->FreeChunk(transfer->buffer_log,
-						(phys_addr_t)transfer->buffer_phy,
-						transfer->buffer_size);
-					delete transfer;
 					transferDone = true;
 				} else {
 					TRACE("FinishIsochronousTransfers not end of transfer\n");
@@ -2287,6 +2296,30 @@ EHCI::FinishIsochronousTransfers()
 			}
 
 			UnlockIsochronous();
+
+			// The callbacks run with the isochronous lock released. A driver
+			// may queue its next transfer from the completion callback --
+			// audio drivers do exactly that -- and SubmitIsochronous() takes
+			// this same non-recursive lock, so calling out while holding it
+			// double-locks and panics the finish thread.
+			for (uint32 f = 0; f < finishedCount; f++) {
+				isochronous_transfer_data *transfer = finished[f];
+
+				transfer->transfer->Finished(finishedStatus[f],
+					finishedLength[f]);
+
+				for (uint32 i = 0; i <= transfer->last_to_process; i++)
+					FreeDescriptor(transfer->descriptors[i]);
+
+				TRACE("FinishIsochronousTransfers descriptors freed\n");
+
+				delete [] transfer->descriptors;
+				delete transfer->transfer;
+				fStack->FreeChunk(transfer->buffer_log,
+					(phys_addr_t)transfer->buffer_phy,
+					transfer->buffer_size);
+				delete transfer;
+			}
 
 			TRACE("FinishIsochronousTransfers next frame\n");
 
