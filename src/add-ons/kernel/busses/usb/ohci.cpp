@@ -2140,8 +2140,53 @@ OHCI::_FreeIsochronousDescriptor(ohci_isochronous_td *descriptor)
 			descriptor->buffer_page_byte_0, descriptor->buffer_size);
 	}
 
+	/*	Free the ITD as the size it was ALLOCATED at.
+
+		_CreateIsochronousDescriptor() allocates
+		sizeof(ohci_isochronous_td), but stock freed sizeof(ohci_general_td)
+		here -- on x86_64, 80 bytes versus 48. The
+		USB stack's allocator is a buddy allocator whose bucket is chosen by
+		size -- Stack.cpp builds it as PhysicalMemoryAllocator("USB Stack
+		Allocator", 8, B_PAGE_SIZE * 32, 64), so buckets are powers of two from
+		8 -- which puts the allocation in the 128-byte array and the free in
+		the 64-byte array.
+
+		The free is not merely lost. Allocate() marks every sub-block of the
+		128-byte slot as used ("fill upwards to the smallest block"), so the
+		64-byte entry the free lands on reads as allocated and passes
+		Deallocate()'s "address was not allocated!" guard. The result per ITD
+		is one 128-byte slot leaked AND one wrongly cleared 64-byte slot, plus
+		its parent counters decremented against a block that is still live.
+
+		WHY IT SURFACES LATE. This costs a couple of descriptors per transfer,
+		so it needs a stream that actually runs to bite. Before the sizing fix
+		in _CreateIsochronousDescriptorChain() OHCI audio died within a second
+		or two and never sustained the allocation rate. With that fixed a
+		DDJ-SR played cleanly for about 26 s -- roughly 10,000 ITDs across the
+		playback and capture streams -- and then the corrupted tree could no
+		longer satisfy a ~4 KB ITD buffer:
+
+			usb error ohci 5: failed to allocate space for iso.buffer
+			usb error ohci 5: failed to allocate ITD
+			usb_audio output queue_isochronous buf:1 ep:0x62 failed: 0xffffffff
+
+		and every transfer after that point time-overran (ITD condition 0x8,
+		len 0): exactly one allocation failure, then 42 ITD errors.
+
+		The same file already frees this object at the right size on
+		_CreateIsochronousDescriptor()'s own error path, which is what makes
+		this a slip rather than a deliberate asymmetry.
+
+		(buffer_page_byte_0 above is the PAGE-MASKED address, not what
+		AllocateChunk() returned -- _CreateIsochronousDescriptorChain() clears
+		its low 12 bits to build the ITD's page pointer. Harmless only because
+		Deallocate() derives the slot from the logical address whenever one is
+		given, and it always is here. Left alone deliberately: correcting it
+		means storing the unmasked address, which grows the descriptor for no
+		behavioural gain.)
+	*/
 	fStack->FreeChunk((void *)descriptor, descriptor->physical_address,
-		sizeof(ohci_general_td));
+		sizeof(ohci_isochronous_td));
 }
 
 
