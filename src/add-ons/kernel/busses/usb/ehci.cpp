@@ -1293,6 +1293,47 @@ EHCI::SubmitIsochronous(Transfer *transfer)
 
 	memset(bufferLog, 0, dataLength);
 
+	// Copy the caller's payload into the bounce buffer before any descriptor
+	// goes live in the periodic schedule. The iTDs below point only at this
+	// buffer, and nothing else ever fills it for an OUT transfer:
+	// WriteIsochronousDescriptorChain(), which is meant to, returns 0 without
+	// doing anything. Every isochronous OUT transfer has therefore sent the
+	// zeros from the memset above.
+	if (!directionIn) {
+		// Make the caller's vectors reachable from kernel space before
+		// copying: a user-space isochronous OUT (via usb_raw, say) is
+		// otherwise an unmapped source address. usb_audio hands over kernel
+		// buffers, where this is a no-op, but the copy has to be correct for
+		// any submitter.
+		status_t accessStatus = transfer->PrepareKernelAccess();
+		if (accessStatus != B_OK) {
+			TRACE_ERROR("failed to prepare kernel access for isochronous "
+				"out data\n");
+			fStack->FreeChunk(bufferLog, bufferPhy, dataLength);
+			delete[] isoRequest;
+			return accessStatus;
+		}
+
+		generic_io_vec *vector = transfer->Vector();
+		size_t vectorCount = transfer->VectorCount();
+		const bool physical = transfer->IsPhysical();
+		size_t bufferOffset = 0;
+		for (size_t i = 0; i < vectorCount && bufferOffset < dataLength; i++) {
+			size_t length = min_c((size_t)vector[i].length,
+				dataLength - bufferOffset);
+			status_t copyStatus = generic_memcpy(
+				(generic_addr_t)bufferLog + bufferOffset, false,
+				vector[i].base, physical, length);
+			if (copyStatus != B_OK) {
+				TRACE_ERROR("failed to copy isochronous out data\n");
+				fStack->FreeChunk(bufferLog, bufferPhy, dataLength);
+				delete[] isoRequest;
+				return copyStatus;
+			}
+			bufferOffset += length;
+		}
+	}
+
 	phys_addr_t currentPhy = bufferPhy;
 	uint32 frameCount = 0;
 	while (dataLength > 0) {
