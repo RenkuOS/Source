@@ -7,6 +7,7 @@ BMarkdownView::BMarkdownView(const char* name, uint32 flags)
     :
     BTextView(name, flags)
 {
+	fRawMarkdown.SetTo("");
     MakeEditable(false);
     MakeSelectable(true);
     SetStylable(true);
@@ -19,6 +20,7 @@ BMarkdownView::~BMarkdownView()
 status_t
 BMarkdownView::SetMarkdown(const BString& markdownText)
 {
+	fRawMarkdown.SetTo(markdownText);
     return SetMarkdown(markdownText.String());
 }
 
@@ -26,7 +28,7 @@ status_t
 BMarkdownView::SetMarkdown(const char* markdownText)
 {
     SetText("");
-
+	fRawMarkdown.SetTo(markdownText);
     if (markdownText == NULL || strlen(markdownText) == 0)
         return B_OK;
 
@@ -58,10 +60,39 @@ BMarkdownView::SetMarkdown(const char* markdownText)
     int result = md_parse(markdownText, (MD_SIZE)strlen(markdownText), &parser, &state);
     return (result == 0) ? B_OK : B_ERROR;
 }
+
+void BMarkdownView::InsertRaw(int32 offset, const char* text, int32 length)
+{
+	//inserisco il testo in fRawMarkdown tenendo conto di offset e length,
+	// questo lo posso fare con Insert:
+	fRawMarkdown.Insert(text, length, offset);
+	// dopo di che aggiorno la vista chia	mando:
+	SetMarkdown(fRawMarkdown);
+}
+
+void BMarkdownView::InsertRaw(const char* text, int32 length)
+{
+	InsertRaw(0, text, length);
+}
+void BMarkdownView::InsertRaw(const char* text)
+{
+	InsertRaw(0, text, strlen(text));
+}
+
+int32 BMarkdownView::RawTextLength() const
+{
+	return fRawMarkdown.Length();
+}
+
+const char*
+BMarkdownView::RawText() const
+{
+	return fRawMarkdown.String();
+}
 void
 BMarkdownView::_ApplyCurrentStyle(int32 startPos, RenderState& state)
 {
-    int32 endPos = TextLength();
+    int32 endPos = TextLength(); // should I use RawTextLength()?
     if (startPos >= endPos)
         return;
 
@@ -191,7 +222,7 @@ BMarkdownView::_TextCb(MD_TEXTTYPE type, const MD_CHAR* text, MD_SIZE size, void
 {
     RenderState* state = static_cast<RenderState*>(userdata);
     
-    int32 startPos = state->view->TextLength();
+    int32 startPos = state->view->TextLength(); // should I use RawTextLenght()
     
     // Estraiamo il testo dal buffer MD4C
     BString str(text, size);
