@@ -209,6 +209,7 @@ inline	uint32						ReadReg32(uint32 reg);
 
 		uint32						fRegisterBase;
 		pci_info *					fPCIInfo;
+		bool						fIsPoulsbo;
 		pci_device_module_info*		fPci;
 		pci_device*					fDevice;
 		Stack *						fStack;

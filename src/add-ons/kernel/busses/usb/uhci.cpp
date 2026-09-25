@@ -516,6 +516,16 @@ UHCI::UHCI(pci_info *info, pci_device_module_info* pci, pci_device* device, Stac
 	device_node* node)
 	:	BusManager(stack, node),
 		fPCIInfo(info),
+		// The Intel SCH (Poulsbo/US15W) UHCI companions, device IDs
+		// 0x8114-0x8116. The chipset only ever shipped in 32-bit x86
+		// machines, so outside __i386__ this stays false and the driver
+		// behaves exactly as it always has.
+#ifdef __i386__
+		fIsPoulsbo(info->vendor_id == 0x8086 && info->device_id >= 0x8114
+			&& info->device_id <= 0x8116),
+#else
+		fIsPoulsbo(false),
+#endif
 		fPci(pci),
 		fDevice(device),
 		fStack(stack),
@@ -588,8 +598,18 @@ UHCI::UHCI(pci_info *info, pci_device_module_info* pci, pci_device* device, Stac
 	WriteReg16(UHCI_USBINTR, 0);
 
 	// make sure we gain control of the UHCI controller instead of the BIOS
-	fPci->write_pci_config(fDevice, PCI_LEGSUP, 2, PCI_LEGSUP_USBPIRQDEN
-		| PCI_LEGSUP_CLEAR_SMI);
+	// -- except on Intel SCH (Poulsbo/US15W) companions: they don't
+	// implement the USBLEGSUP config register at 0xC0 at all, and writing
+	// there corrupts the controller's transfer engine in bizarre ways --
+	// schedules run but TDs execute wrong (ActLen stuck at 0x7ff, transfers
+	// trampling memory past their buffers) and no device ever enumerates.
+	// The coreboot/SeaBIOS port to this chipset hit the exact same thing:
+	// https://www.seabios.org/pipermail/seabios/2012-August/004327.html
+	// There's no USB legacy support to take over there anyway.
+	if (!fIsPoulsbo) {
+		fPci->write_pci_config(fDevice, PCI_LEGSUP, 2, PCI_LEGSUP_USBPIRQDEN
+			| PCI_LEGSUP_CLEAR_SMI);
+	}
 
 	// do a global and host reset
 	GlobalReset();
