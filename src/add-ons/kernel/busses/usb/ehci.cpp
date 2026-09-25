@@ -1428,6 +1428,7 @@ EHCI::SubmitIsochronous(Transfer *transfer)
 
 		if (!LockIsochronous())
 			continue;
+		itd->frame = currentFrame;
 		LinkITDescriptors(itd, &fItdEntries[currentFrame]);
 		UnlockIsochronous();
 		fFrameBandwidth[currentFrame] -= bandwidth;
@@ -2402,6 +2403,31 @@ EHCI::FinishIsochronousTransfers()
 				} else {
 					TRACE("FinishIsochronousTransfers not end of transfer\n");
 					itd = itd->prev;
+				}
+			}
+
+			// The finisher is time-based: each wakeup it starts a few frames
+			// behind the controller and stops after finalising one transfer,
+			// so over a long stream it can land mid-transfer and leave
+			// earlier descriptors of a finished transfer still chained in
+			// frames this pass never walked. Freeing one of those below would
+			// return its memory to the pool while fItdEntries[frame], or a
+			// neighbour's next pointer, still refers to it; the next
+			// CreateItdDescriptor() recycles it and the next
+			// UnlinkITDescriptors() walks a garbage prev. Detach them here,
+			// while the lock is still held. A non-NULL prev means the
+			// descriptor is still chained, because retiring one clears it.
+			for (uint32 f = 0; f < finishedCount; f++) {
+				isochronous_transfer_data *ft = finished[f];
+				for (uint32 i = 0; i <= ft->last_to_process; i++) {
+					ehci_itd *desc = ft->descriptors[i];
+					if (desc != NULL && desc->prev != NULL) {
+						UnlinkITDescriptors(desc,
+							&fItdEntries[desc->frame
+								& (EHCI_VFRAMELIST_ENTRIES_COUNT - 1)]);
+						desc->prev = NULL;
+						desc->next = NULL;
+					}
 				}
 			}
 
