@@ -1452,7 +1452,15 @@ EHCI::SubmitIsochronous(Transfer *transfer)
 
 	TRACE("appended isochronous transfer by starting at frame number %d\n",
 		currentFrame);
-	SetIsoAnchor(pipe, currentFrame + 1);
+	// currentFrame already names the first frame this transfer did not use:
+	// the fill loop advances it after linking each descriptor. Stock added a
+	// further +1 here, which left one idle frame between consecutive
+	// transfers. That was invisible while every transfer was packed eight
+	// packets to an iTD and spanned only a few frames, but once packets are
+	// placed one per service interval a transfer spans exactly as many frames
+	// as it has packets, and the extra frame becomes a permanent rate error:
+	// 20 ms of audio delivered every 21 ms, i.e. 44.1 kHz played at 42 kHz.
+	SetIsoAnchor(pipe, currentFrame);
 
 	// Wake up the isochronous finisher thread
 	release_sem_etc(fFinishIsochronousTransfersSem, 1 /*frameCount*/,
