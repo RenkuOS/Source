@@ -1307,6 +1307,32 @@ EHCI::SubmitIsochronous(Transfer *transfer)
 		// 2. We stay in the range 0-127
 		// 3. There is enough bandwidth in the first entry
 		currentFrame &= EHCI_VFRAMELIST_ENTRIES_COUNT - 1;
+
+		// The virtual frame list is only EHCI_VFRAMELIST_ENTRIES_COUNT frames
+		// deep, so the distance from the controller to the anchor wraps. An
+		// anchor that fell behind the controller (a stream whose requeue
+		// stalled) or ran so far ahead that its distance wrapped would link
+		// descriptors into frames the controller reaches a full list too
+		// early, playing them out of order. Neither is recoverable by waiting,
+		// because the anchor only ever moves forward from where it is.
+		// Resynchronize to just ahead of the controller instead, which costs
+		// one discontinuity now rather than a permanently misplaced stream.
+		uint32 controllerVFrame = (ReadOpReg(EHCI_FRINDEX) / 8)
+			& (EHCI_VFRAMELIST_ENTRIES_COUNT - 1);
+		uint32 ahead = (currentFrame - controllerVFrame)
+			& (EHCI_VFRAMELIST_ENTRIES_COUNT - 1);
+		if (ahead < 1 || ahead > EHCI_VFRAMELIST_ENTRIES_COUNT - 8) {
+			static int32 sResyncLogBudget = 5;
+			uint32 resynced = (controllerVFrame + 2 + (fThreshold + 7) / 8)
+				& (EHCI_VFRAMELIST_ENTRIES_COUNT - 1);
+			if (atomic_add(&sResyncLogBudget, -1) > 0) {
+				dprintf("usb ehci: iso anchor resync: anchor %" B_PRIu32
+					" controller %" B_PRIu32 " (ahead %" B_PRIu32
+					") -> %" B_PRIu32 "\n", currentFrame, controllerVFrame,
+					ahead, resynced);
+			}
+			currentFrame = resynced;
+		}
 	} else {
 		// Find out if the frame number specified has enough bandwidth,
 		// otherwise find the first next available frame with enough bandwidth
