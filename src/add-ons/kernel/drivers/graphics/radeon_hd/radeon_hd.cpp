@@ -762,10 +762,32 @@ radeon_hd_init(radeon_info &info)
 	}
 
 	// *** Populate frame buffer information
+	//
+	// The VRAM size register and its unit vary by GPU generation and type:
+	//   - Discrete Tahiti+ (SI/CIK/VI): CONFIG_MEMSIZE_TAHITI (0x03de), in MB
+	//   - APU Tahiti+ (Aruba, Kaveri, Kabini, Mullins, Carrizo, Stoney, Raven):
+	//     CONFIG_MEMSIZE (0x5428), in bytes — these use UMA (unified memory
+	//     architecture) and carve out a portion of system RAM for the GPU.
+	//     Reading CONFIG_MEMSIZE_TAHITI on an APU returns 0 since there is no
+	//     dedicated VRAM, which previously caused 0MB detection and crashes.
+	//   - Discrete Evergreen (Cedar–Cayman): CONFIG_MEMSIZE (0x5428), in MB
+	//   - Fusion APU (Palm, Sumo, Sumo2): CONFIG_MEMSIZE (0x5428), in bytes
+	//   - R600–R700: CONFIG_MEMSIZE (0x5428), in bytes
+	//
+	// See also: Linux radeon driver si_mc_init() / cik_mc_init() / evergreen.c
+	// for reference on per-generation register semantics.
 	if (info.chipsetID >= RADEON_TAHITI) {
-		// Tahiti+ has memory stored in MB
-		info.shared_info->graphics_memory_size
-			= read32(info.registers + CONFIG_MEMSIZE_TAHITI) * 1024;
+		if ((info.chipsetFlags & CHIP_APU) != 0) {
+			// APU with UMA — CONFIG_MEMSIZE reports reserved system RAM in bytes.
+			// Applies to: Aruba (Trinity/Richland), Kaveri, Kabini, Mullins,
+			// Carrizo, Stoney, Raven, and Navi-based APUs (Renoir, etc.)
+			info.shared_info->graphics_memory_size
+				= read32(info.registers + CONFIG_MEMSIZE) / 1024;
+		} else {
+			// Discrete SI+ — CONFIG_MEMSIZE_TAHITI reports dedicated VRAM in MB
+			info.shared_info->graphics_memory_size
+				= read32(info.registers + CONFIG_MEMSIZE_TAHITI) * 1024;
+		}
 	} else if (info.chipsetID >= RADEON_CEDAR) {
 		switch (info.chipsetID) {
 			default:
