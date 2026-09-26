@@ -15,6 +15,52 @@
 #include <algorithm>
 
 
+// The bounded per-port retry/power-cycle backoff below is enabled only on
+// x86 32-bit. It exists for the early-boot behaviour of old 32-bit-only
+// machines (the Sony VAIO P's Intel SCH companions and its EC-powered
+// internal devices), and that is the only place it has been exercised;
+// every other architecture keeps servicing a failing port on every poll,
+// exactly as before. The compiler drops the guarded code entirely.
+#ifdef __i386__
+static const bool kBoundedPortRetries = true;
+#else
+static const bool kBoundedPortRetries = false;
+#endif
+
+
+// Number of consecutive failed device setup attempts on a port (with no
+// real disconnect/reconnect in between) before Explore() stops retrying it
+// on every poll. Each attempt already involves a debounce, a full port
+// reset, and up to 3 retried SET_ADDRESS attempts (200ms apart), so even a
+// handful of attempts adds up to real, user-visible boot delay on a port
+// that's never going to succeed -- keep this low.
+static const uint8 kMaxPortFailedAttempts = 2;
+
+// Number of times a port that has exhausted kMaxPortFailedAttempts gets a
+// genuine power-off/power-on cycle (see PowerCyclePort()) as a last-resort
+// recovery attempt before Explore() gives up on it for good. Kept low: if a
+// real power cycle doesn't help after a couple of tries, more of them won't
+// either, and each one costs real time (power-off settle + power-on-to-
+// power-good delays).
+static const uint8 kMaxPortPowerCycleAttempts = 2;
+
+// After a port exhausts every retry and power-cycle attempt, it isn't
+// written off forever right away: a *fresh* connection event arriving after
+// this cooldown earns it another full round of attempts, up to
+// kMaxPortRearms times. Rationale (observed on the Sony VAIO P): an
+// internal device can be electrically present but unresponsive early in
+// boot simply because the EC hasn't powered its logic yet -- the port then
+// burns through all its attempts and, if ignored permanently, the device
+// never gets another chance even though it connects perfectly fine once
+// its power request goes through seconds later. The cooldown plus the
+// fresh-connection requirement keeps the original pathology (a dead device
+// bouncing several times a second, flooding the bus with doomed resets)
+// bounded: at worst one re-arm per cooldown window, permanently quiet
+// after kMaxPortRearms.
+static const bigtime_t kPortIgnoreCooldown = 5000000;
+static const uint8 kMaxPortRearms = 3;
+
+
 Hub::Hub(Object *parent, int8 hubAddress, uint8 hubPort,
 	usb_device_descriptor &desc, int8 deviceAddress, usb_speed speed,
 	bool isRootHub, void *controllerCookie)
@@ -25,8 +71,13 @@ Hub::Hub(Object *parent, int8 hubAddress, uint8 hubPort,
 	TRACE("creating hub\n");
 
 	memset(&fHubDescriptor, 0, sizeof(fHubDescriptor));
-	for (int32 i = 0; i < USB_MAX_PORT_COUNT; i++)
+	for (int32 i = 0; i < USB_MAX_PORT_COUNT; i++) {
 		fChildren[i] = NULL;
+		fFailedAttempts[i] = 0;
+		fPowerCycleAttempts[i] = 0;
+		fIgnoredUntil[i] = 0;
+		fRearmCount[i] = 0;
+	}
 
 	if (!fInitOK) {
 		TRACE_ERROR("device failed to initialize\n");
@@ -231,11 +282,107 @@ Hub::DisablePort(uint8 index)
 }
 
 
+status_t
+Hub::PowerCyclePort(uint8 index)
+{
+	// A genuine power-off/power-on cycle (as opposed to just disabling the
+	// port's transaction servicing) is the closest a driver can get, in
+	// software, to what physically unplugging and replugging a device
+	// does. Some flaky devices that never recover via reset alone do
+	// recover from this.
+	//
+	// Only where the hub switches power per port, though. Bits 0-1 of the
+	// hub characteristics carry the logical power switching mode, and any
+	// value other than 01b means the ports are ganged (or not switchable at
+	// all): clearing PORT_POWER on one port of a ganged hub takes down every
+	// port in the gang, which on a root hub is the whole controller -- the
+	// keyboard, and quite possibly the volume this system booted from.
+	// Recovering one unresponsive device is not worth that trade, so a hub
+	// that cannot do it per port simply does not get this recovery step.
+	//
+	// Note this rules out every root hub: all four host controller drivers
+	// report hub characteristics 0x0000, i.e. ganged power. So this step
+	// only ever applies to an external hub that switches power per port,
+	// and a device on a root port -- which is where this was needed -- gets
+	// the retry cap, the cooldown and the re-arm instead. TRACE, not
+	// TRACE_ALWAYS: it is a fixed property of the hub, not an event, and it
+	// would otherwise print on every failed round.
+	if ((fHubDescriptor.characteristics & 0x3) != 0x1) {
+		TRACE("hub does not switch port power individually "
+			"(characteristics 0x%04x); not power cycling port %u\n",
+			fHubDescriptor.characteristics, index);
+		return B_NOT_SUPPORTED;
+	}
+
+	status_t status = DefaultPipe()->SendRequest(USB_REQTYPE_CLASS
+		| USB_REQTYPE_OTHER_OUT, USB_REQUEST_CLEAR_FEATURE, PORT_POWER,
+		index + 1, 0, NULL, 0, NULL);
+	if (status != B_OK)
+		return status;
+
+	snooze(100000);
+
+	status = DefaultPipe()->SendRequest(USB_REQTYPE_CLASS
+		| USB_REQTYPE_OTHER_OUT, USB_REQUEST_SET_FEATURE, PORT_POWER,
+		index + 1, 0, NULL, 0, NULL);
+	if (status != B_OK)
+		return status;
+
+	snooze(USB_DELAY_HUB_POWER_UP);
+	return B_OK;
+}
+
+
 
 void
 Hub::Explore(change_item **changeList)
 {
 	for (int32 i = 0; i < fHubDescriptor.num_ports; i++) {
+		if (kBoundedPortRetries && fIgnoredUntil[i] != 0) {
+			// Read the status even while ignoring the port. Skipping it
+			// before the read would mean a port written off for the rest of
+			// the boot never reaches the disconnect handling below, so
+			// pulling the broken device out and plugging a good one in
+			// would do nothing until a reboot. Reading does not clear the
+			// change bits, so the normal handling below still sees them.
+			if (UpdatePortStatus(i) < B_OK)
+				continue;
+
+			if ((fPortStatus[i].status & PORT_STATUS_CONNECTION) == 0) {
+				// Nothing is connected any more. That is the strongest
+				// "start over" signal there is -- stronger than the bare
+				// change bit the cooldown path looks for -- so forget
+				// everything about this port, ignore included, and let the
+				// next device in have a full set of attempts.
+				fIgnoredUntil[i] = 0;
+				fFailedAttempts[i] = 0;
+				fPowerCycleAttempts[i] = 0;
+				fRearmCount[i] = 0;
+			} else if (fIgnoredUntil[i] == B_INFINITE_TIMEOUT
+					|| system_time() < fIgnoredUntil[i]) {
+				// Still the same broken device, still inside the cooldown
+				// (or written off for good): leave it alone.
+				continue;
+			} else if ((fPortStatus[i].change & PORT_STATUS_CONNECTION) == 0) {
+				// The cooldown expired, but nothing has changed
+				// electrically since we gave up -- a stale "still
+				// connected, still broken" state does not earn another
+				// round.
+				continue;
+			} else {
+				// A fresh connection event on a port that is still
+				// occupied: something did change, e.g. an EC power request
+				// finally bringing an internal device properly alive.
+				fRearmCount[i]++;
+				fIgnoredUntil[i] = 0;
+				fFailedAttempts[i] = 0;
+				fPowerCycleAttempts[i] = 0;
+				TRACE_ALWAYS("port %" B_PRId32 ": new connection event after "
+					"cooldown, giving the port another chance (%u of %u)\n",
+					i, fRearmCount[i], kMaxPortRearms);
+			}
+		}
+
 		status_t result = UpdatePortStatus(i);
 		if (result < B_OK)
 			continue;
@@ -250,7 +397,9 @@ Hub::Explore(change_item **changeList)
 		}
 #endif
 
-		if ((fPortStatus[i].change & PORT_STATUS_CONNECTION)
+		bool freshConnection = (fPortStatus[i].change & PORT_STATUS_CONNECTION) != 0;
+
+		if (freshConnection
 				|| ((fPortStatus[i].status & PORT_STATUS_CONNECTION)
 					&& fChildren[i] == NULL)) {
 			// clear status change
@@ -335,12 +484,61 @@ Hub::Explore(change_item **changeList)
 					if (newDevice) {
 						newDevice->Changed(changeList, true);
 						fChildren[i] = newDevice;
+						fFailedAttempts[i] = 0;
+						fPowerCycleAttempts[i] = 0;
 						break;
 					} else {
 						// the device failed to setup correctly, disable the
 						// port so that the device doesn't get in the way of
 						// future addressing.
 						DisablePort(i);
+					}
+				}
+
+				if (kBoundedPortRetries && fChildren[i] == NULL
+						&& fFailedAttempts[i] < kMaxPortFailedAttempts) {
+					fFailedAttempts[i]++;
+					if (fFailedAttempts[i] >= kMaxPortFailedAttempts) {
+						if (fPowerCycleAttempts[i] < kMaxPortPowerCycleAttempts
+								&& PowerCyclePort(i) == B_OK) {
+							// A register-level reset couldn't get this port
+							// working after several tries; try an actual
+							// power-off/power-on cycle before giving up for
+							// good, since that's a meaningfully different
+							// (and stronger) recovery than another retry --
+							// closer to what physically unplugging and
+							// replugging the device would do. Give it a
+							// fresh set of retries under the new power
+							// cycle.
+							fPowerCycleAttempts[i]++;
+							fFailedAttempts[i] = 0;
+							TRACE_ALWAYS("port %" B_PRId32 ": repeated setup "
+								"failures, power-cycled the port (attempt "
+								"%u), retrying\n", i,
+								fPowerCycleAttempts[i]);
+						} else if (fRearmCount[i] < kMaxPortRearms) {
+							// Stop touching this port instead of re-arming
+							// on every physical bounce (which keeps
+							// costing boot time and disrupting other
+							// USB/PCI traffic for a recovery that hasn't
+							// worked) -- but leave the door open: a fresh
+							// connection event after the cooldown earns it
+							// another chance. See kPortIgnoreCooldown
+							// above for why (devices whose power arrives
+							// only after the first enumeration attempts
+							// have already failed and been given up on).
+							fIgnoredUntil[i] = system_time()
+								+ kPortIgnoreCooldown;
+							TRACE_ALWAYS("port %" B_PRId32 ": giving up "
+								"after repeated setup failures, ignoring "
+								"until a new connection event after "
+								"cooldown\n", i);
+						} else {
+							fIgnoredUntil[i] = B_INFINITE_TIMEOUT;
+							TRACE_ALWAYS("port %" B_PRId32 ": giving up after "
+								"repeated setup failures, ignoring for the "
+								"rest of this boot\n", i);
+						}
 					}
 				}
 			} else {
@@ -351,6 +549,15 @@ Hub::Explore(change_item **changeList)
 					fChildren[i]->Changed(changeList, false);
 					fChildren[i] = NULL;
 				}
+
+				// A clean disconnect (status no longer shows a connection at
+				// all, as opposed to a bouncing device that reconnects
+				// within the same Explore() cycle) is a much stronger
+				// signal than a bare status change bit, so it's safe to
+				// give a previously given-up port a fresh start here.
+				fFailedAttempts[i] = 0;
+				fPowerCycleAttempts[i] = 0;
+				fRearmCount[i] = 0;
 			}
 		}
 
