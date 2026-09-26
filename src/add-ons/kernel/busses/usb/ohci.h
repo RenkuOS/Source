@@ -165,6 +165,8 @@ static	int32						_FinishThread(void *data);
 										uint16 size);
 		void						_ReleaseIsochronousBandwidth(
 										uint16 startFrame, uint16 count);
+		void						_ReleaseIsochronousChainBandwidth(
+										ohci_isochronous_td *topDescriptor);
 
 		status_t					_GetStatusOfConditionCode(
 										uint8 conditionCode);
