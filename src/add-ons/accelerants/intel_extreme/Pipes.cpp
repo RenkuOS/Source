@@ -327,7 +327,9 @@ Pipe::ConfigureScalePos(display_mode* target)
 	// Set the plane size as well while we're at it (this is independant, we
 	// could have a larger plane and scroll through it).
 	if ((gInfo->shared_info->device_type.Generation() <= 4)
-		|| gInfo->shared_info->device_type.HasDDI()) {
+		|| gInfo->shared_info->device_type.HasDDI()
+		|| gInfo->shared_info->device_type.InGroup(INTEL_GROUP_VLV)
+		|| gInfo->shared_info->device_type.InGroup(INTEL_GROUP_CHV)) {
 		// This is "reserved" on G35 and GMA965, but needed on 945 (for which
 		// there is no public documentation), and I assume earlier devices as
 		// well.

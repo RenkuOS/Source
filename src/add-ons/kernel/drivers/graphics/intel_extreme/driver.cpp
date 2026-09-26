@@ -107,12 +107,12 @@ const struct supported_device {
 	{0x0a2e, INTEL_MODEL_HASM, "Haswell ULT GT3 Mobile"},
 	{0x0d26, INTEL_MODEL_HASM, "Haswell CRW GT3 Mobile"},
 
-#if 0
 	{0x0f30, INTEL_MODEL_VLVM, "ValleyView Mobile"},
 	{0x0f31, INTEL_MODEL_VLVM, "ValleyView Mobile"},
 	{0x0f32, INTEL_MODEL_VLVM, "ValleyView Mobile"},
 	{0x0f33, INTEL_MODEL_VLVM, "ValleyView Mobile"},
 
+#if 0
 	{0x22b1, INTEL_MODEL_CHVM, "Braswell GT1"},
 #endif
 

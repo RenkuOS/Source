@@ -118,13 +118,13 @@ const struct supported_device {
 	{0x0a04, 0x0a2e, INTEL_MODEL_HASM, "Haswell ULT GT3 Mobile"},
 	{0x0d04, 0x0d26, INTEL_MODEL_HASM, "Haswell CRW GT3 Mobile"},
 
-#if 0
 	// XXX: 0x0f00 only confirmed on 0x0f30, 0x0f31
 	{0x0f00, 0x0f30, INTEL_MODEL_VLVM, "ValleyView Mobile"},
 	{0x0f00, 0x0f31, INTEL_MODEL_VLVM, "ValleyView Mobile"},
 	{0x0f00, 0x0f32, INTEL_MODEL_VLVM, "ValleyView Mobile"},
 	{0x0f00, 0x0f33, INTEL_MODEL_VLVM, "ValleyView Mobile"},
 
+#if 0
 	{0x2280, 0x22b1, INTEL_MODEL_CHVM, "Braswell GT1"},
 #endif
 
@@ -315,6 +315,18 @@ gtt_memory_config(intel_info &info)
 	if (info.type->Generation() >= 6)
 		controlRegister = SNB_GRAPHICS_MEMORY_CONTROL;
 
+	// On desktop-style chipsets (SNB/IVB/HAS/...) GGC lives on the host
+	// bridge. On ValleyView/CherryView's SoC-style integration, the host
+	// bridge is a minimal "SoC Transaction Register" function that does
+	// NOT carry this register -- it reads back as 0 there. GGC is instead
+	// exposed on the display (GPU) function's own PCI config space.
+	// Confirmed empirically: bridge cfg[0x50] = 0x00000000, but
+	// display cfg[0x50] = 0x00000211 on real ValleyView hardware.
+	if (info.type->InGroup(INTEL_GROUP_VLV)
+			|| info.type->InGroup(INTEL_GROUP_CHV)) {
+		uint16 value = get_pci_config(info.display, controlRegister, 2);
+		return value;
+		}
 	return get_pci_config(info.bridge, controlRegister, 2);
 }
 

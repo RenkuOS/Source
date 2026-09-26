@@ -698,6 +698,18 @@ intel_extreme_init(intel_info &info)
 	// Everything in the display PRM gets +0x180000
 	if (info.device_type.InGroup(INTEL_GROUP_VLV) || info.device_type.InGroup(INTEL_GROUP_CHV)) {
 		// "I nearly got violent with the hw guys when they told me..."
+		//
+		// NOTE: this must cover the NORTH blocks too, not just SOUTH. The
+		// whole display engine is relocated behind VLV_DISPLAY_BASE on
+		// ValleyView/CherryView -- pipe, plane and primary-surface
+		// registers included. Leaving the north blocks at their MCH_*
+		// desktop bases means every pipe/plane write (DSPACNTR, DSPASTRIDE,
+		// PIPE_SIZE, IMAGE_SIZE, ...) targets unmapped MMIO: writes are
+		// silently dropped and reads return 0, so the display keeps running
+		// on whatever the BIOS/GOP left configured.
+		blocks[REGISTER_BLOCK(REGS_NORTH_SHARED)] += VLV_DISPLAY_BASE;
+		blocks[REGISTER_BLOCK(REGS_NORTH_PIPE_AND_PORT)] += VLV_DISPLAY_BASE;
+		blocks[REGISTER_BLOCK(REGS_NORTH_PLANE_CONTROL)] += VLV_DISPLAY_BASE;
 		blocks[REGISTER_BLOCK(REGS_SOUTH_SHARED)] += VLV_DISPLAY_BASE;
 		blocks[REGISTER_BLOCK(REGS_SOUTH_TRANSCODER_PORT)] += VLV_DISPLAY_BASE;
 	}

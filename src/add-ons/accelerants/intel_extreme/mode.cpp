@@ -140,7 +140,9 @@ set_frame_buffer_registers(uint32 offset)
 		|| sharedInfo.device_type.InFamily(INTEL_FAMILY_SER5)
 		|| sharedInfo.device_type.InFamily(INTEL_FAMILY_LAKE)
 		|| sharedInfo.device_type.InFamily(INTEL_FAMILY_SOC0)) {
-		if (sharedInfo.device_type.InGroup(INTEL_GROUP_HAS)) {
+		if (sharedInfo.device_type.InGroup(INTEL_GROUP_HAS)
+			|| sharedInfo.device_type.InGroup(INTEL_GROUP_VLV)
+			|| sharedInfo.device_type.InGroup(INTEL_GROUP_CHV)) {
 //			|| sharedInfo.device_type.InGroup(INTEL_GROUP_SKY)) {
 			write32(INTEL_DISPLAY_A_OFFSET_HAS + offset,
 				((uint32)mode.v_display_start << 16)
