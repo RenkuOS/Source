@@ -5,8 +5,15 @@
 #include <String.h>
 #include <Font.h>
 #include <GraphicsDefs.h>
+#include <ObjectList.h>
 
 #include <md4c.h>
+
+// Struttura per tracciare le regioni dei blocchi di codice nel testo
+struct CodeBlockRegion {
+	int32	startPos;
+	int32	endPos;
+};
 
 class BMarkdownView : public BTextView {
 public:
@@ -16,6 +23,9 @@ public:
 								const BFont* font, const rgb_color* color,
 								uint32 flags = B_WILL_DRAW | B_NAVIGABLE);
 	virtual					~BMarkdownView();
+
+	// Override di BView per il rendering dello sfondo custom dei blocchi
+	virtual void			Draw(BRect updateRect) override;
 
 	// Supporto per BMessage/Archiving (se usato da LayoutBuilder / InterfaceKit)
 	static	BArchivable*	Instantiate(BMessage* archive);
@@ -50,6 +60,7 @@ private:
 		bool				isCode;
 		bool				isBlockCode;
 		uint32				headingLevel;
+		int32				currentBlockStart;
 		
 		RenderState()
 			: view(NULL),
@@ -59,7 +70,8 @@ private:
 			  isItalic(false),
 			  isCode(false),
 			  isBlockCode(false),
-			  headingLevel(0)
+			  headingLevel(0),
+			  currentBlockStart(-1)
 		{}
 	};
 
@@ -74,6 +86,7 @@ private:
 	static int				_TextCb(MD_TEXTTYPE type, const MD_CHAR* text, MD_SIZE size, void* userdata);
 
 	BString					fRawMarkdown;
+	BObjectList<CodeBlockRegion, true> fCodeBlocks;
 };
 
 #endif // MARKDOWN_VIEW_H
