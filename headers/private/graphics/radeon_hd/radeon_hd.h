@@ -291,7 +291,6 @@ struct radeon_free_graphics_memory {
 #define R6XX_CONFIG_APER_SIZE			0x5430	// r600>
 #define OLD_CONFIG_APER_SIZE			0x0108	// <r600
 #define CONFIG_MEMSIZE					0x5428	// r600>
-#define CONFIG_MEMSIZE_TAHITI			0x03de	// tahiti>
 
 
 #endif	/* RADEON_HD_H */
