@@ -1,12 +1,14 @@
 /*
  * Copyright (c) 2002, Thomas Kurschel
  * Copyright 2004-2016 Haiku, Inc. All rights reserved.
+ * Copyright 2026, Kevin Adams <kevinadams05@gmail.com>. All Rights Reserved.
  * Distributed under the terms of the MIT License.
  *
  * Authors:
  *		Thomas Kurschel
  *		Clemens Zeidler, <haiku@clemens-zeidler.de>
  *		Alexander von Gluck IV, kallisti5@unixzen.com
+ *		Kevin Adams <kevinadams05@gmail.com>
  */
 
 
@@ -687,6 +689,27 @@ get_next_radeon_hd(int32* _cookie, pci_info &info, uint32 &type)
 		for (uint32 i = 0; i < sizeof(kSupportedDevices)
 				/ sizeof(kSupportedDevices[0]); i++) {
 			if (info.device_id == kSupportedDevices[i].pciID) {
+				// DCN-class GPUs — Raven-family APUs and everything
+				// Navi and newer — replaced the AtomBIOS-driven DCE
+				// display engine with DCN, which programs registers
+				// directly and cannot be driven by this driver's
+				// AtomBIOS command-table backend at all. Refuse them
+				// with a clear diagnostic instead of binding and
+				// failing midway through init; with no driver bound,
+				// app_server falls back to the VESA/framebuffer
+				// driver, which works on these cards via the UEFI GOP.
+				// (Raven is listed as DCE 12 in kSupportedDevices, but
+				// its display engine is DCN 1.0.)
+				if (kSupportedDevices[i].chipsetID >= RADEON_RAVEN) {
+					ERROR("%s: %s (1002:%" B_PRIx32 ") has a DCN-class "
+						"display engine that radeon_hd cannot drive; "
+						"skipping device. The VESA/framebuffer driver "
+						"will take over.\n", __func__,
+						kSupportedDevices[i].deviceName,
+						kSupportedDevices[i].pciID);
+					break;
+						// out of the table walk; keep scanning the bus
+				}
 				type = i;
 				*_cookie = index + 1;
 				return B_OK;
@@ -695,6 +718,77 @@ get_next_radeon_hd(int32* _cookie, pci_info &info, uint32 &type)
 	}
 
 	return B_ENTRY_NOT_FOUND;
+}
+
+
+/*! Validate that the framebuffer and MMIO register BARs have been
+ *  assigned by the firmware / Haiku PCI bus manager. Haiku ticket #3
+ *  (open since 2005) means the bus manager does not allocate BARs that
+ *  the firmware left unprogrammed; on affected boards we get
+ *  base=0 / size=0 and any attempt to map those BARs later in
+ *  radeon_hd_init() fails in confusing ways (map_physical_memory(0, ...)
+ *  usually returns garbage or panics).
+ *
+ *  Returns B_OK if both BARs look usable, an error otherwise. Logs a
+ *  clear diagnostic with a pointer to Haiku #3 on failure so users can
+ *  find the upstream root cause.
+ */
+static status_t
+validate_bars(const pci_info& info, uint16 chipsetID)
+{
+	// Mirrors radeon_hd_pci_bar_mmio() in radeon_hd.cpp: Sea Islands
+	// (Bonaire) and newer moved the register window from BAR2 to BAR5.
+	const uint32 mmioBar = chipsetID < RADEON_BONAIRE ? 2 : 5;
+
+	phys_addr_t fbAddr = info.u.h0.base_registers[PCI_BAR_FB];
+	uint64 fbSize = info.u.h0.base_register_sizes[PCI_BAR_FB];
+	if ((info.u.h0.base_register_flags[PCI_BAR_FB] & PCI_address_type)
+			== PCI_address_type_64) {
+		fbAddr |= (uint64)info.u.h0.base_registers[PCI_BAR_FB + 1] << 32;
+		fbSize |= (uint64)info.u.h0.base_register_sizes[PCI_BAR_FB + 1] << 32;
+	}
+
+	phys_addr_t mmioAddr = info.u.h0.base_registers[mmioBar];
+	uint64 mmioSize = info.u.h0.base_register_sizes[mmioBar];
+	if (mmioBar < 5
+		&& (info.u.h0.base_register_flags[mmioBar] & PCI_address_type)
+			== PCI_address_type_64) {
+		mmioAddr |= (uint64)info.u.h0.base_registers[mmioBar + 1] << 32;
+		mmioSize |= (uint64)info.u.h0.base_register_sizes[mmioBar + 1] << 32;
+	}
+
+	if (fbAddr == 0 || fbSize == 0) {
+		ERROR("%s: PCI BAR%d (framebuffer) unassigned at "
+			"[bus %u device %u function %u]: base=0x%" B_PRIxPHYSADDR
+			" size=%" B_PRIu64 ". This is Haiku ticket #3 "
+			"(PCI bus_manager does no memory resource assignment). "
+			"Refusing to bind; VESA fallback will take over.\n", __func__,
+			PCI_BAR_FB, info.bus, info.device, info.function, fbAddr, fbSize);
+		return B_DEV_RESOURCE_CONFLICT;
+	}
+	if (mmioAddr == 0 || mmioSize == 0) {
+		ERROR("%s: PCI BAR%" B_PRIu32 " (MMIO regs) unassigned at "
+			"[bus %u device %u function %u]: base=0x%" B_PRIxPHYSADDR
+			" size=%" B_PRIu64 ". This is Haiku ticket #3 "
+			"(PCI bus_manager does no memory resource assignment). "
+			"Refusing to bind; VESA fallback will take over.\n", __func__,
+			mmioBar, info.bus, info.device, info.function, mmioAddr, mmioSize);
+		return B_DEV_RESOURCE_CONFLICT;
+	}
+
+	// Sanity: BARs below 1 MB physical are almost certainly system DRAM,
+	// not a real device window. Catches BIOS-left-stale-default cases
+	// where the value is e.g. 0x10 (default reset value of some chipsets).
+	if (fbAddr < 0x100000 || mmioAddr < 0x100000) {
+		ERROR("%s: PCI BARs at suspiciously low addresses "
+			"[bus %u device %u function %u]: framebuffer=0x%"
+			B_PRIxPHYSADDR " MMIO=0x%" B_PRIxPHYSADDR
+			". Refusing to bind.\n", __func__,
+			info.bus, info.device, info.function, fbAddr, mmioAddr);
+		return B_DEV_RESOURCE_CONFLICT;
+	}
+
+	return B_OK;
 }
 
 
@@ -756,6 +850,13 @@ init_driver(void)
 			break;
 		}
 
+		// Refuse devices whose BARs were never assigned (Haiku #3);
+		// mapping them in radeon_hd_init() would fail in confusing ways.
+		if (validate_bars(*info, kSupportedDevices[type].chipsetID) != B_OK) {
+			free(info);
+			continue;
+		}
+
 		// create device names & allocate device info structure
 
 		char name[64];
@@ -764,12 +865,16 @@ init_driver(void)
 			info->function);
 
 		gDeviceNames[found] = strdup(name);
-		if (gDeviceNames[found] == NULL)
+		if (gDeviceNames[found] == NULL) {
+			free(info);
 			break;
+		}
 
 		gDeviceInfo[found] = (radeon_info*)malloc(sizeof(radeon_info));
 		if (gDeviceInfo[found] == NULL) {
 			free(gDeviceNames[found]);
+			gDeviceNames[found] = NULL;
+			free(info);
 			break;
 		}
 

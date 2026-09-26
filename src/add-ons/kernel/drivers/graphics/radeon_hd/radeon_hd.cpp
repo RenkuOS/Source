@@ -1,5 +1,6 @@
 /*
  * Copyright 2006-2011, Haiku, Inc. All Rights Reserved.
+ * Copyright 2026, Kevin Adams <kevinadams05@gmail.com>. All Rights Reserved.
  * Distributed under the terms of the MIT License.
  *
  * Authors:
@@ -7,6 +8,7 @@
  *		Clemens Zeidler, haiku@clemens-zeidler.de
  *		Fredrik Holmqvis, fredrik.holmqvist@gmail.com
  *		Alexander von Gluck, kallisti5@unixzen.com
+ *		Kevin Adams <kevinadams05@gmail.com>
  */
 
 
@@ -64,7 +66,29 @@ mapAtomBIOSACPI(radeon_info &info, uint32& romSize)
 		return status;
 	}
 
-	vbios = (GOP_VBIOS_CONTENT*)((char*)vfct + vfct->VBIOSImageOffset);
+	// The VFCT table comes straight from the firmware; validate every
+	// offset and length against the table's own size before
+	// dereferencing, so a malformed table can't send us reading out of
+	// bounds in kernel space. (Same checks Linux makes in
+	// radeon_acpi_vfct_bios().)
+	uint32 tableSize = vfct->SHeader.TableLength;
+	if (tableSize < sizeof(UEFI_ACPI_VFCT)) {
+		ERROR("%s: ACPI VFCT table too small (%" B_PRIu32 " bytes)\n",
+			__func__, tableSize);
+		put_module(B_ACPI_MODULE_NAME);
+		return B_BAD_DATA;
+	}
+
+	uint64 imageOffset = vfct->VBIOSImageOffset;
+	if (imageOffset + sizeof(VFCT_IMAGE_HEADER) > tableSize) {
+		ERROR("%s: ACPI VFCT image header outside table (offset %" B_PRIu64
+			", table %" B_PRIu32 " bytes)\n", __func__, imageOffset,
+			tableSize);
+		put_module(B_ACPI_MODULE_NAME);
+		return B_BAD_DATA;
+	}
+
+	vbios = (GOP_VBIOS_CONTENT*)((char*)vfct + imageOffset);
 	vhdr = &vbios->VbiosHeader;
 	TRACE("%s: ACPI VFCT contains a BIOS for: %" B_PRIx32 ":%" B_PRIx32 ":%"
 		B_PRId32 " %04x:%04x\n", __func__,
@@ -78,10 +102,35 @@ mapAtomBIOSACPI(radeon_info &info, uint32& romSize)
 		return B_ERROR;
 	}
 
+	uint32 imageLength = vhdr->ImageLength;
+	if (imageLength == 0
+		|| imageOffset + sizeof(VFCT_IMAGE_HEADER) + imageLength > tableSize) {
+		ERROR("%s: ACPI VFCT vbios image truncated (image %" B_PRIu32
+			" bytes at offset %" B_PRIu64 ", table %" B_PRIu32 " bytes)\n",
+			__func__, imageLength, imageOffset, tableSize);
+		put_module(B_ACPI_MODULE_NAME);
+		return B_BAD_DATA;
+	}
+
 	rom = vbios->VbiosContent;
-	romSize = vhdr->ImageLength;
-	// see if valid AtomBIOS rom
+	romSize = imageLength;
+
+	// see if valid AtomBIOS rom; the header-pointer read at 0x48 and the
+	// 4-byte signature read it points at must both stay inside the image
+	if (romSize < 0x4A) {
+		ERROR("%s: ACPI VFCT vbios image too small for AtomBIOS header "
+			"(%" B_PRIu32 " bytes)\n", __func__, romSize);
+		put_module(B_ACPI_MODULE_NAME);
+		return B_BAD_DATA;
+	}
 	uint16 romHeader = RADEON_BIOS16(rom, 0x48);
+	if ((uint32)romHeader + 8 > romSize) {
+		ERROR("%s: ACPI VFCT AtomBIOS header offset outside image "
+			"(0x%" B_PRIx16 ", image %" B_PRIu32 " bytes)\n", __func__,
+			romHeader, romSize);
+		put_module(B_ACPI_MODULE_NAME);
+		return B_BAD_DATA;
+	}
 	bool romValid = !memcmp(&rom[romHeader + 4], "ATOM", 4)
 		|| !memcmp(&rom[romHeader + 4], "MOTA", 4);
 
@@ -119,8 +168,11 @@ mapAtomBIOSACPI(radeon_info &info, uint32& romSize)
 		//set_area_protection(info.rom_area,
 		//	B_KERNEL_READ_AREA | B_CLONEABLE_AREA);
 		ERROR("%s: AtomBIOS verified and locked (%" B_PRIu32 ")\n", __func__, romSize);
-	} else
+	} else {
 		ERROR("%s: AtomBIOS memcpy failed!\n", __func__);
+		delete_area(info.rom_area);
+		info.rom_area = -1;
+	}
 
 	put_module(B_ACPI_MODULE_NAME);
 
@@ -215,6 +267,8 @@ mapAtomBIOS(radeon_info &info, phys_addr_t romBase, uint32 romSize,
 		romSize = radeon_get_rom_size(rom, romSize);
 		if (romSize == 0) {
 			TRACE("%s: rom size is zero\n", __func__);
+			delete_area(info.rom_area);
+			info.rom_area = -1;
 			delete_area(testArea);
 			return B_ERROR;
 		}
@@ -232,8 +286,11 @@ mapAtomBIOS(radeon_info &info, phys_addr_t romBase, uint32 romSize,
 		//set_area_protection(info.rom_area,
 		//	B_KERNEL_READ_AREA | B_CLONEABLE_AREA);
 		ERROR("%s: AtomBIOS verified and locked (%" B_PRIu32 ")\n", __func__, romSize);
-	} else
+	} else {
 		ERROR("%s: AtomBIOS memcpy failed!\n", __func__);
+		delete_area(info.rom_area);
+		info.rom_area = -1;
+	}
 
 	delete_area(testArea);
 	return romValid ? B_OK : B_ERROR;
@@ -683,7 +740,6 @@ radeon_hd_init(radeon_info &info)
 	}
 
 	memset((void*)info.shared_info, 0, sizeof(radeon_shared_info));
-	sharedCreator.Detach();
 
 	// *** Map Memory mapped IO
 	const uint32 pciBarMmio = radeon_hd_pci_bar_mmio(info.chipsetID);
@@ -704,7 +760,6 @@ radeon_hd_init(radeon_info &info)
 			__func__, info.id);
 		return info.registers_area;
 	}
-	mmioMapper.Detach();
 
 	// *** Populate frame buffer information
 	if (info.chipsetID >= RADEON_TAHITI) {
@@ -810,8 +865,6 @@ radeon_hd_init(radeon_info &info)
 	// Turn on write combining for the frame buffer area
 	vm_set_area_memory_type(info.framebuffer_area, fbAddr, B_WRITE_COMBINING_MEMORY);
 
-	frambufferMapper.Detach();
-
 	info.shared_info->frame_buffer_area = info.framebuffer_area;
 	info.shared_info->frame_buffer_phys = fbAddr;
 
@@ -903,6 +956,15 @@ radeon_hd_init(radeon_info &info)
 
 	TRACE("card(%" B_PRId32 "): GPU thermal status: %" B_PRId32 "C\n",
 		info.id, radeon_thermal_query(info) / 1000);
+
+	// Init succeeded — release the areas from their RAII keepers so they
+	// outlive this function (radeon_hd_uninit() deletes them). On any of
+	// the error returns above, the still-armed keepers delete whatever
+	// was mapped so far, instead of leaking it (the AtomBIOS rom area is
+	// cleaned up by mapAtomBIOS() itself on failure).
+	sharedCreator.Detach();
+	mmioMapper.Detach();
+	frambufferMapper.Detach();
 
 	return B_OK;
 }
