@@ -1329,12 +1329,60 @@ OHCI::_FinishIsochronousTransfer(transfer_data *transfer,
 	size_t actualLength = 0;
 	uint32 packet = 0;
 
-	if (transfer->canceled)
-		callbackStatus = B_CANCELED;
-	else {
-		// at first check if ALL ITDs are retired by HC
-		ohci_isochronous_td *descriptor
-			= (ohci_isochronous_td *)transfer->first_descriptor;
+	/*	Unlink BEFORE touching transfer->transfer.
+
+		This panics the machine under an ordinary shutdown with an isochronous
+		stream still live. The old code did all of
+		the descriptor processing FIRST and only unlinked the transfer from
+		fFirstTransfer afterwards -- despite the comment on that block saying
+		"remove the transfer from the list first so we are sure it doesn't get
+		canceled while we still process it". The general-TD path in
+		_FinishTransfers() really does unlink first (:1249-1265, before it
+		touches transfer->transfer at :1273); only the isochronous path had the
+		order inverted, which is why only this one crashed.
+
+		THE RACE. CancelQueuedTransfers() nulls the pointer before it raises the
+		flag, both under the OHCI lock:
+
+			:739  current->transfer = NULL;
+			:744  current->canceled = true;
+
+		while this function tested transfer->canceled and then dereferenced
+		transfer->transfer with NO lock held. So the finish thread could read
+		canceled == false, be preempted, and dereference a pointer cancellation
+		had since nulled. Observed exactly: a live transfer_data with
+		transfer == NULL and canceled == true, faulting on
+		transfer->transfer->IsochronousData().
+
+		WHY UNLINKING IS THE FIX, and why it is sufficient. Cancellation reaches
+		a transfer only by walking fFirstTransfer (:698-747). Once we have taken
+		it off that list under the lock, cancellation cannot find it, cannot null
+		its Transfer, and cannot delete it (:760) -- so everything after this
+		point owns the transfer exclusively and needs no further synchronisation.
+
+		Reading `canceled` under the SAME lock acquisition is the other half.
+		Cancel performs both stores while holding the lock, so any lock holder
+		sees a consistent pair: either (transfer != NULL, canceled == false) or
+		(transfer == NULL, canceled == true). Never the torn state that crashed.
+
+		⚠️ Reordering cancel's two stores, or adding a NULL check here, would
+		only narrow the window -- both fields are read unlocked and cancel goes
+		on to delete the Transfer, so even a snapshot can be freed underneath.
+		Narrowing is not fixing.
+	*/
+	bool canceled = transfer->canceled;
+
+	// Declared out here so the retirement walk below decides whether the
+	// processing loop runs at all: it leaves this at first_descriptor when it
+	// found last_descriptor, and NULL when the chain ran out without one. Stock
+	// relied on the same variable carrying that meaning across, and a malformed
+	// chain must still be skipped rather than walked.
+	ohci_isochronous_td *descriptor = NULL;
+
+	if (!canceled) {
+		// at first check if ALL ITDs are retired by HC. Done before unlinking:
+		// a transfer that is not finished has to stay on the list.
+		descriptor = (ohci_isochronous_td *)transfer->first_descriptor;
 		while (descriptor) {
 			if (OHCI_TD_GET_CONDITION_CODE(descriptor->flags)
 				== OHCI_TD_CONDITION_NOT_ACCESSED) {
@@ -1352,7 +1400,67 @@ OHCI::_FinishIsochronousTransfer(transfer_data *transfer,
 			descriptor
 				= (ohci_isochronous_td *)descriptor->next_done_descriptor;
 		}
+	}
 
+	/*	UNLINK UNCONDITIONALLY, CANCELED INCLUDED.
+
+		This block used to sit INSIDE the `if (!canceled)` above, which f859bbf
+		introduced while moving it ahead of the transfer->transfer dereferences.
+		That move was right; putting it inside the branch was not.
+
+		The caller frees the transfer whatever we return true for:
+
+			:1157  if (endpoint->flags & OHCI_ENDPOINT_ISOCHRONOUS_FORMAT) {
+			:1159      if (_FinishIsochronousTransfer(transfer, &lastTransfer)) {
+			:1160          delete transfer->transfer;
+			:1161          delete transfer;
+
+		and it does NOT unlink -- that is this function's job. So a CANCELED
+		transfer had its descriptor chain freed (:1603, unconditional) and its
+		transfer_data deleted, while fFirstTransfer / the predecessor's link
+		still pointed at it. The next _FinishTransfers() pass then walked freed
+		memory and freed the same ITD chain a second time, which is what
+		produced the run of
+
+			PMA: address was not allocated!
+
+		during shutdown with an isochronous stream active (16 of them on
+		the unlink change above). That message is the benign half: the guard in
+		PhysicalMemoryAllocator::Deallocate refuses the second free. The
+		use-after-free of the transfer_data itself is not guarded by anything.
+
+		Stock is correct here and always was -- its unlink is unconditional
+		(compare ~/repos/haiku ohci.cpp, where `if (transfer->canceled)` only
+		selects the callback status and the Lock() block sits outside it). This
+		restores that, keeping f859bbf's ordering: the retirement walk still
+		runs first and can still `return false` to leave an unfinished transfer
+		on the list, and fProcessingPipe stays guarded because it is the one
+		thing here that dereferences transfer->transfer -- which the cancel path
+		has already NULLed.
+	*/
+	if (Lock()) {
+		if (*_lastTransfer)
+			(*_lastTransfer)->link = transfer->link;
+
+		if (transfer == fFirstTransfer)
+			fFirstTransfer = transfer->link;
+		if (transfer == fLastTransfer)
+			fLastTransfer = *_lastTransfer;
+
+		canceled = transfer->canceled;
+
+		// store the currently processing pipe here so we can wait
+		// in cancel if we are processing something on the target pipe
+		if (!canceled)
+			fProcessingPipe = transfer->transfer->TransferPipe();
+
+		transfer->link = NULL;
+		Unlock();
+	}
+
+	if (canceled)
+		callbackStatus = B_CANCELED;
+	else {
 		while (descriptor) {
 			uint32 status = OHCI_TD_GET_CONDITION_CODE(descriptor->flags);
 			if (status != OHCI_TD_CONDITION_NO_ERROR) {
@@ -1378,10 +1486,40 @@ OHCI::_FinishIsochronousTransfer(transfer_data *transfer,
 				uint8 code = OHCI_ITD_GET_BUFFER_CONDITION_CODE(offset);
 				packet_descriptor->status = _GetStatusOfConditionCode(code);
 
-				// not touched by HC - sheduled too late to be processed
-				// in the requested frame - so we ignore it too
-				if (packet_descriptor->status == B_DEV_TOO_LATE)
+				/*	Recognise BOTH NotAccessed encodings.
+
+					OHCI 1.0a 4.3.2.3.5.3 defines both 1110b and 1111b as
+					NotAccessed in a packet status word, but
+					_GetStatusOfConditionCode() maps 0x0F to B_DEV_PENDING --
+					correct for a general TD, where NotAccessed means "still
+					active" -- and only 0x0E to B_DEV_TOO_LATE. Stock skipped
+					B_DEV_TOO_LATE alone, so a NotAccessed frame reading 0x0F
+					fell through to the length calculation below and had its
+					OFFSET bits consumed as a transferred byte count.
+
+					Which of the two an untouched frame carries is decided by
+					bit 12 of the offset word -- the buffer page selector, which
+					OHCI_ITD_MK_OFFS() ORs into the same nibble the condition
+					code occupies. So a frame starting past the ITD's first page
+					reads 0x0F, and one below it reads 0x0E.
+
+					Not reachable on the DDJ-SR -- its largest ITD is 4224 bytes
+					with offsets up to 3696, so bit 12 is never set -- but a
+					full-speed endpoint with packets near the 1023-byte maximum
+					crosses 4096 inside a single 8-frame ITD and does hit it.
+
+					actual_length is zeroed here too. Stock left the previous
+					transfer's value in place on this skip path, and the
+					descriptor array is reused every buffer, so a stale count
+					could be read back as real data for a frame that never
+					happened.
+				*/
+				if (packet_descriptor->status == B_DEV_TOO_LATE
+					|| packet_descriptor->status == B_DEV_PENDING) {
+					packet_descriptor->status = B_DEV_TOO_LATE;
+					packet_descriptor->actual_length = 0;
 					continue;
+				}
 
 				size_t len = OHCI_ITD_GET_BUFFER_LENGTH(offset);
 				if (!transfer->incoming)
@@ -1392,6 +1530,10 @@ OHCI::_FinishIsochronousTransfer(transfer_data *transfer,
 			}
 
 			uint16 frame = OHCI_ITD_GET_STARTING_FRAME(descriptor->flags);
+			// This is the hot path -- it runs on every completed ITD of
+			// a running stream, which is why the stock reset-to-MAX kept the
+			// accounting permanently flatlined rather than only leaking at
+			// teardown.
 			_ReleaseIsochronousBandwidth(frame,
 				OHCI_ITD_GET_FRAME_COUNT(descriptor->flags));
 
@@ -1405,33 +1547,65 @@ OHCI::_FinishIsochronousTransfer(transfer_data *transfer,
 		}
 	}
 
-	// remove the transfer from the list first so we are sure
-	// it doesn't get canceled while we still process it
-	if (Lock()) {
-		if (*_lastTransfer)
-			(*_lastTransfer)->link = transfer->link;
+	// (The unlink that used to sit here has moved ABOVE, before anything
+	// dereferences transfer->transfer -- see the race note at the top of this
+	// function. Doing it here was the bug.)
 
-		if (transfer == fFirstTransfer)
-			fFirstTransfer = transfer->link;
-		if (transfer == fLastTransfer)
-			fLastTransfer = *_lastTransfer;
+	/*	Break the chain through the RIGHT type.
 
-		// store the currently processing pipe here so we can wait
-		// in cancel if we are processing something on the target pipe
-		if (!transfer->canceled)
-			fProcessingPipe = transfer->transfer->TransferPipe();
+		STOCK BUG: transfer_data::last_descriptor is declared ohci_general_td*,
+		but the isochronous path stores an ohci_isochronous_td* in it
+		(_AddPendingIsochronousTransfer casts it in). Stock then wrote
 
-		transfer->link = NULL;
-		Unlock();
-	}
+			transfer->last_descriptor->next_logical_descriptor = NULL;
 
-	// break the descriptor chain on the last descriptor
-	transfer->last_descriptor->next_logical_descriptor = NULL;
+		through that wrong type. The two structures do not share a layout --
+		the ITD carries a 16-byte offset[8] PSW array the general TD has no
+		equivalent for -- so the field this lands on is not the one intended.
+		Measured with offsetof() on x86_64:
+
+			ohci_general_td::next_logical_descriptor  @ 40
+			ohci_isochronous_td::buffer_size          @ 40   <-- collision
+			ohci_isochronous_td::next_logical_descriptor @ 56
+
+		So every completing isochronous transfer silently zeroed its LAST
+		descriptor's buffer_size. _FreeIsochronousDescriptor() then called
+		FreeChunk(buffer_logical, ..., 0), and PhysicalMemoryAllocator::
+		Deallocate() rejects a zero size before touching its bitmaps -- the
+		block is never returned and the buddy tree keeps it marked forever.
+
+		WHY IT LOOKED LIKE A CONTROLLER BUG. It leaks exactly one buffer per
+		transfer, the trailing ITD's, while the first ITD's buffer travels to
+		the endpoint's old tail object and is freed correctly. Measured over
+		one 24 s run of the DDJ-SR at 44.1 kHz:
+
+			PMA[ 7] block 1024  alloc 2370  freed    0   <- 2nd ITD (capture)
+			PMA[ 8] block 2048  alloc 2371  freed    0   <- 2nd ITD (playback)
+			PMA[ 9] block 4096  alloc 2370  freed 2368   <- 1st ITD, fine
+			PMA[10] block 8192  alloc 2371  freed 2369   <- 1st ITD, fine
+			PMA rejected frees: zero-size 4737, bad-index 0,
+			                    not-allocated 0, no-address 0
+
+		4737 rejections + 4737 successes = 9474, exactly the number of frees
+		OHCI issued. That fills the 8 MB USB pool in ~24 s, after which no
+		4224-byte ITD buffer can be allocated, the queue fails, and every
+		later transfer time-overruns (ITD condition 0x8, len 0) -- which is
+		what reached the ear as "clean for 25 seconds, then dropouts".
+
+		Nothing but isochronous is affected: the general-TD path stores a real
+		ohci_general_td* and this line was always correct for it. But the pool
+		is shared by every host controller, so the exhaustion is not confined
+		to OHCI once it starts.
+	*/
+	((ohci_isochronous_td *)transfer->last_descriptor)
+		->next_logical_descriptor = NULL;
 	TRACE("iso.transfer %p done with status 0x%08" B_PRIx32 " len:%ld\n",
 		transfer, callbackStatus, actualLength);
 
-	// if canceled the callback has already been called
-	if (!transfer->canceled) {
+	// If canceled the callback has already been called, and transfer->transfer
+	// belongs to the cancel path -- use the snapshot taken under the lock, not
+	// a fresh unlocked read of transfer->canceled.
+	if (!canceled) {
 		if (callbackStatus == B_OK && actualLength > 0) {
 			if (transfer->data_descriptor && transfer->incoming) {
 				// data to read out
@@ -2140,8 +2314,53 @@ OHCI::_FreeIsochronousDescriptor(ohci_isochronous_td *descriptor)
 			descriptor->buffer_page_byte_0, descriptor->buffer_size);
 	}
 
+	/*	Free the ITD as the size it was ALLOCATED at.
+
+		_CreateIsochronousDescriptor() allocates
+		sizeof(ohci_isochronous_td), but stock freed sizeof(ohci_general_td)
+		here -- on x86_64, 80 bytes versus 48. The
+		USB stack's allocator is a buddy allocator whose bucket is chosen by
+		size -- Stack.cpp builds it as PhysicalMemoryAllocator("USB Stack
+		Allocator", 8, B_PAGE_SIZE * 32, 64), so buckets are powers of two from
+		8 -- which puts the allocation in the 128-byte array and the free in
+		the 64-byte array.
+
+		The free is not merely lost. Allocate() marks every sub-block of the
+		128-byte slot as used ("fill upwards to the smallest block"), so the
+		64-byte entry the free lands on reads as allocated and passes
+		Deallocate()'s "address was not allocated!" guard. The result per ITD
+		is one 128-byte slot leaked AND one wrongly cleared 64-byte slot, plus
+		its parent counters decremented against a block that is still live.
+
+		WHY IT SURFACES LATE. This costs a couple of descriptors per transfer,
+		so it needs a stream that actually runs to bite. Before the sizing fix
+		in _CreateIsochronousDescriptorChain() OHCI audio died within a second
+		or two and never sustained the allocation rate. With that fixed a
+		DDJ-SR played cleanly for about 26 s -- roughly 10,000 ITDs across the
+		playback and capture streams -- and then the corrupted tree could no
+		longer satisfy a ~4 KB ITD buffer:
+
+			usb error ohci 5: failed to allocate space for iso.buffer
+			usb error ohci 5: failed to allocate ITD
+			usb_audio output queue_isochronous buf:1 ep:0x62 failed: 0xffffffff
+
+		and every transfer after that point time-overran (ITD condition 0x8,
+		len 0): exactly one allocation failure, then 42 ITD errors.
+
+		The same file already frees this object at the right size on
+		_CreateIsochronousDescriptor()'s own error path, which is what makes
+		this a slip rather than a deliberate asymmetry.
+
+		(buffer_page_byte_0 above is the PAGE-MASKED address, not what
+		AllocateChunk() returned -- _CreateIsochronousDescriptorChain() clears
+		its low 12 bits to build the ITD's page pointer. Harmless only because
+		Deallocate() derives the slot from the logical address whenever one is
+		given, and it always is here. Left alone deliberately: correcting it
+		means storing the unmasked address, which grows the descriptor for no
+		behavioural gain.)
+	*/
 	fStack->FreeChunk((void *)descriptor, descriptor->physical_address,
-		sizeof(ohci_general_td));
+		sizeof(ohci_isochronous_td));
 }
 
 
@@ -2160,13 +2379,59 @@ OHCI::_CreateIsochronousDescriptorChain(ohci_isochronous_td **_firstDescriptor,
 		return B_BAD_VALUE;
 	}
 
-	size_t packetSize = dataLength / packet_count;
-	if (dataLength % packet_count != 0)
-		packetSize++;
+	/*	Honour the caller's PER-PACKET lengths.
 
-	if (packetSize > pipe->MaxPacketSize()) {
-		TRACE_ERROR("isochronous packetSize %ld is bigger"
-			" than pipe MaxPacketSize %ld.", packetSize, pipe->MaxPacketSize());
+		STOCK BUG: stock computed one uniform packet size here,
+
+			packetSize = dataLength / packet_count;   // rounded up
+
+		and used it as the stride for every frame's offset. It never read
+		isochronousData->packet_descriptors[] on submission -- while
+		_FinishIsochronousTransfer() DOES read request_length from those same
+		descriptors to work out how much actually moved. So the submission path
+		and the completion path disagreed about what each packet was.
+
+		WHY IT DESTROYS AUDIO. 44.1 kHz does not divide into 1 ms frames: a
+		stream needs a 44/45 sample cadence, which the caller expresses through
+		these per-packet lengths. Flattening that to one rounded-up size
+		produces a stride that is not a whole number of samples. Measured on a
+		Pioneer DDJ-SR (4 ch x 3 B = 12 B per audio frame, 44.1 kHz, its only
+		rate): a 10-packet transfer of 5292 bytes gave packetSize 530, which is
+		44.17 samples. Every USB frame then ends mid-sample, channel
+		interleaving walks forward, and the result is continuous digital
+		distortion. The 8-byte overshoot (10 x 530 vs 5292) is what the
+		completion path reports as ITD condition 0x8, DATA_OVERRUN.
+
+		Observed on that device: severe distortion with 22-42 occurrences of
+		'ITD error: 0x00000008' per track over OHCI, while the same device on
+		UHCI and on xHCI played clean -- OHCI was the only one of the three
+		that could not express the cadence.
+
+		THE FIX. An OHCI ITD already supports variable per-frame lengths -- a
+		frame's length is the gap between consecutive offsets -- so this needs
+		no restructuring into one ITD per frame the way UHCI did. The offsets
+		just have to come from a running sum of request_length instead of a
+		fixed stride, and each ITD's buffer has to be sized from the frames it
+		actually carries.
+	*/
+	if (isochronousData->packet_descriptors == NULL) {
+		TRACE_ERROR("isochronous transfer has no packet descriptors.\n");
+		return B_BAD_VALUE;
+	}
+
+	// The MaxPacketSize check has to be against the LARGEST packet, not an
+	// average -- with a cadence the large frames are the ones that can overrun.
+	size_t maxRequested = 0;
+	for (size_t i = 0; i < packet_count; i++) {
+		size_t len = isochronousData->packet_descriptors[i].request_length;
+		if (len > maxRequested)
+			maxRequested = len;
+	}
+
+	if (maxRequested > pipe->MaxPacketSize()) {
+		TRACE_ERROR("isochronous packet of %ld bytes is bigger"
+			" than pipe MaxPacketSize %ld.", maxRequested,
+			pipe->MaxPacketSize());
 		return B_BAD_VALUE;
 	}
 
@@ -2193,6 +2458,10 @@ OHCI::_CreateIsochronousDescriptorChain(ohci_isochronous_td **_firstDescriptor,
 
 	uint16 packets = packet_count;
 	uint16 frameOffset = 0;
+	// How much of the fragment has been placed into ITD buffers so
+	// far, so a caller whose descriptors disagree with dataLength gets clamped
+	// rather than overrunning the buffers the copy path fills.
+	size_t bytesPlaced = 0;
 	while (packets > 0) {
 		// look for up to 8 continous frames with available bandwidth
 		uint16 frameCount = 0;
@@ -2205,27 +2474,56 @@ OHCI::_CreateIsochronousDescriptorChain(ohci_isochronous_td **_firstDescriptor,
 			// starting frame has no bandwidth for our transaction - try next
 			if (++frameOffset >= 0xFFFF) {
 				TRACE_ERROR("failed to allocate bandwidth\n");
+				// Hand back what earlier iterations reserved. Nothing
+				// was taken this iteration (frameCount is 0), but every
+				// descriptor already in the chain still holds its frames.
+				_ReleaseIsochronousChainBandwidth(firstDescriptor);
 				_FreeIsochronousDescriptorChain(firstDescriptor);
 				return B_NO_MEMORY;
 			}
 			continue;
 		}
 
-		ohci_isochronous_td *descriptor = _CreateIsochronousDescriptor(
-				packetSize * frameCount);
+		// Size this ITD from the frames it actually carries, not from
+		// a uniform stride. packetIndex is where these frames sit in the
+		// caller's packet_descriptors[].
+		size_t packetIndex = packet_count - packets;
+		size_t itdLength = 0;
+		for (uint16 i = 0; i < frameCount; i++)
+			itdLength += isochronousData->packet_descriptors[packetIndex + i]
+				.request_length;
+
+		// Never place more than the fragment actually holds. If the caller's
+		// descriptors and dataLength ever disagree, clamp rather than run off
+		// the end of the buffer the copy path fills.
+		if (bytesPlaced + itdLength > dataLength)
+			itdLength = dataLength - bytesPlaced;
+
+		ohci_isochronous_td *descriptor
+			= _CreateIsochronousDescriptor(itdLength);
 
 		if (!descriptor) {
 			TRACE_ERROR("failed to allocate ITD\n");
+			// This iteration's reservation is released here...
 			_ReleaseIsochronousBandwidth(currentFrame + frameOffset, frameCount);
+			// ...and the chain built by earlier iterations is released too.
+			_ReleaseIsochronousChainBandwidth(firstDescriptor);
 			_FreeIsochronousDescriptorChain(firstDescriptor);
 			return B_NO_MEMORY;
 		}
 
 		uint16 pageOffset = descriptor->buffer_page_byte_0 & 0xfff;
 		descriptor->buffer_page_byte_0 &= ~0xfff;
+		// Running sum, not a fixed stride. Frame i starts where frame
+		// i-1 ended, so each frame gets exactly its own request_length. This is
+		// what carries the 44/45 sample cadence that a uniform stride cannot
+		// express -- see the comment on the MaxPacketSize check above.
+		size_t frameOffsetBytes = 0;
 		for (uint16 i = 0; i < frameCount; i++) {
 			descriptor->offset[OHCI_ITD_OFFSET_IDX(i)]
-				= OHCI_ITD_MK_OFFS(pageOffset + packetSize * i);
+				= OHCI_ITD_MK_OFFS(pageOffset + frameOffsetBytes);
+			frameOffsetBytes += isochronousData->packet_descriptors[
+				packetIndex + i].request_length;
 		}
 
 		descriptor->flags = OHCI_ITD_SET_FRAME_COUNT(frameCount)
@@ -2233,10 +2531,19 @@ OHCI::_CreateIsochronousDescriptorChain(ohci_isochronous_td **_firstDescriptor,
 				| OHCI_ITD_SET_DELAY_INTERRUPT(OHCI_ITD_INTERRUPT_NONE)
 				| OHCI_ITD_SET_STARTING_FRAME(currentFrame + frameOffset);
 
-		// the last packet may be shorter than other ones in this transfer
-		if (packets <= OHCI_ITD_NOFFSET)
-			descriptor->last_byte_address
-				+= dataLength - packetSize * (packet_count);
+		// The previous "last packet may be shorter" adjustment is gone.
+		//
+		//     if (packets <= OHCI_ITD_NOFFSET)
+		//         descriptor->last_byte_address
+		//             += dataLength - packetSize * (packet_count);
+		//
+		// It existed only to patch up the uniform-stride assumption after the
+		// fact -- and it patched the LAST descriptor by the error accumulated
+		// across the WHOLE transfer, which is not where that error lived.
+		// _CreateIsochronousDescriptor() already sets last_byte_address from
+		// the buffer size, and that size is now exactly the sum of this ITD's
+		// own request_lengths, so it is correct with nothing to correct.
+		bytesPlaced += itdLength;
 
 		// link to previous
 		if (lastDescriptor)
@@ -2250,14 +2557,85 @@ OHCI::_CreateIsochronousDescriptorChain(ohci_isochronous_td **_firstDescriptor,
 
 		frameOffset += frameCount;
 
+		/*	Report the frame this transfer STARTS in, not the
+			frame after it ends.
+
+			STOCK BUG: stock wrote back `currentFrame + frameOffset`. By this
+			point frameOffset has already been advanced past every frame the
+			transfer occupies, so the value names the first frame AFTER the
+			transfer.
+
+			uhci.cpp:1529 (`*starting_frame_number = currentFrame`) and
+			xhci.cpp:1231 (`*starting_frame_number = frame`) both report the
+			START frame, and usb_audio is written against that contract: after
+			a successful full-speed queue it chains the next buffer with
+
+				fNextStartFrame = fStartingFrame + fPacketsPerBuffer;
+
+			(Stream.cpp:1485). Given OHCI's end-frame that addition counts the
+			transfer's length twice, so every buffer is scheduled packet_count
+			frames later than it should be. At 44.1 kHz (10 packets/buffer)
+			that is a 10 ms hole in every 20 ms -- continuous glitching from
+			the first buffer -- and the requested frame number gains 10 frames
+			per 10 ms buffer against the controller's own counter. Once that
+			lead passes half of the 16-bit frame space the ITDs read as
+			scheduled in the PAST, and the HC retires them unprocessed: ITD
+			condition code 0x8 with every frame left NotAccessed, which
+			reaches usb_audio as B_DEV_DATA_OVERRUN with len 0.
+
+			This is why OHCI failed identically before and after the
+			packet-sizing fix above, and why UHCI and xHCI are clean with the
+			same device, same usb_audio, same format.
+
+			firstDescriptor's own starting frame is by construction the frame
+			the transfer begins in -- including any frames the bandwidth
+			search had to skip past -- so read it back from there rather than
+			recomputing it.
+		*/
 		if (packets == 0 && isochronousData->starting_frame_number)
-			*isochronousData->starting_frame_number = currentFrame + frameOffset;
+			*isochronousData->starting_frame_number
+				= OHCI_ITD_GET_STARTING_FRAME(firstDescriptor->flags);
 	}
 
 	*_firstDescriptor = firstDescriptor;
 	*_lastDescriptor = lastDescriptor;
 
 	return B_OK;
+}
+
+
+/*!	Release the bandwidth held by a whole descriptor chain.
+
+	⚠️ THIS EXISTS BECAUSE FIXING _ReleaseIsochronousBandwidth() UNMASKED A LEAK.
+
+	Both error exits in _CreateIsochronousDescriptorChain() call
+	_FreeIsochronousDescriptorChain(), which frees memory and nothing else -- it
+	never touched bandwidth. So descriptors created on EARLIER iterations of the
+	build loop kept their reservations when a later iteration failed.
+
+	Under stock that was invisible: release reset whole frames to
+	MAX_AVAILABLE_BANDWIDTH, so a leak could not accumulate against accounting
+	that was already meaningless. Once release became exact, the leak became real
+	and permanent -- those frames would stay reduced with nothing left to return
+	them, and repeated failures would starve the bus.
+
+	Call this before _FreeIsochronousDescriptorChain() on an ERROR path only.
+	⚠️ NOT on the normal completion path: _FinishIsochronousTransfer() already
+	releases per descriptor as each ITD completes, and doing both would
+	double-release, which this warning exists to prevent rather than trusting
+	the reader to notice.
+*/
+void
+OHCI::_ReleaseIsochronousChainBandwidth(ohci_isochronous_td *topDescriptor)
+{
+	ohci_isochronous_td *current = topDescriptor;
+
+	while (current) {
+		_ReleaseIsochronousBandwidth(
+			OHCI_ITD_GET_STARTING_FRAME(current->flags),
+			OHCI_ITD_GET_FRAME_COUNT(current->flags));
+		current = (ohci_isochronous_td *)current->next_done_descriptor;
+	}
 }
 
 
