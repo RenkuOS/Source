@@ -261,6 +261,15 @@ __res_vinit(res_state statp, int preinit) {
 	statp->_u._ext.ext = malloc(sizeof(*statp->_u._ext.ext));
 	if (statp->_u._ext.ext != NULL) {
 	        memset(statp->_u._ext.ext, 0, sizeof(*statp->_u._ext.ext));
+		/*
+		 * memset leaves these two at 0, and 0 is a descriptor --
+		 * standard input, as a rule. res_ndestroy() closes them
+		 * unless they are -1, so they have to start at -1. The
+		 * branch further down that would set them is inside
+		 * #ifndef __HAIKU__, so on Haiku nothing ever does.
+		 */
+		statp->_u._ext.ext->kq = -1;
+		statp->_u._ext.ext->resfd = -1;
 		statp->_u._ext.ext->nsaddrs[0].sin = statp->nsaddr;
 		strcpy(statp->_u._ext.ext->nsuffix, "ip6.arpa");
 		strcpy(statp->_u._ext.ext->nsuffix2, "ip6.int");
