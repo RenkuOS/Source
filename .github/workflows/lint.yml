@@ -11,10 +11,15 @@ name: lint
 
 on:
   pull_request:
+    # labeled/unlabeled so that applying 'oversize-approved' re-evaluates the
+    # size gate without needing a new push.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 
 # A pull request from a fork must never see a secret or a writable token.
+# pull-requests: read is for looking up the current labels (see Pull request size).
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: lint-${{ github.event.pull_request.number }}
@@ -79,10 +84,16 @@ jobs:
             body="$(git log -1 --format=%B "$sha")"
             short="$(git rev-parse --short "$sha")"
 
-            # Required: DCO sign-off.
-            if ! printf '%s' "$body" | grep -qiE '^Signed-off-by:[[:space:]]+.+<.+@.+>'; then
-              echo "::error::${short} has no valid Signed-off-by. Use 'git commit -s'. (CONTRIBUTING.md 1.1)"
+            # Required: DCO sign-off, meaning a name and an email address. The
+            # address may be in <angle brackets>, (parentheses) or bare, since
+            # hand-typed trailers vary. Only a non-canonical form gets a nudge.
+            email='[^[:space:]<>()@]+@[^[:space:]<>()@]+\.[^[:space:]<>()@]+'
+            sob="^Signed-off-by:[[:space:]]*[^[:space:]<>()@][^<>()@]*[[:space:]][<(]?${email}[>)]?[[:space:]]*$"
+            if ! printf '%s\n' "$body" | grep -qiE "$sob"; then
+              echo "::error::${short} has no valid Signed-off-by (a name and an email address). Use 'git commit -s'. (CONTRIBUTING.md 1.1)"
               fail=1
+            elif ! printf '%s\n' "$body" | grep -qiE "^Signed-off-by:.*<${email}>[[:space:]]*$"; then
+              echo "::warning::${short} Signed-off-by is accepted, but the usual form is 'Name <email>'."
             fi
 
             # Ported-from and Ported-from-license travel together, or the licence
@@ -117,9 +128,19 @@ jobs:
       # ------------------------------------------------------- REVIEW.md §2
       - name: Pull request size
         env:
-          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
         run: |
           set -uo pipefail
+          # Labels are fetched live, not read from the event payload. The payload
+          # is frozen when the run is created, so re-running a job after adding
+          # 'oversize-approved' would otherwise still see the old label set.
+          if ! LABELS="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/labels" \
+                          --jq 'map(.name) | join(",")')"; then
+            echo "::warning::Could not fetch labels; treating the PR as unlabeled."
+            LABELS=""
+          fi
+          echo "Labels: ${LABELS:-(none)}"
           exempt=0
           case ",${LABELS}," in
             *,oversize-approved,*|*,size-exempt,*) exempt=1 ;;
