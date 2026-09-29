@@ -41,9 +41,50 @@ MCLGETL(struct mbuf* m, int how, int size)
 	if (m == NULL)
 		return m_get3(size, how, MT_DATA, M_PKTHDR);
 
+	// OpenBSD takes any length and uses the smallest cluster that fits it.
+	// m_cljget() only takes the exact cluster sizes. If none is large
+	// enough, leave m without a cluster, which is how MCLGETL() fails.
+	if (size <= MCLBYTES)
+		size = MCLBYTES;
+	else if (size <= MJUMPAGESIZE)
+		size = MJUMPAGESIZE;
+	else if (size <= MJUM9BYTES)
+		size = MJUM9BYTES;
+	else
+		return m;
+
 	m_cljget(m, how, size);
 	return m;
 }
+
+/*
+ * OpenBSD's m_prepend() prepends in place when there is leading space and
+ * always adds to m_pkthdr.len, which is what FreeBSD's M_PREPEND() does.
+ * FreeBSD's m_prepend() always allocates a new head and leaves the length
+ * alone. This is not #defined over m_prepend: M_PREPEND() itself calls
+ * m_prepend(), and net80211 uses M_PREPEND(), so the length would be added
+ * twice. A driver that wants the OpenBSD meaning maps m_prepend to this.
+ */
+static struct mbuf*
+m_prepend_openbsd(struct mbuf* m, int len, int how)
+{
+	M_PREPEND(m, len, how);
+	return m;
+}
+
+/*
+ * OpenBSD's m_pullup() returns the chain unchanged when the first mbuf
+ * already holds len bytes. FreeBSD's always pulls into a new mbuf, and fails
+ * once len is over MHLEN even when the data is contiguous in a cluster.
+ */
+static struct mbuf*
+m_pullup_openbsd(struct mbuf* m, int len)
+{
+	if (m->m_len >= len)
+		return m;
+	return m_pullup(m, len);
+}
+#define m_pullup m_pullup_openbsd
 
 static int
 m_dup_pkthdr_openbsd(struct mbuf* to, const struct mbuf* from, int how)
