@@ -284,7 +284,7 @@ typedef struct {
 			uint8	bm_controls;
 			uint8	format_type;
 			uint32	bm_formats;
-			uint8	num_output_pins;
+			uint8	nr_channels;
 			uint32	channel_config;
 			uint8	channel_names;
 		} _PACKED r2;
@@ -308,6 +308,33 @@ typedef struct {
 typedef struct {
 	uint8	bytes[3];
 } _PACKED usb_audio_sampling_freq;
+
+
+// R2: layout of the parameter block returned by a RANGE request. The width of
+// a sub-range triple matches the width of the addressed control: 4 bytes for a
+// Clock Source sampling frequency, 2 bytes for a Feature Unit volume.
+// (Audio20 5.2.3.2, page 65)
+typedef struct {
+	uint32	min;
+	uint32	max;
+	uint32	res;
+} _PACKED usb_audio_range4_sub;
+
+typedef struct {
+	uint16	num_sub_ranges;
+	usb_audio_range4_sub	subranges[1];
+} _PACKED usb_audio_range4;
+
+typedef struct {
+	int16	min;
+	int16	max;
+	int16	res;
+} _PACKED usb_audio_range2_sub;
+
+typedef struct {
+	uint16	num_sub_ranges;
+	usb_audio_range2_sub	subranges[1];
+} _PACKED usb_audio_range2;
 
 
 // Format Type I/II/III Descriptors
@@ -341,6 +368,15 @@ typedef struct {
 			uint8 sam_freq_type;
 			usb_audio_sampling_freq sam_freqs[1];
 		} _PACKED typeIII;
+
+		// R2: the Type I Format Type descriptor carries only the subslot
+		// size and bit resolution; channel count comes from the AS general
+		// descriptor and the sample rates from the Clock Source entity.
+		// (Frmts20 Table 2-2, page 15)
+		struct {
+			uint8 subslot_size;
+			uint8 bit_resolution;
+		} _PACKED typeI_r2;
 	};
 } _PACKED usb_audio_format_descriptor;
 
@@ -366,6 +402,13 @@ enum { // Audio Class-Specific Request Codes
 	USB_AUDIO_SET_MEM		= 0x05,
 	USB_AUDIO_GET_MEM		= 0x85,
 	USB_AUDIO_GET_STATUS	= 0xFF
+};
+
+enum { // R2: Audio Class-Specific Request Codes (A.14)
+	// direction (get/set) is taken from bmRequestType, not the request code
+	USB_AUDIO_R2_CUR		= 0x01,
+	USB_AUDIO_R2_RANGE		= 0x02,
+	USB_AUDIO_R2_MEM		= 0x03
 };
 
 enum { // Terminal Control Selectors
@@ -446,6 +489,29 @@ enum {
 	USB_AUDIO_PITCH_CONTROL					= 0x02
 };
 
+/* R2: A.17.1 Clock Source Control Selectors */
+enum {
+	USB_AUDIO_CS_CONTROL_UNDEFINED			= 0x00,
+	USB_AUDIO_CS_CONTROL_SAM_FREQ			= 0x01,
+	USB_AUDIO_CS_CONTROL_CLOCK_VALID		= 0x02
+};
+
+/* R2: A.17.2 Clock Selector Control Selectors */
+enum {
+	USB_AUDIO_CX_CONTROL_UNDEFINED			= 0x00,
+	USB_AUDIO_CX_CLOCK_SELECTOR_CONTROL		= 0x01
+};
+
+// R2: Clock Source bmAttributes (Table 4-6, page 49)
+enum {
+	USB_AUDIO_CS_CLOCK_TYPE_MASK			= 0x03,
+	USB_AUDIO_CS_CLOCK_TYPE_EXTERNAL		= 0x00,
+	USB_AUDIO_CS_CLOCK_TYPE_INT_FIXED		= 0x01,
+	USB_AUDIO_CS_CLOCK_TYPE_INT_VARIABLE	= 0x02,
+	USB_AUDIO_CS_CLOCK_TYPE_INT_PROGRAM		= 0x03,
+	USB_AUDIO_CS_CLOCK_SYNCED_TO_SOF		= 0x04
+};
+
 /*
 typedef struct
 {
@@ -521,6 +587,16 @@ enum {
 	USB_AUDIO_FORMAT_IEEE_FLOAT			= 0x0003,
 	USB_AUDIO_FORMAT_ALAW				= 0x0004,
 	USB_AUDIO_FORMAT_MULAW				= 0x0005
+};
+
+// R2: Frmts20 Table A-2, page 26, bmFormats bit allocations for Type I.
+// Unlike R1 (a single wFormatTag) R2 advertises a bitmap of supported formats.
+enum {
+	USB_AUDIO_R2_FORMAT_PCM				= 0x00000001,
+	USB_AUDIO_R2_FORMAT_PCM8			= 0x00000002,
+	USB_AUDIO_R2_FORMAT_IEEE_FLOAT		= 0x00000004,
+	USB_AUDIO_R2_FORMAT_ALAW			= 0x00000008,
+	USB_AUDIO_R2_FORMAT_MULAW			= 0x00000010
 };
 
 

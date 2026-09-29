@@ -16,15 +16,22 @@
 
 class ASInterfaceDescriptor {
 public:
-							ASInterfaceDescriptor(
+							ASInterfaceDescriptor(uint16 specReleaseNumber,
 								usb_audio_streaming_interface_descriptor*
 								Descriptor);
 							~ASInterfaceDescriptor();
 
 // protected:
+			bool			fIsR2;
 			uint8			fTerminalLink;
-			uint8			fDelay;
-			uint16			fFormatTag;
+			uint8			fDelay;			// R1 only
+			uint16			fFormatTag;		// R1 only
+			// R2: the format is a bitmap and the channel count is carried here
+			// rather than in the Format Type descriptor (Audio20 Table 4-27).
+			uint8			fFormatType;
+			uint32			fBmFormats;
+			uint8			fChannelsCount;
+			uint32			fChannelConfig;
 };
 
 
@@ -61,11 +68,12 @@ public:
 
 class TypeIFormatDescriptor : public _ASFormatDescriptor {
 public:
-							TypeIFormatDescriptor(
+							TypeIFormatDescriptor(uint16 specReleaseNumber,
 								usb_audio_format_descriptor* Descriptor);
 	virtual					~TypeIFormatDescriptor();
 
-			status_t		Init(usb_audio_format_descriptor* Descriptor);
+			status_t		Init(uint16 specReleaseNumber,
+								usb_audio_format_descriptor* Descriptor);
 
 // protected:
 			uint8			fNumChannels;
@@ -92,7 +100,7 @@ public:
 
 class TypeIIIFormatDescriptor : public TypeIFormatDescriptor {
 public:
-							TypeIIIFormatDescriptor(
+							TypeIIIFormatDescriptor(uint16 specReleaseNumber,
 								usb_audio_format_descriptor* Descriptor);
 	virtual					~TypeIIIFormatDescriptor();
 

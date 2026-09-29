@@ -88,6 +88,7 @@ public:
 
 			uint16			TerminalType() { return fTerminalType; }
 			bool			IsUSBIO();
+			uint8			ClockSourceId() { return fClockSourceId; }
 	virtual	const char*		Name();
 	static	const char*		_GetTerminalDescription(uint16 TerminalType);
 
@@ -224,7 +225,13 @@ public:
 								usb_audiocontrol_header_descriptor* Header);
 	virtual					~ClockSource();
 
+	virtual	const char*		Name() { return "Clock Source"; }
+			bool			SamplingFrequencyReadable();
+			bool			SamplingFrequencyWritable();
+
 protected:
+			uint8			fClockType;			// bmAttributes
+			uint8			fControlsBitmap;	// bmControls
 };
 
 
@@ -234,7 +241,11 @@ public:
 								usb_audiocontrol_header_descriptor* Header);
 	virtual					~ClockSelector();
 
-protected:
+	virtual	const char*		Name() { return "Clock Selector"; }
+
+//	protected:
+			Vector<uint8>	fInputPins;
+			uint8			fControlsBitmap;
 };
 
 
@@ -244,7 +255,10 @@ public:
 								usb_audiocontrol_header_descriptor* Header);
 	virtual					~ClockMultiplier();
 
+	virtual	const char*		Name() { return "Clock Multiplier"; }
+
 protected:
+			uint8			fControlsBitmap;
 };
 
 
@@ -277,8 +291,31 @@ public:
 			_AudioControl*	FindOutputTerminal(uint8 id);
 			uint16			SpecReleaseNumber() { return fADCSpecification; }
 
+			// R2: Clock Source handling. The stream identifies its clock via
+			// its terminal; sampling frequency is get/set through Clock Source
+			// class requests on the AudioControl interface (not on the endpoint
+			// as in R1).
+			uint8			ClockSourceIdForTerminal(uint8 terminalId);
+			bool			ClockRateIsWritable(uint8 clockId);
+			status_t		GetSamplingRates(uint8 clockId,
+								Vector<uint32>& rates);
+			status_t		SetSamplingRate(uint8 clockId, uint32 rate);
+			uint8			LastClockId() { return fLastClockId; }
+			uint32			LastClockRate() { return fLastClockRate; }
+
 			AudioControlsMap&
 							Controls() { return fAudioControls; }
+
+			// Probe, log, unmute and open the volume of every feature-unit
+			// channel. Some devices (Hercules DJ Console RMX) power up muted,
+			// staying silent although USB streaming is perfectly healthy.
+			// Handles both R1 (GET/SET_CUR) and R2 (CUR/RANGE) request sets.
+			void			InitHardwareGains();
+
+			// R2: route every writable Clock Selector to its first input pin.
+			// Part of the stream-start sequence (working hosts rewrite the
+			// selector at every stream open), not just initial probe.
+			void			RouteClockSelectors();
 
 			uint32			GetChannelsDescription(
 								Vector<multi_channel_info>& Channels,
@@ -332,6 +369,8 @@ protected:
 								const char* inputName, const char* name,
 								Vector<multi_mix_control>& Controls);
 			bool			_InitGainLimits(multi_mix_control& Control);
+			uint8			_ActiveClockSelectorInput(ClockSelector* selector,
+								uint8 selectorId);
 
 			size_t			fInterface;
 			status_t		fStatus;
@@ -340,6 +379,10 @@ protected:
 			Vector<uint8>	fStreams;
 			uint8			fFunctionCategory;
 			uint8			fControlsBitmap;
+			// R2: last rate programmed to a Clock Source, for restoring the
+			// (stream-shared) clock after a device reattach.
+			uint8			fLastClockId;
+			uint32			fLastClockRate;
 			Device*			fDevice;
 
 			// map to store all controls and lookup by control ID
