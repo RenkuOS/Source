@@ -98,17 +98,28 @@ usb_raw_device_removed(void *cookie)
 	raw_device *device = (raw_device *)cookie;
 
 	// cancel all pending transfers to make sure no one keeps waiting forever
-	// in syscalls.
+	// in syscalls. This has to happen here: once the device is freed, the
+	// stack cancels what is left by force, without calling the callbacks, and
+	// an ioctl waiting for one would never return while holding the device
+	// lock. That includes control requests on the default pipe.
+	gUSBModule->cancel_queued_requests(device->device);
+
 	const usb_configuration_info *configurationInfo =
 		gUSBModule->get_configuration(device->device);
-	if (configurationInfo != NULL && configurationInfo->interface_count > 0) {
-		// An interface the device described no alternate for has no active
-		// one.
-		struct usb_interface_info* interface
-			= configurationInfo->interface->active;
-		for (unsigned int i = 0;
-				interface != NULL && i < interface->endpoint_count; i++)
-			gUSBModule->cancel_queued_transfers(interface->endpoint[i].handle);
+	if (configurationInfo != NULL) {
+		for (size_t i = 0; i < configurationInfo->interface_count; i++) {
+			// An interface the device described no alternate for has no
+			// active one.
+			struct usb_interface_info* interface
+				= configurationInfo->interface[i].active;
+			if (interface == NULL)
+				continue;
+
+			for (size_t j = 0; j < interface->endpoint_count; j++) {
+				gUSBModule->cancel_queued_transfers(
+					interface->endpoint[j].handle);
+			}
+		}
 	}
 
 	mutex_lock(&gDeviceListLock);
@@ -235,7 +246,8 @@ usb_raw_free(void *cookie)
 
 	raw_device *device = (raw_device *)cookie;
 	device->reference_count--;
-	if (device->device == 0) {
+	if (device->device == 0 && device->reference_count == 0) {
+		// the device is gone and this was its last user
 		mutex_lock(&device->lock);
 		mutex_destroy(&device->lock);
 		delete_sem(device->notify);
