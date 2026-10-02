@@ -161,7 +161,7 @@ SubDir HAIKU_TOP ;
 UserBuildConfigRulePostBuildTargets	;
 
 # specify the Haiku repository contents
-include [ FDirName $(HAIKU_BUILD_RULES_DIR) repositories Haiku ] ;
+include [ FDirName $(HAIKU_BUILD_RULES_DIR) repositories Renku ] ;
 
 # specify the actual Haiku image contents
 include [ FDirName $(HAIKU_BUILD_RULES_DIR) images HaikuImage ] ;

@@ -1,10 +1,12 @@
-# Builds the Haiku packages repository.
+# Builds the RenkuOS system package repository. Its repository info, and so
+# the config an installed system updates from, comes from the renku template;
+# the upstream Haiku repository is not configured on the image.
 
-local haikuRepository = <repository>Haiku ;
+local haikuRepository = <repository>Renku ;
 MakeLocate $(haikuRepository)
 	: $(HAIKU_PACKAGE_REPOSITORIES_DIR_$(HAIKU_PACKAGING_ARCH)) ;
 
-local repoInfo = <repository-info-template>haiku ;
+local repoInfo = <repository-info-template>renku ;
 SEARCH on $(repoInfo) = $(HAIKU_TOP)/src/data/repository_infos ;
 
 local secondaryArchs = $(TARGET_PACKAGING_ARCHS[2-]) ;

@@ -158,7 +158,7 @@ jobs:
               # system hpkgs. This is what pkgman and HaikuDepot would update
               # from, as opposed to the ISO which is for installing. Built as
               # an artifact only for now -- see DECISIONS.md D2 for hosting.
-              jam -q -j"$(nproc)" "<repository>Haiku"
+              jam -q -j"$(nproc)" "<repository>Renku"
             '
 
       - name: Restore ownership
@@ -181,7 +181,7 @@ jobs:
         id: repo
         run: |
           set -uo pipefail
-          SRC="generated.${{ matrix.arch }}/objects/haiku/${{ matrix.arch }}/packaging/repositories/Haiku"
+          SRC="generated.${{ matrix.arch }}/objects/haiku/${{ matrix.arch }}/packaging/repositories/Renku"
           if [ ! -d "${SRC}" ]; then
             echo "::warning::no repository tree at ${SRC}"
             exit 0
