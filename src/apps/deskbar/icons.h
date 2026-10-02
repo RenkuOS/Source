@@ -1,5 +1,5 @@
 enum {
-	R_LeafLogoBitmap = 14,
+	R_MarkLogoBitmap = 14,
 	R_LargeNewGroupIcon = 16,
 	R_SmallNewGroupIcon = 17,
 	R_TeamIcon = 18,
@@ -8,5 +8,6 @@ enum {
 	R_WindowHiddenIcon = 21,
 	R_ResizeIcon = 22,
 	R_WindowShownSwitchIcon = 23,
-	R_WindowHiddenSwitchIcon = 24
+	R_WindowHiddenSwitchIcon = 24,
+	R_WordmarkLogoBitmap = 25
 };

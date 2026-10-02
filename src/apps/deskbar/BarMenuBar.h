@@ -82,8 +82,13 @@ public:
 	const	BBitmap*		FetchTeamIcon();
 
 private:
+			void			_UpdateDeskbarMenuIcon(float width,
+								float height);
+
 			TBarView*		fBarView;
 			TBarMenuTitle*	fDeskbarMenuItem;
+			BBitmap*		fDeskbarMenuIcon;
+			int32			fDeskbarMenuIconID;
 			TBarMenuTitle*	fAppListMenuItem;
 			TSeparatorItem*	fSeparatorItem;
 

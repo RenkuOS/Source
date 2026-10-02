@@ -53,6 +53,7 @@ public:
 	virtual ~TBarMenuTitle();
 
 	void SetContentSize(float width, float height);
+	void SetIcon(const BBitmap* icon);
 	void Draw();
 
 	status_t Invoke(BMessage* message);

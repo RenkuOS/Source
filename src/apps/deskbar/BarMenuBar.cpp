@@ -60,6 +60,15 @@ const float kSepItemWidth = 5.0f;
 
 const float kTeamIconBitmapHeight = 19.f;
 
+// Share of the Deskbar menu's height (or width, if narrower) that its logo
+// fills, leaving a margin around it.
+const float kLogoFill = 0.85f;
+
+// Width over height of each logo, from its source SVG's viewBox. These must
+// match the artwork in icons.rdef.
+const float kWordmarkLogoAspect = 22.658f / 4.782f;
+const float kMarkLogoAspect = 14.164f / 7.7374f;
+
 
 //	#pragma mark - TSeparatorItem
 
@@ -106,6 +115,9 @@ TBarMenuBar::TBarMenuBar(BRect frame, const char* name, TBarView* barView)
 	:
 	BMenuBar(frame, name, B_FOLLOW_NONE, B_ITEMS_IN_ROW, false),
 	fBarView(barView),
+	fDeskbarMenuItem(NULL),
+	fDeskbarMenuIcon(NULL),
+	fDeskbarMenuIconID(-1),
 	fAppListMenuItem(NULL),
 	fSeparatorItem(NULL),
 	fTeamIconData(NULL),
@@ -117,30 +129,15 @@ TBarMenuBar::TBarMenuBar(BRect frame, const char* name, TBarView* barView)
 	TDeskbarMenu* beMenu = new TDeskbarMenu(barView);
 	TBarWindow::SetDeskbarMenu(beMenu);
 
-	BBitmap* icon = NULL;
-	size_t dataSize;
-	const void* data = AppResSet()->FindResource(B_VECTOR_ICON_TYPE,
-		R_LeafLogoBitmap, &dataSize);
-	if (data != NULL) {
-		// seems valid, scale bitmap according to be_bold_font size
-		float width = std::max(63.f, ceilf(63 * be_bold_font->Size() / 12.f));
-		float height = std::max(22.f, ceilf(22 * be_bold_font->Size() / 12.f));
-		icon = new BBitmap(BRect(0, 0, width - 1, height - 1), B_RGBA32);
-		if (icon->InitCheck() != B_OK
-			|| BIconUtils::GetVectorIcon((const uint8*)data, dataSize, icon)
-					!= B_OK) {
-			delete icon;
-			icon = NULL;
-		}
-	}
-
-	fDeskbarMenuItem = new TBarMenuTitle(0.0f, 0.0f, icon, beMenu, fBarView);
+	fDeskbarMenuItem = new TBarMenuTitle(0.0f, 0.0f, NULL, beMenu, fBarView);
 	AddItem(fDeskbarMenuItem);
+	_UpdateDeskbarMenuIcon(frame.Width(), frame.Height());
 }
 
 
 TBarMenuBar::~TBarMenuBar()
 {
+	delete fDeskbarMenuIcon;
 }
 
 
@@ -154,16 +151,20 @@ TBarMenuBar::SmartResize(float width, float height)
 	} else
 		ResizeTo(width, height);
 
-	if (fSeparatorItem != NULL)
-		fDeskbarMenuItem->SetContentSize(width - kSepItemWidth, height);
-	else {
+	float menuWidth;
+	if (fSeparatorItem != NULL) {
+		menuWidth = width - kSepItemWidth;
+		fDeskbarMenuItem->SetContentSize(menuWidth, height);
+	} else {
 		int32 count = CountItems();
+		menuWidth = floorf(width / count);
 		if (fDeskbarMenuItem != NULL)
-			fDeskbarMenuItem->SetContentSize(floorf(width / count), height);
+			fDeskbarMenuItem->SetContentSize(menuWidth, height);
 		if (fAppListMenuItem != NULL)
-			fAppListMenuItem->SetContentSize(floorf(width / count), height);
+			fAppListMenuItem->SetContentSize(menuWidth, height);
 	}
 
+	_UpdateDeskbarMenuIcon(menuWidth, height);
 	InvalidateLayout();
 }
 
@@ -359,4 +360,53 @@ TBarMenuBar::FetchTeamIcon()
 	}
 
 	return teamIcon;
+}
+
+
+void
+TBarMenuBar::_UpdateDeskbarMenuIcon(float width, float height)
+{
+	if (fDeskbarMenuItem == NULL)
+		return;
+
+	// The wordmark needs the wide menu of the vertical, expanded layout.
+	// Every other layout is too narrow for it and shows the mark instead.
+	const bool wordmark = fBarView->Vertical() && !fBarView->MiniState();
+	const int32 id = wordmark ? R_WordmarkLogoBitmap : R_MarkLogoBitmap;
+
+	// Fit the logo inside the menu. GetVectorIcon() scales the icon canvas
+	// by the bitmap's width, so the bitmap takes the logo's own shape.
+	const float aspect = wordmark ? kWordmarkLogoAspect : kMarkLogoAspect;
+	const float iconHeight
+		= floorf(std::min(height, width / aspect) * kLogoFill);
+	const float iconWidth = floorf(iconHeight * aspect);
+	if (iconHeight < 1.f || iconWidth < 1.f)
+		return;
+
+	if (fDeskbarMenuIcon != NULL && fDeskbarMenuIconID == id
+		&& fDeskbarMenuIcon->Bounds().Width() == iconWidth - 1
+		&& fDeskbarMenuIcon->Bounds().Height() == iconHeight - 1) {
+		return;
+	}
+
+	size_t dataSize;
+	const void* data = AppResSet()->FindResource(B_VECTOR_ICON_TYPE, id,
+		&dataSize);
+	if (data == NULL)
+		return;
+
+	BBitmap* icon = new(std::nothrow) BBitmap(
+		BRect(0, 0, iconWidth - 1, iconHeight - 1), B_RGBA32);
+	if (icon == NULL || icon->InitCheck() != B_OK
+		|| BIconUtils::GetVectorIcon((const uint8*)data, dataSize, icon)
+			!= B_OK) {
+		delete icon;
+		return;
+	}
+
+	fDeskbarMenuItem->SetIcon(icon);
+	delete fDeskbarMenuIcon;
+	fDeskbarMenuIcon = icon;
+	fDeskbarMenuIconID = id;
+	Invalidate();
 }

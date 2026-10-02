@@ -44,7 +44,6 @@ All rights reserved.
 #include "BarApp.h"
 #include "BarView.h"
 #include "BarWindow.h"
-#include "DeskbarMenu.h"
 
 
 TBarMenuTitle::TBarMenuTitle(float width, float height, const BBitmap* icon,
@@ -53,15 +52,12 @@ TBarMenuTitle::TBarMenuTitle(float width, float height, const BBitmap* icon,
 	BMenuItem(menu, new BMessage(B_REFS_RECEIVED)),
 	fWidth(width),
 	fHeight(height),
-	fIcon(icon),
+	fIcon(NULL),
 	fMenu(menu),
 	fBarView(barView),
 	fInitStatus(B_NO_INIT)
 {
-	if (fIcon == NULL || fMenu == NULL || fBarView == NULL)
-		fInitStatus = B_BAD_VALUE;
-	else
-		fInitStatus = B_OK;
+	SetIcon(icon);
 }
 
 
@@ -75,6 +71,18 @@ TBarMenuTitle::SetContentSize(float width, float height)
 {
 	fWidth = width;
 	fHeight = height;
+}
+
+
+void
+TBarMenuTitle::SetIcon(const BBitmap* icon)
+{
+	// The caller keeps ownership of the icon.
+	fIcon = icon;
+	if (fIcon == NULL || fMenu == NULL || fBarView == NULL)
+		fInitStatus = B_BAD_VALUE;
+	else
+		fInitStatus = B_OK;
 }
 
 
@@ -133,13 +141,7 @@ TBarMenuTitle::DrawContent()
 
 	float widthOffset = rintf((frame.Width() - iconRect.Width()) / 2);
 	float heightOffset = rintf((frame.Height() - iconRect.Height()) / 2);
-
-	// cut-off the leaf
-	bool isLeafMenu = dynamic_cast<TDeskbarMenu*>(fMenu) != NULL;
-	if (isLeafMenu)
-		iconRect.OffsetBy(widthOffset, frame.Height() - iconRect.Height() + 2);
-	else
-		iconRect.OffsetBy(widthOffset, heightOffset);
+	iconRect.OffsetBy(widthOffset, heightOffset);
 
 	// clip to menu item frame
 	if (iconRect.Width() > frame.Width()) {
