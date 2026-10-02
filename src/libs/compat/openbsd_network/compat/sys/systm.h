@@ -14,6 +14,8 @@
 
 #define	INFSLP	UINT64_MAX
 
+#define delay(usec)	DELAY(usec)
+
 
 static inline void
 explicit_bzero(void *buf, size_t len)

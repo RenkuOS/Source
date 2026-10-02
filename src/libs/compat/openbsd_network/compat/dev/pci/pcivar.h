@@ -10,6 +10,7 @@
 #include <dev/pci/pcireg.h>
 
 #include <sys/rman.h>
+#include <machine/bus.h>
 
 
 typedef u_int32_t pcireg_t;
@@ -37,6 +38,8 @@ typedef struct {
 	pci_mapreg_map_openbsd(SC_DEV_FOR_PCI, reg, type, flags, tagp, handlep, basep, sizep, maxsize)
 #define pci_intr_establish(pa, ih, level, func, arg, what) \
 	pci_intr_establish_openbsd(SC_DEV_FOR_PCI, ih, level, func, arg, what)
+#define pci_intr_disestablish(pc, cookie) \
+	bus_teardown_intr(SC_DEV_FOR_PCI, NULL, cookie)
 
 #define pci_intr_string(...) NULL
 
@@ -75,6 +78,14 @@ pci_mapreg_map_openbsd(device_t dev, int reg, pcireg_t type, int flags,
 		*sizep = rman_get_size(res);
 	return 0;
 }
+
+/*
+ * The inverse of pci_mapreg_map(). The handle is the virtual address of the
+ * mapping, so this deletes the area holding it. The struct resource is not
+ * kept by pci_mapreg_map(), so it is not freed here.
+ */
+#define bus_space_unmap(tag, handle, size) \
+	delete_area(area_for((void*)(handle)))
 
 static int
 pci_intr_map_msix(device_t dev, int vec, pci_intr_handle_t* ihp)

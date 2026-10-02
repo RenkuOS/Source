@@ -124,6 +124,20 @@ fail:
 
 
 /*
+ * Compute the amount of space available before the current start of data
+ * in an mbuf. Read-only clusters never have space available.
+ */
+static int
+m_leadingspace(struct mbuf *m)
+{
+	if (M_READONLY(m))
+		return 0;
+	KASSERT(m->m_data >= M_DATABUF(m));
+	return m->m_data - M_DATABUF(m);
+}
+
+
+/*
  * Compute the amount of space available after the end of data in an mbuf.
  * Read-only clusters never have space available.
  */
