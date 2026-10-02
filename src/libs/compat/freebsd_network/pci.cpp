@@ -186,6 +186,50 @@ pci_set_command_bit(device_t dev, uint16_t bit)
 }
 
 
+/*!	Enables bus mastering on every bridge between \a bus and the root complex.
+
+	A bridge with bus mastering disabled does not forward its secondary side's
+	memory requests upstream, so a device behind it sees every DMA transfer
+	end in a master abort. Firmware does not always enable it: on shredder
+	(Supermicro X11SSH-LN4F) root port 00:1d.0 was left at 0x0003 with an
+	MT7920 behind it. Linux enables it along the whole path in pci_set_master().
+*/
+static void
+pci_enable_busmaster_upstream(uint8 bus)
+{
+	for (int depth = 0; bus != 0 && depth < 256; depth++) {
+		pci_info bridge;
+		bool found = false;
+
+		for (long i = 0; gPci->get_nth_pci_info(i, &bridge) == B_OK; i++) {
+			if ((bridge.header_type & PCI_header_type_mask)
+					!= PCI_header_type_PCI_to_PCI_bridge
+				|| bridge.u.h1.secondary_bus != bus) {
+				continue;
+			}
+
+			uint16 command = gPci->read_pci_config(bridge.bus, bridge.device,
+				bridge.function, PCI_command, 2);
+			if ((command & PCI_command_master) == 0) {
+				gPci->write_pci_config(bridge.bus, bridge.device,
+					bridge.function, PCI_command, 2,
+					command | PCI_command_master);
+				dprintf("pci_enable_busmaster: enabled bus mastering on "
+					"bridge %u:%u:%u\n", bridge.bus, bridge.device,
+					bridge.function);
+			}
+
+			bus = bridge.bus;
+			found = true;
+			break;
+		}
+
+		if (!found)
+			break;
+	}
+}
+
+
 int
 pci_enable_busmaster(device_t dev)
 {
@@ -193,6 +237,7 @@ pci_enable_busmaster(device_t dev)
 	if (pci_get_powerstate(dev) != PCI_POWERSTATE_D0)
 		pci_set_powerstate(dev, PCI_POWERSTATE_D0);
 
+	pci_enable_busmaster_upstream(get_device_pci_info(dev)->bus);
 	pci_set_command_bit(dev, PCI_command_master);
 	return 0;
 }
