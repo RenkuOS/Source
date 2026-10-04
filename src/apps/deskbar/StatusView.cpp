@@ -206,6 +206,7 @@ TReplicantTray::AttachedToWindow()
 	InitAddOnSupport();
 #endif
 #endif
+	_RestoreDesklinkItems();
 	ResizeToPreferred();
 }
 
@@ -1911,4 +1912,37 @@ TResizeControl::MouseMoved(BPoint where, uint32 code,
 	windowWidth = Window()->Frame().Width();
 
 	BControl::MouseMoved(where, code, dragMessage);
+}
+void
+TReplicantTray::_RestoreDesklinkItems()
+{
+	BPath settingsDir;
+	if (find_directory(B_USER_SETTINGS_DIRECTORY, &settingsDir) != B_OK)
+		return;
+
+	BPath desklinkPath(settingsDir.Path(), "desklink");
+	BFile desklinkFile(desklinkPath.Path(), B_READ_ONLY);
+	if (desklinkFile.InitCheck() != B_OK)
+		return;
+
+	BMessage persistMsg;
+	if (persistMsg.Unflatten(&desklinkFile) != B_OK)
+		return;
+
+	type_code type;
+	int32 appCount = 0;
+	persistMsg.GetInfo("app", &type, &appCount);
+
+	for (int32 i = 0; i < appCount; i++) {
+		BMessage appMsg;
+		if (persistMsg.FindMessage("app", i, &appMsg) == B_OK) {
+			const char* args = NULL;
+			if (appMsg.FindString("completeCmd", &args) == B_OK && args != NULL) {
+				BString fullCommand("/bin/desklink ");
+				fullCommand << args << " &";
+
+				system(fullCommand.String());
+			}
+		}
+	}
 }
