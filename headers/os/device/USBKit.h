@@ -305,6 +305,21 @@ mutable	char *						fInterfaceString;
 /*	The BUSBEndpoint represent a device endpoint that can be used to send or
 	receive data. It also allows to query endpoint characteristics like
 	endpoint type or direction. */
+// What precedes each packet returned by
+// BUSBEndpoint::ReadIsochronousStream().
+struct usb_stream_packet_header {
+		uint16						length;
+		uint16						flags;
+};
+
+enum {
+	B_USB_STREAM_PACKET_ERROR	= 0x0001,
+		// the packet was received with an error
+	B_USB_STREAM_PACKET_GAP		= 0x0002
+		// packets before this one were lost
+};
+
+
 class BUSBEndpoint {
 public:
 		// Interface() returns the parent interface of this endpoint.
@@ -349,6 +364,25 @@ public:
 										size_t length,
 										usb_iso_packet_descriptor *packetDescriptors,
 										uint32 packetCount)	const;
+
+		// A single IsochronousTransfer() at a time loses what the device
+		// sends between two calls. For an isochronous input endpoint that
+		// has to be read without gaps, start a stream instead: the system
+		// then keeps transferCount transfers of packetsPerTransfer packets
+		// queued and holds up to bufferSize bytes of what arrived.
+		// ReadIsochronousStream() waits up to timeout for packets and
+		// stores them one after another, each as a usb_stream_packet_header
+		// followed by its data; packets without data are left out. It
+		// returns the number of bytes stored, B_TIMED_OUT, or another error
+		// when the stream has ended. There is one stream per device.
+		status_t					StartIsochronousStream(size_t packetSize,
+										uint32 packetsPerTransfer = 32,
+										uint32 transferCount = 4,
+										size_t bufferSize = 0) const;
+		ssize_t						ReadIsochronousStream(void *data,
+										size_t length,
+										bigtime_t timeout) const;
+		status_t					StopIsochronousStream() const;
 
 		// These are convenience methods for getting and clearing the halt
 		// state of an endpoint. They use the control pipe of the device to
