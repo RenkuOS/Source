@@ -32,9 +32,13 @@
 #define DRIVER_NAME		"usb_raw"
 #define DEVICE_NAME		"bus/usb/raw"
 
+struct raw_stream;
+
 typedef struct {
 	usb_device			device;
 	mutex				lock;
+	mutex				stream_lock;
+	raw_stream			*stream;
 	uint32				reference_count;
 
 	char				name[64];
@@ -59,10 +63,13 @@ usb_raw_device_added(usb_device newDevice, void **cookie)
 	raw_device *device = (raw_device *)malloc(sizeof(raw_device));
 
 	mutex_init(&device->lock, "usb_raw device lock");
+	mutex_init(&device->stream_lock, "usb_raw stream lock");
+	device->stream = NULL;
 
 	device->notify = create_sem(0, "usb_raw callback notify");
 	if (device->notify < B_OK) {
 		mutex_destroy(&device->lock);
+		mutex_destroy(&device->stream_lock);
 		free(device);
 		return B_NO_MORE_SEMS;
 	}
@@ -91,11 +98,19 @@ usb_raw_device_added(usb_device newDevice, void **cookie)
 }
 
 
+static void usb_raw_stream_stop(raw_device *device);
+static void usb_raw_stream_callback(void *cookie, status_t status, void *data,
+	size_t actualLength);
+
+
 static status_t
 usb_raw_device_removed(void *cookie)
 {
 	TRACE((DRIVER_NAME": device_removed(0x%p)\n", cookie));
 	raw_device *device = (raw_device *)cookie;
+
+	// the stream's transfers have callbacks to be called, too
+	usb_raw_stream_stop(device);
 
 	// cancel all pending transfers to make sure no one keeps waiting forever
 	// in syscalls. This has to happen here: once the device is freed, the
@@ -143,6 +158,7 @@ usb_raw_device_removed(void *cookie)
 	if (device->reference_count == 0) {
 		mutex_lock(&device->lock);
 		mutex_destroy(&device->lock);
+		mutex_destroy(&device->stream_lock);
 		delete_sem(device->notify);
 		free(device);
 	}
@@ -246,10 +262,15 @@ usb_raw_free(void *cookie)
 
 	raw_device *device = (raw_device *)cookie;
 	device->reference_count--;
+	if (device->device != 0 && device->reference_count == 0) {
+		// nobody is left to read from it
+		usb_raw_stream_stop(device);
+	}
 	if (device->device == 0 && device->reference_count == 0) {
 		// the device is gone and this was its last user
 		mutex_lock(&device->lock);
 		mutex_destroy(&device->lock);
+		mutex_destroy(&device->stream_lock);
 		delete_sem(device->notify);
 		free(device);
 	}
@@ -288,6 +309,405 @@ usb_raw_callback(void *cookie, status_t status, void *data, size_t actualLength)
 
 	device->actual_length = actualLength;
 	release_sem(device->notify);
+}
+
+
+//
+//#pragma mark - isochronous streams
+//
+
+
+// A stream that nobody reads from is stopped after this long, so that a
+// program that died does not leave the device streaming for ever.
+#define STREAM_IDLE_TIMEOUT		5000000LL
+#define STREAM_MAX_ERRORS		64
+
+struct raw_stream_transfer {
+	raw_stream					*stream;
+	uint8						*data;
+	usb_iso_packet_descriptor	*descriptors;
+};
+
+struct raw_stream {
+	usb_pipe					pipe;
+	uint32						packet_size;
+	uint32						packets_per_transfer;
+	uint32						transfer_count;
+	raw_stream_transfer			*transfers;
+
+	mutex						lock;
+	uint8						*buffer;
+	size_t						buffer_size;
+	size_t						buffer_head;
+	size_t						buffer_used;
+	bool						gap;
+
+	bool						running;
+	int32						pending;
+	uint32						errors;
+	bigtime_t					last_read;
+
+	sem_id						data_sem;
+	int32						waiting;
+	int32						readers;
+};
+
+
+static void
+usb_raw_stream_store(raw_stream *stream, const void *_data, size_t length)
+{
+	const uint8 *data = (const uint8 *)_data;
+	size_t position = (stream->buffer_head + stream->buffer_used)
+		% stream->buffer_size;
+	size_t first = min_c(length, stream->buffer_size - position);
+	memcpy(stream->buffer + position, data, first);
+	if (first < length)
+		memcpy(stream->buffer, data + first, length - first);
+	stream->buffer_used += length;
+}
+
+
+static void
+usb_raw_stream_fetch(raw_stream *stream, void *_data, size_t offset,
+	size_t length)
+{
+	uint8 *data = (uint8 *)_data;
+	size_t position = (stream->buffer_head + offset) % stream->buffer_size;
+	size_t first = min_c(length, stream->buffer_size - position);
+	memcpy(data, stream->buffer + position, first);
+	if (first < length)
+		memcpy(data + first, stream->buffer, length - first);
+}
+
+
+static status_t
+usb_raw_stream_queue(raw_stream_transfer *transfer)
+{
+	raw_stream *stream = transfer->stream;
+	for (uint32 i = 0; i < stream->packets_per_transfer; i++) {
+		transfer->descriptors[i].request_length = stream->packet_size;
+		transfer->descriptors[i].actual_length = 0;
+		transfer->descriptors[i].status = B_OK;
+	}
+
+	return gUSBModule->queue_isochronous(stream->pipe, transfer->data,
+		stream->packet_size * stream->packets_per_transfer,
+		transfer->descriptors, stream->packets_per_transfer, NULL,
+		USB_ISO_ASAP, usb_raw_stream_callback, transfer);
+}
+
+
+static void
+usb_raw_stream_callback(void *cookie, status_t status, void *data,
+	size_t actualLength)
+{
+	raw_stream_transfer *transfer = (raw_stream_transfer *)cookie;
+	raw_stream *stream = transfer->stream;
+
+	MutexLocker locker(stream->lock);
+
+	if (status != B_CANCELED && stream->running) {
+		size_t offset = 0;
+		for (uint32 i = 0; i < stream->packets_per_transfer; i++) {
+			const usb_iso_packet_descriptor &descriptor
+				= transfer->descriptors[i];
+			size_t length = descriptor.actual_length;
+			if (length > stream->packet_size)
+				length = stream->packet_size;
+
+			if (length > 0) {
+				usb_raw_stream_packet header;
+				if (stream->buffer_used + sizeof(header) + length
+						> stream->buffer_size) {
+					stream->gap = true;
+				} else {
+					header.length = length;
+					header.flags = 0;
+					if (descriptor.status != B_OK)
+						header.flags |= B_USB_RAW_STREAM_PACKET_ERROR;
+					if (stream->gap)
+						header.flags |= B_USB_RAW_STREAM_PACKET_GAP;
+					stream->gap = false;
+					usb_raw_stream_store(stream, &header, sizeof(header));
+					usb_raw_stream_store(stream, transfer->data + offset,
+						length);
+				}
+			}
+
+			offset += stream->packet_size;
+		}
+	}
+
+	bool requeue = stream->running && status != B_CANCELED;
+	if (status == B_OK)
+		stream->errors = 0;
+	else if (++stream->errors > STREAM_MAX_ERRORS)
+		requeue = false;
+	if (system_time() - stream->last_read > STREAM_IDLE_TIMEOUT)
+		requeue = false;
+
+	if (requeue && usb_raw_stream_queue(transfer) != B_OK)
+		requeue = false;
+
+	if (!requeue) {
+		stream->pending--;
+		if (stream->pending == 0)
+			stream->running = false;
+	}
+
+	if (stream->waiting > 0 && (stream->buffer_used > 0 || !stream->running)) {
+		stream->waiting--;
+		release_sem_etc(stream->data_sem, 1, B_DO_NOT_RESCHEDULE);
+	}
+}
+
+
+static void
+usb_raw_stream_free(raw_stream *stream)
+{
+	if (stream->transfers != NULL) {
+		for (uint32 i = 0; i < stream->transfer_count; i++) {
+			free(stream->transfers[i].data);
+			free(stream->transfers[i].descriptors);
+		}
+		free(stream->transfers);
+	}
+	free(stream->buffer);
+	if (stream->data_sem >= 0)
+		delete_sem(stream->data_sem);
+	mutex_destroy(&stream->lock);
+	free(stream);
+}
+
+
+static void
+usb_raw_stream_stop(raw_device *device)
+{
+	mutex_lock(&device->stream_lock);
+	raw_stream *stream = device->stream;
+	device->stream = NULL;
+	mutex_unlock(&device->stream_lock);
+
+	if (stream == NULL)
+		return;
+
+	mutex_lock(&stream->lock);
+	stream->running = false;
+	bool pending = stream->pending > 0;
+	mutex_unlock(&stream->lock);
+
+	// this calls the callbacks of what is still queued
+	if (pending)
+		gUSBModule->cancel_queued_transfers(stream->pipe);
+
+	// Wait for the transfers and for readers to be gone. The callbacks are
+	// normally called by the cancel above; in case one is still on its way,
+	// give it time.
+	bool done = false;
+	for (int32 tries = 0; tries < 200; tries++) {
+		mutex_lock(&stream->lock);
+		done = stream->pending == 0 && stream->readers == 0;
+		while (stream->waiting > 0) {
+			stream->waiting--;
+			release_sem_etc(stream->data_sem, 1, B_DO_NOT_RESCHEDULE);
+		}
+		mutex_unlock(&stream->lock);
+		if (done)
+			break;
+		snooze(10000);
+	}
+
+	if (!done) {
+		// Something still refers to the stream: leaking it is the lesser evil.
+		dprintf(DRIVER_NAME ": stream still in use, not freeing it\n");
+		return;
+	}
+
+	usb_raw_stream_free(stream);
+}
+
+
+static status_t
+usb_raw_stream_start(raw_device *device, usb_pipe pipe, uint32 packetSize,
+	uint32 packetsPerTransfer, uint32 transferCount, uint32 bufferSize)
+{
+	if (packetSize == 0 || packetSize > 3 * 1024 || packetsPerTransfer == 0
+		|| packetsPerTransfer > 64 || transferCount == 0 || transferCount > 6
+		|| bufferSize > 64 * 1024 * 1024) {
+		return B_BAD_VALUE;
+	}
+
+	// room for at least what the queued transfers can deliver at once
+	size_t minimum = (size_t)(packetSize + sizeof(usb_raw_stream_packet))
+		* packetsPerTransfer * transferCount * 2;
+	if (bufferSize < minimum)
+		bufferSize = minimum;
+
+	usb_raw_stream_stop(device);
+
+	raw_stream *stream = (raw_stream *)calloc(1, sizeof(raw_stream));
+	if (stream == NULL)
+		return B_NO_MEMORY;
+
+	mutex_init(&stream->lock, "usb_raw stream");
+	stream->pipe = pipe;
+	stream->packet_size = packetSize;
+	stream->packets_per_transfer = packetsPerTransfer;
+	stream->transfer_count = transferCount;
+	stream->buffer_size = bufferSize;
+	stream->last_read = system_time();
+	stream->data_sem = create_sem(0, "usb_raw stream data");
+	stream->buffer = (uint8 *)malloc(bufferSize);
+	stream->transfers = (raw_stream_transfer *)calloc(transferCount,
+		sizeof(raw_stream_transfer));
+
+	bool allocated = stream->data_sem >= 0 && stream->buffer != NULL
+		&& stream->transfers != NULL;
+	for (uint32 i = 0; allocated && i < transferCount; i++) {
+		raw_stream_transfer &transfer = stream->transfers[i];
+		transfer.stream = stream;
+		transfer.data = (uint8 *)malloc(packetSize * packetsPerTransfer);
+		transfer.descriptors = (usb_iso_packet_descriptor *)malloc(
+			sizeof(usb_iso_packet_descriptor) * packetsPerTransfer);
+		if (transfer.data == NULL || transfer.descriptors == NULL)
+			allocated = false;
+	}
+
+	if (!allocated) {
+		usb_raw_stream_free(stream);
+		return B_NO_MEMORY;
+	}
+
+	mutex_lock(&stream->lock);
+	stream->running = true;
+	status_t status = B_OK;
+	for (uint32 i = 0; i < transferCount; i++) {
+		status = usb_raw_stream_queue(&stream->transfers[i]);
+		if (status != B_OK)
+			break;
+		stream->pending++;
+	}
+	if (stream->pending == 0)
+		stream->running = false;
+	mutex_unlock(&stream->lock);
+
+	mutex_lock(&device->stream_lock);
+	device->stream = stream;
+	mutex_unlock(&device->stream_lock);
+
+	if (status != B_OK) {
+		dprintf(DRIVER_NAME ": queueing a stream transfer failed: %s\n",
+			strerror(status));
+		usb_raw_stream_stop(device);
+		return status;
+	}
+
+	return B_OK;
+}
+
+
+/*!	Copies whole packets into the caller's buffer, waiting up to \a timeout
+	for the first one.
+*/
+static status_t
+usb_raw_stream_read(raw_device *device, void *userData, size_t *_length,
+	bigtime_t timeout)
+{
+	size_t capacity = *_length;
+	*_length = 0;
+
+	mutex_lock(&device->stream_lock);
+	raw_stream *stream = device->stream;
+	if (stream == NULL) {
+		mutex_unlock(&device->stream_lock);
+		return B_NO_INIT;
+	}
+	mutex_lock(&stream->lock);
+	if (stream->readers > 0) {
+		// one reader at a time
+		mutex_unlock(&stream->lock);
+		mutex_unlock(&device->stream_lock);
+		return B_BUSY;
+	}
+	stream->readers++;
+	mutex_unlock(&device->stream_lock);
+
+	status_t status = B_OK;
+	size_t total = 0;
+	bigtime_t end = system_time() + timeout;
+
+	while (true) {
+		stream->last_read = system_time();
+
+		while (stream->buffer_used >= sizeof(usb_raw_stream_packet)) {
+			usb_raw_stream_packet header;
+			usb_raw_stream_fetch(stream, &header, 0, sizeof(header));
+			size_t size = sizeof(header) + header.length;
+			if (total + size > capacity)
+				break;
+
+			// The data cannot be copied to userland with the lock held (the
+			// memory may have to be paged in), so take it out in pieces.
+			uint8 chunk[512];
+			size_t offset = 0;
+			bool failed = false;
+			mutex_unlock(&stream->lock);
+			while (offset < size) {
+				size_t length = min_c(sizeof(chunk), size - offset);
+				mutex_lock(&stream->lock);
+				usb_raw_stream_fetch(stream, chunk, offset, length);
+				mutex_unlock(&stream->lock);
+				if (user_memcpy((uint8 *)userData + total + offset, chunk,
+						length) != B_OK) {
+					failed = true;
+					break;
+				}
+				offset += length;
+			}
+			mutex_lock(&stream->lock);
+			if (failed) {
+				status = B_BAD_ADDRESS;
+				break;
+			}
+
+			stream->buffer_head = (stream->buffer_head + size)
+				% stream->buffer_size;
+			stream->buffer_used -= size;
+			total += size;
+		}
+
+		if (total > 0 || status != B_OK)
+			break;
+		if (stream->buffer_used >= sizeof(usb_raw_stream_packet)) {
+			// the caller's buffer cannot even hold one packet
+			status = B_BUFFER_OVERFLOW;
+			break;
+		}
+		if (!stream->running) {
+			status = B_DEV_NOT_READY;
+			break;
+		}
+
+		stream->waiting++;
+		mutex_unlock(&stream->lock);
+		status = acquire_sem_etc(stream->data_sem, 1,
+			B_ABSOLUTE_TIMEOUT | B_CAN_INTERRUPT, end);
+		mutex_lock(&stream->lock);
+		if (status != B_OK) {
+			// nobody released the semaphore for us
+			if (stream->waiting > 0)
+				stream->waiting--;
+			else
+				acquire_sem_etc(stream->data_sem, 1, B_RELATIVE_TIMEOUT, 0);
+			break;
+		}
+	}
+
+	stream->readers--;
+	mutex_unlock(&stream->lock);
+
+	*_length = total;
+	return status;
 }
 
 
@@ -682,6 +1102,9 @@ usb_raw_ioctl(void *cookie, uint32 op, void *buffer, size_t length)
 			if (configurationInfo == NULL)
 				break;
 
+			// its pipe is about to go away
+			usb_raw_stream_stop(device);
+
 			if (gUSBModule->set_configuration(device->device,
 				configurationInfo) < B_OK) {
 				command.config.status = B_USB_RAW_STATUS_FAILED;
@@ -717,6 +1140,9 @@ usb_raw_ioctl(void *cookie, uint32 op, void *buffer, size_t length)
 				command.alternate.status = B_USB_RAW_STATUS_INVALID_INTERFACE;
 				break;
 			}
+
+			// its pipe is about to go away
+			usb_raw_stream_stop(device);
 
 			if (gUSBModule->set_alt_interface(device->device,
 				&interfaceList->alt[command.alternate.alternate_info]) < B_OK) {
@@ -916,6 +1342,99 @@ usb_raw_ioctl(void *cookie, uint32 op, void *buffer, size_t length)
 				}
 			}
 
+			break;
+		}
+
+		case B_USB_RAW_COMMAND_ISOCHRONOUS_STREAM_START:
+		{
+			if (length < sizeof(command.stream_start))
+				return B_BUFFER_OVERFLOW;
+
+			status = B_OK;
+			const usb_configuration_info *configurationInfo =
+				gUSBModule->get_configuration(device->device);
+			if (configurationInfo == NULL) {
+				command.stream_start.status
+					= B_USB_RAW_STATUS_INVALID_CONFIGURATION;
+				break;
+			}
+
+			if (command.stream_start.interface
+					>= configurationInfo->interface_count) {
+				command.stream_start.status
+					= B_USB_RAW_STATUS_INVALID_INTERFACE;
+				break;
+			}
+
+			const usb_interface_info *interfaceInfo = configurationInfo
+				->interface[command.stream_start.interface].active;
+			if (interfaceInfo == NULL) {
+				command.stream_start.status = B_USB_RAW_STATUS_ABORTED;
+				break;
+			}
+
+			if (command.stream_start.endpoint
+					>= interfaceInfo->endpoint_count) {
+				command.stream_start.status
+					= B_USB_RAW_STATUS_INVALID_ENDPOINT;
+				break;
+			}
+
+			const usb_endpoint_info *endpointInfo
+				= &interfaceInfo->endpoint[command.stream_start.endpoint];
+			if (!endpointInfo->handle
+				|| (endpointInfo->descr->attributes
+					& USB_ENDPOINT_ATTR_MASK) != USB_ENDPOINT_ATTR_ISOCHRONOUS
+				|| (endpointInfo->descr->endpoint_address
+					& USB_ENDPOINT_ADDR_DIR_IN) == 0) {
+				command.stream_start.status
+					= B_USB_RAW_STATUS_INVALID_ENDPOINT;
+				break;
+			}
+
+			status_t result = usb_raw_stream_start(device,
+				endpointInfo->handle, command.stream_start.packet_size,
+				command.stream_start.packets_per_transfer,
+				command.stream_start.transfer_count,
+				command.stream_start.buffer_size);
+			if (result == B_NO_MEMORY)
+				command.stream_start.status = B_USB_RAW_STATUS_NO_MEMORY;
+			else if (result != B_OK)
+				command.stream_start.status = B_USB_RAW_STATUS_FAILED;
+			else
+				command.stream_start.status = B_USB_RAW_STATUS_SUCCESS;
+			break;
+		}
+
+		case B_USB_RAW_COMMAND_ISOCHRONOUS_STREAM_READ:
+		{
+			if (length < sizeof(command.stream_read))
+				return B_BUFFER_OVERFLOW;
+			if (!IS_USER_ADDRESS(command.stream_read.data))
+				return B_BAD_ADDRESS;
+
+			status_t result = usb_raw_stream_read(device,
+				command.stream_read.data, &command.stream_read.length,
+				command.stream_read.timeout);
+			status = B_OK;
+			if (result == B_OK)
+				command.stream_read.status = B_USB_RAW_STATUS_SUCCESS;
+			else if (result == B_TIMED_OUT || result == B_WOULD_BLOCK)
+				command.stream_read.status = B_USB_RAW_STATUS_TIMEOUT;
+			else if (result == B_INTERRUPTED)
+				status = B_INTERRUPTED;
+			else if (result == B_BAD_ADDRESS)
+				return B_BAD_ADDRESS;
+			else
+				command.stream_read.status = B_USB_RAW_STATUS_ABORTED;
+			break;
+		}
+
+		case B_USB_RAW_COMMAND_ISOCHRONOUS_STREAM_STOP:
+		{
+			usb_raw_stream_stop(device);
+			command.version.status = B_USB_RAW_STATUS_SUCCESS;
+			status = B_OK;
 			break;
 		}
 	}

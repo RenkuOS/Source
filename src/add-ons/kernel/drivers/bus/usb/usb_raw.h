@@ -37,8 +37,29 @@ typedef enum {
 	B_USB_RAW_COMMAND_CONTROL_TRANSFER = 0x4000,
 	B_USB_RAW_COMMAND_INTERRUPT_TRANSFER,
 	B_USB_RAW_COMMAND_BULK_TRANSFER,
-	B_USB_RAW_COMMAND_ISOCHRONOUS_TRANSFER
+	B_USB_RAW_COMMAND_ISOCHRONOUS_TRANSFER,
+
+	// A continuous isochronous IN stream: the driver keeps several transfers
+	// queued at all times and collects what arrives, so that no service
+	// interval is missed between two calls from userland.
+	B_USB_RAW_COMMAND_ISOCHRONOUS_STREAM_START = 0x5000,
+	B_USB_RAW_COMMAND_ISOCHRONOUS_STREAM_READ,
+	B_USB_RAW_COMMAND_ISOCHRONOUS_STREAM_STOP
 } usb_raw_command_id;
+
+
+// What B_USB_RAW_COMMAND_ISOCHRONOUS_STREAM_READ returns is a sequence of
+// these headers, each followed by "length" bytes of packet data. Packets
+// without data are left out.
+typedef struct {
+	uint16								length;
+	uint16								flags;
+} usb_raw_stream_packet;
+
+#define B_USB_RAW_STREAM_PACKET_ERROR	0x0001
+	// the controller reported an error for this packet
+#define B_USB_RAW_STREAM_PACKET_GAP		0x0002
+	// packets before this one were lost (the reader was too slow)
 
 
 typedef enum {
@@ -183,6 +204,27 @@ typedef union {
 		usb_iso_packet_descriptor		*packet_descriptors;
 		uint32							packet_count;
 	} isochronous;
+
+	struct {
+		status_t						status;
+		uint32							interface;
+		uint32							endpoint;
+		uint32							packet_size;
+			// bytes to ask for per service interval
+		uint32							packets_per_transfer;
+		uint32							transfer_count;
+			// number of transfers kept queued
+		uint32							buffer_size;
+			// bytes of received packets to hold for the reader
+	} stream_start;
+
+	struct {
+		status_t						status;
+		void							*data;
+		size_t							length;
+			// in: size of data, out: bytes stored
+		bigtime_t						timeout;
+	} stream_read;
 } usb_raw_command;
 
 #endif // _USB_RAW_H_
