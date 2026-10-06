@@ -26,5 +26,5 @@ SimpleTest MarkdownText :
 	TestMarkdownView.cpp
 	: be shared translation [ TargetLibsupc++ ]
 	;
-	
+
 SubInclude HAIKU_TOP src tests kits shared shake_filter ;
