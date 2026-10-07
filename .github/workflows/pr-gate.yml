@@ -30,28 +30,33 @@ jobs:
     # the summary step below records it. The hard cap is 6 hours.
     timeout-minutes: 240
     strategy:
-      # TEMPORARY — x86 removed from the matrix, 2026-09-03.
+      # INTERIM — 32-bit x86 is built as the x86_gcc2h hybrid, 2026-10-07.
+      # Pure x86 has no upstream package snapshot to build against; see the
+      # matrix comment in toolchain.yml and x86-ci-research.md 11.
       #
-      # Not a D4 decision: D4 still says Tier 1 is x86 and x86_64, and this
-      # divergence is deliberate and visible rather than a quiet policy change.
+      # ADVISORY: branch protection requires "build x86_64" and "boot x86_64"
+      # by name, so the x86_gcc2h legs report but do not block a merge. They
+      # catch C++ that gcc 2.95 cannot compile, which a contributor who only
+      # builds x86_64 will not see. Add them to the required checks once they
+      # have been green for a while.
       #
-      # Why: Haiku fetches build dependencies from
-      #   <url>/build-packages/<sha256 of build/jam/repositories/HaikuPorts/x86>/repo
-      # (RepositoryRules:168). Only snapshots upstream has uploaded exist, and
-      # they have not touched the pure-x86 definition since 2018-05-21, so its
-      # pinned 2016-era packages now 404. Refreshing those pins cannot help:
-      # any edit changes the checksum and therefore the URL, so the result is
-      # still a 404. Verified -- the hash in the failing URL is exactly the
-      # sha256 of that file.
-      #
-      # Restore when one of: we publish our own build-packages snapshot (D2),
-      # or we adopt the x86_gcc2h hybrid whose snapshot upstream does publish,
-      # or the council demotes x86 in D4 for real.
+      #   arch       names the job, artifacts, ISO, and toolchain image tag
+      #   packaging  the primary packaging architecture: object directories
+      #              and the HaikuPorts definition
+      #   secondary  the secondary architecture of a hybrid, or empty
       fail-fast: false
       matrix:
         include:
           - arch: x86_64
+            packaging: x86_64
             triple: x86_64-unknown-haiku
+            secondary: ''
+            secondary_triple: ''
+          - arch: x86_gcc2h
+            packaging: x86_gcc2
+            triple: i586-pc-haiku
+            secondary: x86
+            secondary_triple: i586-pc-haiku
 
     steps:
       - uses: actions/checkout@v4
@@ -112,7 +117,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: generated.${{ matrix.arch }}/download
-          key: hpkg-${{ matrix.arch }}-${{ hashFiles(format('build/jam/repositories/HaikuPorts/{0}', matrix.arch)) }}
+          key: hpkg-${{ matrix.arch }}-${{ hashFiles(format('build/jam/repositories/HaikuPorts/{0}', matrix.packaging)) }}
           restore-keys: |
             hpkg-${{ matrix.arch }}-
 
@@ -159,13 +164,17 @@ jobs:
         env:
           IMAGE: ${{ steps.img.outputs.image }}
           ARCH: ${{ matrix.arch }}
+          PACKAGING: ${{ matrix.packaging }}
           TRIPLE: ${{ matrix.triple }}
+          SECONDARY: ${{ matrix.secondary }}
+          SECONDARY_TRIPLE: ${{ matrix.secondary_triple }}
         run: |
           set -euo pipefail
           START=$(date +%s)
           docker run --rm \
             -v "${PWD}:/src" -w /src \
-            -e ARCH -e TRIPLE -e HOME=/tmp -e TERM=dumb \
+            -e ARCH -e PACKAGING -e TRIPLE -e SECONDARY -e SECONDARY_TRIPLE \
+            -e HOME=/tmp -e TERM=dumb \
             -e HAIKU_REVISION -e HAIKU_IMAGE_LABEL -e RENKUOS_BUILD \
             "${IMAGE}" \
             bash -euo pipefail -c '
@@ -184,9 +193,14 @@ jobs:
               # --distro-compatibility default is required, not cosmetic: we are
               # not the official Haiku distribution and must not generate files
               # claiming their trademarks.
-              ../configure \
-                --cross-tools-prefix "/tools/cross-tools-${ARCH}/bin/${TRIPLE}-" \
-                --distro-compatibility default
+              # The first prefix is the primary compiler. A hybrid adds a
+              # second one for its secondary architecture.
+              set -- --cross-tools-prefix "/tools/cross-tools-${PACKAGING}/bin/${TRIPLE}-"
+              if [ -n "${SECONDARY}" ]; then
+                set -- "$@" --cross-tools-prefix \
+                  "/tools/cross-tools-${SECONDARY}/bin/${SECONDARY_TRIPLE}-"
+              fi
+              ../configure "$@" --distro-compatibility default
               jam -q -j"$(nproc)" @nightly-anyboot
             '
           echo "seconds=$(( $(date +%s) - START ))" >> "$GITHUB_OUTPUT"
@@ -263,6 +277,11 @@ jobs:
   boot:
     name: boot ${{ matrix.arch }}
     needs: build
+    # needs: waits for every build leg, and a job skipped for a failed need
+    # counts as passing a required check. Without this, an advisory x86_gcc2h
+    # build failure would skip "boot x86_64" and let an unbooted x86_64 image
+    # through. A failed x86_64 build still fails here, at the download.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # Blocking. Two runs put the kernel banner at 5s under emulation, so the
@@ -271,7 +290,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: [x86_64]
+        include:
+          - arch: x86_64
+            qemu: qemu-system-x86_64
+          - arch: x86_gcc2h
+            qemu: qemu-system-i386
 
     steps:
       - uses: actions/download-artifact@v4
@@ -282,7 +305,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq qemu-system-x86
-          qemu-system-x86_64 --version | head -1
+          ${{ matrix.qemu }} --version | head -1
 
       - name: Boot and watch the serial console
         id: boot
@@ -302,7 +325,7 @@ jobs:
           echo "Booting ${ISO} ($(du -h "${ISO}" | cut -f1)) under TCG"
           : > serial.log
 
-          qemu-system-x86_64 \
+          ${{ matrix.qemu }} \
             -machine pc \
             -accel tcg,thread=multi \
             -smp "$(nproc)" \
