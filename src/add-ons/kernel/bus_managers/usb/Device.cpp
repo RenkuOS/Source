@@ -300,6 +300,17 @@ Device::Device(Object* parent, int8 hubAddress, uint8 hubPort,
 				}
 
 				case USB_DESCRIPTOR_ENDPOINT_SS_COMPANION: {
+					if (currentInterface != NULL
+							&& currentInterface->endpoint_count == 0) {
+						// No endpoint to belong to: it came first, or every
+						// endpoint before it was skipped above as too short.
+						// Drop it like a misplaced one; kept as a generic it
+						// would shift which endpoint each companion is paired
+						// with in InitEndpoints().
+						TRACE_ERROR("found endpoint companion descriptor "
+							"before any endpoint descriptor, ignoring!\n");
+						break;
+					}
 					if (currentInterface != NULL) {
 						usb_endpoint_descriptor* desc
 							= currentInterface->endpoint[
