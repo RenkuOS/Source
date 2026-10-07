@@ -15,13 +15,15 @@
 #include <algorithm>
 
 
-// The bounded per-port retry/power-cycle backoff below is enabled only on
-// x86 32-bit. It exists for the early-boot behaviour of old 32-bit-only
-// machines (the Sony VAIO P's Intel SCH companions and its EC-powered
-// internal devices), and that is the only place it has been exercised;
-// every other architecture keeps servicing a failing port on every poll,
-// exactly as before. The compiler drops the guarded code entirely.
-#ifdef __i386__
+// The bounded per-port retry/power-cycle backoff below is enabled on x86,
+// 32- and 64-bit. It was written for the early-boot behaviour of old
+// 32-bit-only machines (the Sony VAIO P's Intel SCH companions and its
+// EC-powered internal devices); on x86_64 it stops a device that keeps
+// failing setup from being reset several times a second for as long as it
+// stays plugged in. Those are the only places it has been exercised; every
+// other architecture keeps servicing a failing port on every poll, exactly
+// as before. The compiler drops the guarded code entirely.
+#if defined(__i386__) || defined(__x86_64__)
 static const bool kBoundedPortRetries = true;
 #else
 static const bool kBoundedPortRetries = false;
