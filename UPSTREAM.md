@@ -23,6 +23,7 @@ upstream honest and the fix attributable.
 | 2026-09-16 | `fcdee3a787` | deskbar: don't loop forever if replicant is larger than the row itself | Fixes a Deskbar hang (#19394): a replicant wider than the tray made the placement loop spin at 100% CPU, so Deskbar never appeared |
 | 2026-09-19 | `e9ade57f61` | ntfs: fix vnode leak on mkdir | Creating one directory on an NTFS volume leaked a vnode reference, so the volume could never be unmounted again ("inode is still referenced") |
 | 2026-09-21 | `056cd81185` | deskbar: fix replicant loop guard regression on first empty row | Follow-up to `fcdee3a787`: with the clock shown, a replicant too wide for the first row but narrow enough for a full row was forced onto the first row and overlapped the clock, instead of moving to the second row |
+| 2026-10-06 | `d1111656df` | usb_manager: check descriptors length integrity | A device reporting a malformed configuration could make the USB stack overread its descriptor buffer: a total length shorter than the configuration header, descriptors of length 1, or interface and endpoint descriptors shorter than their structures. Also refuses a device with no configurations |
 
 ## Declined
 
