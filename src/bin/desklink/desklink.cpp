@@ -7,6 +7,7 @@
  *		François Revol
  *		Marcus Overhagen
  *		Jonas Sundström
+ *		Fabio Tomat
  */
 
 //! VolumeControl and link items in Deskbar
@@ -23,6 +24,10 @@
 #include <MimeType.h>
 #include <Roster.h>
 #include <String.h>
+#include <Message.h>
+#include <Path.h>
+#include <File.h>
+#include <FindDirectory.h>
 
 #include "DeskButton.h"
 #include "VolumeWindow.h"
@@ -47,6 +52,28 @@ our_image(image_info& image)
 	return B_ERROR;
 }
 
+static void
+EscapeArgument(const char* arg, BString& outStr)
+{
+	if (arg == NULL)
+		return;
+
+	BString temp(arg);
+	
+	// Controlla se servono le virgolette (spazi, parentesi, ecc.)
+	bool needsQuotes = (temp.FindFirst(' ') != B_ERROR 
+		|| temp.FindFirst('(') != B_ERROR 
+		|| temp.FindFirst(')') != B_ERROR
+		|| temp.FindFirst('"') != B_ERROR);
+
+	if (needsQuotes) {
+		// Escape di eventuali virgolette doppie esistenti all'interno dell'argomento
+		temp.ReplaceAll("\"", "\\\"");
+		outStr << "\"" << temp << "\"";
+	} else {
+		outStr << temp;
+	}
+}
 int
 main(int argc, char **argv)
 {
