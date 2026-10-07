@@ -38,28 +38,27 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 240
     strategy:
-      # TEMPORARY — x86 removed from the matrix, 2026-09-03.
+      # INTERIM — 32-bit x86 is built as the x86_gcc2h hybrid, 2026-10-07.
+      # Pure x86 has no upstream package snapshot to build against; see the
+      # matrix comment in toolchain.yml and x86-ci-research.md 11.
       #
-      # Not a D4 decision: D4 still says Tier 1 is x86 and x86_64, and this
-      # divergence is deliberate and visible rather than a quiet policy change.
-      #
-      # Why: Haiku fetches build dependencies from
-      #   <url>/build-packages/<sha256 of build/jam/repositories/HaikuPorts/x86>/repo
-      # (RepositoryRules:168). Only snapshots upstream has uploaded exist, and
-      # they have not touched the pure-x86 definition since 2018-05-21, so its
-      # pinned 2016-era packages now 404. Refreshing those pins cannot help:
-      # any edit changes the checksum and therefore the URL, so the result is
-      # still a 404. Verified -- the hash in the failing URL is exactly the
-      # sha256 of that file.
-      #
-      # Restore when one of: we publish our own build-packages snapshot (D2),
-      # or we adopt the x86_gcc2h hybrid whose snapshot upstream does publish,
-      # or the council demotes x86 in D4 for real.
+      #   arch       names the job, artifacts, ISO, and toolchain image tag
+      #   packaging  the primary packaging architecture: object directories,
+      #              the HaikuPorts definition, and the repository path
+      #   secondary  the secondary architecture of a hybrid, or empty
       fail-fast: false
       matrix:
         include:
           - arch: x86_64
+            packaging: x86_64
             triple: x86_64-unknown-haiku
+            secondary: ''
+            secondary_triple: ''
+          - arch: x86_gcc2h
+            packaging: x86_gcc2
+            triple: i586-pc-haiku
+            secondary: x86
+            secondary_triple: i586-pc-haiku
     steps:
       - uses: actions/checkout@v4
         with:
@@ -89,7 +88,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: generated.${{ matrix.arch }}/download
-          key: hpkg-${{ matrix.arch }}-${{ hashFiles(format('build/jam/repositories/HaikuPorts/{0}', matrix.arch)) }}
+          key: hpkg-${{ matrix.arch }}-${{ hashFiles(format('build/jam/repositories/HaikuPorts/{0}', matrix.packaging)) }}
           restore-keys: |
             hpkg-${{ matrix.arch }}-
 
@@ -130,11 +129,15 @@ jobs:
         env:
           IMAGE: ${{ steps.img.outputs.image }}
           ARCH: ${{ matrix.arch }}
+          PACKAGING: ${{ matrix.packaging }}
           TRIPLE: ${{ matrix.triple }}
+          SECONDARY: ${{ matrix.secondary }}
+          SECONDARY_TRIPLE: ${{ matrix.secondary_triple }}
         run: |
           set -euo pipefail
           docker run --rm -v "${PWD}:/src" -w /src \
-            -e ARCH -e TRIPLE -e HOME=/tmp -e TERM=dumb \
+            -e ARCH -e PACKAGING -e TRIPLE -e SECONDARY -e SECONDARY_TRIPLE \
+            -e HOME=/tmp -e TERM=dumb \
             -e HAIKU_REVISION -e HAIKU_IMAGE_LABEL -e RENKUOS_BUILD \
             "${IMAGE}" \
             bash -euo pipefail -c '
@@ -150,9 +153,14 @@ jobs:
               printf "tries = 10\nwaitretry = 5\ntimeout = 60\nretry_connrefused = on\n" > /tmp/.wgetrc
               mkdir -p "generated.${ARCH}"
               cd "generated.${ARCH}"
-              ../configure \
-                --cross-tools-prefix "/tools/cross-tools-${ARCH}/bin/${TRIPLE}-" \
-                --distro-compatibility default
+              # The first prefix is the primary compiler. A hybrid adds a
+              # second one for its secondary architecture.
+              set -- --cross-tools-prefix "/tools/cross-tools-${PACKAGING}/bin/${TRIPLE}-"
+              if [ -n "${SECONDARY}" ]; then
+                set -- "$@" --cross-tools-prefix \
+                  "/tools/cross-tools-${SECONDARY}/bin/${SECONDARY_TRIPLE}-"
+              fi
+              ../configure "$@" --distro-compatibility default
               jam -q -j"$(nproc)" @nightly-anyboot
               # The package repository: repo, repo.info, repo.sha256 and the
               # system hpkgs. This is what pkgman and HaikuDepot would update
@@ -181,13 +189,15 @@ jobs:
         id: repo
         run: |
           set -uo pipefail
-          SRC="generated.${{ matrix.arch }}/objects/haiku/${{ matrix.arch }}/packaging/repositories/Renku"
+          SRC="generated.${{ matrix.arch }}/objects/haiku/${{ matrix.packaging }}/packaging/repositories/Renku"
           if [ ! -d "${SRC}" ]; then
             echo "::warning::no repository tree at ${SRC}"
             exit 0
           fi
           mkdir -p repo-out
-          cp -r "${SRC}" "repo-out/${{ matrix.arch }}"
+          # Named for the packaging architecture, because that is what the
+          # baseurl in src/data/repository_infos/renku ends with.
+          cp -r "${SRC}" "repo-out/${{ matrix.packaging }}"
           echo "size=$(du -sh repo-out | cut -f1)" >> "$GITHUB_OUTPUT"
           echo "packages=$(find repo-out -name '*.hpkg' | wc -l)" >> "$GITHUB_OUTPUT"
           echo "  tree:"; find repo-out -maxdepth 3 -not -name '*.hpkg' | sed 's/^/    /'
@@ -229,12 +239,19 @@ jobs:
   boot:
     name: boot ${{ matrix.arch }}
     needs: build
+    # needs: waits for every build leg. Without this, one failed arch would
+    # skip the boot of every other arch, and so stop its nightly.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        arch: [x86_64]
+        include:
+          - arch: x86_64
+            qemu: qemu-system-x86_64
+          - arch: x86_gcc2h
+            qemu: qemu-system-i386
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -256,7 +273,7 @@ jobs:
             echo "::error::No RenkuOS image in the artifact."; find . -maxdepth 2 -type f | head; exit 1
           fi
           : > serial.log
-          qemu-system-x86_64 -machine pc -accel tcg,thread=multi -smp "$(nproc)" \
+          ${{ matrix.qemu }} -machine pc -accel tcg,thread=multi -smp "$(nproc)" \
             -m 2048 -cdrom "${ISO}" -boot d -display none \
             -serial file:serial.log -no-reboot &
           QEMU=$!
@@ -317,7 +334,7 @@ jobs:
           set -uo pipefail
           mkdir -p staging
           published=""
-          for arch in x86_64; do
+          for arch in x86_64 x86_gcc2h; do
             if gh run download "${{ github.run_id }}" --repo "${{ github.repository }}" \
                  --name "boot-pass-${arch}" --dir "/tmp/pass-${arch}" 2>/dev/null; then
               gh run download "${{ github.run_id }}" --repo "${{ github.repository }}" \
@@ -355,6 +372,9 @@ jobs:
             echo "| Commit | ${{ github.sha }} |"
             echo "| Architectures | ${{ steps.collect.outputs.arches }} |"
             echo "| Built | $(date -u '+%Y-%m-%d %H:%M UTC') |"
+            echo ""
+            echo "\`x86_gcc2h\` is the 32-bit image: gcc2 for the system, GCC 13 for x86"
+            echo "secondary packages."
             echo ""
             echo "Every image here booted under emulation without entering the kernel"
             echo "debugger. That is the extent of the automated testing so far — it is"

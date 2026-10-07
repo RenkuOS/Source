@@ -51,30 +51,27 @@ jobs:
     # Under the 6-hour hard cap with room to spare.
     timeout-minutes: 330
     strategy:
-      # TEMPORARY — x86 removed from the matrix, 2026-09-03.
+      # INTERIM — 32-bit x86 is built as the x86_gcc2h hybrid, 2026-10-07.
       #
-      # Not a D4 decision: D4 still says Tier 1 is x86 and x86_64, and this
-      # divergence is deliberate and visible rather than a quiet policy change.
-      #
-      # Why: Haiku fetches build dependencies from
+      # Pure x86 cannot build: Haiku fetches build dependencies from
       #   <url>/build-packages/<sha256 of build/jam/repositories/HaikuPorts/x86>/repo
-      # (RepositoryRules:168). Only snapshots upstream has uploaded exist, and
-      # they have not touched the pure-x86 definition since 2018-05-21, so its
-      # pinned 2016-era packages now 404. Refreshing those pins cannot help:
-      # any edit changes the checksum and therefore the URL, so the result is
-      # still a 404. Verified -- the hash in the failing URL is exactly the
-      # sha256 of that file.
+      # (RepositoryRules:168), and upstream has not published a snapshot for
+      # that definition since 2018, so it 404s. Upstream does publish the
+      # x86_gcc2 snapshot, so the hybrid builds as is: gcc 2.95 for the
+      # primary architecture and GCC 13 for the x86 secondary.
       #
-      # Restore when one of: we publish our own build-packages snapshot (D2),
-      # or we adopt the x86_gcc2h hybrid whose snapshot upstream does publish,
-      # or the council demotes x86 in D4 for real.
-      # Kept even with a single leg, so adding one back cannot mask a failure.
+      # Whether to keep gcc2 or move to pure x86 is still open in D4. See
+      # x86-ci-research.md 11 for the cost of each.
       fail-fast: false
       matrix:
         include:
           - tag: x86_64
             architecture: x86_64
             secondary: ''
+          # Two compilers, so expect roughly twice the x86_64 time.
+          - tag: x86_gcc2h
+            architecture: x86_gcc2
+            secondary: x86
 
     steps:
       - uses: actions/checkout@v4
@@ -166,6 +163,7 @@ jobs:
             echo "|---|---|"
             echo "| Image | \`${{ steps.cfg.outputs.image }}:${{ matrix.tag }}-${{ steps.cfg.outputs.buildtools_rev }}\` |"
             echo "| Architecture | \`${{ matrix.architecture }}\` |"
+            echo "| Secondary | \`${{ matrix.secondary || 'none' }}\` |"
             echo "| buildtools | \`${{ steps.cfg.outputs.buildtools_rev }}\` |"
             echo "| haiku | \`${{ steps.cfg.outputs.haiku_rev }}\` |"
             echo "| Digest | \`${{ steps.build.outputs.digest || 'n/a' }}\` |"
