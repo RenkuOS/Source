@@ -24,6 +24,7 @@ upstream honest and the fix attributable.
 | 2026-09-19 | `e9ade57f61` | ntfs: fix vnode leak on mkdir | Creating one directory on an NTFS volume leaked a vnode reference, so the volume could never be unmounted again ("inode is still referenced") |
 | 2026-09-21 | `056cd81185` | deskbar: fix replicant loop guard regression on first empty row | Follow-up to `fcdee3a787`: with the clock shown, a replicant too wide for the first row but narrow enough for a full row was forced onto the first row and overlapped the clock, instead of moving to the second row |
 | 2026-10-06 | `d1111656df` | usb_manager: check descriptors length integrity | A device reporting a malformed configuration could make the USB stack overread its descriptor buffer: a total length shorter than the configuration header, descriptors of length 1, or interface and endpoint descriptors shorter than their structures. Also refuses a device with no configurations |
+| 2026-10-07 | `7f32a78c62` | radeon_hd: fix crtc control register state tracing on evergreen+ | The mode-set register dump read the pre-Evergreen D1/D2 addresses on every card, so it showed nothing useful on DCE4 and later. Debug output only (`TRACE_MODE`). Taken ahead of the RadeonHD port, which edits the same files |
 
 ## Declined
 
