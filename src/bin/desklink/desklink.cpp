@@ -7,6 +7,7 @@
  *		François Revol
  *		Marcus Overhagen
  *		Jonas Sundström
+ *		Fabio Tomat
  */
 
 //! VolumeControl and link items in Deskbar
@@ -23,6 +24,10 @@
 #include <MimeType.h>
 #include <Roster.h>
 #include <String.h>
+#include <Message.h>
+#include <Path.h>
+#include <File.h>
+#include <FindDirectory.h>
 
 #include "DeskButton.h"
 #include "VolumeWindow.h"
@@ -47,9 +52,30 @@ our_image(image_info& image)
 	return B_ERROR;
 }
 
+static void
+EscapeArgument(const char* arg, BString& outStr)
+{
+	if (arg == NULL)
+		return;
 
+	BString temp(arg);
+	
+	// Controlla se servono le virgolette (spazi, parentesi, ecc.)
+	bool needsQuotes = (temp.FindFirst(' ') != B_ERROR 
+		|| temp.FindFirst('(') != B_ERROR 
+		|| temp.FindFirst(')') != B_ERROR
+		|| temp.FindFirst('"') != B_ERROR);
+
+	if (needsQuotes) {
+		// Escape di eventuali virgolette doppie esistenti all'interno dell'argomento
+		temp.ReplaceAll("\"", "\\\"");
+		outStr << "\"" << temp << "\"";
+	} else {
+		outStr << temp;
+	}
+}
 int
-main(int, char **argv)
+main(int argc, char **argv)
 {
 	BApplication app(kAppSignature);
 	bool atLeastOnePath = false;
@@ -57,7 +83,34 @@ main(int, char **argv)
 	BList actionList;
 	BDeskbar deskbar;
 	status_t err = B_OK;
+	
+	BMessage persistMsg;
+	BPath settingsDir;
+	if (find_directory(B_USER_SETTINGS_DIRECTORY, &settingsDir) == B_OK) {
+		BPath ROdsklnkPth(settingsDir.Path(), "desklink");
+		BFile ROdsklnkFile(ROdsklnkPth.Path(), B_READ_ONLY);
+		if (ROdsklnkFile.InitCheck() == B_OK) {
+			//il file esiste! aggiorniamolo così poi aggiungeremo invece di sovrascrivere
+			if (persistMsg.Unflatten(&ROdsklnkFile) != B_OK)
+				printf("Error reading previously saved desklinks\ngonna overwrite it!");
+		}
+	}
 
+	BMessage* appToSave = new BMessage();
+	// TODO: caricare il vecchio persistMsg flattenizzato su disco
+	BString completeCmd;
+	for (int32 i = 1; argv[i] != NULL; i++) {
+		EscapeArgument(argv[i], completeCmd);
+
+		if (argv[i + 1] != NULL)
+			completeCmd << " ";
+	}
+
+	appToSave->AddString("completeCmd", completeCmd);
+	
+	bool correctCmd = true;
+	
+	bool removePresence = false;
 	for (int32 i = 1; argv[i]!=NULL; i++) {
 		if (strcmp(argv[i], "--help") == 0)
 			break;
@@ -118,6 +171,47 @@ main(int, char **argv)
 				found++;
 			}
 			printf("Removed %" B_PRId32 " items.\n", found);
+			// --- AGGIORNAMENTO FILE DI PERSISTENZA ---
+			if (found > 0) {
+				BPath settingsDir;
+				if (find_directory(B_USER_SETTINGS_DIRECTORY, &settingsDir) == B_OK) {
+					BPath desklinkPath(settingsDir.Path(), "desklink");
+					BFile desklinkFile(desklinkPath.Path(), B_READ_WRITE);
+
+					if (desklinkFile.InitCheck() == B_OK) {
+						BMessage persistMsg;
+						if (persistMsg.Unflatten(&desklinkFile) == B_OK) {
+							type_code type;
+							int32 appCount = 0;
+							persistMsg.GetInfo("app", &type, &appCount);
+
+							bool modified = false;
+
+							// Scorriamo tutti i comandi salvati (al contrario per rimozione sicura)
+							for (int32 k = appCount - 1; k >= 0; k--) {
+								BMessage appMsg;
+								if (persistMsg.FindMessage("app", k, &appMsg) == B_OK) {
+									const char* cmdStr = NULL;
+									if (appMsg.FindString("refname", &cmdStr) == B_OK) {
+										// Se il comando salvato conteneva il nome del replicant rimosso
+										if (strcmp(cmdStr, replicant.String()) == 0) {
+											persistMsg.RemoveData("app", k);
+											modified = true;
+										}
+									}
+								}
+							}
+
+							if (modified) {
+								// Svuotiamo il file e riscriviamo il BMessage aggiornato
+								desklinkFile.SetSize(0);
+								desklinkFile.Seek(0, SEEK_SET);
+								persistMsg.Flatten(&desklinkFile);
+							}
+						}
+					}
+				}
+			}
 			return err;
 		}
 
@@ -126,10 +220,18 @@ main(int, char **argv)
 			int32 index = title->FindFirst(':');
 			if (index <= 0) {
 				printf("desklink: usage: cmd=title:action\n");
+				correctCmd=false;
+				printf("          this desklink won't be persistent\n");
 			} else {
 				title->Truncate(index);
 				BString *action = new BString(argv[i] + 4);
 				action->Remove(0, index+1);
+				const char* lookfor = "desklink --remove";
+				if (action->FindFirst(lookfor)>-1) removePresence=true;
+				BMessage* param = new BMessage();
+				param->AddString("title",title->String());
+				param->AddString("action",action->String());
+				appToSave->AddMessage("parameter",param);
 				titleList.AddItem(title);
 				actionList.AddItem(action);
 			}
@@ -152,6 +254,16 @@ main(int, char **argv)
 			printf("desklink: cannot find '%s'\n", argv[i]);
 			return 1;
 		}
+		
+		if (!removePresence) {
+			//aggiungiamo sempre una rimozione
+			BString *remtitle = new BString("Remove replicant");
+			BString *remaction = new BString("desklink --remove=");
+			remaction->Append(ref.name);
+			titleList.AddItem(remtitle);
+			actionList.AddItem(remaction);
+		}
+		appToSave->AddString("refname", ref.name);
 
 		err = deskbar.AddItem(&ref);
 		if (err != B_OK) {
@@ -162,6 +274,39 @@ main(int, char **argv)
 			if (err != B_OK) {
 				printf("desklink: Deskbar refuses link to '%s': %s\n", argv[i], strerror(err));
 				return 1;
+			}
+			// se correctCmd aggiungere la nuova app a persistMSG e flattenizzarla su disco
+			if (correctCmd) {
+				//prima verifichiamo che la nostra app non sia già presente, verificando il comando
+				BMessage fApp;
+				bool tosave = true;
+				type_code type;
+				int32 count = 0;
+				persistMsg.GetInfo("app", &type, &count);
+				for (int32 v=0; v<count; v++) {
+					if (persistMsg.FindMessage("app",v, &fApp)==B_OK) {
+						const char* savedCmd;
+						if (fApp.FindString("completeCmd", &savedCmd)==B_OK){
+							if (strcmp(savedCmd, completeCmd.String()) == 0){
+								tosave = false;
+								printf("This app is already persistent\n");
+							}
+						}
+					}
+				}
+				if (tosave) {
+					persistMsg.AddMessage("app",appToSave);
+					BPath desklinkPath(settingsDir.Path(), "desklink");
+					BFile desklinkFile(desklinkPath.Path(), B_WRITE_ONLY | B_CREATE_FILE | B_ERASE_FILE);
+					if (desklinkFile.InitCheck() != B_OK) {
+						return desklinkFile.InitCheck();
+					}
+
+					err = persistMsg.Flatten(&desklinkFile);
+					if (err!=B_OK){
+						printf("Unable to save desklink persistence\n");
+					}
+				}
 			}
 		}
 
