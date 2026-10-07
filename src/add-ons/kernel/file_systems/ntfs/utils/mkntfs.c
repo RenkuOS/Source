@@ -1593,7 +1593,7 @@ static int insert_resident_attr_in_mft_record(MFT_RECORD *m,
 	m->next_attr_instance = cpu_to_le16((le16_to_cpu(m->next_attr_instance)
 			+ 1) & 0xffff);
 	a->value_length = cpu_to_le32(val_len);
-	a->value_offset = cpu_to_le16(24 + ((name_len + 7) & ~7));
+	a->value_offset = cpu_to_le16(24 + ((name_len*2 + 7) & ~7));
 	a->resident_flags = res_flags;
 	a->reservedR = 0;
 	if (name_len)
@@ -4272,14 +4272,6 @@ static BOOL mkntfs_create_root_structures(void)
 	m = (MFT_RECORD*)(g_buf + 4 * g_vol->mft_record_size);
 	err = add_attr_data(m, NULL, 0, CASE_SENSITIVE, const_cpu_to_le16(0),
 			(u8*)g_vol->attrdef, g_vol->attrdef_len);
-	/*
-	 * The $Info only exists since Windows 8, but it apparently
-	 * does not disturb chkdsk from earlier versions.
-	 */
-	if (!err)
-		err = add_attr_data(m, "$Info", 5, CASE_SENSITIVE,
-			const_cpu_to_le16(0),
-			(u8*)g_upcaseinfo, sizeof(struct UPCASEINFO));
 	if (!err)
 		err = create_hardlink(g_index_block, root_ref, m,
 				MK_LE_MREF(FILE_AttrDef, FILE_AttrDef),
@@ -4510,6 +4502,14 @@ static BOOL mkntfs_create_root_structures(void)
 	m = (MFT_RECORD*)(g_buf + 0xa * g_vol->mft_record_size);
 	err = add_attr_data(m, NULL, 0, CASE_SENSITIVE, const_cpu_to_le16(0),
 			(u8*)g_vol->upcase, g_vol->upcase_len << 1);
+	/*
+	 * The $Info only exists since Windows 8, but it apparently
+	 * does not disturb chkdsk from earlier versions.
+	 */
+	if (!err)
+		err = add_attr_data(m, "$Info", 5, CASE_SENSITIVE,
+			const_cpu_to_le16(0),
+			(u8*)g_upcaseinfo, sizeof(struct UPCASEINFO));
 	if (!err)
 		err = create_hardlink(g_index_block, root_ref, m,
 				MK_LE_MREF(FILE_UpCase, FILE_UpCase),
