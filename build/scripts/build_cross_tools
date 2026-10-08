@@ -126,7 +126,9 @@ CC_VERSION=`$CC -dumpversion`
 if [ ${CC_VERSION%%.*} -ge 10 ]; then
 	export CC="$CC -fcommon"
 fi
-if [ ${CC_VERSION%%.*} -ge 13 ]; then
+if [ ${CC_VERSION%%.*} -ge 5 ]; then
+	# GCC 5 changed the default from gnu89 to gnu11, whose C99 inline rules
+	# leave c-lex.c without a definition of is_reserved_word.
 	export CC="$CC -std=gnu89"
 fi
 
