@@ -162,13 +162,13 @@ public:
 	virtual					~BMarkdownView();
 
 	static	BArchivable*	Instantiate(BMessage* archive);
-	virtual	status_t		Archive(BMessage* archive, bool deep = true) const override;
+	virtual	status_t		Archive(BMessage* archive, bool deep = true) const;
 	
-	virtual void			Draw(BRect updateRect) override;
-	virtual void			FrameResized(float width, float height) override;
+	virtual void			Draw(BRect updateRect);
+	virtual void			FrameResized(float width, float height);
 	
-	virtual void			MouseDown(BPoint where) override;
-	virtual void			MouseMoved(BPoint where, uint32 transit, const BMessage* dragMessage) override;
+	virtual void			MouseDown(BPoint where);
+	virtual void			MouseMoved(BPoint where, uint32 transit, const BMessage* dragMessage);
 
 	void					InsertRaw(const char* text);
 	void					InsertRaw(const char* text, int32 length);
