@@ -43,6 +43,8 @@ class SdhciBus {
 			bool				PowerOn();
 			void				PowerOff();
 			void				RecoverError();
+
+			status_t			_WaitDataLineIdle(bigtime_t timeout);
 	static	status_t			_WorkerThread(void*);
 
 	private:
@@ -169,10 +171,12 @@ class ClockControl
 		uint16_t Bits() { return fBits; }
 
 		uint16_t SetDivider(uint16_t divider) {
-			if (divider == 1)
+			// The register holds half the divider. Round up, so that the
+			// resulting clock is never faster than requested.
+			if (divider <= 1)
 				divider = 0;
 			else
-				divider /= 2;
+				divider = (divider + 1) / 2;
 			uint16_t bits = fBits & ~0xffc0;
 			bits |= divider << 8;
 			bits |= (divider >> 8) & 0xc0;
