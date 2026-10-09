@@ -285,7 +285,7 @@ typedef struct {
 #ifdef B_HAIKU_64_BIT
 	uint32		padding[1]; // align on 128
 #else
-	uint32		padding[5]; // align on 128
+	uint32		padding[4]; // align on 128
 #endif
 } itd_entry;
 
