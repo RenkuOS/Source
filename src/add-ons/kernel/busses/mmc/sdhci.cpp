@@ -55,6 +55,7 @@ SdhciBus::SdhciBus(struct registers* registers, uint8_t irq, bool poll)
 	:
 	fRegisters(registers),
 	fIrq(irq),
+	fWorkerThread(0),
 	fCardType(CARD_TYPE_UNKNOWN)
 {
 	if (irq == 0 || irq == 0xff) {
@@ -154,17 +155,20 @@ SdhciBus::~SdhciBus()
 {
 	TerminateBus();
 
+	// Stop the polling thread first: it reads the registers, which are
+	// unmapped below. (This used to happen after unmapping them.)
+	fStatus = B_SHUTTING_DOWN;
+	status_t result;
+	if (fWorkerThread > 0)
+		wait_for_thread(fWorkerThread, &result);
+
 	if (fIrq != 0)
 		remove_io_interrupt_handler(fIrq, sdhci_generic_interrupt, this);
 
 	area_id regs_area = area_for(fRegisters);
 	delete_area(regs_area);
 
-	fStatus = B_SHUTTING_DOWN;
 
-	status_t result;
-	if (fWorkerThread != 0)
-		wait_for_thread(fWorkerThread, &result);
 }
 
 
@@ -181,6 +185,28 @@ SdhciBus::DisableInterrupts()
 {
 	fRegisters->interrupt_status_enable = 0;
 	fRegisters->interrupt_signal_enable = 0;
+}
+
+
+// Everything except the card insertion and removal events, which must not be
+// lost when cleaning up after an error
+static const uint32 kClearableStatusBits = ~(uint32)(SDHCI_INT_CARD_INS
+	| SDHCI_INT_CARD_REM | SDHCI_INT_CARD_STATUS);
+
+
+status_t
+SdhciBus::_WaitDataLineIdle(bigtime_t timeout)
+{
+	bigtime_t deadline = system_time() + timeout;
+	bigtime_t delay = 5;
+	while (fRegisters->present_state.DataInhibit()) {
+		if (system_time() >= deadline)
+			return B_TIMED_OUT;
+		snooze(delay);
+		if (delay < 1000)
+			delay *= 2;
+	}
+	return B_OK;
 }
 
 
@@ -209,14 +235,6 @@ SdhciBus::ExecuteCommand(uint8_t command, uint32_t argument, uint32_t* response)
 		TRACE_ALWAYS("Command execution impossible, command inhibit\n");
 		return B_BUSY;
 	}
-	if (fRegisters->present_state.DataInhibit()) {
-		TRACE_ALWAYS("Command execution unwise, data inhibit\n");
-		return B_BUSY;
-	}
-
-	// Get ready to accet interrupts that will occur during the command
-	ConditionVariableEntry waiter;
-	fInterruptNotifier.Add(&waiter);
 
 	uint32_t replyType;
 	uint16 transferMode = 0;
@@ -290,17 +308,27 @@ SdhciBus::ExecuteCommand(uint8_t command, uint32_t argument, uint32_t* response)
 			return B_BAD_DATA;
 	}
 
-	// Check if DATA line is available (if needed)
+	// Check if DATA line is available (if needed). Commands without a data
+	// phase or busy signal (for example CMD13) can always be sent.
+	//
+	// This used to return B_BUSY right away. After a single transfer that did
+	// not complete, every later command then failed and the bus never
+	// recovered, so wait a bit and reset the data line instead.
 	if ((replyType & Command::k32BitResponseCheckBusy) != 0
-		&& command != SD_STOP_TRANSMISSION && command != SD_IO_ABORT) {
-		if (fRegisters->present_state.DataInhibit()) {
-			ERROR("Execution aborted, data inhibit\n");
-			return B_BUSY;
-		}
+		&& command != SD_STOP_TRANSMISSION && command != SD_IO_ABORT
+		&& fRegisters->present_state.DataInhibit()
+		&& _WaitDataLineIdle(500000) != B_OK) {
+		ERROR("data line still busy before command %d (state %08" B_PRIx32
+			"), resetting it\n", command, fRegisters->present_state.Bits());
+		fRegisters->software_reset.ResetDataLine();
 	}
 
 	if (fRegisters->present_state.CommandInhibit())
 		panic("Command line busy at start of execute command\n");
+
+	// Get ready to accept interrupts that will occur during the command
+	ConditionVariableEntry waiter;
+	fInterruptNotifier.Add(&waiter);
 
 	fRegisters->argument = argument;
 
@@ -312,11 +340,20 @@ SdhciBus::ExecuteCommand(uint8_t command, uint32_t argument, uint32_t* response)
 
 	// Wait for command response to be available ("command complete" interrupt)
 	TRACE("Wait for command complete...");
+	int rounds = 0;
 	do {
 		status_t result = waiter.Wait(B_RELATIVE_TIMEOUT, 1000000);
 		if (result == B_TIMED_OUT) {
 			TRACE("Command complete interrupt did not trigger for a while, status %x\n",
 				fRegisters->interrupt_status);
+			if (++rounds >= 5 && fCommandResult == 0) {
+				ERROR("no response to command %d after 5s (int status %08"
+					B_PRIx32 ", state %08" B_PRIx32 "), resetting\n", command,
+					fRegisters->interrupt_status,
+					fRegisters->present_state.Bits());
+				fRegisters->software_reset.ResetCommandAndDataLines();
+				return B_TIMED_OUT;
+			}
 		} else if (result != B_OK)
 			panic("sdhci: Failed to wait for command complete: %s", strerror(result));
 
@@ -331,7 +368,10 @@ SdhciBus::ExecuteCommand(uint8_t command, uint32_t argument, uint32_t* response)
 
 	if (fCommandResult & SDHCI_INT_ERROR) {
 		// TODO is it a good idea to clear interrupts here from outside the interrupt handler?
-		fRegisters->interrupt_status |= fCommandResult;
+		// Write-1-to-clear register: write only the bits to acknowledge. A
+		// read-modify-write ("|=") would also clear bits that arrived in the
+		// meantime, without anybody having seen them.
+		fRegisters->interrupt_status = fCommandResult & kClearableStatusBits;
 		if (fCommandResult & SDHCI_INT_COMMAND_TIMEOUT) {
 			ERROR("Command execution timed out\n");
 			// At this point, the "command inhibit" bit is not set yet, it will be set only after
@@ -377,20 +417,21 @@ SdhciBus::ExecuteCommand(uint8_t command, uint32_t argument, uint32_t* response)
 
 	if ((replyType == Command::kR1bType)
 			&& (fCommandResult & SDHCI_INT_TRANSFER_MASK) == 0) {
-		// R1b commands may use the data line so we must wait for the
-		// "transfer complete" interrupt here.
+		// R1b commands may use the data line so we must wait for the busy
+		// signal on DAT0 to end. This used to wait forever, which hung the
+		// whole bus if the card never released the line.
 		TRACE("Waiting for data line...\n");
-		fInterruptNotifier.Add(&waiter);
-		while (fRegisters->present_state.DataInhibit()) {
-			status_t result = waiter.Wait();
-			if (result != B_OK)
-				panic("sdhci: Failed to wait for data line release: %s", strerror(result));
-			fInterruptNotifier.Add(&waiter);
+		if (_WaitDataLineIdle(2000000) != B_OK) {
+			ERROR("busy signal after command %d did not end (state %08"
+				B_PRIx32 "), resetting the data line\n", command,
+				fRegisters->present_state.Bits());
+			fRegisters->software_reset.ResetDataLine();
+			return B_TIMED_OUT;
 		}
 		TRACE("Dataline is released.\n");
 	}
 
-	ERROR("Command execution %d complete\n", command);
+	TRACE("Command execution %d complete\n", command);
 	return B_OK;
 }
 
@@ -421,8 +462,14 @@ SdhciBus::SetClock(int kilohertz, bool allowAuto)
 	}
 
 	int base_clock = fRegisters->capabilities.BaseClockFrequency();
-	// Try to get as close to 400kHz as possible, but not faster
-	int divider = base_clock * 1000 / kilohertz;
+	// Try to get as close to the requested frequency as possible, but not
+	// faster: round the divider up. (It used to be rounded down, which went
+	// unnoticed for 400kHz and 25MHz, which divide the usual base clocks
+	// exactly, but made a 52MHz request run at 100MHz on a 200MHz base.)
+	int divider = (base_clock * 1000 + kilohertz - 1) / kilohertz;
+
+	// The clock to the card must be stopped while the divider changes
+	fRegisters->clock_control.DisableSD();
 
 	if (fRegisters->host_controller_version.specVersion <= 1) {
 		// Old controller only support power of two dividers up to 256,
@@ -717,21 +764,22 @@ SdhciBus::HandleInterrupt()
 		else
 			TRACE("Card removed interrupt, but card is inserted\n");
 
-		fRegisters->interrupt_status |= SDHCI_INT_CARD_REM;
+		fRegisters->interrupt_status = SDHCI_INT_CARD_REM;
 		TRACE("Card removal interrupt handled\n");
 	}
 
 	if ((intmask & SDHCI_INT_CARD_INS) != 0) {
 		// We can get spurious interrupts as the card is inserted or removed,
-		// so check the actual state before acting
+		// so check the actual state before acting. The clock is not touched
+		// here: the scan sets it itself, and changing it from the interrupt
+		// handler can corrupt a command the scan is sending at the same moment.
 		if (fRegisters->present_state.IsCardInserted()) {
-			if (PowerOn())
-				SetClock(400, false);
+			PowerOn();
 			release_sem_etc(fScanSemaphore, 1, B_DO_NOT_RESCHEDULE);
 		} else
 			TRACE("Card insertion interrupt, but card is removed\n");
 
-		fRegisters->interrupt_status |= SDHCI_INT_CARD_INS;
+		fRegisters->interrupt_status = SDHCI_INT_CARD_INS;
 		TRACE("Card presence interrupt handled\n");
 	}
 
@@ -740,7 +788,13 @@ SdhciBus::HandleInterrupt()
 		fCommandResult |= intmask;
 			// Save the status before clearing so the thread can handle it
 
-		fRegisters->interrupt_status |= (intmask & SDHCI_INT_CMD_MASK);
+		// The status register is write-1-to-clear: write only the bits seen
+		// above. It used to be updated with "|=", a read-modify-write that
+		// also cleared any bit set since intmask was read (for example the
+		// transfer complete or buffer ready status of a short transfer),
+		// without recording it anywhere. The transfer then looked like it
+		// never finished.
+		fRegisters->interrupt_status = (intmask & SDHCI_INT_CMD_MASK);
 
 		// Notify the thread
 		fInterruptNotifier.NotifyAll();
@@ -749,14 +803,14 @@ SdhciBus::HandleInterrupt()
 
 	if (intmask & SDHCI_INT_TRANSFER_MASK) {
 		fCommandResult |= intmask;
-		fRegisters->interrupt_status |= (intmask & SDHCI_INT_TRANSFER_MASK);
+		fRegisters->interrupt_status = (intmask & SDHCI_INT_TRANSFER_MASK);
 		fInterruptNotifier.NotifyAll();
 		TRACE("Transfer complete interrupt handled\n");
 	}
 
 	// handling bus power interrupt
 	if (intmask & SDHCI_INT_BUS_POWER) {
-		fRegisters->interrupt_status |= SDHCI_INT_BUS_POWER;
+		fRegisters->interrupt_status = SDHCI_INT_BUS_POWER;
 		TRACE("card is consuming too much power\n");
 	}
 
@@ -764,7 +818,9 @@ SdhciBus::HandleInterrupt()
 	// enabled, so that should always be the case)
 	intmask = fRegisters->interrupt_status;
 	if (intmask != 0) {
-		ERROR("Remaining interrupts at end of handler: %x\n", intmask);
+		// Bits that arrived while the handler was running are left for the
+		// next interrupt (or for the thread polling them), this is expected
+		TRACE("Remaining interrupts at end of handler: %x\n", intmask);
 	}
 
 	return B_HANDLED_INTERRUPT;
@@ -774,19 +830,17 @@ SdhciBus::HandleInterrupt()
 status_t
 SdhciBus::_WorkerThread(void* cookie) {
 	SdhciBus* bus = (SdhciBus*)cookie;
+	bigtime_t delay = 50;
 	while (bus->fStatus != B_SHUTTING_DOWN) {
-		uint32_t intmask = bus->fRegisters->interrupt_status;
-		if (intmask & SDHCI_INT_CMD_CMP) {
-			bus->fCommandResult = intmask;
-			bus->fRegisters->interrupt_status |= (intmask & SDHCI_INT_CMD_MASK);
-			bus->fInterruptNotifier.NotifyAll();
-		}
-		if (intmask & SDHCI_INT_TRANS_CMP) {
-			bus->fCommandResult = intmask;
-			bus->fRegisters->interrupt_status |= SDHCI_INT_TRANS_CMP;
-			bus->fInterruptNotifier.NotifyAll();
-		}
-		snooze(100);
+		// Exactly what the interrupt handler would do. Checking only for
+		// command and transfer complete, as before, missed errors such as a
+		// command timeout, so every probe that timed out waited 5 seconds.
+		// Poll quickly while there is activity, back off to 1ms when idle.
+		if (bus->HandleInterrupt() == B_HANDLED_INTERRUPT)
+			delay = 50;
+		else if (delay < 1000)
+			delay += 50;
+		snooze(delay);
 	}
 	TRACE("poller thread terminating");
 	return B_OK;
