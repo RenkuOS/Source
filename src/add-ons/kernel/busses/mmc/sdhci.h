@@ -189,6 +189,7 @@ class ClockControl
 		bool InternalStable() { return fBits & (1 << 1); }
 		void EnableSD() { fBits |= 1 << 2; }
 		void DisableSD() { fBits &= ~(1 << 2); }
+		bool SDEnabled() { return fBits & (1 << 2); }
 		void EnablePLL() { fBits |= 1 << 3; }
 	private:
 		volatile  uint16_t fBits;

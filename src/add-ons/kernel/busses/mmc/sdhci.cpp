@@ -454,7 +454,11 @@ SdhciBus::Reset()
 void
 SdhciBus::SetClock(int kilohertz, bool allowAuto)
 {
-	if (allowAuto && (fRegisters->host_controller_version.specVersion > 2)) {
+	// Preset values only choose the divider: the clock must already be
+	// running. It is not when the slot was empty at startup and a card was
+	// inserted later, so set it explicitly then.
+	if (allowAuto && (fRegisters->host_controller_version.specVersion > 2)
+		&& fRegisters->clock_control.SDEnabled()) {
 		TRACE("Ignoring set_clock, controller support presets\n");
 		fRegisters->host_control_2 |= (1<<15);
 		TRACE("Host control 2 after enabling preset mode: %x\n", fRegisters->host_control_2);
