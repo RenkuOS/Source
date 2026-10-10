@@ -18,7 +18,7 @@
 #include "mmc.h"
 
 
-#define MMCBUS_TRACE
+//#define MMCBUS_TRACE
 #ifdef MMCBUS_TRACE
 #	define TRACE(x...)		dprintf("\33[33mmmc_bus:\33[0m " x)
 #else
@@ -88,6 +88,10 @@ class SDCid : public CidWrapper {
 
 
 // per JEDEC Standard No. 84-B51, sec 7.2
+//
+// The SDHCI controller does not store the CRC byte of the R2 response, so the
+// 128-bit CID arrives shifted right by 8 bits: CID bit N is at bit N - 8 of
+// the four words. The field positions below take that into account.
 class MMCCid : public CidWrapper {
 	public:
 		MMCCid(const uint32 cid[4])
@@ -96,31 +100,64 @@ class MMCCid : public CidWrapper {
 		{
 		}
 
+		uint32_t VendorID() const
+		{
+			// MID, CID[127:120]
+			return (fWords[3] >> 16) & 0xFF;
+		}
+
+		uint8_t OemID() const
+		{
+			// OID, CID[111:104]
+			return fWords[3] & 0xFF;
+		}
+
 		void ProductName(char out[7]) const
 		{
-			out[0] = (char)(fWords[3] & 0xFF);
-			out[1] = (char)(fWords[2] >> 24);
-			out[2] = (char)(fWords[2] >> 16);
-			out[3] = (char)(fWords[2] >> 8);
-			out[4] = (char)(fWords[2]);
-			out[5] = (char)(fWords[1] >> 24);
+			// PNM, CID[103:56]
+			out[0] = (char)(fWords[2] >> 24);
+			out[1] = (char)(fWords[2] >> 16);
+			out[2] = (char)(fWords[2] >> 8);
+			out[3] = (char)(fWords[2]);
+			out[4] = (char)(fWords[1] >> 24);
+			out[5] = (char)(fWords[1] >> 16);
 			out[6] = '\0';
+			for (int i = 0; i < 6; i++) {
+				if (out[i] < 0x20 || out[i] > 0x7e)
+					out[i] = '?';
+			}
+		}
+
+		uint16_t ProductRevision() const
+		{
+			// PRV, CID[55:48], BCD major.minor
+			uint8 prv = (fWords[1] >> 8) & 0xFF;
+			return (prv >> 4) * 100 + (prv & 0xF);
+		}
+
+		uint32_t ProductSerial() const
+		{
+			// PSN, CID[47:16]
+			return (fWords[1] << 24) | (fWords[0] >> 8);
 		}
 
 		uint8_t ManufactureMonth() const
 		{
-			// detailed in sec 7.2.7 MDT[15:8]
-			return (fWords[0] >> 12) & 0x0F;
+			// MDT[7:4], CID[15:12]
+			return (fWords[0] >> 4) & 0x0F;
 		}
 
 		uint16_t ManufactureYear(bool modern) const
 		{
+			// MDT[3:0], CID[11:8]
 			// For eMMC 4.41 and later devices,
 			// indicated by a value larger than 4 in EXT_CSD_REV[192]
 			// year offset is 2013 instead of 1997.
-			uint8_t yearOffset = (fWords[0] >> 8) & 0x0F;
+			uint8_t yearOffset = fWords[0] & 0x0F;
 			return  yearOffset + (modern? 2013 : 1997);
 		}
+
+		uint32_t Word(int index) const { return fWords[index]; }
 };
 
 
@@ -142,6 +179,9 @@ public:
 				status_t		DoIO(uint16_t rca, uint8_t command,
 									IOOperation* operation,
 									bool offsetAsSectors);
+				status_t		ReadData(uint16_t rca, uint8_t command,
+									uint32_t argument, void* buffer,
+									size_t length);
 
 				void			SetClock(int frequency);
 				void			SetBusWidth(int width);

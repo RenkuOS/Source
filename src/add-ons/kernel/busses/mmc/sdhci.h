@@ -19,6 +19,23 @@
 #include "mmc.h"
 
 
+// Ways to move data between the controller and memory, see
+// SdhciBus::_SelectTransferMode().
+enum sdhci_data_mode {
+	kDataModeSdma = 0,		// DMA through the simple system address register
+	kDataModePio,			// CPU copies through the buffer data port
+	kDataModeCount
+};
+
+// Ways to end a multiple block transfer.
+enum sdhci_stop_mode {
+	kStopModeCmd23 = 0,		// CMD23 announces the block count beforehand
+	kStopModeAutoCmd12,		// the controller sends CMD12 at the end
+	kStopModeSingle,		// one single block command per block, no stop
+	kStopModeCount
+};
+
+
 class SdhciBus {
 	public:
 								SdhciBus(struct registers* registers, uint8_t irq, bool poll);
@@ -38,14 +55,39 @@ class SdhciBus {
 			void				SetBusWidth(int width);
 			void				SetCardType(card_type type);
 			void				TerminateBus();
+			status_t			ReadData(uint8_t command, uint32_t argument,
+									void* buffer, size_t length);
 
 	private:
 			bool				PowerOn();
 			void				PowerOff();
 			void				RecoverError();
-
-			status_t			_WaitDataLineIdle(bigtime_t timeout);
 	static	status_t			_WorkerThread(void*);
+
+			bool				_IsMMC() const
+									{ return is_mmc_card_type(fCardType); }
+			bool				_IsEmbeddedSlot();
+			bool				_IsCardPresent();
+			bool				_UsesSectorAddressing() const;
+			status_t			_WaitDataLineIdle(bigtime_t timeout);
+			status_t			_SendDataCommand(uint8 command,
+									uint32 argument, uint16 transferMode,
+									uint32* _response);
+			status_t			_TransferChunk(uint8 command,
+									uint32 argument, uint32 blockCount,
+									uint32 blockSize, bool isWrite,
+									int dataMode, int stopMode,
+									phys_addr_t physical, uint8* buffer,
+									bigtime_t timeout);
+			status_t			_TransferBlocks(bool isWrite,
+									uint32 argument, uint32 argumentStep,
+									uint32 blockCount, int dataMode,
+									int stopMode, phys_addr_t physical,
+									uint8* buffer, bigtime_t timeout);
+			void				_AbortTransfer(const char* reason);
+			void				_LogCardStatus(const char* when,
+									uint32 status);
+			status_t			_SelectTransferMode();
 
 	private:
 			struct registers*	fRegisters;
@@ -56,6 +98,27 @@ class SdhciBus {
 			status_t			fStatus;
 			thread_id			fWorkerThread;
 			card_type			fCardType;
+
+			// Page 0 holds the ADMA2 descriptor table, page 1 is a bounce
+			// buffer for the self test and for ReadData(). Both are
+			// physically contiguous and below 4GB.
+			area_id				fDmaArea;
+			uint8*				fBounceBuffer;
+			phys_addr_t			fBouncePhysical;
+
+			// Transfer strategy, decided once on the first data access
+			bool				fTransferModeSelected;
+			int					fDataMode;
+			int					fStopMode;
+
+			// Transfer mode used by the next data command sent through
+			// ExecuteCommand(), set by _SendDataCommand()
+			bool				fUseDataTransferMode;
+			uint16				fDataTransferMode;
+
+			// RCA of the selected card, remembered from CMD7, needed for
+			// CMD13 (SEND_STATUS) in error recovery
+			uint16				fSelectedRca;
 };
 
 
@@ -540,6 +603,8 @@ void set_scan_semaphore(void* controller, sem_id sem);
 void set_bus_width(void* controller, int width);
 void set_card_type(void* controller, card_type type);
 void terminate_bus(void* controller);
+status_t read_data(void* controller, uint8_t command, uint32_t argument,
+	void* buffer, size_t length);
 
 extern mmc_bus_interface gSDHCIACPIDeviceModule;
 extern mmc_bus_interface gSDHCIPCIDeviceModule;
