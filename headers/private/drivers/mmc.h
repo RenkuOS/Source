@@ -55,10 +55,13 @@ enum SD_COMMANDS {
 	MMC_SEND_EXT_CSD = 8,
 	SEND_CSD = 9,
 	SD_STOP_TRANSMISSION = 12,
+	SEND_STATUS = 13,
 
 	// Block oriented read and write commands, class 2
 	SD_READ_SINGLE_BLOCK = 17,
 	SD_READ_MULTIPLE_BLOCKS = 18,
+	SET_BLOCK_COUNT = 23,
+		// Mandatory for eMMC, optional for SD (see CMD_SUPPORT in the SCR)
 
 	SD_WRITE_SINGLE_BLOCK = 24,
 	SD_WRITE_MULTIPLE_BLOCKS = 25,
@@ -105,6 +108,11 @@ typedef struct mmc_bus_interface {
 		// Set the data bus width to 1, 4 or 8 bit mode.
 	void (*terminate_bus)(void* controller);
 	void (*set_card_type)(void* controller, card_type type);
+	status_t (*read_data)(void* controller, uint8_t command,
+		uint32_t argument, void* buffer, size_t length);
+		// Execute a command that reads a single small block of data (at most
+		// 512 bytes) into a kernel buffer. Used for registers that are read
+		// through the data lines, such as the eMMC EXT_CSD.
 } mmc_bus_interface;
 
 
@@ -123,7 +131,18 @@ typedef struct mmc_device_interface {
 		// Execute a command that involves a data transfer.
 	void (*set_bus_width)(device_node* controller, void* cookie, int width);
 		// Set the data bus width to 1, 4 or 8 bit mode.
+	status_t (*read_data)(device_node* controller, void* cookie, uint16_t rca,
+		uint8_t command, uint32_t argument, void* buffer, size_t length);
+		// Read a single small block of data (at most 512 bytes) into a
+		// kernel buffer, see mmc_bus_interface::read_data.
 } mmc_device_interface;
+
+
+static inline bool
+is_mmc_card_type(card_type type)
+{
+	return type == CARD_TYPE_MMC || type == CARD_TYPE_MMC_EXTENDED_CAPACITY;
+}
 
 
 // Device attribute paths for the MMC device

@@ -102,6 +102,20 @@ MMCBus::DoIO(uint16_t rca, uint8_t command, IOOperation* operation,
 }
 
 
+status_t
+MMCBus::ReadData(uint16_t rca, uint8_t command, uint32_t argument,
+	void* buffer, size_t length)
+{
+	if (fController->read_data == NULL)
+		return B_NOT_SUPPORTED;
+
+	status_t status = _ActivateDevice(rca);
+	if (status != B_OK)
+		return status;
+	return fController->read_data(fCookie, command, argument, buffer, length);
+}
+
+
 void
 MMCBus::SetClock(int frequency)
 {
@@ -198,6 +212,14 @@ MMCBus::_WorkerThread(void* cookie)
 		TRACE("Reset the bus...\n");
 		result = bus->ExecuteCommand(0, GO_IDLE_STATE, 0, NULL);
 		TRACE("CMD0 result: %s\n", strerror(result));
+
+		// CMD0 has no response, so a device that did not get it (corrupted on
+		// the wire) cannot tell us. Send it a second time: an eMMC device the
+		// firmware left in the transfer state would otherwise stay there.
+		if (result == B_OK) {
+			snooze(1000);
+			result = bus->ExecuteCommand(0, GO_IDLE_STATE, 0, NULL);
+		}
 	} while (result != B_OK);
 
 	// Need to wait at least 8 clock cycles after CMD0 before sending the next
@@ -207,6 +229,19 @@ MMCBus::_WorkerThread(void* cookie)
 	snooze(30000);
 
 	while (bus->fStatus != B_SHUTTING_DOWN) {
+		// An eMMC device is soldered to the board and never goes away. A
+		// second scan request (for example from the card presence interrupt)
+		// must not run the identification sequence again: the device has
+		// left the idle state, so it rejects every probe command, and the
+		// scan then wrongly reset the card type to SD. That in turn made the
+		// SDHCI driver use SD response types for CMD6 and CMD8, and put the
+		// bus back to 1-bit mode and 400kHz behind the disk driver's back.
+		if (is_mmc_card_type(bus->fCardType)) {
+			TRACE("rescan request ignored, eMMC already initialized\n");
+			bus->_AcquireScanSemaphore();
+			continue;
+		}
+
 		TRACE("Scanning the bus\n");
 
 		// Use the low speed clock and 1bit bus width for scanning
@@ -231,6 +266,22 @@ MMCBus::_WorkerThread(void* cookie)
 		uint32_t hcs = 1 << 30;
 		uint32_t ocr;
 		status_t status = bus->ExecuteCommand(0, SD_SEND_IF_COND, probe, &response);
+		if (status == B_OK && response != probe) {
+			// Not an SD 2.0 card echoing the check pattern. What answers here
+			// instead is an eMMC device that missed the reset and is still in
+			// the state the firmware left it in: for eMMC, CMD8 is SEND_EXT_CSD,
+			// and the reply is its R1 card status. Reset it again, and go on
+			// as for a device that does not implement CMD8 (the MMC path).
+			// This used to terminate the bus, and the device never showed up.
+			ERROR("CMD8 answered %08" B_PRIx32 " instead of the check pattern "
+				"(an eMMC device not reset, card state %" B_PRIu32 "), "
+				"resetting again\n", response, (response >> 9) & 0xF);
+			bus->ExecuteCommand(0, GO_IDLE_STATE, 0, NULL);
+			snooze(1000);
+			bus->ExecuteCommand(0, GO_IDLE_STATE, 0, NULL);
+			snooze(30000);
+			status = B_ERROR;
+		}
 		if (status != B_OK) {
 			TRACE("Card does not implement CMD8, may be a V1 SD or MMC card\n");
 			// Do not check for SDHC support in this case
@@ -238,8 +289,11 @@ MMCBus::_WorkerThread(void* cookie)
 
 			TRACE("Trying MMC CMD1 initialization...\n");
 			do {
-				status = bus->ExecuteCommand(0, MMC_SEND_OP_COND, 0xFF8000, &ocr);
-				// full voltage window, byte addressable, should look into this.
+				// Full voltage window (2.7-3.6V and 1.70-1.95V), and bit 30 to
+				// tell the device the host supports sector addressing, which
+				// devices larger than 2GB require (JEDEC 84-B51, 7.1). Devices
+				// that only do byte addressing ignore that bit.
+				status = bus->ExecuteCommand(0, MMC_SEND_OP_COND, 0x40FF8080, &ocr);
 				if (status != B_OK) {
 					TRACE("MMC CMD1 failed\n");
 					break;
@@ -252,6 +306,7 @@ MMCBus::_WorkerThread(void* cookie)
 
 			if (status == B_OK && (ocr & (1 << 31)) != 0) {
 				TRACE("Detected MMC card after CMD1\n");
+				TRACE("device ready after CMD1, OCR %08" B_PRIx32 "\n", ocr);
 				if ((ocr & (1 << 30)) != 0)
 					cardType = CARD_TYPE_MMC_EXTENDED_CAPACITY;
 				else
@@ -342,9 +397,16 @@ MMCBus::_WorkerThread(void* cookie)
 					revision = mmcCid.ProductRevision();
 					month = mmcCid.ManufactureMonth();
 					year = mmcCid.ManufactureYear(true);
-					TRACE("MMC CID: MID=%" B_PRIu32 ", name=\"%s\", PSN=%" B_PRIu32
-						  ", PRV=%u, MDT=%u/%u\n",
-						vendor, name, serial, revision, month, year);
+					TRACE("CID raw %08" B_PRIx32 " %08" B_PRIx32 " %08" B_PRIx32
+						" %08" B_PRIx32 "\n", mmcCid.Word(3), mmcCid.Word(2),
+						mmcCid.Word(1), mmcCid.Word(0));
+					TRACE_ALWAYS("CID: MID=0x%02" B_PRIx32 ", OID=0x%02x, name=\"%s\", "
+						"PSN=%08" B_PRIx32 ", PRV=%u.%u, MDT=%u/%u, type=%s\n",
+						vendor, mmcCid.OemID(), name, serial, revision / 100,
+						revision % 100, month, year,
+						cardType == CARD_TYPE_MMC_EXTENDED_CAPACITY
+							? "high capacity (sector addressing)"
+							: "standard capacity (byte addressing)");
 					cardFound = true;
 				}
 			}
