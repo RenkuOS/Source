@@ -184,6 +184,17 @@ MMCBus::_WorkerThread(void* cookie)
 			return B_OK;
 		}
 
+		// Start the identification clock before the first command. The
+		// controller only sets it at startup when a card is already there:
+		// for a card inserted later, the insertion interrupt powers the slot
+		// on but leaves the clock alone (changing it there could corrupt a
+		// command in flight), so CMD0 would go out with no clock and time out.
+		// Setting it here, with the bus held, has no such race. The card
+		// also needs 1ms after power on and 74 clock cycles before its first
+		// command.
+		bus->SetClock(400);
+		snooze(1000);
+
 		TRACE("Reset the bus...\n");
 		result = bus->ExecuteCommand(0, GO_IDLE_STATE, 0, NULL);
 		TRACE("CMD0 result: %s\n", strerror(result));
