@@ -14,6 +14,7 @@
 #include <bus/PCI.h>
 #include <USB3.h>
 #include <KernelExport.h>
+#include <debug.h>
 
 #include "ehci.h"
 
@@ -662,6 +663,12 @@ EHCI::EHCI(pci_info *info, pci_device_module_info* pci, pci_device* device, Stac
 	fEnabledInterrupts = EHCI_USBINTR_HOSTSYSERR | EHCI_USBINTR_USBERRINT
 		| EHCI_USBINTR_USBINT | EHCI_USBINTR_INTONAA;
 	WriteOpReg(EHCI_USBINTR, fEnabledInterrupts);
+
+	// The controller needs each descriptor 32-byte aligned, and the entries
+	// below are laid out back to back, so their sizes must keep that.
+	STATIC_ASSERT(sizeof(interrupt_entry) % 32 == 0);
+	STATIC_ASSERT(sizeof(itd_entry) == 128);
+	STATIC_ASSERT(sizeof(sitd_entry) % 32 == 0);
 
 	// structures don't span page boundaries
 	size_t itdListSize = EHCI_VFRAMELIST_ENTRIES_COUNT
