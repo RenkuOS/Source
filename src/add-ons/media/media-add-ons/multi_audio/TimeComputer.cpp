@@ -48,6 +48,26 @@ TimeComputer::SetFrameRate(float frameRate)
 }
 
 
+/*!	Continues the performance timeline across a gap in which no time stamps
+	arrived (the device was unplugged and has come back). Performance time is
+	carried forward to \a realTime at a drift of exactly 1 -- the drift the
+	node publishes, so this matches what consumers extrapolated during the gap
+	and the timeline neither jumps nor restarts at 0 (which Init() would do).
+	The next time stamp re-bases the frame count, since the device's own count
+	started over.
+*/
+void
+TimeComputer::Resync(bigtime_t realTime)
+{
+	fPerformanceTime += realTime - fRealTime;
+	fRealTime = realTime;
+	fDrift = 1;
+	fResetTimeBase = true;
+	fFirstEntry = 0;
+	fLastEntry = 0;
+}
+
+
 void
 TimeComputer::AddTimeStamp(bigtime_t realTime, uint64 frames)
 {

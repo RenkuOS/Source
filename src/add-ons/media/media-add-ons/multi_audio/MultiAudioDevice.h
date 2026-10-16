@@ -21,6 +21,7 @@ public:
 
 	status_t			InitCheck() const;
 
+	const char*			Path() const { return fPath; }
 	const multi_description& Description() const { return fDescription; }
 	const multi_format_info& FormatInfo() const { return fFormatInfo; }
 	const multi_buffer_list& BufferList() const { return fBufferList; }

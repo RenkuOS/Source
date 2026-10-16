@@ -323,21 +323,23 @@ publish_devices()
 		// KDLs with a page fault whose address moves between runs, because it
 		// jumps through a recycled vtable.
 		//
-		// Publishing it while open inverts the order safely: multi_audio sees
-		// B_CANCELED from the exchange, closes, usb_audio_free() retires the
-		// slot, and only THEN does the entry leave this list - so devfs
-		// unpublishes a device nothing holds open.
+		// Publishing it while open inverts the order safely: the entry leaves
+		// this list only after usb_audio_free() retired the slot, so devfs
+		// unpublishes a device nothing holds open. Nothing republishes the
+		// driver at that point, though: the path goes away at the next USB
+		// hotplug event for this driver (Stack::NotifyDeviceChange()).
 		//
 		// This deliberately relaxes 1a6c661, which stopped republishing removed
 		// devices to break a circular wait: the add-on decided a device was
 		// gone purely by its path vanishing, so republishing meant it never
-		// noticed and never closed. That is no longer true. MultiAudioNode's
-		// output thread now checks the exchange result and stops on B_CANCELED
-		// (it previously discarded the return value entirely), so it has an
-		// error-driven exit that does not depend on the path. THE TWO CHANGES
-		// ARE A PAIR - reverting either one alone brings back a bug: without
-		// the add-on's check, this deadlocks; without this, that use-after-free
-		// returns. See docs/usb-audio-removal-hang.md.
+		// noticed and never closed. That is no longer true: MultiAudioNode's
+		// output thread checks the exchange result (it once discarded it
+		// entirely), so it learns of the removal from B_CANCELED and does not
+		// depend on the path. It does NOT close on it (as of 2026-10-01 it
+		// waits for the replug, and closes only when the node is deleted).
+		// THE TWO CHANGES ARE A PAIR - reverting either one alone brings back
+		// a bug: without the add-on's check, this deadlocks; without this,
+		// that use-after-free returns. See docs/usb-audio-removal-hang.md.
 		if (gDevices[i] == NULL)
 			continue;
 		if (gDevices[i]->IsRemoved() && !gDevices[i]->IsOpen())

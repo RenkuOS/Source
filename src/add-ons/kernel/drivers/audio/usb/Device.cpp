@@ -311,9 +311,14 @@ Device::Control(uint32 op, void* buffer, size_t length)
 	// there, and several issue USB requests to it. The media node keeps its fd
 	// (and keeps calling) well past the removal - its own teardown does a
 	// final B_MULTI_GET_MIX to save settings - so this has to be refused here
-	// rather than assumed not to happen. B_MULTI_BUFFER_EXCHANGE has carried
-	// its own gate for a while; this covers the rest.
-	if (fRemoved)
+	// rather than assumed not to happen.
+	//
+	// B_MULTI_BUFFER_EXCHANGE is let through to its own gate, which reports a
+	// removal as B_CANCELED. Until 2026-10-01 this gate caught it first and
+	// returned B_DEV_NOT_READY -- the same code the exchange uses for "every
+	// stream is parked" -- so the media node could not tell a device that is
+	// gone (wait for the replug) from one that is present but cannot stream.
+	if (fRemoved && op != B_MULTI_BUFFER_EXCHANGE)
 		return B_DEV_NOT_READY;
 
 	switch (op) {
@@ -695,13 +700,30 @@ Device::CompareAndReattach(usb_device device)
 		// this certainly isn't the same device
 		return B_BAD_VALUE;
 
-	// this is the same device that was replugged - clear the removed state,
-	// re-bind the existing streams (and with them the sample buffers already
-	// published to the consumer) to the new usb_device, and open the device
-	// if it was previously opened. _SetupEndpoints() must not run again here:
-	// it would create a second set of streams alongside the stale ones.
+	// Only a device that is actually gone can be plugged back. A second unit
+	// of the same model arriving while this one is live must get its own
+	// entry, not take this one over.
+	if (!fRemoved)
+		return B_BUSY;
+
+	// this is the same device that was replugged - re-bind the existing
+	// streams (and with them the sample buffers already published to the
+	// consumer) to the new usb_device, clear the removed state, and open the
+	// device if it was previously opened. _SetupEndpoints() must not run again
+	// here: it would create a second set of streams alongside the stale ones.
+	//
+	// fRemoved stays set until the very end. The media node keeps calling
+	// B_MULTI_BUFFER_EXCHANGE throughout, and that starts any stream that is
+	// not running -- so clearing it first (as this did until 2026-10-01) let
+	// streams start in the middle of the reattach, on the endpoint handles of
+	// the old device or on an alternate setting about to be reset. Measured
+	// on RenkuOS 2026-09-29: capture queued on stale handles, failed with
+	// B_DEV_INVALID_PIPE until it was parked (silence, RMX and DDJ-SR on
+	// OHCI), or playback queued 2 ms before the interface reset and was never
+	// restarted (RMX on UHCI, 2/3 speed). While fRemoved is set the exchange
+	// returns B_CANCELED before its start loop and _Start() refuses, exactly
+	// as while the device was unplugged.
 	fDevice = device;
-	fRemoved = false;
 
 	const usb_configuration_info* config
 		= gUSBModule->get_nth_configuration(fDevice, 0);
@@ -710,10 +732,8 @@ Device::CompareAndReattach(usb_device device)
 		result = gUSBModule->set_configuration(fDevice, config);
 	for (int i = 0; result == B_OK && i < fStreams.Count(); i++)
 		result = fStreams[i]->OnReattach(fDevice, config);
-	if (result != B_OK) {
-		fRemoved = true;
+	if (result != B_OK)
 		return result;
-	}
 
 	// An R2 device's streams share their clock; restore the rate that was
 	// last programmed before the removal, rather than letting each stream
@@ -723,10 +743,8 @@ Device::CompareAndReattach(usb_device device)
 			&& fAudioControl.LastClockId() != 0) {
 		result = fAudioControl.SetSamplingRate(fAudioControl.LastClockId(),
 			fAudioControl.LastClockRate());
-		if (result != B_OK) {
-			fRemoved = true;
+		if (result != B_OK)
 			return result;
-		}
 	}
 
 	// The replugged device starts with an empty FIFO; drop any feedback
@@ -748,6 +766,11 @@ Device::CompareAndReattach(usb_device device)
 	result = SetupDevice(true);
 	if (result != B_OK)
 		return result;
+
+	// Every stream now holds the new device's endpoint handles; let the next
+	// buffer exchange start them. OnReattach() has already un-parked them.
+	// Open() below refuses a removed device, so this must come first.
+	fRemoved = false;
 
 	if (fOpen) {
 		fOpen = false;

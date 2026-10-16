@@ -206,6 +206,10 @@ private:
 			int32				_OutputThread();
 			status_t			_StartOutputThreadIfNeeded();
 			status_t			_StopOutputThread();
+			void				_EnterDeviceGone();
+			void				_LeaveDeviceGone(bigtime_t goneSince);
+			void				_DiscardQueuedInputs();
+			void				_ReportDevicePresence(bool present);
 
 			void	 			_AllocateBuffers(node_output& channel);
 			BBuffer*	 		_FillNextBuffer(multi_buffer_info& info,
