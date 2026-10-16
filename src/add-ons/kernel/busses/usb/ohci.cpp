@@ -2453,8 +2453,50 @@ OHCI::_CreateIsochronousDescriptorChain(ohci_isochronous_td **_firstDescriptor,
 		// We should stay about 5-10 ms ahead of the controller
 		// USB1 frame is equal to 1 ms
 		currentFrame += safeFrames;
-	else
+	else {
+		/*	Never queue into a frame the controller has passed.
+
+			This used to take the caller's starting frame as given. usb_audio
+			chains full-speed transfers on explicit frames (fNextStartFrame =
+			fStartingFrame + fPacketsPerBuffer), so if one re-queue arrives
+			after its frame has gone by, this ITD lands in the past; the HC
+			retires it unprocessed as a time overrun (ITD condition 0x8, every
+			frame NotAccessed, len 0). The write-back below then hands
+			usb_audio that same past frame, so the NEXT transfer is chained
+			into the past too, and so on: the stream never recovers. usb_audio
+			parks it after 10 such errors, the device's time source goes stale,
+			and the mixer stops in debugger() on it.
+
+			uhci.cpp has had exactly this guard (fall back to FRNUM+5 when the
+			requested frame is not safely ahead); OHCI never got it. Measured
+			2026-09-30 on the Beta 6 bench: switching a running RMX2 to 96 kHz
+			delays the DDJ-SR's re-queue by ~240 ms, past its 20 ms lead.
+			DDJ-SR on OHCI: 40-48 ITD errors and a dead stream in 5 of 5 runs,
+			whichever chip the RMX2 was on. Same sequence with the DDJ-SR on
+			UHCI: clean, 2 of 2.
+
+			Frame numbers are 16 bits here (the HCCA counter), so a requested
+			frame more than half the space "ahead" is really behind. Falling
+			back breaks stream continuity (a gap of a few ms, audible), so it
+			is logged -- rate-limited, since this runs in the re-queue path
+			from the completion callback. */
 		currentFrame = *isochronousData->starting_frame_number;
+		uint16 hcFrame = fHcca->current_frame_number & 0xFFFF;
+		uint16 ahead = currentFrame - hcFrame;
+		if (ahead < 2 || ahead > 0x8000) {
+			static int32 sChainFallbacks = 0;
+			static bigtime_t sChainFallbackLastLog = 0;
+			int32 count = atomic_add(&sChainFallbacks, 1) + 1;
+			bigtime_t now = system_time();
+			if (now - sChainFallbackLastLog >= 10000000) {
+				sChainFallbackLastLog = now;
+				dprintf("ohci: iso chain fallback #%" B_PRId32 " (requested"
+					" frame %u, hc frame %u, ahead %u)\n", count, currentFrame,
+					hcFrame, ahead);
+			}
+			currentFrame = hcFrame + safeFrames;
+		}
+	}
 
 	uint16 packets = packet_count;
 	uint16 frameOffset = 0;

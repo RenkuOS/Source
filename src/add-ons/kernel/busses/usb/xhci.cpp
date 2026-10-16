@@ -1120,7 +1120,51 @@ XHCI::SubmitNormalRequest(Transfer *transfer)
 				td->trbs[i].flags |= TRB_3_ISO_SIA_BIT;
 		} else {
 			// TODO: We likely to apply FRIDs to each TD. (XHCI 1.2 § 4.11.2.5 p219.)
+			/*	Never queue into a frame the controller has passed.
+
+				This used to take the caller's starting frame as given.
+				usb_audio chains full-speed transfers on explicit frames
+				(fNextStartFrame = fStartingFrame + fPacketsPerBuffer), so if
+				one re-queue arrives after its frame has gone by, this TD's
+				Frame ID is in the past, and the write-back below hands
+				usb_audio that same frame to chain the NEXT transfer from:
+				the stream can never catch up. OHCI had the same gap, where it
+				was measured: 10 errored transfers, a parked stream, a stale
+				time source, and the mixer stopped in debugger(). uhci.cpp has
+				always had this guard. Found by code reading; not yet
+				reproduced on xHCI.
+
+				Fall back to a frame safely ahead of the controller and write
+				that back, so the chain carries on from it. "Safely ahead"
+				must clear the Isochronous Scheduling Threshold (HCSPARAMS2
+				bits 3:0; bit 3 set = whole frames, else microframes, so round
+				up to one frame). Frame IDs are 11 bits, so a frame more than
+				half the space "ahead" is really behind. A fallback breaks
+				stream continuity (a gap of a few ms, audible), so it is
+				logged -- rate-limited, since this runs in the re-queue path
+				from the completion callback. */
 			frame = *isochronousData->starting_frame_number;
+			uint32 ist = ReadCapReg32(XHCI_HCSPARAMS2) & 0xf;
+			uint32 istFrames = (ist & 0x8) != 0 ? (ist & 0x7) : 1;
+			uint32 hcFrame = ((ReadRunReg32(XHCI_MFINDEX) + 1) >> 3) & 0x7ff;
+			uint32 ahead = (frame - hcFrame) & 0x7ff;
+			if (ahead <= istFrames || ahead > 0x400) {
+				static int32 sChainFallbacks = 0;
+				static bigtime_t sChainFallbackLastLog = 0;
+				int32 count = atomic_add(&sChainFallbacks, 1) + 1;
+				bigtime_t now = system_time();
+				if (now - sChainFallbackLastLog >= 10000000) {
+					sChainFallbackLastLog = now;
+					dprintf("xhci: iso chain fallback #%" B_PRId32 " (requested"
+						" frame %" B_PRIu32 ", hc frame %" B_PRIu32 ", ahead %"
+						B_PRIu32 ", ist %#" B_PRIx32 ")\n", count, frame & 0x7ff,
+						hcFrame, ahead, ist);
+				}
+				uint32 margin = istFrames + 2;
+				if (margin < 5)
+					margin = 5;
+				frame = (hcFrame + margin) & 0x7ff;
+			}
 			td->trbs[0].flags |= TRB_3_FRID(frame);
 		}
 		if (isochronousData->starting_frame_number != NULL)
