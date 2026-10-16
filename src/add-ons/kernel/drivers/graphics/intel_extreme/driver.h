@@ -17,7 +17,12 @@
 #include "intel_extreme_private.h"
 
 
+#define MAX_CARDS 4
+
+
 extern char* gDeviceNames[];
+extern char* gRenderDeviceNames[];
+extern int32 gRenderDeviceCards[];
 extern intel_info* gDeviceInfo[];
 extern pci_module_info* gPCI;
 extern agp_gart_module_info* gGART;

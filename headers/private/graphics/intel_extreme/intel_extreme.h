@@ -756,6 +756,7 @@ struct intel_brightness_legacy {
 
 #define PCH_MASTER_INT_CTL_BDW					0x44200
 
+#define GEN8_GT_RENDER_IRQ						(1 << 0)
 #define PCH_MASTER_INT_CTL_PIPE_PENDING_BDW(pipe)	(1 << (15 + pipe))
 #define GEN8_DE_PCH_IRQ							(1 << 23)
 #define GEN8_DE_PORT_IRQ						(1 << 20)
