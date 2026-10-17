@@ -323,7 +323,8 @@ struct ieee80211_node {
 
 	void			*ni_drv_data;	/* driver specific */
 
-	uint64_t		ni_spare[3];
+	uint64_t		ni_auth_tx_retries; /* local authentication TX failures */
+	uint64_t		ni_spare[2];
 };
 MALLOC_DECLARE(M_80211_NODE);
 MALLOC_DECLARE(M_80211_NODE_IE);

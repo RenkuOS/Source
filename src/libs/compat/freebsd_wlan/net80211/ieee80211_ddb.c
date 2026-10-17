@@ -340,8 +340,9 @@ _db_show_sta(const struct ieee80211_node *ni)
 	db_printf("\tni_drv_data = %p", ni->ni_drv_data);
 	db_printf("\n");
 
-	db_printf("\tni_spare[3] = { %#jx %#jx %#jx }",
-	    ni->ni_spare[0], ni->ni_spare[1], ni->ni_spare[2]);
+	db_printf("\tni_auth_tx_retries = %ju\n", ni->ni_auth_tx_retries);
+	db_printf("\tni_spare[2] = { %#jx %#jx }",
+	    ni->ni_spare[0], ni->ni_spare[1]);
 	db_printf("\n");
 
 #ifdef __notyet__
