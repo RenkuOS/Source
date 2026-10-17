@@ -233,7 +233,10 @@ NetServer::MessageReceived(BMessage* message)
 
 		case kMsgAutoJoinNetwork:
 		{
-			_AutoJoinNetwork(*message);
+			status_t status = _AutoJoinNetwork(*message);
+			BMessage reply(kMsgAutoJoinNetwork);
+			reply.AddInt32("status", status);
+			message->SendReply(&reply);
 			break;
 		}
 
@@ -1121,6 +1124,10 @@ NetServer::_JoinNetwork(const BMessage& message, const BNetworkAddress* address,
 	status = wpaSupplicant.SendMessage(&join);
 	if (status != B_OK)
 		return status;
+
+	AutoconfigLooper* looper = _LooperForDevice(deviceName);
+	if (looper != NULL)
+		looper->PostMessage(kMsgJoinNetwork);
 
 	return B_OK;
 }

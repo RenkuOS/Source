@@ -34,7 +34,8 @@ AutoconfigLooper::AutoconfigLooper(BMessenger target, const char* device)
 	fDevice(device),
 	fCurrentClient(NULL),
 	fLastMediaStatus(0),
-	fJoiningNetwork(false)
+	fJoiningNetwork(false),
+	fJoinRequestPending(false)
 {
 	BMessage ready(kMsgReadyToRun);
 	PostMessage(&ready);
@@ -194,22 +195,20 @@ AutoconfigLooper::_NetworkMonitorNotification(BMessage* message)
 
 		case B_NETWORK_WLAN_SCANNED:
 		{
-			if (fJoiningNetwork || (fLastMediaStatus & IFM_ACTIVE) != 0) {
+			if (fJoiningNetwork || fJoinRequestPending
+				|| (fLastMediaStatus & IFM_ACTIVE) != 0) {
 				// We already have a link or are already joining.
 				break;
 			}
 
-			fJoiningNetwork = true;
-				// TODO: For now we never reset this flag. We can only do that
-				// after infrastructure has been added to discern a scan reason.
-				// If we would always auto join we would possibly interfere
-				// with active scans in the process of connecting to an AP
-				// either for the initial connection, or after connection loss
-				// to re-establish the link.
+			// Only latch the join after net_server accepts it. An early
+			// scan may not contain a saved network yet.
+			fJoinRequestPending = true;
 
 			BMessage message(kMsgAutoJoinNetwork);
 			message.AddString("device", fDevice);
-			fTarget.SendMessage(&message);
+			if (fTarget.SendMessage(&message, this) != B_OK)
+				fJoinRequestPending = false;
 			break;
 		}
 	}
@@ -226,6 +225,22 @@ AutoconfigLooper::MessageReceived(BMessage* message)
 
 		case kMsgAutoConfigureFailed:
 			_ConfigureIPv4Failed();
+			break;
+
+		case kMsgAutoJoinNetwork:
+		{
+			status_t status;
+			if (message->FindInt32("status", &status) == B_OK) {
+				fJoinRequestPending = false;
+				if (status == B_OK)
+					fJoiningNetwork = true;
+			}
+			break;
+		}
+
+		case kMsgJoinNetwork:
+			// A manual join must also suppress subsequent automatic joins.
+			fJoiningNetwork = true;
 			break;
 
 		case B_NETWORK_MONITOR:
