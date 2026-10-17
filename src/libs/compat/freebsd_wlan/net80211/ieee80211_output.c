@@ -3385,6 +3385,36 @@ ieee80211_alloc_prot(struct ieee80211_node *ni, const struct mbuf *m,
 	return (mprot);
 }
 
+/*
+ * Retry a locally failed open-system authentication without keeping a DMA
+ * packet alive or starting another timer. State changes stop iv_mgtsend;
+ * recheck under the state lock before queuing another authentication.
+ */
+static void
+ieee80211_tx_auth_retry(void *arg)
+{
+	struct ieee80211vap *vap = arg;
+	struct ieee80211com *ic = vap->iv_ic;
+
+	IEEE80211_LOCK(ic);
+	if (vap->iv_state == IEEE80211_S_AUTH &&
+	    (ic->ic_flags & IEEE80211_F_SCAN) == 0 && vap->iv_nstate_n == 0 &&
+	    vap->iv_bss != NULL) {
+		struct ieee80211_node *ni = vap->iv_bss;
+
+		if (ni->ni_authmode != IEEE80211_AUTH_SHARED &&
+		    ni->ni_auth_tx_retries < 2) {
+			ni->ni_auth_tx_retries++;
+			ieee80211_new_state_locked(vap, IEEE80211_S_AUTH,
+			    (IEEE80211_STATUS_TIMEOUT << 8) |
+				IEEE80211_FC0_SUBTYPE_DEAUTH);
+		} else
+			ieee80211_new_state_locked(
+			    vap, IEEE80211_S_SCAN, IEEE80211_SCAN_FAIL_TIMEOUT);
+	}
+	IEEE80211_UNLOCK(ic);
+}
+
 static void
 ieee80211_tx_mgt_timeout(void *arg)
 {
@@ -3420,8 +3450,8 @@ ieee80211_tx_mgt_timeout(void *arg)
  *   If a state transition _then_ occurs before that event occurs,
  *   said state transition will cancel this callout.
  *
- * + If the frame transmit was a failure, it immediately schedules
- *   the transition back to scan.
+ * + A locally failed open-system STA authentication gets two retries
+ *   before returning to scan. Other failures return to scan immediately.
  */
 static void
 ieee80211_tx_mgt_cb(struct ieee80211_node *ni, void *arg, int status)
@@ -3431,30 +3461,37 @@ ieee80211_tx_mgt_cb(struct ieee80211_node *ni, void *arg, int status)
 
 	/*
 	 * Frame transmit completed; arrange timer callback.  If
-	 * transmit was successfully we wait for response.  Otherwise
-	 * we arrange an immediate callback instead of doing the
-	 * callback directly since we don't know what state the driver
-	 * is in (e.g. what locks it is holding).  This work should
+	 * transmit was successful we wait for a response. Otherwise we
+	 * defer a retry or scan transition instead of doing it directly:
+	 * we don't know what locks the driver is holding. This work should
 	 * not be too time-critical and not happen too often so the
 	 * added overhead is acceptable.
 	 *
 	 * XXX what happens if !acked but response shows up before callback?
 	 */
-	if (vap->iv_state == ostate) {
-		IEEE80211_DPRINTF(vap, IEEE80211_MSG_STATE | IEEE80211_MSG_DEBUG,
+	if (vap->iv_state == ostate &&
+	    (vap->iv_opmode != IEEE80211_M_STA || ni == vap->iv_bss)) {
+		IEEE80211_DPRINTF(vap,
+		    IEEE80211_MSG_STATE | IEEE80211_MSG_DEBUG,
 		    "ni %p mode %s state %s arg %p status %d\n", ni,
 		    ieee80211_opmode_name[vap->iv_opmode],
 		    ieee80211_state_name[vap->iv_state], arg, status);
 
-		callout_reset(&vap->iv_mgtsend,
-			status == 0 ? IEEE80211_TRANS_WAIT*hz : 0,
-			ieee80211_tx_mgt_timeout, vap);
+		if (status != 0 && ostate == IEEE80211_S_AUTH &&
+		    vap->iv_opmode == IEEE80211_M_STA &&
+		    ni->ni_authmode != IEEE80211_AUTH_SHARED) {
+			callout_reset(&vap->iv_mgtsend, MAX(1, hz / 5),
+			    ieee80211_tx_auth_retry, vap);
+		} else
+			callout_reset(&vap->iv_mgtsend,
+			    status == 0 ? IEEE80211_TRANS_WAIT * hz : 0,
+			    ieee80211_tx_mgt_timeout, vap);
 	}
 }
 
 static void
-ieee80211_beacon_construct(struct mbuf *m, uint8_t *frm,
-	struct ieee80211_node *ni)
+ieee80211_beacon_construct(
+    struct mbuf *m, uint8_t *frm, struct ieee80211_node *ni)
 {
 	struct ieee80211vap *vap = ni->ni_vap;
 	struct ieee80211_beacon_offsets *bo = &vap->iv_bcn_off;
