@@ -334,8 +334,6 @@ if_attach(struct ifnet *ifp)
 	TAILQ_INIT(&ifp->if_prefixhead);
 	TAILQ_INIT(&ifp->if_multiaddrs);
 
-	IF_ADDR_LOCK_INIT(ifp);
-
 	ifp->if_lladdr.sdl_family = AF_LINK;
 
 	ifq_init((struct ifqueue *) &ifp->if_snd, ifp->if_xname);
@@ -391,7 +389,6 @@ if_detach(struct ifnet *ifp)
 	if (HAIKU_DRIVER_REQUIRES(FBSD_SWI_TASKQUEUE))
 		taskqueue_drain(taskqueue_swi, &ifp->if_linktask);
 
-	IF_ADDR_LOCK_DESTROY(ifp);
 	ifq_uninit((struct ifqueue *) &ifp->if_snd);
 }
 
