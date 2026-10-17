@@ -221,6 +221,9 @@ if_free_inplace(struct ifnet *ifp)
 	IF_ADDR_LOCK_DESTROY(ifp);
 
 	delete_sem(ifp->receive_sem);
+	// The consumer stops when the device closes. Release packets it did
+	// not dequeue before destroying the queue and the driver's mbuf cache.
+	IF_DRAIN(&ifp->receive_queue);
 	ifq_uninit(&ifp->receive_queue);
 }
 
