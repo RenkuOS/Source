@@ -11,6 +11,8 @@
 class Menu;
 class MenuItem;
 
+void video_capture_firmware_background();
+
 bool video_mode_hook(Menu *menu, MenuItem *item);
 Menu *video_mode_menu();
 
