@@ -16,6 +16,7 @@
 #include "usb_private.h"
 #include "PhysicalMemoryAllocator.h"
 
+#include <boot_device.h>
 #include <fs/devfs.h>
 #include <kdevice_manager.h>
 
@@ -219,6 +220,21 @@ Stack::Explore()
 	recursive_lock* dmLock = device_manager_get_lock();
 	if (find_thread(NULL) != fExploreThread
 			&& recursive_lock_get_recursion(dmLock) > 0) {
+		// Once the boot volume is mounted, never explore here. This is a host
+		// controller's Start() under the device manager lock, for a controller
+		// that starts after the mount (one not preloaded by the boot loader).
+		// Exploring can then remove a device whose disk is published (EHCI
+		// taking a port back from its companion), and unpublishing it needs a
+		// devfs scan lock that the disk device manager's event thread holds
+		// while it waits for the device manager lock: a deadlock. Leave it to
+		// the explore thread, which runs once the lock is released.
+		// Before the mount, the boot device may be on USB and the initial
+		// device scan needs it now, so keep exploring inline.
+		if (gBootDevice >= 0) {
+			release_sem(fExploreSem);
+			return;
+		}
+
 		// This should only happen during the initial device scan, during which
 		// we should be able to acquire the explore lock immediately (since the
 		// explore thread will be waiting on the device manager lock as below),
