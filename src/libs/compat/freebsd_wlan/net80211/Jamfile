@@ -16,6 +16,11 @@ SubDirC++Flags [ FDefines _KERNEL=1 FBSD_DRIVER=1 ] ;
 
 SEARCH_SOURCE += [ FDirName $(SUBDIR) .. crypto rijndael ] ;
 
+# Use the existing expanded AES rounds on x86_64 to reduce CCMP work.
+if $(TARGET_ARCH) = x86_64 {
+	ObjectDefines rijndael-alg-fst.c : FULL_UNROLL ;
+}
+
 # The reason we use a KernelMergeObject followed by KernelStaticLibrary is to
 # force all objects, not just the ones a driver links against, to be linked
 # into the final binary. Otherwise, certain objects which export no symbols
