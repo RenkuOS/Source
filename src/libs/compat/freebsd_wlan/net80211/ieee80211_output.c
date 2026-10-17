@@ -319,7 +319,7 @@ ieee80211_vap_pkt_send_dest(struct ieee80211vap *vap, struct mbuf *m,
 			return (ENOBUFS);
 		}
 	}
-	(void) ieee80211_parent_xmitpkt(ic, m);
+	int error = ieee80211_parent_xmitpkt(ic, m);
 
 	/*
 	 * Unlock at this point - no need to hold it across
@@ -328,7 +328,7 @@ ieee80211_vap_pkt_send_dest(struct ieee80211vap *vap, struct mbuf *m,
 	IEEE80211_TX_UNLOCK(ic);
 	ic->ic_lastdata = ticks;
 
-	return (0);
+	return (error);
 }
 
 /*
