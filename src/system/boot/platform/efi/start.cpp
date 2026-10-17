@@ -36,7 +36,6 @@
 #include "serial.h"
 #include "smp.h"
 #include "timer.h"
-#include "video.h"
 
 
 extern void (*__ctor_list)(void);
@@ -243,8 +242,6 @@ efi_main(efi_handle image, efi_system_table *systemTable)
 
 	call_ctors();
 
-	// The text console clears the firmware's original graphical background.
-	video_capture_firmware_background();
 	console_init();
 	serial_init();
 	serial_enable();

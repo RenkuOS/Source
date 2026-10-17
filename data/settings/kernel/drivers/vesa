@@ -14,6 +14,3 @@
 # this is outside of VESA specifications and sometimes results in a black screen. As a result,
 # this feature is disabled by default for most cards.
 #bios_patching true
-
-# EFI startup background gray level (0..255); omitted uses the firmware screen.
-#splash_background_gray 191

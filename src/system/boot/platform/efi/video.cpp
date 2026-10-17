@@ -47,82 +47,6 @@ static struct list sModeList;
 static uint32 sModeCount;
 static bool sModeChosen;
 static bool sSettingsLoaded;
-static uint8 sFirmwareBackground;
-
-
-void
-video_capture_firmware_background()
-{
-	// Apple exposes the startup background as a four-byte RGBA variable.
-	// Read it only; changing NVRAM is unnecessary for matching the screen.
-	efi_guid appleVendor = {0x4d1ede05, 0x38c7, 0x4a6a,
-		{0x9c, 0xc6, 0x4b, 0xcc, 0xa8, 0xb3, 0x8c, 0x14}};
-	uint32 color = 0;
-	size_t size = sizeof(color);
-	efi_status status = kRuntimeServices->GetVariable(
-		(char16_t*)u"DefaultBackgroundColor", &appleVendor, NULL, &size, &color);
-	uint8 shade = color & 0xff;
-	if (status == EFI_SUCCESS && size == sizeof(color)
-		&& ((color >> 8) & 0xff) == shade && ((color >> 16) & 0xff) == shade) {
-		sFirmwareBackground = shade;
-		video_set_splash_background(shade);
-		return;
-	}
-
-	// Older firmware need not have the variable. Sample all four corners
-	// before console_init(), using GOP's format-independent pixel access.
-	efi_graphics_output_protocol* output = NULL;
-	status = kBootServices->LocateProtocol(&sGraphicsOutputGuid, NULL,
-		(void**)&output);
-	if (status != EFI_SUCCESS || output == NULL || output->Mode == NULL
-		|| output->Mode->Info == NULL || output->Blt == NULL)
-		return;
-	uint32 width = output->Mode->Info->HorizontalResolution;
-	uint32 height = output->Mode->Info->VerticalResolution;
-	if (width == 0 || height == 0)
-		return;
-	for (uint32 corner = 0; corner < 4; corner++) {
-		efi_graphics_output_blt_pixel pixel = {};
-		status = output->Blt(output, &pixel, EfiBltVideoToBltBuffer,
-			(corner & 1) != 0 ? width - 1 : 0,
-			(corner & 2) != 0 ? height - 1 : 0, 0, 0, 1, 1, 0);
-		if (status != EFI_SUCCESS || pixel.Red != pixel.Green
-			|| pixel.Red != pixel.Blue || (corner != 0 && pixel.Red != shade))
-			return;
-		shade = pixel.Red;
-	}
-	sFirmwareBackground = shade;
-	video_set_splash_background(shade);
-}
-
-
-static void
-video_override_splash_background()
-{
-	// A boot manager can clear the firmware screen before invoking us.
-	// Allow an explicit neutral shade without changing video-mode selection.
-	void* settings = load_driver_settings("vesa");
-	if (settings == NULL)
-		return;
-	const char* value = get_driver_parameter(settings, "splash_background_gray",
-		NULL, NULL);
-	if (value != NULL && value[0] != '\0') {
-		unsigned shade = 0;
-		bool valid = true;
-		for (const char* digit = value; *digit != '\0'; digit++) {
-			if (*digit < '0' || *digit > '9' || shade > 25) {
-				valid = false;
-				break;
-			}
-			shade = shade * 10 + (*digit - '0');
-		}
-		if (valid && shade <= 255) {
-			sFirmwareBackground = shade;
-			video_set_splash_background(shade);
-		}
-	}
-	unload_driver_settings(settings);
-}
 
 
 static int
@@ -355,7 +279,6 @@ platform_switch_to_logo(void)
 	if (!sModeChosen)
 		get_mode_from_settings();
 
-	video_override_splash_background();
 	sGraphicsOutput->SetMode(sGraphicsOutput, sGraphicsMode);
 	gKernelArgs.frame_buffer.physical_buffer.start =
 		sGraphicsOutput->Mode->FrameBufferBase;
@@ -368,7 +291,6 @@ platform_switch_to_logo(void)
 	gKernelArgs.frame_buffer.bytes_per_row = sGraphicsOutput->Mode->Info->PixelsPerScanLine
 			* ((depth + 7) / 8);
 
-	dprintf("EFI: firmware splash background gray %u\n", sFirmwareBackground);
 	video_display_splash(gKernelArgs.frame_buffer.physical_buffer.start);
 }
 
