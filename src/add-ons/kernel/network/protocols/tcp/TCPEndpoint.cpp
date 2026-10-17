@@ -326,7 +326,8 @@ enum {
 	FLAG_CAN_NOTIFY 			= 0x200,
 	FLAG_USER_CLOSED			= 0x400,
 	FLAG_DESTROYING				= 0x800,
-	FLAG_ACK_RETRY_PENDING		= 0x1000
+	FLAG_ACK_RETRY_PENDING		= 0x1000,
+	FLAG_LOCAL_SEND_RETRY		= 0x2000
 };
 
 
@@ -2343,6 +2344,25 @@ TCPEndpoint::_SendReset(bool force)
 }
 
 
+// Queued data has not been put on the wire yet, so no retransmission
+// timer necessarily exists. Keep a first locally rejected send from waiting
+// forever for another write or an ACK that cannot arrive.
+status_t
+TCPEndpoint::_RetryLocalSend(status_t status)
+{
+	if ((status == ENOBUFS || status == B_NO_MEMORY || status == B_WOULD_BLOCK)
+		&& fState != CLOSED && (fFlags & FLAG_DESTROYING) == 0
+		&& !gStackModule->is_timer_active(&fRetransmitTimer)
+		&& !gStackModule->is_timer_active(&fPersistTimer)) {
+		fFlags |= FLAG_LOCAL_SEND_RETRY;
+		const bigtime_t retryDelay = 10000;
+		gStackModule->set_timer(&fPersistTimer, retryDelay);
+		T(TimerSet(this, "local send retry", retryDelay));
+	}
+	return status;
+}
+
+
 /*!	Sends one or more TCP segments with the data waiting in the queue. */
 status_t
 TCPEndpoint::_SendQueued(bool force)
@@ -2420,21 +2440,21 @@ TCPEndpoint::_SendQueued(bool force)
 
 		net_buffer *buffer = gBufferModule->create(256);
 		if (buffer == NULL)
-			return B_NO_MEMORY;
+			return _RetryLocalSend(B_NO_MEMORY);
 
 		status_t status = B_OK;
 		if (segmentLength > 0)
 			status = fSendQueue.Get(buffer, fSendNext, segmentLength);
 		if (status < B_OK) {
 			gBufferModule->free(buffer);
-			return status;
+			return _RetryLocalSend(status);
 		}
 
 		sendWindow -= buffer->size;
 
 		status = _PrepareAndSend(segment, buffer, retransmit);
 		if (status != B_OK)
-			return status;
+			return _RetryLocalSend(status);
 
 		if (shouldStartRetransmitTimer) {
 			TRACE("starting initial retransmit timer of: %" B_PRIdBIGTIME,
@@ -2705,7 +2725,9 @@ TCPEndpoint::_PersistTimer(net_timer* timer, void* _endpoint)
 	if (endpoint->State() == CLOSED)
 		return;
 
-	endpoint->_SendQueued(true);
+	bool localRetry = (endpoint->fFlags & FLAG_LOCAL_SEND_RETRY) != 0;
+	endpoint->fFlags &= ~FLAG_LOCAL_SEND_RETRY;
+	endpoint->_SendQueued(!localRetry);
 }
 
 

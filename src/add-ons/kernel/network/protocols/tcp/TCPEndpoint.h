@@ -85,6 +85,7 @@ private:
 			status_t	_SendAcknowledge(bool force = false);
 			status_t	_SendReset(bool force = false);
 			status_t	_SendQueued(bool force = false);
+			status_t	_RetryLocalSend(status_t status);
 
 			status_t	_Disconnect(bool closing);
 			ssize_t		_AvailableData() const;

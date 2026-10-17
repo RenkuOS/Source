@@ -22,7 +22,7 @@ fixture = r"""
 #include <thread>
 #define T(x)
 constexpr int CLOSED=0, ESTABLISHED=4;
-constexpr unsigned FLAG_CLOSED=8, FLAG_DELETE_ON_CLOSE=16, FLAG_DESTROYING=0x800;
+constexpr unsigned FLAG_CLOSED=8, FLAG_DELETE_ON_CLOSE=16, FLAG_DESTROYING=0x800, FLAG_LOCAL_SEND_RETRY=0x2000;
 struct mutex { std::mutex native; std::atomic<bool> alive{true}, owned{false}; };
 int mutex_lock(mutex* m) {
  assert(m->alive && "callback attempted to lock a destroyed mutex");
