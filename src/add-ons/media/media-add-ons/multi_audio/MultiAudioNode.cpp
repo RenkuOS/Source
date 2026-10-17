@@ -1828,12 +1828,25 @@ MultiAudioNode::_OutputThread()
 	// device is gone. If it is ignored, the node is only torn down when the
 	// device's /dev entry disappears, which forces a driver to unpublish a
 	// device that is still open -- and devfs then deletes the device object
-	// out from under our fd. Stopping on the error lets the node close the
-	// device first, so the driver can unpublish it once nothing holds it.
+	// out from under our fd.
+	//
+	// On removal (B_CANCELED) the thread waits for the device to come back
+	// (see _EnterDeviceGone()) with no time limit, rather than stopping for
+	// good: usb_audio rebinds a replugged device to the same fd, so a stopped
+	// thread left the replugged device silent until the media server was
+	// restarted. The node, its connections and every consumer of its time
+	// source survive the replug, whether that consumer is the system mixer
+	// or an application connected to the node directly. A device that never
+	// returns stays published until the node is deleted, as before: this
+	// node has never closed its fd on removal. Giving up after a timeout
+	// would need usb_audio to republish its devices when it retires one, or
+	// the /dev path outlives the close.
 	int32 consecutiveErrors = 0;
 	const int32 kMaxConsecutiveErrors = 100;
 		// Tolerate transient stalls, but never spin forever on a dead device
 		// (the same shape as usb_midi's consecutive-error cap).
+	bigtime_t goneSince = 0;
+	const bigtime_t kDeviceGonePollInterval = 100000;
 
 	while (atomic_get(&fQuitThread) == 0) {
 		BAutolock locker(fBufferLock);
@@ -1842,11 +1855,31 @@ MultiAudioNode::_OutputThread()
 		// send buffer
 		status_t exchangeStatus = fDevice->BufferExchange(&bufferInfo);
 
-		if (exchangeStatus == B_CANCELED || exchangeStatus == B_DEV_NOT_READY) {
-			// Definitive: the driver is telling us the device is removed.
-			fprintf(stderr, "multi_audio: device gone (%s), stopping the "
-				"output thread\n", strerror(exchangeStatus));
+		if (exchangeStatus == B_CANCELED) {
+			// The device was unplugged, or is being reattached after a replug
+			// (usb_audio returns B_CANCELED until the reattach is complete).
+			if (goneSince == 0) {
+				goneSince = system_time();
+				_EnterDeviceGone();
+			}
+			// Keep producers' buffers flowing back to them; nothing will play
+			// them. Then poll without holding the buffer lock.
+			_DiscardQueuedInputs();
+			locker.Unlock();
+			snooze(kDeviceGonePollInterval);
+			continue;
+		}
+		if (exchangeStatus == B_DEV_NOT_READY) {
+			// The device is present but every stream is parked. Waiting does
+			// not help with that (only a format change or a replug does).
+			fprintf(stderr, "multi_audio: no stream running (%s), stopping the"
+				" output thread\n", strerror(exchangeStatus));
 			break;
+		}
+		if (goneSince != 0) {
+			// Any other result means the driver is talking to a device again.
+			_LeaveDeviceGone(goneSince);
+			goneSince = 0;
 		}
 		if (exchangeStatus != B_OK) {
 			// Transient (a completion stall shows up as B_TIMED_OUT). Do not
@@ -2160,6 +2193,99 @@ MultiAudioNode::_StopOutputThread()
 	}
 
 	return B_OK;
+}
+
+
+/*!	The output thread found the device gone. Called once per absence, from the
+	output thread with fBufferLock held.
+
+	Nothing needs to be done to keep the time source alive: _UpdateTimeSource()
+	always publishes a drift of exactly 1.0, so consumers extrapolate it on the
+	system clock for as long as the device is away, and BTimeSource never takes
+	its debugger() path (that needs drift != 1.0 and a gap over 2^24 us).
+*/
+void
+MultiAudioNode::_EnterDeviceGone()
+{
+	fprintf(stderr, "multi_audio: device %s gone, waiting for it to come"
+		" back\n", fDevice->Path());
+
+	// usb_audio rebinds the replugged device to the same buffers. Silence them
+	// now, or the first exchange after the replug plays what they held at the
+	// unplug.
+	for (int32 i = 0; i < fInputs.CountItems(); i++) {
+		node_input* input = (node_input*)fInputs.ItemAt(i);
+		if (fDevice->BufferList().playback_buffers[0][input->fChannelId].base
+				!= NULL)
+			_FillWithZeros(*input);
+	}
+
+	_ReportDevicePresence(false);
+}
+
+
+/*!	The first exchange after an absence succeeded (or failed for a reason
+	other than removal). Called from the output thread with fBufferLock held,
+	before that exchange's time stamp reaches _UpdateTimeSource().
+*/
+void
+MultiAudioNode::_LeaveDeviceGone(bigtime_t goneSince)
+{
+	bigtime_t now = system_time();
+
+	// The driver's frame count started over with the replugged device. Carry
+	// the performance timeline on from where consumers extrapolated it to,
+	// instead of Init(), which would restart it at 0 and strand every
+	// producer scheduling against it.
+	fTimeComputer.Resync(now);
+
+	for (int32 i = 0; i < fInputs.CountItems(); i++)
+		((node_input*)fInputs.ItemAt(i))->fOldBufferCycle = -1;
+	for (int32 i = 0; i < fOutputs.CountItems(); i++)
+		((node_output*)fOutputs.ItemAt(i))->fOldBufferCycle = -1;
+
+	fprintf(stderr, "multi_audio: device %s is back after %d ms\n",
+		fDevice->Path(), (int)((now - goneSince) / 1000));
+
+	_ReportDevicePresence(true);
+}
+
+
+/*!	Recycles every buffer queued on the inputs, as the exchange beat would
+	after playing it. Called from the output thread, the queues' only consumer,
+	so it advances fQueueHead and leaves fQueueTail to the arrival path.
+*/
+void
+MultiAudioNode::_DiscardQueuedInputs()
+{
+	for (int32 i = 0; i < fInputs.CountItems(); i++) {
+		node_input* input = (node_input*)fInputs.ItemAt(i);
+		int32 queueHead = atomic_get(&input->fQueueHead);
+		while (atomic_get(&input->fQueueTail) - queueHead > 0) {
+			BBuffer* queued = input->fQueue[queueHead % kInputQueueDepth];
+			if (queued != NULL)
+				queued->Recycle();
+			queueHead++;
+			atomic_set(&input->fQueueHead, queueHead);
+		}
+	}
+}
+
+
+/*!	Tells anyone watching this node (BMediaRoster::StartWatching()) that its
+	device went away or came back. B_NODE_IN_DISTRESS is the only node_error
+	that is not about a failed operation; the "device_present" field says
+	which transition this is. Nothing in the system consumes it yet: it is the
+	hook for a mixer fallback policy and for applications connected to the
+	node directly that would rather pause than play into silence.
+*/
+void
+MultiAudioNode::_ReportDevicePresence(bool present)
+{
+	BMessage info;
+	info.AddBool("device_present", present);
+	info.AddString("device_path", fDevice->Path());
+	ReportError(B_NODE_IN_DISTRESS, &info);
 }
 
 

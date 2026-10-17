@@ -14,7 +14,59 @@
 #include "Driver.h"
 #include "Settings.h"
 
+#include <usb_ioctl.h>
 
+
+// Does this device have ANY isochronous endpoint?
+//
+// The driver registers as a wildcard (register_driver() with a
+// supportDescriptorCount of 0, which USB3.h documents as "notify me about any
+// device"), so the constructor below runs for every device on the bus: hubs,
+// root hubs and keyboards included. This is how it avoids sending requests
+// meant for audio devices to all of those.
+static bool
+has_isochronous_endpoint(usb_device device)
+{
+	const usb_device_descriptor* deviceDescriptor
+		= gUSBModule->get_device_descriptor(device);
+	if (deviceDescriptor == NULL)
+		return false;
+
+	// Bounded by num_configurations rather than looping until NULL: a stack that
+	// never returned NULL would spin inside the device_added hook forever.
+	for (uint8 configIndex = 0;
+			configIndex < deviceDescriptor->num_configurations; configIndex++) {
+		const usb_configuration_info* config
+			= gUSBModule->get_nth_configuration(device, configIndex);
+		if (config == NULL)
+			continue;
+
+		for (size_t i = 0; i < config->interface_count; i++) {
+			const usb_interface_list* interfaceList = &config->interface[i];
+
+			// Every ALTERNATE, not just the active one. An audio or video
+			// streaming interface parks on alt 0 with no endpoints at all and
+			// exposes its isochronous endpoint only on a higher alternate, so
+			// checking `active` alone would miss precisely the devices this
+			// is for.
+			for (size_t j = 0; j < interfaceList->alt_count; j++) {
+				const usb_interface_info* interface = &interfaceList->alt[j];
+				for (size_t k = 0; k < interface->endpoint_count; k++) {
+					const usb_endpoint_descriptor* endpoint
+						= interface->endpoint[k].descr;
+					if (endpoint == NULL)
+						continue;
+					if ((endpoint->attributes & USB_ENDPOINT_ATTR_MASK)
+							== USB_ENDPOINT_ATTR_ISOCHRONOUS) {
+						return true;
+					}
+				}
+			}
+		}
+	}
+
+	return false;
+}
 
 
 Device::Device(usb_device device)
@@ -22,7 +74,9 @@ Device::Device(usb_device device)
 	fStatus(B_ERROR),
 	fOpen(false),
 	fRemoved(false),
+	fGainsInitialized(false),
 	fDevice(device),
+	fHighSpeed(false),
 	fNonBlocking(false),
 	fAudioControl(this),
 	fFeedbackFrames(0),
@@ -48,7 +102,7 @@ Device::Device(usb_device device)
 	fProductID = deviceDescriptor->product_id;
 	fUSBVersion = deviceDescriptor->usb_version;
 
-	_ReadProductName();
+	fHighSpeed = _DetectHighSpeed(deviceDescriptor);
 
 	// UAC1 (full-speed) and UAC2 (high-speed) are both handled: the class-
 	// specific descriptor layout is selected per entity by the AudioControl
@@ -64,6 +118,14 @@ Device::Device(usb_device device)
 
 	if (_SetupEndpoints() != B_OK)
 		return;
+
+	// Only now that the device has proven to be audio. This constructor runs
+	// for EVERY device on the bus (the driver registers as a wildcard), and
+	// _SetupEndpoints() sends nothing to a device without audio interfaces --
+	// the name lookup, which ran before it until 2026-10-02, sent a string
+	// descriptor request to every hub and keyboard, and some refused it (three
+	// STALLs on xHCI and UHCI errors on a wireless keyboard, each boot).
+	_ReadProductName();
 
 	// must be set in derived class constructor
 	fStatus = B_OK;
@@ -151,6 +213,91 @@ Device::_ReadLangIds(uint16* langs, uint32 maxCount)
 		langs[count++] = raw[i] | ((uint16)raw[i + 1] << 8);
 
 	return count;
+}
+
+
+/*	Decide whether the device runs at high speed. bcdUSB is NOT that: it is the
+	spec revision the device claims, and many full-speed devices claim 2.0.
+	This driver used "bcdUSB >= 0x0200" as "high speed" everywhere, so such a
+	device got microframe-sized packets (1/8 of the data per 1 ms frame) and
+	ASAP queueing instead of frame chaining. Measured 2026-09-30 with the Samson
+	StudioGT monitors (17a0:0210, bcdUSB 2.0, full speed): a 30 s tone rendered
+	172,872 of 1,323,000 frames on xHCI and 648,270 on UHCI, zero errors
+	logged, audibly chopped.
+
+	The bus manager knows the speed the device is connected at; ask it first
+	(USB_IOCTL_GET_DEVICE_SPEED, headers/private/drivers/usb_ioctl.h). That
+	sends nothing to the device. A bus manager without the query answers
+	B_DEV_INVALID_IOCTL, and then the standard descriptors decide, in order of
+	certainty:
+	 1. bcdUSB < 2.0: the device cannot do high speed.
+	 2. bMaxPacketSize0 != 64: USB 2.0 9.6.1 requires exactly 64 at high speed.
+	 3. GET_DESCRIPTOR(DEVICE_QUALIFIER) fails: a full-speed-only device that
+	    reports 2.0 must answer that request with a Request Error (9.6.2).
+	 4. Otherwise assume high speed. This misjudges a high-speed-capable
+	    device connected at full speed (e.g. on a UHCI/OHCI port), which only
+	    the bus manager can tell apart.
+
+	SuperSpeed devices encode bMaxPacketSize0 as an exponent (9 = 512 bytes)
+	and are serviced in 125 us intervals like high speed, so they take the
+	high-speed path.
+
+	The constructor runs for EVERY device on the bus (the driver registers as
+	a wildcard), so nothing is sent to a device without an isochronous
+	endpoint: without that check, the qualifier request went to every root
+	hub, hub and keyboard. */
+bool
+Device::_DetectHighSpeed(const usb_device_descriptor* descriptor)
+{
+	uint32 speed = (uint32)fDevice;
+	if (gUSBModule->usb_ioctl(USB_IOCTL_GET_DEVICE_SPEED, &speed,
+			sizeof(speed)) == B_OK) {
+		// 0 low, 1 full, 2 high, 3+ SuperSpeed (see the header).
+		bool highSpeed = speed >= 2;
+		if (!highSpeed && descriptor->usb_version >= 0x0200
+				&& has_isochronous_endpoint(fDevice)) {
+			dprintf("usb_audio: %04x:%04x reports USB %d.%d but is connected"
+				" at %s speed -- running it as full speed\n", fVendorID,
+				fProductID, fUSBVersion >> 8, (fUSBVersion >> 4) & 0xf,
+				speed == 0 ? "low" : "full");
+		}
+		return highSpeed;
+	}
+
+	if (descriptor->usb_version < 0x0200)
+		return false;
+
+	if (descriptor->usb_version >= 0x0300
+		&& descriptor->max_packet_size_0 == 9)
+		return true;
+
+	if (!has_isochronous_endpoint(fDevice))
+		return false;
+
+	if (descriptor->max_packet_size_0 != 64) {
+		dprintf("usb_audio: %04x:%04x reports USB %d.%d but its control "
+			"endpoint is %u bytes -- running it as full speed\n",
+			fVendorID, fProductID, fUSBVersion >> 8, (fUSBVersion >> 4) & 0xf,
+			(unsigned)descriptor->max_packet_size_0);
+		return false;
+	}
+
+	// USB_DESCRIPTOR_DEVICE_QUALIFIER is not defined in USB_spec.h.
+	const uint8 kDeviceQualifierDescriptor = 0x06;
+	uint8 qualifier[10];
+	size_t actualLength = 0;
+	status_t status = gUSBModule->get_descriptor(fDevice,
+		kDeviceQualifierDescriptor, 0, 0, qualifier, sizeof(qualifier),
+		&actualLength);
+	if (status != B_OK || actualLength < 2) {
+		dprintf("usb_audio: %04x:%04x reports USB %d.%d but has no device "
+			"qualifier (%s) -- running it as full speed\n",
+			fVendorID, fProductID, fUSBVersion >> 8, (fUSBVersion >> 4) & 0xf,
+			strerror(status));
+		return false;
+	}
+
+	return true;
 }
 
 
@@ -252,6 +399,17 @@ Device::Open(uint32 flags)
 	if (fRemoved)
 		return B_ERROR;
 
+	// Unmute and open the hardware audio path (some devices power up muted;
+	// see InitHardwareGains) at the first open after an attach. Until
+	// 2026-10-02 this ran in _SetupEndpoints(), i.e. inside device_added and
+	// so inside the legacy driver load, where every request a device answers
+	// slowly holds up the loading of every other driver: seven STALLed volume
+	// and qualifier requests on xHCI once delayed PS/2 input by 36 s at boot.
+	if (!fGainsInitialized) {
+		fAudioControl.InitHardwareGains();
+		fGainsInitialized = true;
+	}
+
 	status_t result = StartDevice();
 	if (result != B_OK)
 		return result;
@@ -311,9 +469,14 @@ Device::Control(uint32 op, void* buffer, size_t length)
 	// there, and several issue USB requests to it. The media node keeps its fd
 	// (and keeps calling) well past the removal - its own teardown does a
 	// final B_MULTI_GET_MIX to save settings - so this has to be refused here
-	// rather than assumed not to happen. B_MULTI_BUFFER_EXCHANGE has carried
-	// its own gate for a while; this covers the rest.
-	if (fRemoved)
+	// rather than assumed not to happen.
+	//
+	// B_MULTI_BUFFER_EXCHANGE is let through to its own gate, which reports a
+	// removal as B_CANCELED. Until 2026-10-01 this gate caught it first and
+	// returned B_DEV_NOT_READY -- the same code the exchange uses for "every
+	// stream is parked" -- so the media node could not tell a device that is
+	// gone (wait for the replug) from one that is present but cannot stream.
+	if (fRemoved && op != B_MULTI_BUFFER_EXCHANGE)
 		return B_DEV_NOT_READY;
 
 	switch (op) {
@@ -695,13 +858,30 @@ Device::CompareAndReattach(usb_device device)
 		// this certainly isn't the same device
 		return B_BAD_VALUE;
 
-	// this is the same device that was replugged - clear the removed state,
-	// re-bind the existing streams (and with them the sample buffers already
-	// published to the consumer) to the new usb_device, and open the device
-	// if it was previously opened. _SetupEndpoints() must not run again here:
-	// it would create a second set of streams alongside the stale ones.
+	// Only a device that is actually gone can be plugged back. A second unit
+	// of the same model arriving while this one is live must get its own
+	// entry, not take this one over.
+	if (!fRemoved)
+		return B_BUSY;
+
+	// this is the same device that was replugged - re-bind the existing
+	// streams (and with them the sample buffers already published to the
+	// consumer) to the new usb_device, clear the removed state, and open the
+	// device if it was previously opened. _SetupEndpoints() must not run again
+	// here: it would create a second set of streams alongside the stale ones.
+	//
+	// fRemoved stays set until the very end. The media node keeps calling
+	// B_MULTI_BUFFER_EXCHANGE throughout, and that starts any stream that is
+	// not running -- so clearing it first (as this did until 2026-10-01) let
+	// streams start in the middle of the reattach, on the endpoint handles of
+	// the old device or on an alternate setting about to be reset. Measured
+	// on RenkuOS 2026-09-29: capture queued on stale handles, failed with
+	// B_DEV_INVALID_PIPE until it was parked (silence, RMX and DDJ-SR on
+	// OHCI), or playback queued 2 ms before the interface reset and was never
+	// restarted (RMX on UHCI, 2/3 speed). While fRemoved is set the exchange
+	// returns B_CANCELED before its start loop and _Start() refuses, exactly
+	// as while the device was unplugged.
 	fDevice = device;
-	fRemoved = false;
 
 	const usb_configuration_info* config
 		= gUSBModule->get_nth_configuration(fDevice, 0);
@@ -710,10 +890,8 @@ Device::CompareAndReattach(usb_device device)
 		result = gUSBModule->set_configuration(fDevice, config);
 	for (int i = 0; result == B_OK && i < fStreams.Count(); i++)
 		result = fStreams[i]->OnReattach(fDevice, config);
-	if (result != B_OK) {
-		fRemoved = true;
+	if (result != B_OK)
 		return result;
-	}
 
 	// An R2 device's streams share their clock; restore the rate that was
 	// last programmed before the removal, rather than letting each stream
@@ -723,10 +901,8 @@ Device::CompareAndReattach(usb_device device)
 			&& fAudioControl.LastClockId() != 0) {
 		result = fAudioControl.SetSamplingRate(fAudioControl.LastClockId(),
 			fAudioControl.LastClockRate());
-		if (result != B_OK) {
-			fRemoved = true;
+		if (result != B_OK)
 			return result;
-		}
 	}
 
 	// The replugged device starts with an empty FIFO; drop any feedback
@@ -748,6 +924,22 @@ Device::CompareAndReattach(usb_device device)
 	result = SetupDevice(true);
 	if (result != B_OK)
 		return result;
+
+	// The replugged device was power cycled, so its gains are back at their
+	// power-up state. Program them now, while fRemoved still keeps the media
+	// node from restarting the streams, rather than in the Open() below.
+	// Only a device that was open gets this here; one that was not is
+	// programmed by its next Open().
+	fGainsInitialized = false;
+	if (fOpen) {
+		fAudioControl.InitHardwareGains();
+		fGainsInitialized = true;
+	}
+
+	// Every stream now holds the new device's endpoint handles; let the next
+	// buffer exchange start them. OnReattach() has already un-parked them.
+	// Open() below refuses a removed device, so this must come first.
+	fRemoved = false;
 
 	if (fOpen) {
 		fOpen = false;
@@ -1460,9 +1652,8 @@ Device::_SetupEndpoints()
 			fStreams[i]->OnSetConfiguration(fDevice, config);
 		}
 
-		// Unmute and open the hardware audio path; some devices power up
-		// muted (see InitHardwareGains). Done on replug too.
-		fAudioControl.InitHardwareGains();
+		// The hardware gains are initialised at the first open, not here --
+		// see Device::Open().
 
 		return B_OK;
 	}
