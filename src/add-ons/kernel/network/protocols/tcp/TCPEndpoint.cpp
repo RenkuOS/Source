@@ -325,7 +325,8 @@ enum {
 	FLAG_AUTO_RECEIVE_BUFFER_SIZE = 0x100,
 	FLAG_CAN_NOTIFY 			= 0x200,
 	FLAG_USER_CLOSED			= 0x400,
-	FLAG_DESTROYING				= 0x800
+	FLAG_DESTROYING				= 0x800,
+	FLAG_ACK_RETRY_PENDING		= 0x1000
 };
 
 
@@ -2226,6 +2227,7 @@ TCPEndpoint::_PrepareAndSend(tcp_segment_header& segment, net_buffer* buffer,
 
 	if (segment.flags & TCP_FLAG_ACKNOWLEDGE) {
 		fLastAcknowledgeSent = segment.acknowledge;
+		fFlags &= ~FLAG_ACK_RETRY_PENDING;
 		gStackModule->cancel_timer(&fDelayedAcknowledgeTimer);
 	}
 
@@ -2292,16 +2294,29 @@ TCPEndpoint::_SendAcknowledge(bool force)
 
 	// Is there actually anything to do?
 	if (!force && fState == ESTABLISHED
+			&& (fFlags & FLAG_ACK_RETRY_PENDING) == 0
 			&& fLastAcknowledgeSent == fReceiveNext
 			&& fReceiveQueue.IsContiguous()
 			&& !_ShouldSendSegment(segment, 0, 0, 0))
 		return B_OK;
 
 	net_buffer* buffer = gBufferModule->create(256);
-	if (buffer == NULL)
-		return B_NO_MEMORY;
+	status_t status = buffer != NULL
+		? _PrepareAndSend(segment, buffer, false) : B_NO_MEMORY;
 
-	return _PrepareAndSend(segment, buffer, false);
+	// An ACK has no retransmission queue. In particular, losing a window
+	// update to local congestion can leave the peer waiting indefinitely.
+	// Retry transient local failures without replacing an earlier deadline.
+	if ((status == ENOBUFS || status == B_NO_MEMORY || status == B_WOULD_BLOCK)
+		&& fState != CLOSED && (fFlags & FLAG_DESTROYING) == 0) {
+		fFlags |= FLAG_ACK_RETRY_PENDING;
+		if (gStackModule->is_timer_active(&fDelayedAcknowledgeTimer))
+			return status;
+		const bigtime_t retryDelay = 10000;
+		gStackModule->set_timer(&fDelayedAcknowledgeTimer, retryDelay);
+		T(TimerSet(this, "ack retry", retryDelay));
+	}
+	return status;
 }
 
 
