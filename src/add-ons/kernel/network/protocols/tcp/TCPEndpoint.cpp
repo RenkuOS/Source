@@ -1706,6 +1706,11 @@ TCPEndpoint::_Receive(tcp_segment_header& segment, net_buffer* buffer)
 	ASSERT(fState != SYNCHRONIZE_SENT && fState != LISTEN);
 
 	if (fState != CLOSED && fState != TIME_WAIT) {
+		// The receive queue may have grown while in-order data used the
+		// fast path. Refresh the window before checking an out-of-order
+		// segment, or data inside the larger advertised window is dropped.
+		fReceiveWindow = max_c(fReceiveQueue.Free(), fReceiveWindow);
+
 		// Check sequence number
 		if (!segment_in_sequence(segment, segmentLength, fReceiveNext,
 				fReceiveWindow)) {
@@ -1760,11 +1765,6 @@ TCPEndpoint::_Receive(tcp_segment_header& segment, net_buffer* buffer)
 		// received a SYN within the data stream
 		return DROP | RESET;
 	}
-
-	// TODO: Check this! Why do we advertize a window outside of what we should
-	// buffer?
-	fReceiveWindow = max_c(fReceiveQueue.Free(), fReceiveWindow);
-		// the window must not shrink
 
 	// trim buffer to be within the receive window
 	int32 drop = (int32)(fReceiveNext - segment.sequence).Number();
