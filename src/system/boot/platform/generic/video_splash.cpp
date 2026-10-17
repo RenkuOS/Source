@@ -31,6 +31,52 @@
 #endif
 
 
+static uint8 sSplashBackground;
+
+
+extern "C" void
+video_set_splash_background(uint8 shade)
+{
+	sSplashBackground = shade;
+}
+
+
+static void
+fill_gray_background(uint8* buffer, size_t available, uint32 width,
+	uint32 height, uint32 stride, uint8 shade)
+{
+	// Bound each row by both its pitch and the actual framebuffer mapping.
+	uint64 rowBytes = (uint64)width * 4;
+	if (rowBytes > stride)
+		return;
+	for (uint32 y = 0; y < height; y++) {
+		uint64 offset = (uint64)y * stride;
+		if (offset >= available)
+			break;
+		size_t bytes = min_c(rowBytes, available - offset);
+		uint8* row = buffer + offset;
+		for (size_t x = 0; x + 4 <= bytes; x += 4) {
+			row[x] = row[x + 1] = row[x + 2] = shade;
+			row[x + 3] = 0;
+		}
+	}
+}
+
+
+static void
+replace_black_background(uint8* image, size_t size, uint8 shade)
+{
+	if (shade == 0)
+		return;
+	// Splash assets are RGB images with a black backdrop, not alpha images.
+	// Keep every foreground color intact, and remap only the backdrop.
+	for (size_t i = 0; i + 3 <= size; i += 3) {
+		if (image[i] == 0 && image[i + 1] == 0 && image[i + 2] == 0)
+			image[i] = image[i + 1] = image[i + 2] = shade;
+	}
+}
+
+
 static status_t
 uncompress(const uint8 compressed[], unsigned int compressedSize,
 	uint8* uncompressed, unsigned int uncompressedSize)
@@ -133,6 +179,14 @@ video_display_splash(addr_t frameBuffer)
 	for (; pos < size; pos++)
 		*(char*)(frameBuffer + pos) = 0;
 
+	uint8 shade = gKernelArgs.frame_buffer.depth == 32 ? sSplashBackground : 0;
+	if (shade != 0) {
+		fill_gray_background((uint8*)frameBuffer,
+			gKernelArgs.frame_buffer.physical_buffer.size,
+			gKernelArgs.frame_buffer.width, gKernelArgs.frame_buffer.height,
+			gKernelArgs.frame_buffer.bytes_per_row, shade);
+	}
+
 	uint8* uncompressedLogo = NULL;
 	unsigned int uncompressedSize = kSplashLogoWidth * kSplashLogoHeight;
 	switch (gKernelArgs.frame_buffer.depth) {
@@ -157,6 +211,8 @@ video_display_splash(addr_t frameBuffer)
 				uncompressedSize);
 		break;
 	}
+
+	replace_black_background(uncompressedLogo, uncompressedSize, shade);
 
 	// TODO: support 4-bit indexed version of the images!
 
@@ -199,6 +255,9 @@ video_display_splash(addr_t frameBuffer)
 				+ (kSplashIconsWidth * iconsHalfHeight) * 3;
 		break;
 	}
+
+	// Keep the background consistent when the kernel lights later icons.
+	replace_black_background((uint8*)gKernelArgs.boot_splash, uncompressedSize, shade);
 
 	// render initial (grayed out) icons
 	// the grayed out version is the lower half of the icons image
