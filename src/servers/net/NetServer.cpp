@@ -39,6 +39,7 @@
 #include <PathMonitor.h>
 #include <Roster.h>
 #include <Server.h>
+#include <StringList.h>
 #include <TextView.h>
 #include <FindDirectory.h>
 
@@ -107,6 +108,7 @@ private:
 			BNetworkSettings	fSettings;
 			LooperMap			fDeviceMap;
 			BMessenger			fServices;
+			BStringList		fAutoJoinDisabled;
 };
 
 
@@ -213,6 +215,9 @@ NetServer::MessageReceived(BMessage* message)
 
 		case kMsgJoinNetwork:
 		{
+			const char* device;
+			if (message->FindString("device", &device) == B_OK)
+				fAutoJoinDisabled.Remove(device);
 			status_t status = _JoinNetwork(*message);
 
 			BMessage reply(B_REPLY);
@@ -951,6 +956,10 @@ NetServer::_AutoJoinNetwork(const BMessage& message)
 	if (message.FindString("device", &name) != B_OK)
 		return B_BAD_VALUE;
 
+	// A scan request queued before an explicit leave must not reconnect.
+	if (fAutoJoinDisabled.HasString(name))
+		return B_CANCELED;
+
 	BNetworkDevice device(name);
 
 	// Choose among configured networks
@@ -1139,6 +1148,12 @@ NetServer::_LeaveNetwork(const BMessage& message)
 	const char* deviceName;
 	if (message.FindString("device", &deviceName) != B_OK)
 		return B_BAD_VALUE;
+
+	fAutoJoinDisabled.Add(deviceName);
+
+	AutoconfigLooper* looper = _LooperForDevice(deviceName);
+	if (looper != NULL)
+		looper->PostMessage(kMsgLeaveNetwork);
 
 	int32 reason;
 	if (message.FindInt32("reason", &reason) != B_OK)
