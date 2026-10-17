@@ -15,9 +15,12 @@
 #include <net/if_media.h>
 #include <net/if_types.h>
 #include <stdio.h>
+#include <new>
 #include <sys/socket.h>
 #include <sys/sockio.h>
 
+#include <MessageRunner.h>
+#include <NetworkDevice.h>
 #include <NetworkInterface.h>
 #include <NetworkNotifications.h>
 
@@ -26,6 +29,7 @@
 
 
 static const uint32 kMsgReadyToRun = 'rdyr';
+static const uint32 kMsgRetryAutoJoin = 'rjon';
 
 
 AutoconfigLooper::AutoconfigLooper(BMessenger target, const char* device)
@@ -34,7 +38,10 @@ AutoconfigLooper::AutoconfigLooper(BMessenger target, const char* device)
 	fDevice(device),
 	fCurrentClient(NULL),
 	fLastMediaStatus(0),
-	fJoiningNetwork(false)
+	fJoiningNetwork(false),
+	fJoinRequestPending(false),
+	fAutoJoinDisabled(false),
+	fScanRunner(NULL)
 {
 	BMessage ready(kMsgReadyToRun);
 	PostMessage(&ready);
@@ -43,6 +50,7 @@ AutoconfigLooper::AutoconfigLooper(BMessenger target, const char* device)
 
 AutoconfigLooper::~AutoconfigLooper()
 {
+	delete fScanRunner;
 	_RemoveClient();
 }
 
@@ -133,6 +141,9 @@ AutoconfigLooper::_ConfigureIPv4Failed()
 void
 AutoconfigLooper::_ReadyToRun()
 {
+	BMessage retry(kMsgRetryAutoJoin);
+	fScanRunner = new(std::nothrow) BMessageRunner(BMessenger(this), &retry,
+		10 * 1000 * 1000);
 	start_watching_network(
 		B_WATCH_NETWORK_LINK_CHANGES | B_WATCH_NETWORK_WLAN_CHANGES, this);
 
@@ -145,6 +156,24 @@ AutoconfigLooper::_ReadyToRun()
 		// a link changed notification that might race us.
 		fLastMediaStatus |= IFM_ACTIVE;
 	}
+}
+
+
+void
+AutoconfigLooper::_RetryAutoJoin()
+{
+	if (fAutoJoinDisabled || fJoiningNetwork || fJoinRequestPending)
+		return;
+
+	BNetworkInterface interface(fDevice.String());
+	if ((interface.Flags() & IFF_UP) == 0 || interface.HasLink())
+		return;
+
+	BNetworkDevice device(fDevice.String());
+	if (device.IsWireless())
+		device.Scan(false);
+	// The scan notification chooses only saved networks. An accepted join
+	// is retried by the supplicant, without repeatedly replacing its state.
 }
 
 
@@ -186,6 +215,8 @@ AutoconfigLooper::_NetworkMonitorNotification(BMessage* message)
 				//_ConfigureIPv6();	// TODO: router advertisement and dhcpv6
 			} else if ((media & IFM_ACTIVE) == 0) {
 				_RemoveClient();
+				if ((fLastMediaStatus & IFM_ACTIVE) != 0)
+					fJoiningNetwork = false;
 			}
 
 			fLastMediaStatus = media;
@@ -194,22 +225,20 @@ AutoconfigLooper::_NetworkMonitorNotification(BMessage* message)
 
 		case B_NETWORK_WLAN_SCANNED:
 		{
-			if (fJoiningNetwork || (fLastMediaStatus & IFM_ACTIVE) != 0) {
+			if (fAutoJoinDisabled || fJoiningNetwork || fJoinRequestPending
+				|| (fLastMediaStatus & IFM_ACTIVE) != 0) {
 				// We already have a link or are already joining.
 				break;
 			}
 
-			fJoiningNetwork = true;
-				// TODO: For now we never reset this flag. We can only do that
-				// after infrastructure has been added to discern a scan reason.
-				// If we would always auto join we would possibly interfere
-				// with active scans in the process of connecting to an AP
-				// either for the initial connection, or after connection loss
-				// to re-establish the link.
+			// Only latch the join after net_server accepts it. An early
+			// scan may not contain a saved network yet.
+			fJoinRequestPending = true;
 
 			BMessage message(kMsgAutoJoinNetwork);
 			message.AddString("device", fDevice);
-			fTarget.SendMessage(&message);
+			if (fTarget.SendMessage(&message, this) != B_OK)
+				fJoinRequestPending = false;
 			break;
 		}
 	}
@@ -226,6 +255,31 @@ AutoconfigLooper::MessageReceived(BMessage* message)
 
 		case kMsgAutoConfigureFailed:
 			_ConfigureIPv4Failed();
+			break;
+
+		case kMsgAutoJoinNetwork:
+		{
+			status_t status;
+			if (message->FindInt32("status", &status) == B_OK) {
+				fJoinRequestPending = false;
+				if (status == B_OK)
+					fJoiningNetwork = true;
+			}
+			break;
+		}
+
+		case kMsgJoinNetwork:
+			fAutoJoinDisabled = false;
+			fJoiningNetwork = true;
+			break;
+
+		case kMsgLeaveNetwork:
+			// Explicit disconnect must not be undone by our next scan.
+			fAutoJoinDisabled = true;
+			break;
+
+		case kMsgRetryAutoJoin:
+			_RetryAutoJoin();
 			break;
 
 		case B_NETWORK_MONITOR:
