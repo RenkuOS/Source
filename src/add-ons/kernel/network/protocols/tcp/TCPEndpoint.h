@@ -156,6 +156,7 @@ private:
 	uint32			fSendMaxSegments;
 	BufferQueue		fSendQueue;
 	tcp_sequence	fLastAcknowledgeSent;
+	uint8			fSegmentsSinceAcknowledge;
 	tcp_sequence	fInitialSendSequence;
 	tcp_sequence	fPreviousHighestAcknowledge;
 	uint32			fDuplicateAcknowledgeCount;

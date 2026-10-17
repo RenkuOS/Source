@@ -427,6 +427,7 @@ TCPEndpoint::TCPEndpoint(net_socket* socket)
 	fSendMaxSegmentSize(TCP_DEFAULT_MAX_SEGMENT_SIZE),
 	fSendMaxSegments(0),
 	fSendQueue(socket->send.buffer_size),
+	fSegmentsSinceAcknowledge(0),
 	fInitialSendSequence(0),
 	fPreviousHighestAcknowledge(0),
 	fDuplicateAcknowledgeCount(0),
@@ -1147,8 +1148,15 @@ TCPEndpoint::DelayedAcknowledge()
 	// ACKs "MUST" be generated within 500ms of the first unACKed packet, and
 	// "SHOULD" be for at least every second full-size segment. (RFC 5681 § 4.2)
 
+	// TCP options can make full-sized payloads smaller than the advertised
+	// MSS. Count received segments as well, so two such packets do not
+	// have to wait for a third packet or the delayed ACK timeout.
+	if (fSegmentsSinceAcknowledge < 2)
+		fSegmentsSinceAcknowledge++;
+
 	bigtime_t delay = TCP_DELAYED_ACKNOWLEDGE_TIMEOUT;
-	if ((fReceiveNext - fLastAcknowledgeSent) >= (fReceiveMaxSegmentSize * 2)) {
+	if (fSegmentsSinceAcknowledge >= 2
+		|| (fReceiveNext - fLastAcknowledgeSent) >= (fReceiveMaxSegmentSize * 2)) {
 		// Trigger an immediate timeout rather than invoking Send directly,
 		// allowing multiple invocations to be coalesced.
 		delay = 0;
@@ -2219,6 +2227,7 @@ TCPEndpoint::_PrepareAndSend(tcp_segment_header& segment, net_buffer* buffer,
 
 	if (segment.flags & TCP_FLAG_ACKNOWLEDGE) {
 		fLastAcknowledgeSent = segment.acknowledge;
+		fSegmentsSinceAcknowledge = 0;
 		gStackModule->cancel_timer(&fDelayedAcknowledgeTimer);
 	}
 
