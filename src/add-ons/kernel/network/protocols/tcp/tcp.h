@@ -267,10 +267,15 @@ struct tcp_segment_header {
 
 	uint32 AdvertisedWindow(uint8 windowShift) const
 	{
+		if ((flags & TCP_FLAG_SYNCHRONIZE) != 0)
+			windowShift = 0;
 		return (uint32)advertised_window << windowShift;
 	}
 	void SetAdvertisedWindow(size_t availableBytes, uint8 windowShift)
 	{
+		// RFC 7323: SYN and SYN-ACK window fields are never scaled.
+		if ((flags & TCP_FLAG_SYNCHRONIZE) != 0)
+			windowShift = 0;
 		availableBytes >>= windowShift;
 		advertised_window = min_c(TCP_MAX_WINDOW, availableBytes);
 	}
