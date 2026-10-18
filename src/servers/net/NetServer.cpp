@@ -219,6 +219,11 @@ NetServer::MessageReceived(BMessage* message)
 			if (message->FindString("device", &device) == B_OK)
 				fAutoJoinDisabled.Remove(device);
 			status_t status = _JoinNetwork(*message);
+			if (status == B_OK && device != NULL) {
+				AutoconfigLooper* looper = _LooperForDevice(device);
+				if (looper != NULL)
+					looper->InvalidateAutoJoinRequests();
+			}
 
 			BMessage reply(B_REPLY);
 			reply.AddInt32("status", status);
@@ -958,6 +963,15 @@ NetServer::_AutoJoinNetwork(const BMessage& message)
 
 	// A scan request queued before an explicit leave must not reconnect.
 	if (fAutoJoinDisabled.HasString(name))
+		return B_CANCELED;
+
+	// A scan request already sent before an explicit join must not replace
+	// that newer connection after the looper learns that joining started.
+	AutoconfigLooper* looper = _LooperForDevice(name);
+	int32 generation;
+	if (looper == NULL
+		|| message.FindInt32("autoJoinGeneration", &generation) != B_OK
+		|| generation != looper->AutoJoinGeneration())
 		return B_CANCELED;
 
 	BNetworkDevice device(name);

@@ -38,6 +38,7 @@ AutoconfigLooper::AutoconfigLooper(BMessenger target, const char* device)
 	fDevice(device),
 	fCurrentClient(NULL),
 	fLastMediaStatus(0),
+	fAutoJoinGeneration(0),
 	fJoiningNetwork(false),
 	fJoinRequestPending(false),
 	fAutoJoinDisabled(false),
@@ -237,6 +238,7 @@ AutoconfigLooper::_NetworkMonitorNotification(BMessage* message)
 
 			BMessage message(kMsgAutoJoinNetwork);
 			message.AddString("device", fDevice);
+			message.AddInt32("autoJoinGeneration", AutoJoinGeneration());
 			if (fTarget.SendMessage(&message, this) != B_OK)
 				fJoinRequestPending = false;
 			break;

@@ -27,6 +27,11 @@ public:
 
 			BMessenger			Target() const { return fTarget; }
 
+			int32				AutoJoinGeneration()
+									{ return atomic_get(&fAutoJoinGeneration); }
+			void				InvalidateAutoJoinRequests()
+									{ atomic_add(&fAutoJoinGeneration, 1); }
+
 private:
 			void				_RemoveClient();
 			void				_ConfigureIPv4();
@@ -39,6 +44,7 @@ private:
 			BString				fDevice;
 			AutoconfigClient*	fCurrentClient;
 			int32				fLastMediaStatus;
+			int32				fAutoJoinGeneration;
 			bool				fJoiningNetwork;
 			bool				fJoinRequestPending;
 			bool				fAutoJoinDisabled;
