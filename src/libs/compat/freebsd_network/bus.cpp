@@ -391,6 +391,7 @@ bus_setup_intr(device_t dev, struct resource *res, int flags,
 	intr->arg = arg;
 	intr->irq = res->r_bushandle;
 	intr->flags = flags;
+	intr->handling = 0;
 	intr->sem = -1;
 	intr->thread = -1;
 
