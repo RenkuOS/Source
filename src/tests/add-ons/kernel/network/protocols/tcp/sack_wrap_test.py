@@ -17,7 +17,7 @@ typedef uint32_t uint32;typedef int32_t int32;
 #define TRACE(x)
 #define B_PRIu32 "u"
 struct tcp_sack {uint32 left_edge,right_edge;};
-struct net_buffer {uint32 sequence;size_t size;};
+struct net_buffer {uint32 sequence;uint32 size;};
 struct SegmentList {
  std::vector<net_buffer> items;
  struct ReverseIterator{std::vector<net_buffer>*v;size_t i;
