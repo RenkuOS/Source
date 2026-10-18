@@ -1412,6 +1412,16 @@ setmlme_common(struct ieee80211vap *vap, int op,
 			mlmedebug(vap, vap->iv_bss->ni_macaddr, op, reason);
 			/* XXX not quite right */
 			ieee80211_new_state(vap, IEEE80211_S_INIT, reason);
+#ifdef __HAIKU__
+			/*
+			 * Complete the BSS reset before a following association ioctl
+			 * installs its new node. Otherwise the pending INIT task can
+			 * replace that node with our own address before AUTH runs.
+			 * No state lock is held while waiting for the task queue.
+			 */
+			for (int i = 0; i < NET80211_IV_NSTATE_NUM; i++)
+				ieee80211_draintask(ic, &vap->iv_nstate_task[i]);
+#endif
 			break;
 		case IEEE80211_M_HOSTAP:
 			mlmeop.vap = vap;
