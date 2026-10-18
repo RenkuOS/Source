@@ -206,12 +206,14 @@ BufferQueue::Add(net_buffer *buffer, tcp_sequence sequence)
 
 	if (fLastSequence - fFirstSequence == fNumBytes)
 		fContiguousBytes = fNumBytes;
-	else if (fFirstSequence + fContiguousBytes == sequence) {
-		// the complicated case: the new segment may have connected almost all
-		// buffers in the queue (but not all, or the above would be true)
+	else if (sequence <= fFirstSequence + fContiguousBytes
+		&& sequence + buffer->size >= fFirstSequence + fContiguousBytes) {
+		// The new segment may replace part of the contiguous prefix as well
+		// as extend it. Count from its end instead of adding overlapping bytes.
 
 		do {
-			fContiguousBytes += buffer->size;
+			fContiguousBytes = (tcp_sequence(buffer->sequence) + buffer->size
+				- fFirstSequence).Number();
 
 			buffer = (struct net_buffer *)buffer->link.next;
 		} while (buffer != NULL
