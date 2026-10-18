@@ -15,7 +15,7 @@ prefix=r'''
 #include <stdint.h>
 typedef int status_t; typedef int32_t int32;
 enum {B_OK=0, B_NETWORK_WLAN_SCANNED=1,kMsgAutoJoinNetwork=2,kMsgJoinNetwork=3,kMsgReadyToRun=4,kMsgAutoConfigureFailed=5,B_NETWORK_MONITOR=6,kMsgLeaveNetwork=7,kMsgRetryAutoJoin=8,B_NETWORK_DEVICE_LINK_CHANGED=9,IFF_UP=2,IFM_ACTIVE=1};
-struct BMessage {int what,status;bool valid=false;BMessage(int w):what(w){} void AddString(const char*,const char*){} int FindInt32(const char*,int* p){*p=status;return valid?0:-1;}};
+struct BMessage {int what,status;bool valid=false;BMessage(int w):what(w){} void AddString(const char*,const char*){} void AddInt32(const char*,int32){} int FindInt32(const char*,int* p){*p=status;return valid?0:-1;}};
 struct BLooper {void MessageReceived(BMessage*){}};
 struct Target {unsigned calls=0;int result=0;int SendMessage(BMessage*,void*){calls++;return result;}};
 struct DeviceName {const char* String(){return "test";} operator const char*(){return String();}};
@@ -24,6 +24,7 @@ struct BNetworkInterface {BNetworkInterface(const char*){} int Flags(){return en
 struct BNetworkDevice {BNetworkDevice(const char*){} bool IsWireless(){return wireless;} void Scan(bool wait){assert(!wait);scans++;}};
 struct AutoconfigLooper : BLooper {
  bool fJoiningNetwork=false,fJoinRequestPending=false,fAutoJoinDisabled=false;int fLastMediaStatus=0;DeviceName fDevice;Target fTarget;
+ int32 AutoJoinGeneration(){return 0;}
  void _RetryAutoJoin(); void _RemoveClient(){} void _ConfigureIPv4(){} void _ReadyToRun(){} void _ConfigureIPv4Failed(){} void _NetworkMonitorNotification(BMessage*){}
  void MessageReceived(BMessage*);
  void changeLink(int media){BMessage event(0);event.valid=true;event.status=media;BMessage* message=&event;switch(B_NETWORK_DEVICE_LINK_CHANGED){
