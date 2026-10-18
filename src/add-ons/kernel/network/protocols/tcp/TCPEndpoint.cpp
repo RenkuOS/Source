@@ -2250,8 +2250,11 @@ TCPEndpoint::_ShouldSendSegment(tcp_segment_header& segment, uint32 length,
 	// check if we need to send a window update to the peer
 	if (segment.advertised_window > 0) {
 		// correct the window to take into account what already has been advertised
-		uint32 window = segment.AdvertisedWindow(fReceiveWindowShift)
-			- (fReceiveMaxAdvertised - fReceiveNext).Number();
+		uint32 advertised = segment.AdvertisedWindow(fReceiveWindowShift);
+		uint32 remaining = (fReceiveMaxAdvertised - fReceiveNext).Number();
+		// Rounding a scaled window can move its right edge backwards.
+		// A smaller window is not an increase and must not wrap to 4 GiB.
+		uint32 window = advertised > remaining ? advertised - remaining : 0;
 		if (fReceiveNext == (fReceiveMaxAdvertised + 1))
 			window = 0;
 
