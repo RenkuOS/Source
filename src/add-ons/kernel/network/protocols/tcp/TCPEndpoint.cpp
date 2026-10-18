@@ -648,10 +648,15 @@ TCPEndpoint::Connect(const sockaddr* address)
 
 	// send SYN
 	status = _SendAcknowledge();
-	if (status != B_OK) {
+	if (status != B_OK && status != ENOBUFS && status != B_NO_MEMORY
+		&& status != B_WOULD_BLOCK) {
 		_Close();
 		return status;
 	}
+
+	// A locally congested send path has not rejected the connection. Keep
+	// the SYN pending and let the retransmission timer retry it, using the
+	// same connection timeout and non-blocking semantics as a sent SYN.
 
 	// If we are running over Loopback, after _SendQueued() returns we
 	// may be in ESTABLISHED already.
