@@ -21,6 +21,7 @@ using status_t=int;using bigtime_t=long long;
 #define ENOBUFS (-105)
 constexpr status_t B_OK=0,B_ERROR=-1,B_NO_MEMORY=-12,B_WOULD_BLOCK=-11;
 constexpr int CLOSED=0,LISTEN=1,ESTABLISHED=4;
+constexpr bigtime_t TCP_DELAYED_ACKNOWLEDGE_TIMEOUT=100000;
 constexpr unsigned FLAG_DESTROYING=0x800,FLAG_ACK_RETRY_PENDING=0x1000;
 constexpr int TCP_FLAG_ACKNOWLEDGE=16;
 #define T(x)
@@ -28,7 +29,7 @@ struct net_timer{};
 struct Stack {
  bool active=false;bigtime_t delay=0;unsigned sets=0;
  bool is_timer_active(net_timer*){return active;}
- void set_timer(net_timer*,bigtime_t value){assert(value>0&&value<=500000);active=true;delay=value;sets++;}
+ void set_timer(net_timer*,bigtime_t value){assert(value>=0&&value<=500000);active=true;delay=value;sets++;}
  void cancel_timer(net_timer*){active=false;}
 } stack;
 auto* gStackModule=&stack;
@@ -47,6 +48,7 @@ struct MutexLocker{MutexLocker(int&){}bool IsLocked(){return canLock;}};
 struct TCPEndpoint {
  void* fRoute=(void*)1;int fState=ESTABLISHED,fLock=0;unsigned fFlags=0;
  unsigned fLastAcknowledgeSent=0,fReceiveNext=100,fSegmentsSinceAcknowledge=0;
+ unsigned fReceiveMaxSegmentSize=1460;
  Queue fReceiveQueue;net_timer fDelayedAcknowledgeTimer;
  status_t result=B_OK;bool windowUpdate=false;
  int State(){return fState;}
@@ -58,6 +60,7 @@ struct TCPEndpoint {
   return result;
  }
  status_t _SendAcknowledge(bool force=false);
+ status_t DelayedAcknowledge();
  static void _DelayedAcknowledgeTimer(net_timer*,void*);
 };
 '''
@@ -71,6 +74,17 @@ int main(){
  TCPEndpoint endpoint;endpoint.result=ENOBUFS;dispatch(endpoint);
  assert(stack.active && stack.delay==10000);
  assert(endpoint.fLastAcknowledgeSent!=endpoint.fReceiveNext);
+ // Further receive events must not flood a queue that already rejected us.
+ unsigned deferredSends=sends,deferredAllocations=allocations,deferredSets=stack.sets;
+ for(unsigned event=0;event<1000;event++){
+  endpoint.fReceiveNext++;
+  endpoint._SendAcknowledge(event%2);
+ }
+ assert(sends==deferredSends&&allocations==deferredAllocations&&stack.sets==deferredSets
+  && "pending ACK retry must coalesce further local send attempts");
+ for(unsigned event=0;event<1000;event++)assert(endpoint.DelayedAcknowledge()==B_OK);
+ assert(stack.sets==deferredSets&&stack.delay==10000);
+ assert(endpoint._SendAcknowledge(true)==B_WOULD_BLOCK);
  unsigned before=stack.sets;endpoint.result=B_WOULD_BLOCK;dispatch(endpoint);
  assert(stack.active&&stack.sets==before+1);
  endpoint.result=B_OK;dispatch(endpoint);
@@ -112,6 +126,7 @@ a = source.index('\tif (segment.flags & TCP_FLAG_ACKNOWLEDGE) {', source.index('
 ackSuccess = source[a:source.index('\n\t}', a) + 3]
 fixture = fixture.replace('/*ACTUAL_ACK_SUCCESS*/', ackSuccess)
 code = fixture + '\nstatus_t\n' + extract('_SendAcknowledge')
+code += '\nstatus_t\n' + extract('DelayedAcknowledge')
 code += '\nvoid\n' + extract('_DelayedAcknowledgeTimer') + checks
 with tempfile.TemporaryDirectory() as directory:
     p = Path(directory) / 'ack_retry.cpp'

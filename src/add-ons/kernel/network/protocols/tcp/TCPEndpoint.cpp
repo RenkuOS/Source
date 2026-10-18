@@ -1153,6 +1153,12 @@ TCPEndpoint::IsLocal() const
 status_t
 TCPEndpoint::DelayedAcknowledge()
 {
+	// Preserve an existing local-congestion retry deadline. The callback
+	// builds the ACK from the latest receive and SACK state when it runs.
+	if ((fFlags & FLAG_ACK_RETRY_PENDING) != 0
+		&& gStackModule->is_timer_active(&fDelayedAcknowledgeTimer))
+		return B_OK;
+
 	// ACKs "MUST" be generated within 500ms of the first unACKed packet, and
 	// "SHOULD" be for at least every second full-size segment. (RFC 5681 § 4.2)
 
@@ -2290,6 +2296,13 @@ TCPEndpoint::_SendAcknowledge(bool force)
 {
 	if (fRoute == NULL || fState == LISTEN)
 		return B_ERROR;
+
+	// A rejected ACK already has a retry scheduled. Coalesce further
+	// receive-driven ACK requests until that deadline instead of repeatedly
+	// allocating packets and feeding the same congested device queue.
+	if (fState == ESTABLISHED && (fFlags & FLAG_ACK_RETRY_PENDING) != 0
+		&& gStackModule->is_timer_active(&fDelayedAcknowledgeTimer))
+		return B_WOULD_BLOCK;
 
 	tcp_segment_header segment = _PrepareSendSegment();
 
