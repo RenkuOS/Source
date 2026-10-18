@@ -442,36 +442,33 @@ int
 BufferQueue::PopulateSackInfo(tcp_sequence sequence, int maxSackCount,
 	tcp_sack* sacks)
 {
+	if (maxSackCount <= 0)
+		return 0;
+
 	SegmentList::ReverseIterator iterator = fList.GetReverseIterator();
 	net_buffer* buffer = iterator.Next();
-
 	int sackCount = 0;
-	TRACE(("BufferQueue::PopulateSackInfo() %" B_PRIu32 "\n",
-		sequence.Number()));
+
 	while (buffer != NULL && buffer->sequence > sequence) {
-		if (buffer->sequence + buffer->size < sacks[sackCount].left_edge) {
-			if (sackCount + 1 == maxSackCount)
+		tcp_sequence left = buffer->sequence;
+		tcp_sequence right = left + buffer->size;
+		if (sackCount == 0
+			|| right < tcp_sequence(sacks[sackCount - 1].left_edge)) {
+			if (sackCount == maxSackCount)
 				break;
-			++sackCount;
-			sacks[sackCount].left_edge = buffer->sequence;
-			sacks[sackCount].right_edge = buffer->sequence + buffer->size;
-		} else {
-			sacks[sackCount].left_edge = buffer->sequence;
-			if (sacks[sackCount].right_edge == 0)
-				sacks[sackCount].right_edge = buffer->sequence + buffer->size;
-		}
+			sacks[sackCount].left_edge = left.Number();
+			sacks[sackCount].right_edge = right.Number();
+			sackCount++;
+		} else
+			sacks[sackCount - 1].left_edge = left.Number();
 
 		buffer = iterator.Next();
 	}
 
-	if (sacks[0].left_edge != 0) {
-		for (int i = 0; i <= sackCount; ++i) {
-			sacks[i].left_edge = htonl(sacks[i].left_edge);
-			sacks[i].right_edge = htonl(sacks[i].right_edge);
-		}
-		++sackCount;
+	for (int i = 0; i < sackCount; i++) {
+		sacks[i].left_edge = htonl(sacks[i].left_edge);
+		sacks[i].right_edge = htonl(sacks[i].right_edge);
 	}
-
 	return sackCount;
 }
 
