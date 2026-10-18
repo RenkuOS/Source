@@ -65,6 +65,7 @@ private:
 			tcp_sequence		fFirstSequence;
 			tcp_sequence		fLastSequence;
 			tcp_sequence		fPushPointer;
+			tcp_sequence		fLastAddedSequence;
 };
 
 

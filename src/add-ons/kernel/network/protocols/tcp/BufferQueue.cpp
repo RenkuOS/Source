@@ -34,7 +34,8 @@ BufferQueue::BufferQueue(size_t maxBytes)
 	fContiguousBytes(0),
 	fFirstSequence(0),
 	fLastSequence(0),
-	fPushPointer(0)
+	fPushPointer(0),
+	fLastAddedSequence(0)
 {
 }
 
@@ -63,7 +64,7 @@ BufferQueue::SetInitialSequence(tcp_sequence sequence)
 	TRACE(("BufferQueue@%p::SetInitialSequence(%" B_PRIu32 ")\n", this,
 		sequence.Number()));
 
-	fFirstSequence = fLastSequence = sequence;
+	fFirstSequence = fLastSequence = fLastAddedSequence = sequence;
 }
 
 
@@ -97,6 +98,8 @@ BufferQueue::Add(net_buffer *buffer, tcp_sequence sequence)
 			(fFirstSequence - sequence).Number());
 		sequence = fFirstSequence;
 	}
+
+	fLastAddedSequence = sequence;
 
 	if (fList.IsEmpty() || sequence >= fLastSequence) {
 		// we usually just add the buffer to the end of the queue
@@ -448,21 +451,38 @@ BufferQueue::PopulateSackInfo(tcp_sequence sequence, int maxSackCount,
 	SegmentList::ReverseIterator iterator = fList.GetReverseIterator();
 	net_buffer* buffer = iterator.Next();
 	int sackCount = 0;
+	bool recentFound = fLastAddedSequence <= sequence;
 
 	while (buffer != NULL && buffer->sequence > sequence) {
 		tcp_sequence left = buffer->sequence;
 		tcp_sequence right = left + buffer->size;
-		if (sackCount == 0
-			|| right < tcp_sequence(sacks[sackCount - 1].left_edge)) {
-			if (sackCount == maxSackCount)
-				break;
+		buffer = iterator.Next();
+		while (buffer != NULL && buffer->sequence > sequence
+			&& tcp_sequence(buffer->sequence + buffer->size) >= left) {
+			left = buffer->sequence;
+			buffer = iterator.Next();
+		}
+
+		if (fLastAddedSequence >= left && fLastAddedSequence < right) {
+			// RFC 2018: report the most recently received block first,
+			// including when it is below the highest reported ranges.
+			int retained = sackCount < maxSackCount
+				? sackCount : maxSackCount - 1;
+			for (int i = retained; i > 0; i--)
+				sacks[i] = sacks[i - 1];
+			sacks[0].left_edge = left.Number();
+			sacks[0].right_edge = right.Number();
+			if (sackCount < maxSackCount)
+				sackCount++;
+			recentFound = true;
+		} else if (sackCount < maxSackCount) {
 			sacks[sackCount].left_edge = left.Number();
 			sacks[sackCount].right_edge = right.Number();
 			sackCount++;
-		} else
-			sacks[sackCount - 1].left_edge = left.Number();
+		}
 
-		buffer = iterator.Next();
+		if (recentFound && sackCount == maxSackCount)
+			break;
 	}
 
 	for (int i = 0; i < sackCount; i++) {

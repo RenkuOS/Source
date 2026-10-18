@@ -24,11 +24,11 @@ struct SegmentList {
   net_buffer*Next(){return i?&(*v)[--i]:nullptr;}};
  ReverseIterator GetReverseIterator(){return {&items,items.size()};}
 };
-struct BufferQueue {SegmentList fList;int PopulateSackInfo(tcp_sequence,int,tcp_sack*);};
+struct BufferQueue {tcp_sequence fLastAddedSequence;SegmentList fList;int PopulateSackInfo(tcp_sequence,int,tcp_sack*);};
 '''
 checks=r'''
 static void check(uint32 base,std::vector<net_buffer> items,std::vector<tcp_sack> expected,int max=4){
- BufferQueue q;q.fList.items=items;struct {tcp_sack b[4];uint32 canary;} out{};
+ BufferQueue q;q.fLastAddedSequence=base;q.fList.items=items;struct {tcp_sack b[4];uint32 canary;} out{};
  out.canary=0x12345678;int n=q.PopulateSackInfo(base,max,out.b);
  assert(n==(int)expected.size());assert(out.canary==0x12345678);
  for(int i=0;i<n;i++){
