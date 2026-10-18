@@ -1030,8 +1030,10 @@ TCPEndpoint::ReadData(size_t numBytes, uint32 flags, net_buffer** _buffer)
 	if (fReceiveQueue.Available() == 0 && fState == FINISH_RECEIVED)
 		socket->receive.low_water_mark = 0;
 
-	// if we opened the window, check if we should send a window update
-	if (!clone) {
+	// While a receive gap exists, _PrepareSendSegment() keeps the advertised
+	// window fixed. Reading queued data cannot update that window; new SACK
+	// information is acknowledged by SegmentReceived(), independently of reads.
+	if (!clone && fReceiveQueue.IsContiguous()) {
 		// Only send if there's less than half the window size remaining.
 		// TODO: This should use fReceiveWindow but that stays constant at present
 		// due to another TODO.
