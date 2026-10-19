@@ -129,7 +129,6 @@ uncompress(const uint8 compressed[], unsigned int compressedSize,
 }
 
 
-// SPDX-License-Identifier: MIT
 static bool
 prepare_borderless_icons(uint8* icons, size_t size, uint8 shade)
 {
@@ -227,9 +226,6 @@ video_display_splash(addr_t frameBuffer)
 	if (gKernelArgs.frame_buffer.depth == 8)
 		platform_set_palette(k8BitPalette);
 
-#ifdef HAIKU_DISTRO_COMPATIBILITY_OFFICIAL
-	// The sans-trademark "empty" logo still contains decorative side lines.
-	// Omit that whole image when the build excludes the Haiku logo.
 	uint8* uncompressedLogo = NULL;
 	unsigned int uncompressedSize = kSplashLogoWidth * kSplashLogoHeight;
 	switch (gKernelArgs.frame_buffer.depth) {
@@ -265,7 +261,6 @@ video_display_splash(addr_t frameBuffer)
 		kSplashLogoWidth, x, y);
 
 	free(uncompressedLogo);
-#endif
 
 	const uint8* lowerHalfIconImage;
 	unsigned int iconsSize = kSplashIconsWidth * kSplashIconsHeight;
@@ -324,4 +319,3 @@ video_display_splash(addr_t frameBuffer)
 		kSplashIconsWidth, x, y);
 	return B_OK;
 }
-
