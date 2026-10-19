@@ -32,6 +32,7 @@ void uncompress_24bit_RLE(const uint8 compressed[], uint8 *uncompressed);
 void uncompress_8bit_RLE(const uint8 compressed[], uint8 *uncompressed);
 
 /* default splash display */
+void video_set_splash_background(uint8 shade);
 status_t video_display_splash(addr_t frameBuffer);
 
 /* video text console */
