@@ -7,6 +7,7 @@
 #include "video.h"
 
 #include <stdlib.h>
+#include <string.h>
 
 #include <boot/kernel_args.h>
 #include <boot/menu.h>
@@ -47,6 +48,201 @@ static struct list sModeList;
 static uint32 sModeCount;
 static bool sModeChosen;
 static bool sSettingsLoaded;
+static uint8 sFirmwareBackground;
+
+// The gray startup backdrop belongs to MacBooks: their firmware paints the
+// screen gray before the loader runs. Anything else keeps the black one.
+#define MACBOOK_STARTUP_GRAY	191
+
+
+static bool
+smbios_string(const uint8* strings, const uint8* end, uint8 index,
+	const char** out, size_t* outLength)
+{
+	if (index == 0)
+		return false;
+	const uint8* at = strings;
+	for (uint8 i = 1; at < end && *at != '\0'; i++) {
+		const uint8* stop = at;
+		while (stop < end && *stop != '\0')
+			stop++;
+		if (stop >= end)
+			return false;
+		if (i == index) {
+			*out = (const char*)at;
+			*outLength = stop - at;
+			return true;
+		}
+		at = stop + 1;
+	}
+	return false;
+}
+
+
+static bool
+smbios_product_is_macbook()
+{
+	const uint8* start = NULL;
+	size_t length = 0;
+	const efi_configuration_table* table = kSystemTable->ConfigurationTable;
+	for (size_t i = 0; i < kSystemTable->NumberOfTableEntries; i++) {
+		const uint8* entry = (const uint8*)table[i].VendorTable;
+		if (entry == NULL)
+			continue;
+		if (table[i].VendorGuid.equals(SMBIOS3_TABLE_GUID)
+			&& memcmp(entry, "_SM3_", 5) == 0) {
+			uint64 address;
+			uint32 size;
+			memcpy(&address, entry + 0x10, sizeof(address));
+			memcpy(&size, entry + 0x0c, sizeof(size));
+			start = (const uint8*)(addr_t)address;
+			length = size;
+			break;
+		}
+		if (table[i].VendorGuid.equals(SMBIOS_TABLE_GUID)
+			&& memcmp(entry, "_SM_", 4) == 0) {
+			uint32 address;
+			uint16 size;
+			memcpy(&address, entry + 0x18, sizeof(address));
+			memcpy(&size, entry + 0x16, sizeof(size));
+			start = (const uint8*)(addr_t)address;
+			length = size;
+		}
+	}
+	if (start == NULL || length < 4 || length > 0x100000)
+		return false;
+
+	const uint8* end = start + length;
+	const uint8* at = start;
+	while (at + 4 <= end) {
+		uint8 type = at[0];
+		uint8 formatted = at[1];
+		if (formatted < 4 || at + formatted > end)
+			return false;
+		const uint8* strings = at + formatted;
+		const uint8* next = strings;
+		while (next + 1 < end && (next[0] != '\0' || next[1] != '\0'))
+			next++;
+		if (next + 1 >= end)
+			return false;
+		if (type == 1 && formatted >= 6) {
+			// System Information: product name is string 0x05.
+			const char* product;
+			size_t productLength;
+			if (!smbios_string(strings, next + 1, at[5], &product,
+					&productLength))
+				return false;
+			return productLength >= 7 && memcmp(product, "MacBook", 7) == 0;
+		}
+		if (type == 127)
+			return false;
+		at = next + 2;
+	}
+	return false;
+}
+
+
+static bool
+video_system_is_macbook()
+{
+	static int8 sMacBook = -1;
+	if (sMacBook < 0) {
+		sMacBook = smbios_product_is_macbook() ? 1 : 0;
+		dprintf("EFI: startup gray %s (SMBIOS product %s MacBook)\n",
+			sMacBook ? "on" : "off", sMacBook ? "is a" : "is not a");
+	}
+	return sMacBook != 0;
+}
+
+
+void
+video_capture_firmware_background()
+{
+	sFirmwareBackground = 0;
+	video_set_splash_background(0);
+	if (!video_system_is_macbook())
+		return;
+
+	// Apple exposes the startup background as a four-byte RGBA variable.
+	// Read it only; changing NVRAM is unnecessary for matching the screen.
+	efi_guid appleVendor = {0x4d1ede05, 0x38c7, 0x4a6a,
+		{0x9c, 0xc6, 0x4b, 0xcc, 0xa8, 0xb3, 0x8c, 0x14}};
+	uint32 color = 0;
+	size_t size = sizeof(color);
+	efi_status status = kRuntimeServices->GetVariable(
+		(char16_t*)u"DefaultBackgroundColor", &appleVendor, NULL, &size, &color);
+	uint8 shade = color & 0xff;
+	if (status == EFI_SUCCESS && size == sizeof(color)
+		&& ((color >> 8) & 0xff) == shade && ((color >> 16) & 0xff) == shade) {
+		sFirmwareBackground = shade;
+		video_set_splash_background(shade);
+		return;
+	}
+
+	// Without a neutral firmware color, use the MacBook startup gray.
+	sFirmwareBackground = MACBOOK_STARTUP_GRAY;
+	video_set_splash_background(MACBOOK_STARTUP_GRAY);
+}
+
+
+uint8
+video_firmware_background_gray()
+{
+	return sFirmwareBackground;
+}
+
+
+void
+video_fill_firmware_background()
+{
+	// Available before VFS/video initialization, while the EFI console starts.
+	if (sFirmwareBackground == 0)
+		return;
+	efi_graphics_output_protocol* output = NULL;
+	efi_status status = kBootServices->LocateProtocol(&sGraphicsOutputGuid, NULL,
+		(void**)&output);
+	if (status != EFI_SUCCESS || output == NULL || output->Mode == NULL
+		|| output->Mode->Info == NULL || output->Blt == NULL) {
+		return;
+	}
+	efi_graphics_output_blt_pixel pixel = {};
+	pixel.Red = pixel.Green = pixel.Blue = sFirmwareBackground;
+	output->Blt(output, &pixel, EfiBltVideoFill, 0, 0, 0, 0,
+		output->Mode->Info->HorizontalResolution,
+		output->Mode->Info->VerticalResolution, 0);
+}
+
+
+static void
+video_override_splash_background()
+{
+	// A boot manager can clear the firmware screen before invoking us.
+	// Allow an explicit neutral shade without changing video-mode selection.
+	// Only on a MacBook: elsewhere the backdrop stays black.
+	if (!video_system_is_macbook())
+		return;
+	void* settings = load_driver_settings("vesa");
+	if (settings == NULL)
+		return;
+	const char* value = get_driver_parameter(settings, "splash_background_gray",
+		NULL, NULL);
+	if (value != NULL && value[0] != '\0') {
+		unsigned shade = 0;
+		bool valid = true;
+		for (const char* digit = value; *digit != '\0'; digit++) {
+			if (*digit < '0' || *digit > '9' || shade > 25) {
+				valid = false;
+				break;
+			}
+			shade = shade * 10 + (*digit - '0');
+		}
+		if (valid && shade <= 255) {
+			sFirmwareBackground = shade;
+			video_set_splash_background(shade);
+		}
+	}
+	unload_driver_settings(settings);
+}
 
 
 static int
@@ -279,7 +475,9 @@ platform_switch_to_logo(void)
 	if (!sModeChosen)
 		get_mode_from_settings();
 
+	video_override_splash_background();
 	sGraphicsOutput->SetMode(sGraphicsOutput, sGraphicsMode);
+	video_fill_firmware_background();
 	gKernelArgs.frame_buffer.physical_buffer.start =
 		sGraphicsOutput->Mode->FrameBufferBase;
 	gKernelArgs.frame_buffer.physical_buffer.size =
@@ -291,17 +489,18 @@ platform_switch_to_logo(void)
 	gKernelArgs.frame_buffer.bytes_per_row = sGraphicsOutput->Mode->Info->PixelsPerScanLine
 			* ((depth + 7) / 8);
 
-	// Clear the whole mode to black before the splash goes up. Without this
+	// Clear the whole mode to the firmware backdrop before the splash goes up. Without this
 	// whatever the firmware left on screen -- on a Mac, the boot picker --
 	// stays visible around the splash for the rest of the boot.
 	efi_graphics_output_blt_pixel black;
-	black.Red = 0;
-	black.Green = 0;
-	black.Blue = 0;
+	black.Red = depth == 32 ? sFirmwareBackground : 0;
+	black.Green = depth == 32 ? sFirmwareBackground : 0;
+	black.Blue = depth == 32 ? sFirmwareBackground : 0;
 	black.Reserved = 0;
 	sGraphicsOutput->Blt(sGraphicsOutput, &black, EfiBltVideoFill, 0, 0, 0, 0,
 		gKernelArgs.frame_buffer.width, gKernelArgs.frame_buffer.height, 0);
 
+	dprintf("EFI: firmware splash background gray %u\n", sFirmwareBackground);
 	video_display_splash(gKernelArgs.frame_buffer.physical_buffer.start);
 }
 

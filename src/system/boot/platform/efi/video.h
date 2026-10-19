@@ -7,9 +7,15 @@
 #ifndef VIDEO_H
 #define VIDEO_H
 
+#include <SupportDefs.h>
+
 
 class Menu;
 class MenuItem;
+
+void video_capture_firmware_background();
+uint8 video_firmware_background_gray();
+void video_fill_firmware_background();
 
 bool video_mode_hook(Menu *menu, MenuItem *item);
 Menu *video_mode_menu();

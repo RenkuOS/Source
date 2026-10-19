@@ -20,6 +20,7 @@
 #include <util/kernel_cpp.h>
 
 #include "efi_platform.h"
+#include "video.h"
 
 
 // This likely won't work without moving things around.
@@ -247,7 +248,15 @@ static void update_screen_size(void)
 		}
 	}
 
+	// Keep console initialization and mode setting, but clear in gray.
+	uint8 shade = video_firmware_background_gray();
+	if (shade != 0) {
+		ConOut->SetAttribute(ConOut, EFI_TEXT_ATTR(
+			shade >= 128 ? EFI_BLACK : EFI_WHITE,
+			shade >= 128 ? EFI_LIGHTGRAY : EFI_BLACK));
+	}
 	ConOut->SetMode(ConOut, sScreenMode);
+	video_fill_firmware_background();
 }
 
 
@@ -260,6 +269,8 @@ console_init(void)
 	update_screen_size();
 	console_hide_cursor();
 	console_clear_screen();
+	// The text palette is coarse; repaint with the exact firmware RGB gray.
+	video_fill_firmware_background();
 #else
 	// FIXME: This does not work because we cannot initialize video before VFS, as it
 	// needs to read the driver settings before setting a mode; and also because the
@@ -306,4 +317,5 @@ platform_switch_to_text_mode(void)
 {
 	kSystemTable->ConOut->Reset(kSystemTable->ConOut, false);
 	kSystemTable->ConOut->SetMode(kSystemTable->ConOut, sScreenMode);
+	video_fill_firmware_background();
 }
