@@ -928,6 +928,15 @@ ampdu_rx_flush(struct ieee80211_node *ni, struct ieee80211_rx_ampdu *rap)
 		if (rap->rxa_qframes == 0)
 			break;
 	}
+#ifdef __HAIKU__
+	/*
+	 * Move the BA window past the last frame dispatched, or the
+	 * frames that follow are queued behind the hole that caused the
+	 * flush again.
+	 */
+	if (i < rap->rxa_wnd)
+		rap->rxa_start = IEEE80211_SEQ_ADD(rap->rxa_start, i + 1);
+#endif
 }
 
 /*
@@ -1131,6 +1140,27 @@ again:
 		if (rap->rxa_qframes != 0) {
 			/* XXX honor batimeout? */
 			if (ticks - rap->rxa_age > ieee80211_ampdu_age) {
+#ifdef __HAIKU__
+				int qframes = rap->rxa_qframes;
+
+				/*
+				 * Too long since we received the first
+				 * frame; release the frames before this one
+				 * and move the window up to it.  Frames
+				 * after it must not go up before it, or it
+				 * fails the CCMP replay check.  Not while
+				 * subframes of this A-MSDU are held: that
+				 * would release them, and the run after
+				 * them, and move the window past this one.
+				 */
+				if (mbufq_empty(&rap->rxa_mq[off])) {
+					ampdu_rx_flush_upto(ni, rap, rxseq);
+					vap->iv_stats.is_ampdu_rx_age +=
+					    qframes - rap->rxa_qframes;
+					rap->rxa_age = ticks;
+					goto again;
+				}
+#else
 				/*
 				 * Too long since we received the first
 				 * frame; flush the reorder buffer.
@@ -1159,6 +1189,7 @@ again:
 					    IEEE80211_SEQ_INC(rxseq);
 				}
 				return PROCESS;
+#endif
 			}
 		} else {
 			/*
