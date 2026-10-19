@@ -128,6 +128,10 @@ static const char* kIntelFirmware = B_TRANSLATE_MARK("Intel WiFi Firmware");
 static const char* kMarvellFirmware = B_TRANSLATE_MARK("Marvell (firmware)");
 static const char* kRalinkFirmware = B_TRANSLATE_MARK("Ralink WiFi Firmware");
 #endif
+#if defined(__i386__) || defined(__x86_64__) || defined(__riscv)
+static const char* kBroadcomFirmware
+	= B_TRANSLATE_MARK("Broadcom (bcm43xx firmware)");
+#endif
 
 
 //	#pragma mark - TranslationComparator function
@@ -2067,6 +2071,16 @@ AboutView::_CreateCreditsView()
 		.SetCopyright(B_TRANSLATE(COPYRIGHT_STRING "2007 "
 			"Ralink Technology Corporation. All rights reserved."))
 		.SetLicense(kRalinkFirmware));
+#endif
+
+#if defined(__i386__) || defined(__x86_64__) || defined(__riscv)
+	// Broadcom BCM43xx microcode
+	_AddPackageCredit(PackageCredit("Broadcom BCM43xx microcode")
+		.SetCopyright(B_TRANSLATE(COPYRIGHT_STRING
+			"Broadcom Corporation. All rights reserved."))
+		.SetLicense(kBroadcomFirmware)
+		.SetURL("https://git.kernel.org/pub/scm/linux/kernel/git/firmware/"
+			"linux-firmware.git"));
 #endif
 
 	// Gutenprint

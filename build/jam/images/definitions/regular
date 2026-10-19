@@ -319,6 +319,7 @@ SYSTEM_ADD_ONS_DRIVERS_NET += [ FFilterByBuildFeatures
 		aironetwifi
 		atheroswifi
 		broadcom43xx
+		broadcom43xxn
 		iaxwifi200
 		idualwifi7260
 		iprowifi2100

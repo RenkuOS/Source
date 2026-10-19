@@ -15,6 +15,16 @@ for driver in $(SYSTEM_ADD_ONS_DRIVERS_NET) {
 	}
 }
 
+# Broadcom BCM43xx microcode (version 610.812) from linux-firmware's brcm/,
+# redistributed unmodified with its licence, "Broadcom (bcm43xx firmware)".
+if broadcom43xxn in $(SYSTEM_ADD_ONS_DRIVERS_NET) {
+	local broadcomFirmware = bcm43xx-0.fw bcm43xx_hdr-0.fw ;
+	broadcomFirmware = $(broadcomFirmware:G=broadcom43xxn-firmware) ;
+	SEARCH on $(broadcomFirmware)
+		= [ FDirName $(HAIKU_TOP) data system data firmware broadcom43xxn ] ;
+	AddFilesToPackage data firmware broadcom43xxn : $(broadcomFirmware) ;
+}
+
 # bootloaders
 local bootTarget ;
 for bootTarget in $(HAIKU_BOOT_TARGETS) {
