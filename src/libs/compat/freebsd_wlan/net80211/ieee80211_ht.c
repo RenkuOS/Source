@@ -2543,11 +2543,27 @@ ht_recv_action_ba_addba_request(struct ieee80211_node *ni,
 	 */
 	if ((ni->ni_flags & IEEE80211_NODE_AMPDU_RX) &&
 	    (vap->iv_flags_ht & IEEE80211_FHT_AMPDU_RX)) {
+#ifdef __HAIKU__
+		/*
+		 * If the driver did not set the session up, accepting it
+		 * has the peer aggregate while nothing reorders.
+		 */
+		if (ic->ic_ampdu_rx_start(ni, rap,
+		    baparamset, batimeout, baseqctl) != 0) {
+			IEEE80211_NOTE(vap,
+			    IEEE80211_MSG_ACTION | IEEE80211_MSG_11N, ni,
+			    "reject ADDBA request: %s", "driver failed");
+			vap->iv_stats.is_addba_reject++;
+			args[1] = IEEE80211_STATUS_UNSPECIFIED;
+		} else
+			args[1] = IEEE80211_STATUS_SUCCESS;
+#else
 		/* XXX TODO: handle ampdu_rx_start failure */
 		ic->ic_ampdu_rx_start(ni, rap,
 		    baparamset, batimeout, baseqctl);
 
 		args[1] = IEEE80211_STATUS_SUCCESS;
+#endif
 	} else {
 		IEEE80211_NOTE(vap, IEEE80211_MSG_ACTION | IEEE80211_MSG_11N,
 		    ni, "reject ADDBA request: %s",
