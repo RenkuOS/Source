@@ -391,21 +391,28 @@ update_media_formats()
 	for (; index < sFormats.CountItems() && index < count; index++) {
 		meta_format* item = sFormats.ItemAt(index);
 
-		const meta_format* newItem;
+		// the data in the message is not aligned
+		const void* newItem;
 		ssize_t size;
 		if (reply.FindData("formats", MEDIA_META_FORMAT_TYPE, index,
-				(const void**)&newItem, &size) == B_OK)
-			*item = *newItem;
+				&newItem, &size) == B_OK && size == sizeof(meta_format)) {
+			alignas(meta_format) char buffer[sizeof(meta_format)];
+			memcpy(buffer, newItem, sizeof(meta_format));
+			*item = *(const meta_format*)buffer;
+		}
 	}
 
 	// allocate additional formats
 
 	for (; index < count; index++) {
-		const meta_format* newItem;
+		const void* newItem;
 		ssize_t size;
 		if (reply.FindData("formats", MEDIA_META_FORMAT_TYPE, index,
-				(const void**)&newItem, &size) == B_OK)
-			sFormats.AddItem(new meta_format(*newItem));
+				&newItem, &size) == B_OK && size == sizeof(meta_format)) {
+			alignas(meta_format) char buffer[sizeof(meta_format)];
+			memcpy(buffer, newItem, sizeof(meta_format));
+			sFormats.AddItem(new meta_format(*(const meta_format*)buffer));
+		}
 	}
 
 	// remove no longer used formats
