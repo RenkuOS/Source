@@ -130,6 +130,7 @@
 #	include <boot_item.h>
 #	include <kernel.h>
 #	include <vm/vm.h>
+#	include <vm/vm_page.h>
 #endif
 
 __BEGIN_DECLS
@@ -501,7 +502,13 @@ AcpiOsMapMemory(ACPI_PHYSICAL_ADDRESS where, ACPI_SIZE length)
 	// physical memory mapped twice with different attributes. On many arches,
 	// this is invalid. So we stick with the default type where possible.
 #if defined(__HAIKU_ARCH_ARM) || defined(__HAIKU_ARCH_ARM64)
-	const uint32 memoryType = B_WRITE_BACK_MEMORY;
+	// Only RAM (the ACPI tables, and memory operation regions in RAM) can be
+	// mapped cacheable. Operation regions also point at device registers
+	// (e.g. PCIe configuration space on the Raspberry Pi 4); accessing those
+	// through a cacheable mapping results in external aborts (SError).
+	const uint32 memoryType
+		= vm_lookup_page(where / B_PAGE_SIZE) != NULL
+			? B_WRITE_BACK_MEMORY : B_UNCACHED_MEMORY;
 #else
 	const uint32 memoryType = 0;
 #endif
