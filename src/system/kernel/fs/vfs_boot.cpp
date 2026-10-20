@@ -498,6 +498,18 @@ vfs_mount_boot_file_system(kernel_args* args)
 
 	PartitionStack partitions;
 	status_t status = get_boot_partitions(bootVolume, partitions);
+
+	// Some boot devices are published asynchronously and may still be
+	// initializing (e.g. an SD card waiting to power up), so give them some
+	// time to show up.
+	for (int32 tries = 0; status == B_OK && partitions.IsEmpty() && tries < 30;
+			tries++) {
+		if (tries == 0)
+			dprintf("vfs_mount_boot_file_system(): waiting for the boot device\n");
+		snooze(500000);
+		status = get_boot_partitions(bootVolume, partitions);
+	}
+
 	if (status < B_OK) {
 		panic("get_boot_partitions failed!");
 	}
