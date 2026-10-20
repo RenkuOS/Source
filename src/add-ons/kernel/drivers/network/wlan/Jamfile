@@ -15,6 +15,9 @@ SubInclude HAIKU_TOP src add-ons kernel drivers network wlan realtekwifi ;
 SubInclude HAIKU_TOP src add-ons kernel drivers network wlan realtekwifi8187 ;
 SubInclude HAIKU_TOP src add-ons kernel drivers network wlan zydwifi1211 ;
 
+# Native drivers
+SubInclude HAIKU_TOP src add-ons kernel drivers network wlan brcmfmac ;
+
 # OpenBSD drivers
 SubInclude HAIKU_TOP src add-ons kernel drivers network wlan iaxwifi200 ;
 SubInclude HAIKU_TOP src add-ons kernel drivers network wlan idualwifi7260 ;
