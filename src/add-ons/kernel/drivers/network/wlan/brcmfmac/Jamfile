@@ -1,0 +1,15 @@
+SubDir HAIKU_TOP src add-ons kernel drivers network wlan brcmfmac ;
+
+UsePrivateKernelHeaders ;
+UsePrivateHeaders drivers net ;
+SubDirHdrs $(HAIKU_TOP) src add-ons kernel bus_managers acpi acpica include ;
+SubDirHdrs $(HAIKU_TOP) src add-ons kernel bus_managers acpi acpica include platform ;
+UseHeaders [ FDirName $(HAIKU_TOP) src libs compat freebsd_network ] : true ;
+UseHeaders [ FDirName $(HAIKU_TOP) src libs compat freebsd_wlan ] : true ;
+
+KernelAddon brcmfmac :
+	brcmf.cpp
+	driver.cpp
+	sdio_host.cpp
+	vc_mailbox.cpp
+;
