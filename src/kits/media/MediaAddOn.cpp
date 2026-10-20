@@ -36,6 +36,26 @@
 #include "DataExchange.h"
 
 
+// The flattened data is packed: the values after the strings are unaligned.
+// Copy them byte-wise, a direct access can fault on some CPUs (ARM).
+template<typename Type>
+static inline void
+write_flat(char* buffer, const Type& value)
+{
+	memcpy(buffer, &value, sizeof(Type));
+}
+
+
+template<typename Type>
+static inline Type
+read_flat(const char* buffer)
+{
+	Type value;
+	memcpy((void*)&value, buffer, sizeof(Type));
+	return value;
+}
+
+
 #define MAX_FLAVOR_IN_FORMAT_COUNT	300
 #define MAX_FLAVOR_OUT_FORMAT_COUNT	300
 
@@ -334,40 +354,41 @@ dormant_flavor_info::Flatten(void *buffer, ssize_t size) const
 	}
 
 	// magic
-	*(int32*)buf = FLATTEN_MAGIC; buf += sizeof(int32);
+	write_flat<int32>(buf, FLATTEN_MAGIC); buf += sizeof(int32);
 
 	// size
-	*(int32*)buf = FlattenedSize(); buf += sizeof(int32);
+	write_flat<int32>(buf, FlattenedSize()); buf += sizeof(int32);
 
 	// struct flavor_info
-	*(int32*)buf = nameLength; buf += sizeof(int32);
+	write_flat<int32>(buf, nameLength); buf += sizeof(int32);
 	if (nameLength > 0) {
 		memcpy(buf, name, nameLength);
 		buf += nameLength;
 	}
-	*(int32*)buf = infoLength; buf += sizeof(int32);
+	write_flat<int32>(buf, infoLength); buf += sizeof(int32);
 	if (infoLength > 0) {
 		memcpy(buf, info, infoLength);
 		buf += infoLength;
 	}
 
-	*(uint64*)buf = kinds; buf += sizeof(uint64);
-	*(uint32*)buf = flavor_flags; buf += sizeof(uint32);
-	*(int32*)buf = internal_id; buf += sizeof(int32);
-	*(int32*)buf = possible_count; buf += sizeof(int32);
-	*(int32*)buf = inFormatCount; buf += sizeof(int32);
-	*(uint32*)buf = in_format_flags; buf += sizeof(uint32);
+	write_flat<uint64>(buf, kinds); buf += sizeof(uint64);
+	write_flat<uint32>(buf, flavor_flags); buf += sizeof(uint32);
+	write_flat<int32>(buf, internal_id); buf += sizeof(int32);
+	write_flat<int32>(buf, possible_count); buf += sizeof(int32);
+	write_flat<int32>(buf, inFormatCount); buf += sizeof(int32);
+	write_flat<uint32>(buf, in_format_flags); buf += sizeof(uint32);
 
 	// XXX FIXME! we should not!!! make flat copies	of media_format
 	memcpy(buf, in_formats, inFormatSize); buf += inFormatSize;
 
-	*(int32*)buf = outFormatCount; buf += sizeof(int32);
-	*(uint32*)buf = out_format_flags; buf += sizeof(uint32);
+	write_flat<int32>(buf, outFormatCount); buf += sizeof(int32);
+	write_flat<uint32>(buf, out_format_flags); buf += sizeof(uint32);
 
 	// XXX FIXME! we should not!!! make flat copies	of media_format
 	memcpy(buf, out_formats, outFormatSize); buf += outFormatSize;
 
-	*(dormant_node_info*)buf = node_info; buf += sizeof(dormant_node_info);
+	write_flat<dormant_node_info>(buf, node_info);
+	buf += sizeof(dormant_node_info);
 
 	return B_OK;
 }
@@ -386,12 +407,12 @@ dormant_flavor_info::Unflatten(type_code c, const void *buffer, ssize_t size)
 	int32 infoLength;
 
 	// check magic
-	if (*(int32*)buf != FLATTEN_MAGIC)
+	if (read_flat<int32>(buf) != FLATTEN_MAGIC)
 		return B_ERROR;
 	buf += sizeof(int32);
 
 	// check size
-	if (*(uint32*)buf > (uint32)size)
+	if (read_flat<uint32>(buf) > (uint32)size)
 		return B_ERROR;
 	buf += sizeof(int32);
 
@@ -407,7 +428,7 @@ dormant_flavor_info::Unflatten(type_code c, const void *buffer, ssize_t size)
 	out_format_count = 0;
 
 	// struct flavor_info
-	nameLength = *(int32*)buf; buf += sizeof(int32);
+	nameLength = read_flat<int32>(buf); buf += sizeof(int32);
 	if (nameLength >= 0) { // if nameLength is -1, we leave name = 0
 		char* nameStorage = new(std::nothrow) char [nameLength + 1];
 		name = nameStorage;
@@ -418,7 +439,7 @@ dormant_flavor_info::Unflatten(type_code c, const void *buffer, ssize_t size)
 		}
 	}
 
-	infoLength = *(int32*)buf; buf += sizeof(int32);
+	infoLength = read_flat<int32>(buf); buf += sizeof(int32);
 	if (infoLength >= 0) { // if infoLength is -1, we leave info = 0
 		char* infoStorage = new(std::nothrow) char [infoLength + 1];
 		info = infoStorage;
@@ -431,12 +452,12 @@ dormant_flavor_info::Unflatten(type_code c, const void *buffer, ssize_t size)
 
 	int32 count;
 
-	kinds = *(uint64*)buf; buf += sizeof(uint64);
-	flavor_flags = *(uint32*)buf; buf += sizeof(uint32);
-	internal_id = *(int32*)buf; buf += sizeof(int32);
-	possible_count = *(int32*)buf; buf += sizeof(int32);
-	count = *(int32*)buf; buf += sizeof(int32);
-	in_format_flags = *(uint32*)buf; buf += sizeof(uint32);
+	kinds = read_flat<uint64>(buf); buf += sizeof(uint64);
+	flavor_flags = read_flat<uint32>(buf); buf += sizeof(uint32);
+	internal_id = read_flat<int32>(buf); buf += sizeof(int32);
+	possible_count = read_flat<int32>(buf); buf += sizeof(int32);
+	count = read_flat<int32>(buf); buf += sizeof(int32);
+	in_format_flags = read_flat<uint32>(buf); buf += sizeof(uint32);
 
 	if (count > 0) {
 		if (count <= MAX_FLAVOR_IN_FORMAT_COUNT) {
@@ -453,8 +474,8 @@ dormant_flavor_info::Unflatten(type_code c, const void *buffer, ssize_t size)
 		}
 	}
 
-	count = *(int32*)buf; buf += sizeof(int32);
-	out_format_flags = *(uint32*)buf; buf += sizeof(uint32);
+	count = read_flat<int32>(buf); buf += sizeof(int32);
+	out_format_flags = read_flat<uint32>(buf); buf += sizeof(uint32);
 
 	if (count > 0) {
 		if (count <= MAX_FLAVOR_OUT_FORMAT_COUNT) {
@@ -471,7 +492,8 @@ dormant_flavor_info::Unflatten(type_code c, const void *buffer, ssize_t size)
 		}
 	}
 
-	node_info = *(dormant_node_info*)buf; buf += sizeof(dormant_node_info);
+	node_info = read_flat<dormant_node_info>(buf);
+	buf += sizeof(dormant_node_info);
 
 	return B_OK;
 }
