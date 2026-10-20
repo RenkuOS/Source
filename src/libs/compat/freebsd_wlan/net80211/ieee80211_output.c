@@ -3386,33 +3386,45 @@ ieee80211_alloc_prot(struct ieee80211_node *ni, const struct mbuf *m,
 }
 
 /*
- * Retry a locally failed open-system authentication without keeping a DMA
- * packet alive or starting another timer. State changes stop iv_mgtsend;
- * recheck under the state lock before queuing another authentication.
+ * Retry an open-system STA authentication, sharing one budget between a
+ * failed AUTH transmit and a lost AUTH response. State changes stop
+ * iv_mgtsend, but a callout already waiting for the lock still runs, so
+ * the state is rechecked here. Returns false, and does nothing, when the
+ * vap is not waiting for that authentication. Caller holds IEEE80211_LOCK.
  */
+static bool
+ieee80211_tx_auth_retry_locked(struct ieee80211vap *vap)
+{
+	struct ieee80211com *ic = vap->iv_ic;
+	struct ieee80211_node *ni = vap->iv_bss;
+
+	IEEE80211_LOCK_ASSERT(ic);
+	if (vap->iv_opmode != IEEE80211_M_STA ||
+	    vap->iv_state != IEEE80211_S_AUTH ||
+	    (ic->ic_flags & IEEE80211_F_SCAN) != 0 ||
+	    vap->iv_nstate_n != 0 || ni == NULL)
+		return false;
+
+	if (ni->ni_authmode != IEEE80211_AUTH_SHARED &&
+	    ni->ni_auth_tx_retries < 2) {
+		ni->ni_auth_tx_retries++;
+		ieee80211_new_state_locked(vap, IEEE80211_S_AUTH,
+		    (IEEE80211_STATUS_TIMEOUT << 8) |
+		    IEEE80211_FC0_SUBTYPE_DEAUTH);
+	} else
+		ieee80211_new_state_locked(vap, IEEE80211_S_SCAN,
+		    IEEE80211_SCAN_FAIL_TIMEOUT);
+	return true;
+}
+
 static void
 ieee80211_tx_auth_retry(void *arg)
 {
 	struct ieee80211vap *vap = arg;
-	struct ieee80211com *ic = vap->iv_ic;
 
-	IEEE80211_LOCK(ic);
-	if (vap->iv_state == IEEE80211_S_AUTH &&
-	    (ic->ic_flags & IEEE80211_F_SCAN) == 0 &&
-	    vap->iv_nstate_n == 0 && vap->iv_bss != NULL) {
-		struct ieee80211_node *ni = vap->iv_bss;
-
-		if (ni->ni_authmode != IEEE80211_AUTH_SHARED &&
-		    ni->ni_auth_tx_retries < 2) {
-			ni->ni_auth_tx_retries++;
-			ieee80211_new_state_locked(vap, IEEE80211_S_AUTH,
-			    (IEEE80211_STATUS_TIMEOUT << 8) |
-			    IEEE80211_FC0_SUBTYPE_DEAUTH);
-		} else
-			ieee80211_new_state_locked(vap, IEEE80211_S_SCAN,
-			    IEEE80211_SCAN_FAIL_TIMEOUT);
-	}
-	IEEE80211_UNLOCK(ic);
+	IEEE80211_LOCK(vap->iv_ic);
+	(void)ieee80211_tx_auth_retry_locked(vap);
+	IEEE80211_UNLOCK(vap->iv_ic);
 }
 
 static void
@@ -3427,7 +3439,8 @@ ieee80211_tx_mgt_timeout(void *arg)
 	    vap->iv_ic->ic_flags, IEEE80211_F_SCAN);
 
 	IEEE80211_LOCK(vap->iv_ic);
-	if (vap->iv_state != IEEE80211_S_INIT &&
+	if (!ieee80211_tx_auth_retry_locked(vap) &&
+	    vap->iv_state != IEEE80211_S_INIT &&
 	    (vap->iv_ic->ic_flags & IEEE80211_F_SCAN) == 0) {
 		/*
 		 * NB: it's safe to specify a timeout as the reason here;
@@ -3450,8 +3463,9 @@ ieee80211_tx_mgt_timeout(void *arg)
  *   If a state transition _then_ occurs before that event occurs,
  *   said state transition will cancel this callout.
  *
- * + A locally failed open-system STA authentication gets two retries
- *   before returning to scan. Other failures return to scan immediately.
+ * + An open-system STA authentication gets two retries before returning
+ *   to scan, shared between a failed transmit and a response that did
+ *   not arrive in time. Other failures return to scan immediately.
  */
 static void
 ieee80211_tx_mgt_cb(struct ieee80211_node *ni, void *arg, int status)
