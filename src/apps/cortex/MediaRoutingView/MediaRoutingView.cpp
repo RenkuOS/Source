@@ -483,7 +483,7 @@ void MediaRoutingView::MessageReceived(
 					ssize_t dataSize;
 					if (message->FindData("output", B_RAW_TYPE, n, &data, &dataSize) == B_OK)
 					{
-						output = *reinterpret_cast<const media_output *>(data);
+						memcpy((void*)&output, data, sizeof(output));
 						Connection connection;
 						if (manager->findConnection(output.node.node, output.source, &connection) == B_OK)
 						{
@@ -524,15 +524,17 @@ void MediaRoutingView::MessageReceived(
 			if(message->FindInt32("__connection_id", (int32*)&connectionID) < B_OK)
 				break;
 
-			media_source* source;
+			const void* sourceData;
 			ssize_t dataSize;
-			if(message->FindData("be:source", B_RAW_TYPE, (const void**)&source, &dataSize) < B_OK)
+			if(message->FindData("be:source", B_RAW_TYPE, &sourceData, &dataSize) < B_OK)
 				break;
+			media_source source;
+			memcpy((void*)&source, sourceData, sizeof(source));
 
 			MediaWire* wire;
 			if(_findWireFor(connectionID, &wire) == B_OK) {
 				// copy new connection data
-				manager->findConnection(nodeID, *source, &wire->connection);
+				manager->findConnection(nodeID, source, &wire->connection);
 			}
 			break;
 		}
@@ -674,7 +676,7 @@ void MediaRoutingView::MessageReceived(
 					ssize_t dataSize;
 					if (message->FindData("input", B_RAW_TYPE, i, &data, &dataSize) == B_OK)
 					{
-						input = *reinterpret_cast<const media_input *>(data);
+						memcpy((void*)&input, data, sizeof(input));
 						InfoWindowManager *manager = InfoWindowManager::Instance();
 						if (manager && manager->Lock()) {
 							manager->openWindowFor(input);
@@ -692,7 +694,7 @@ void MediaRoutingView::MessageReceived(
 					ssize_t dataSize;
 					if (message->FindData("output", B_RAW_TYPE, i, &data, &dataSize) == B_OK)
 					{
-						output = *reinterpret_cast<const media_output *>(data);
+						memcpy((void*)&output, data, sizeof(output));
 						InfoWindowManager *manager = InfoWindowManager::Instance();
 						if (manager && manager->Lock()) {
 							manager->openWindowFor(output);
