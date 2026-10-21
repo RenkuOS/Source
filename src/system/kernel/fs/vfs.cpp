@@ -9026,6 +9026,9 @@ _user_mount(const char* userPath, const char* userDevice,
 	const char* userFileSystem, uint32 flags, const char* userArgs,
 	size_t argsLength)
 {
+	if (geteuid() != 0)
+		return B_NOT_ALLOWED;
+
 	char fileSystem[B_FILE_NAME_LENGTH];
 	KPath path, device;
 	char* args = NULL;
@@ -9094,6 +9097,9 @@ _user_mount(const char* userPath, const char* userDevice,
 status_t
 _user_unmount(const char* userPath, uint32 flags)
 {
+	if (geteuid() != 0)
+		return B_NOT_ALLOWED;
+
 	if (!IS_USER_ADDRESS(userPath))
 		return B_BAD_ADDRESS;
 
