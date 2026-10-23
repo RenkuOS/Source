@@ -335,7 +335,7 @@ wlan_control(void* cookie, uint32 op, void* arg, size_t length)
 			if (op != SIOCS80211)
 				return B_BAD_VALUE;
 
-			struct ieee80211req_mlme mlme;
+			struct ieee80211req_mlme mlme = {};
 			if (user_memcpy(&mlme, ireq.i_data, min_c(sizeof(mlme), ireq.i_len)) != B_OK)
 				return B_BAD_ADDRESS;
 
@@ -346,6 +346,27 @@ wlan_control(void* cookie, uint32 op, void* arg, size_t length)
 					struct ieee80211_nwid nwid;
 					ifr.ifr_data = (uint8_t*)&nwid;
 					nwid.i_len = 0;
+
+					// Clearing the SSID only resets the driver, which sends
+					// nothing, so the AP would keep our association and refuse
+					// the next one. Tell it we are leaving first.
+					IFF_LOCKGIANT(ifp);
+					const bool tell = ic->ic_opmode == IEEE80211_M_STA
+						&& ic->ic_state == IEEE80211_S_RUN;
+					if (tell) {
+						IEEE80211_SEND_MGMT(ic, ic->ic_bss,
+							mlme.im_op == IEEE80211_MLME_DEAUTH
+								? IEEE80211_FC0_SUBTYPE_DEAUTH
+								: IEEE80211_FC0_SUBTYPE_DISASSOC,
+							mlme.im_reason != 0 ? mlme.im_reason
+								: mlme.im_op == IEEE80211_MLME_DEAUTH
+									? IEEE80211_REASON_AUTH_LEAVE
+									: IEEE80211_REASON_ASSOC_LEAVE);
+					}
+					IFF_UNLOCKGIANT(ifp);
+					if (tell)
+						snooze(20000);
+							// let it go out before the reset clears the queues
 
 					IFF_LOCKGIANT(ifp);
 					status_t status = ifp->if_ioctl(ifp, SIOCS80211NWID, (caddr_t)&ifr);
