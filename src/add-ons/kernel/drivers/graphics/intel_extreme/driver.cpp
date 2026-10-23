@@ -10,6 +10,7 @@
 #include "driver.h"
 #include "device.h"
 #include "lock.h"
+#include "render_node.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -31,9 +32,6 @@
 
 #define ERROR(x...) dprintf("intel_extreme: " x)
 #define CALLED(x...) TRACE("CALLED %s\n", __PRETTY_FUNCTION__)
-
-
-#define MAX_CARDS 4
 
 
 // list of supported devices
@@ -226,10 +224,15 @@ const struct supported_device {
 int32 api_version = B_CUR_DRIVER_API_VERSION;
 
 char* gDeviceNames[MAX_CARDS + 1];
+char* gRenderDeviceNames[MAX_CARDS + 1];
+int32 gRenderDeviceCards[MAX_CARDS];
 intel_info* gDeviceInfo[MAX_CARDS];
 pci_module_info* gPCI;
 agp_gart_module_info* gGART;
 mutex gLock;
+
+// merged display + render names returned by publish_devices()
+static const char* sPublishedNames[2 * MAX_CARDS + 1];
 
 
 static status_t
@@ -354,7 +357,7 @@ extern "C" const char**
 publish_devices(void)
 {
 	CALLED();
-	return (const char**)gDeviceNames;
+	return sPublishedNames;
 }
 
 
@@ -405,6 +408,7 @@ init_driver(void)
 	// find devices
 
 	int32 found = 0;
+	int32 renderFound = 0;
 
 	for (int32 cookie = 0; found < MAX_CARDS;) {
 		pci_info* info = (pci_info*)malloc(sizeof(pci_info));
@@ -449,10 +453,32 @@ init_driver(void)
 		dprintf(DEVICE_NAME ": (%" B_PRId32 ") %s, revision = 0x%x\n", found,
 			kSupportedDevices[type].name, info->revision);
 
+		// Gen9 (Skylake…CometLake) cards additionally get a render node
+		// (see render_node.cpp); Generation() == 9 is exactly the LAKE
+		// family members with the Gen9 register layout
+		if (gDeviceInfo[found]->device_type.Generation() == 9) {
+			sprintf(name, "graphics/intel_render_9x_%02x%02x%02x",
+				info->bus, info->device, info->function);
+			gRenderDeviceNames[renderFound] = strdup(name);
+			if (gRenderDeviceNames[renderFound] != NULL) {
+				gRenderDeviceCards[renderFound] = found;
+				renderFound++;
+			}
+		}
+
 		found++;
 	}
 
 	gDeviceNames[found] = NULL;
+	gRenderDeviceNames[renderFound] = NULL;
+
+	// build the merged publish list: display devices, then render nodes
+	int32 published = 0;
+	for (int32 i = 0; i < found; i++)
+		sPublishedNames[published++] = gDeviceNames[i];
+	for (int32 i = 0; i < renderFound; i++)
+		sPublishedNames[published++] = gRenderDeviceNames[i];
+	sPublishedNames[published] = NULL;
 
 	if (found == 0) {
 		mutex_destroy(&gLock);
@@ -470,12 +496,18 @@ uninit_driver(void)
 {
 	CALLED();
 
+	render_node_uninit_all();
+
 	mutex_destroy(&gLock);
 
 	// free device related structures
 	char* name;
 	for (int32 index = 0; (name = gDeviceNames[index]) != NULL; index++) {
 		free(gDeviceInfo[index]);
+		free(name);
+	}
+	for (int32 index = 0; (name = gRenderDeviceNames[index]) != NULL;
+			index++) {
 		free(name);
 	}
 
@@ -493,6 +525,11 @@ find_device(const char* name)
 	for (index = 0; gDeviceNames[index] != NULL; index++) {
 		if (!strcmp(name, gDeviceNames[index]))
 			return &gDeviceHooks;
+	}
+
+	for (index = 0; gRenderDeviceNames[index] != NULL; index++) {
+		if (!strcmp(name, gRenderDeviceNames[index]))
+			return &gRenderDeviceHooks;
 	}
 
 	return NULL;
