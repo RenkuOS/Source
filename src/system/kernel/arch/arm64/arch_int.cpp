@@ -259,9 +259,9 @@ do_sync_handler(iframe * frame)
 #endif
 
 	InterruptScope scope(frame);
-	debug_exception_type exceptionType;
-	uint32 signalNumber;
-	int32 signalCode;
+	debug_exception_type exceptionType = B_GENERAL_PROTECTION_FAULT;
+	uint32 signalNumber = SIGILL;
+	int32 signalCode = ILL_ILLOPC;
 	uint64 signalAddress = 0;
 
 	bool isUser = (frame->spsr & PSR_M_MASK) == PSR_M_EL0t;
@@ -357,6 +357,30 @@ do_sync_handler(iframe * frame)
 			break;
 		}
 
+		case EXCP_UNKNOWN:
+		case EXCP_ILL_STATE:
+		case EXCP_MSR:
+			// Undefined/unallocated instruction (e.g. a CPU feature probe
+			// like OpenSSL's, which relies on SIGILL), or a trapped system
+			// register access.
+			exceptionType = B_INVALID_OPCODE_EXCEPTION;
+			signalNumber = SIGILL;
+			signalCode = ILL_ILLOPC;
+			signalAddress = frame->elr;
+			break;
+		case EXCP_SP_ALIGN:
+			exceptionType = B_ALIGNMENT_EXCEPTION;
+			signalNumber = SIGBUS;
+			signalCode = BUS_ADRALN;
+			signalAddress = frame->sp;
+			break;
+		case EXCP_TRAP_FP:
+			exceptionType = B_FLOATING_POINT_EXCEPTION;
+			signalNumber = SIGFPE;
+			signalCode = FPE_FLTINV;
+			signalAddress = frame->elr;
+			break;
+
 		case EXCP_SVC64:
 		{
 			uint32 syscall = (frame->esr & 0xffff);
@@ -386,6 +410,14 @@ do_sync_handler(iframe * frame)
 			syscall_dispatcher(syscall, (void*)args, &frame->x[0]);
 			return;
 		}
+
+		default:
+			// Previously these fell through with signalNumber uninitialized.
+			exceptionType = B_GENERAL_PROTECTION_FAULT;
+			signalNumber = SIGILL;
+			signalCode = ILL_ILLOPC;
+			signalAddress = frame->elr;
+			break;
 	}
 
 	if (isUser) {
