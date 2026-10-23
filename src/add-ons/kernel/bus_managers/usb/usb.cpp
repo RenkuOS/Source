@@ -11,6 +11,7 @@
 #include <util/kernel_cpp.h>
 #include "usb_private.h"
 #include <USB_rle.h>
+#include <usb_ioctl.h>
 
 #define USB_MODULE_NAME "module"
 
@@ -517,6 +518,17 @@ usb_ioctl(uint32 opcode, void *buffer, size_t bufferSize)
 			uint32 index = 0;
 			return device->BuildDeviceName((char *)buffer, &index,
 				bufferSize, NULL);
+		}
+
+		case USB_IOCTL_GET_DEVICE_SPEED: {
+			// See headers/private/drivers/usb_ioctl.h.
+			if (buffer == NULL || bufferSize < sizeof(uint32))
+				return B_BAD_VALUE;
+			BReference<Object> object(gUSBStack->GetObject(*(usb_id *)buffer), true);
+			if (!object.IsSet() || (object->Type() & USB_OBJECT_DEVICE) == 0)
+				return B_BAD_VALUE;
+			*(uint32 *)buffer = ((Device *)object.Get())->Speed();
+			return B_OK;
 		}
 	}
 

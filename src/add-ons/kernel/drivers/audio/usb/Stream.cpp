@@ -417,7 +417,7 @@ Stream::_SetupBuffers()
 	fMediaSampleSize = format->fNumChannels * mediaSubframe;
 	uint32 sampleSize = fWireSampleSize;	// wire bytes per audio frame
 
-	const bool highSpeed = fDevice->fUSBVersion >= 0x0200;
+	const bool highSpeed = fDevice->fHighSpeed;
 
 	// The endpoint is serviced once every (1 << fDataInterval) microframes, and
 	// THAT - not the microframe - is the unit a packet has to fill. Sizing per
@@ -954,7 +954,7 @@ Stream::_ResolveEndpoints(usb_interface_info* interface)
 		// type is the explicit feedback endpoint of an asynchronous playback
 		// stream. Only high-speed devices use the 16.16 format handled here;
 		// capture streams never have one.
-		if (!fIsInput && fDevice->fUSBVersion >= 0x0200
+		if (!fIsInput && fDevice->fHighSpeed
 			&& (descriptor->attributes & USB_ENDPOINT_ATTR_MASK)
 				== USB_ENDPOINT_ATTR_ISOCHRONOUS
 			&& (descriptor->attributes & USB_ENDPOINT_ATTR_USAGE_MASK)
@@ -1420,7 +1420,7 @@ Stream::_QueueNextTransfer(size_t queuedBuffer, bool start, bool staleSlot)
 	usb_iso_packet_descriptor* descriptors
 		= fDescriptors + queuedBuffer * fPacketsPerBuffer;
 
-	const bool highSpeed = fDevice->fUSBVersion >= 0x0200;
+	const bool highSpeed = fDevice->fHighSpeed;
 	size_t framesPerBuffer = fSamplesCount / fBufferCount;
 	size_t wireChunkSize = fWireSampleSize * framesPerBuffer;
 	uint8* wireChunk = fWireBuffers + wireChunkSize * queuedBuffer;
@@ -1619,7 +1619,7 @@ Stream::_QueueWarmup()
 		fAlternates[fActiveAlternate]->Format());
 	uint32 stride = format->fNumChannels * format->fSubframeSize;
 	uint32 rate = fAlternates[fActiveAlternate]->GetSamplingRate();
-	uint32 divisor = fDevice->fUSBVersion < 0x0200 ? 1000 : 8000;
+	uint32 divisor = fDevice->fHighSpeed ? 8000 : 1000;
 	size_t packetSize = (size_t)rate * stride / divisor;
 	packetSize -= packetSize % stride;	// whole audio frames per packet
 	if (packetSize == 0 || packetSize > fMaxPacketSize)
@@ -1685,7 +1685,7 @@ Stream::_FillPlaybackPackets(usb_iso_packet_descriptor* descriptors,
 	// feedback) packets are exempt: their ring entries cannot be un-popped,
 	// and the 1:1 interval replay matters more than the seam there.
 	uint32 frameAlign = 1;
-	if (fDevice->fUSBVersion >= 0x0200 && !fUseImplicitFeedback)
+	if (fDevice->fHighSpeed && !fUseImplicitFeedback)
 		frameAlign = 8 >> (fDataInterval > 3 ? 3 : fDataInterval);
 	size_t alignedCount = 0;
 	size_t alignedEmitted = 0;
@@ -1938,7 +1938,7 @@ Stream::_PublishImplicitFeedback(size_t actualLength)
 	// the average would drag the estimate far below the device's true rate --
 	// enough for it to reject the stream -- so skip it.
 	uint32 rate = fAlternates[fActiveAlternate]->GetSamplingRate();
-	uint32 divisor = fDevice->fUSBVersion < 0x0200 ? 1000 : 8000;
+	uint32 divisor = fDevice->fHighSpeed ? 8000 : 1000;
 	size_t frames = actualLength / stride;
 	size_t nominalFrames = (size_t)rate * fPacketsPerBuffer / divisor;
 	if (frames + fMaxPacketSize / stride < nominalFrames)
@@ -2360,7 +2360,7 @@ Stream::_CheckCaptureOverrun(void* scratch)
 			(unsigned)fIsoNoEvent, (unsigned)fIsoLastError,
 			(unsigned)fIsoMaxActual, (unsigned)fIsoMaxActualReq,
 			(unsigned)fMaxPacketSize,
-			(unsigned)(fDevice->fUSBVersion >= 0x0200 ? 1 : 0));
+			(unsigned)(fDevice->fHighSpeed ? 1 : 0));
 	}
 }
 
@@ -2557,10 +2557,25 @@ Stream::_SetDeviceSamplingRate()
 		return status;
 	}
 
-	// R1: set endpoint speed
+	// R1: set endpoint speed -- if the endpoint has the control at all. Bit 0
+	// of the class-specific endpoint descriptor's bmAttributes says so (UAC
+	// 1.0 4.6.1.2, Table 4-21); with it clear the rate is fixed by the
+	// alternate setting, and the request (and the read-back below) can only
+	// earn a STALL. The Jieli "UACDemoV1.0" (4c4a:4155, bmAttributes 0x00) did
+	// that on every plug and every stream start. Linux's snd-usb-audio skips
+	// the request on the same bit.
+	const uint8 kEndpointHasSamplingFrequencyControl = 0x01;
+	ASEndpointDescriptor* endpoint = fAlternates[fActiveAlternate]->Endpoint();
+	if ((endpoint->fCSAttributes & kEndpointHasSamplingFrequencyControl) == 0) {
+		TRACE(INF, "ep %#x has no sampling frequency control; %lu Hz is set by"
+			" the alternate\n", endpoint->fEndpointAddress,
+			(unsigned long)samplingRate);
+		return B_OK;
+	}
+
 	size_t actualLength = 0;
 	usb_audio_sampling_freq freq = _ASFormatDescriptor::GetSamFreq(samplingRate);
-	uint8 address = fAlternates[fActiveAlternate]->Endpoint()->fEndpointAddress;
+	uint8 address = endpoint->fEndpointAddress;
 
 	status = gUSBModule->send_request(fDevice->fDevice,
 		USB_REQTYPE_CLASS | USB_REQTYPE_ENDPOINT_OUT,
@@ -2693,7 +2708,7 @@ Stream::GetBuffers(multi_buffer_list* List)
 	// verified geometry (_SetupBuffers forces it), so requests are ignored
 	// there - honoring them would reallocate the areas on every call and
 	// dangle the client's clones.
-	if (fDevice->fUSBVersion >= 0x0200) {
+	if (fDevice->fHighSpeed) {
 		int32 requestBuffers = fIsInput
 			? List->request_record_buffers : List->request_playback_buffers;
 		uint32 requestFrames = fIsInput

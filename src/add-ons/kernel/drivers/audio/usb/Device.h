@@ -98,6 +98,8 @@ public:
 private:
 			status_t		_SetupEndpoints();
 			void			_ReadProductName();
+			bool			_DetectHighSpeed(
+								const usb_device_descriptor* descriptor);
 			bool			_FetchStringAscii(uint8 index, uint16 langId,
 								char* out, size_t outSize);
 			uint32			_ReadLangIds(uint16* langs, uint32 maxCount);
@@ -114,8 +116,14 @@ private:
 			status_t		fStatus;
 			bool			fOpen;
 			bool			fRemoved;
+			// Whether InitHardwareGains() has run since the device was
+			// attached or reattached; see Open().
+			bool			fGainsInitialized;
 			usb_device		fDevice;
 			uint16			fUSBVersion;
+			// The speed the device actually runs at, NOT bcdUSB: plenty of
+			// full-speed devices report USB 2.0. See _DetectHighSpeed().
+			bool			fHighSpeed;
 			uint16			fVendorID;
 			uint16			fProductID;
 			// Cached product string and per-model instance index; see the
