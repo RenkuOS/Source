@@ -267,6 +267,7 @@ arm64_handle_acpi_fadt(acpi_fadt_arm_boot_arch armBootFlags)
 		sPsciCallFn = arm64_psci_call_hvc;
 	else
 		sPsciCallFn = arm64_psci_call_smc;
+	gKernelArgs.arch_args.psci_conduit = armBootFlags.psci_use_hvc ? 2 : 1;
 }
 
 
@@ -276,10 +277,14 @@ arm64_handle_fdt_psci_node(const void* fdt, int node)
 	const char* method = (const char*)fdt_getprop(fdt, node,
 		"method", NULL);
 
+	if (method == NULL)
+		return;
 	if (strcmp(method, "smc") == 0) {
 		sPsciCallFn = arm64_psci_call_smc;
+		gKernelArgs.arch_args.psci_conduit = 1;
 	} else if (strcmp(method, "hvc") == 0) {
 		sPsciCallFn = arm64_psci_call_hvc;
+		gKernelArgs.arch_args.psci_conduit = 2;
 	}
 }
 

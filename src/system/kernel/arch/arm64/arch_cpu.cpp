@@ -15,6 +15,9 @@
 extern "C" void _exception_vectors(void);
 
 
+static uint32 sPsciConduit = 0;
+
+
 status_t
 arch_cpu_preboot_init_percpu(kernel_args *args, int curr_cpu)
 {
@@ -48,6 +51,8 @@ arch_cpu_init_percpu(kernel_args *args, int curr_cpu)
 status_t
 arch_cpu_init(kernel_args *args)
 {
+	sPsciConduit = args->arch_args.psci_conduit;
+
 	for (uint32 i = 0; i < args->num_cpus; i++) {
 		cpu_ent* cpu = &gCPU[i];
 
@@ -76,7 +81,19 @@ arch_cpu_init_post_modules(kernel_args *args)
 status_t
 arch_cpu_shutdown(bool reboot)
 {
-	// never reached
+	// PSCI 0.2+: SYSTEM_RESET / SYSTEM_OFF. These don't return on success.
+	uint64 function = reboot ? 0x84000009UL : 0x84000008UL;
+	register uint64 x0 asm("x0") = function;
+	switch (sPsciConduit) {
+		case 1:
+			asm volatile("smc #0" : "+r" (x0) : : "memory");
+			break;
+		case 2:
+			asm volatile("hvc #0" : "+r" (x0) : : "memory");
+			break;
+		default:
+			break;
+	}
 	return B_ERROR;
 }
 

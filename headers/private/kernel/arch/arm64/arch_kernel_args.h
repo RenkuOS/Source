@@ -35,6 +35,9 @@ typedef struct {
 	uart_info	uart;
 	intc_info	interrupt_controller;
 
+	// PSCI conduit for SYSTEM_OFF/SYSTEM_RESET: 0 none, 1 smc, 2 hvc
+	uint32		psci_conduit;
+
 } _PACKED arch_kernel_args;
 
 #endif	/* KERNEL_ARCH_ARM64_KERNEL_ARGS_H */
