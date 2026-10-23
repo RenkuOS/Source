@@ -36,7 +36,7 @@ uname(struct utsname *info)
 
 	get_system_info(&systemInfo);
 
-	strlcpy(info->sysname, "Haiku", sizeof(info->sysname));
+	strlcpy(info->sysname, "RenkuOS", sizeof(info->sysname));
 
 	haikuRevision = __get_haiku_revision();
 	if (haikuRevision[0] != '\0')
