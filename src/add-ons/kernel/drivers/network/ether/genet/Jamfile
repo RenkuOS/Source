@@ -1,0 +1,10 @@
+SubDir HAIKU_TOP src add-ons kernel drivers network ether genet ;
+
+UsePrivateKernelHeaders ;
+UsePrivateHeaders drivers net ;
+SubDirHdrs $(HAIKU_TOP) src add-ons kernel bus_managers acpi acpica include ;
+SubDirHdrs $(HAIKU_TOP) src add-ons kernel bus_managers acpi acpica include platform ;
+
+KernelAddon genet :
+	genet.cpp
+;
