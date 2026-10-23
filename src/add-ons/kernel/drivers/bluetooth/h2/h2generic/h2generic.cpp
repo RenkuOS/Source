@@ -22,6 +22,7 @@
 #include "bluetooth/HCI/btHCI_transport.h"
 #include "h2cfg.h"
 #include "h2debug.h"
+#include "h2intel.h"
 #include "h2transactions.h"
 #include "h2util.h"
 #include "snet_buffer.h"
@@ -306,7 +307,8 @@ device_added(usb_device dev, void** cookie)
 
 		new_bt_dev->driver_info = BT_WILL_NEED_A_RESET | BT_SCO_NOT_WORKING;
 
-	}
+	} else if (intel_needs_firmware(desc))
+		new_bt_dev->intel_firmware = true;
 	/*
 	else if ( desc->vendor_id == YOUR_VENDOR_HERE
 		&& desc->product_id == YOUR_PRODUCT_HERE ) {
@@ -545,6 +547,18 @@ device_open(const char* name, uint32 flags, void **cookie)
 	}
 
 	acquire_sem(bdev->lock);
+
+	// The controller must run its operational firmware before the stack
+	// can use it. If the download fails, the device stays open, but the
+	// stack cannot initialize it.
+	if (bdev->intel_firmware && bdev->connected) {
+		status_t status = intel_load_firmware(bdev);
+		if (status != B_OK) {
+			ERROR("%s: Intel firmware setup failed: %s\n", __func__,
+				strerror(status));
+		}
+	}
+
 	// TX structures
 	for (i = 0; i < BT_DRIVER_TXCOVERAGE; i++) {
 		list_init(&bdev->nbuffersTx[i]);

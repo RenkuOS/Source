@@ -75,6 +75,7 @@ struct bt_usb_dev {
 	uint8				ctrl_req;
 	uint8				driver_info;
 	uint32				state;
+	bool				intel_firmware; /* needs Intel firmware download */
 
 	bt_hci_statistics	stat;
 
