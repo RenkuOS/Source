@@ -126,7 +126,7 @@ rule HaikuImageGetSystemLibs
 			libgnu.so
 			libmail.so
 			libmedia.so
-			libmidi.so
+			libmidi.so@fluidlite
 			libmidi2.so
 			libnetwork.so
 			libnvmm.so@x86_64
