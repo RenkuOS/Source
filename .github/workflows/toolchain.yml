@@ -72,6 +72,13 @@ jobs:
           - tag: x86_gcc2h
             architecture: x86_gcc2
             secondary: x86
+          # aarch64-unknown-haiku. The kernel, EFI loader and userland carry
+          # arm64 support, but nothing in CI builds it yet, so this image comes
+          # first: pr-gate cannot add a build leg until the toolchain it pulls
+          # exists. Single architecture, no secondary.
+          - tag: arm64
+            architecture: arm64
+            secondary: ''
 
     steps:
       - uses: actions/checkout@v4
