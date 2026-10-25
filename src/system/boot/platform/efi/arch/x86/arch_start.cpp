@@ -189,10 +189,7 @@ arch_start_kernel(addr_t kernelEntry)
 		for (uint32 i = 0; i < gKernelArgs.num_kernel_args_ranges; i++)
 			gKernelArgs.kernel_args_range[i].start += KERNEL_FIXUP_FOR_LONG_MODE;
 
-		// The 32-bit AP startup code can not enter a 64-bit kernel.
-		dprintf("Starting a 64-bit kernel from a 32-bit loader: SMP is not "
-			"supported yet, using one CPU.\n");
-		gKernelArgs.num_cpus = 1;
+		dprintf("Starting a 64-bit kernel from a 32-bit loader.\n");
 	}
 #endif
 
@@ -201,8 +198,7 @@ arch_start_kernel(addr_t kernelEntry)
 	// as there are some fixups happening to kernel_args even in the last minute
 	memcpy((void *)kernelArgs, &gKernelArgs, sizeof(struct kernel_args));
 
-	if (!gIsHybridPlatform)
-		smp_boot_other_cpus(pageDirectory, kernelEntry, virtKernelArgs);
+	smp_boot_other_cpus(pageDirectory, kernelEntry, virtKernelArgs);
 
 	// Enter the kernel!
 	dprintf("enter_kernel(pageDirectory: 0x%08x, kernelArgs: 0x%08x, "
