@@ -298,11 +298,12 @@ video_display_splash(addr_t frameBuffer)
 		replace_black_background((uint8*)gKernelArgs.boot_splash, iconsSize, shade);
 	}
 
-	// An unlit icon is the lit one at quarter opacity over the backdrop.
-	// The active half is already composited over that backdrop, so a 1:3
-	// mix with the backdrop is exactly a 25% alpha. Palette images cannot
-	// blend.
-	if (gKernelArgs.frame_buffer.depth != 8) {
+	// With a gray backdrop, an unlit icon is the lit one at quarter opacity
+	// over it. The active half is already composited over that backdrop, so
+	// a 1:3 mix with the backdrop is exactly a 25% alpha. Without one (and
+	// always on palette displays, where shade is 0) keep the artwork's own
+	// grayed-out half.
+	if (shade != 0) {
 		const uint8* active = (const uint8*)gKernelArgs.boot_splash;
 		uint8* inactive = (uint8*)lowerHalfIconImage;
 		size_t halfBytes = (size_t)kSplashIconsWidth * iconsHalfHeight * 3;
