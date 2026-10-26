@@ -21,6 +21,7 @@ SimpleTest flock_test : flock_test.cpp ;
 SimpleTest fseek_test : fseek_test.cpp ;
 SimpleTest getsubopt_test : getsubopt_test.cpp ;
 SimpleTest locale_test : locale_test.cpp ;
+SimpleTest locale_startup_race_test : locale_startup_race_test.c ;
 SimpleTest memalign_test : memalign_test.cpp : [ TargetLibsupc++ ] ;
 SimpleTest mprotect_test : mprotect_test.cpp ;
 SimpleTest pthread_signal_test : pthread_signal_test.cpp ;

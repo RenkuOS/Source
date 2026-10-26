@@ -51,9 +51,14 @@ LoadFunctions()
 static void
 LoadBackend()
 {
-	LocaleBackend::CreateBackend(gGlobalLocaleBackend);
-	if (gGlobalLocaleBackend != NULL) {
-		gGlobalLocaleBackend->Initialize(&gGlobalLocaleDataBridge);
+	// Other threads use gGlobalLocaleBackend as soon as it is set without
+	// going through the pthread_once(), so publish it only once it is
+	// initialized.
+	LocaleBackend* backend;
+	LocaleBackend::CreateBackend(backend);
+	if (backend != NULL) {
+		backend->Initialize(&gGlobalLocaleDataBridge);
+		__atomic_store_n(&gGlobalLocaleBackend, backend, __ATOMIC_RELEASE);
 	}
 }
 

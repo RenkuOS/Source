@@ -51,9 +51,19 @@ ICUCtypeData::~ICUCtypeData()
 void
 ICUCtypeData::Initialize(LocaleCtypeDataBridge* dataBridge)
 {
-	*dataBridge->addrOfClassInfoTable = &fClassInfo[128];
-	*dataBridge->addrOfToLowerTable = &fToLowerMap[128];
-	*dataBridge->addrOfToUpperTable = &fToUpperMap[128];
+	// Other threads may read the published tables at any time (isdigit_l()
+	// on the global locale, from vfscanf() for example), so they must hold
+	// valid POSIX data before they become visible.
+	memcpy(fClassInfo, dataBridge->posixClassInfo, sizeof(fClassInfo));
+	memcpy(fToLowerMap, dataBridge->posixToLowerMap, sizeof(fToLowerMap));
+	memcpy(fToUpperMap, dataBridge->posixToUpperMap, sizeof(fToUpperMap));
+
+	__atomic_store_n(dataBridge->addrOfClassInfoTable, &fClassInfo[128],
+		__ATOMIC_RELEASE);
+	__atomic_store_n(dataBridge->addrOfToLowerTable, &fToLowerMap[128],
+		__ATOMIC_RELEASE);
+	__atomic_store_n(dataBridge->addrOfToUpperTable, &fToUpperMap[128],
+		__ATOMIC_RELEASE);
 	fDataBridge = dataBridge;
 }
 
