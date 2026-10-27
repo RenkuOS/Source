@@ -12,8 +12,11 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <strings.h>
+#include <sys/utsname.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <AppMisc.h>
@@ -53,6 +56,23 @@ using std::nothrow;
 
 
 static const char *kSignature = "application/x-vnd.Haiku-debug_server";
+
+
+/*!	Prints to \a file, or to the syslog when \a file is \c NULL. */
+static void
+print_to(FILE* file, const char* format, ...)
+{
+	char buffer[1024];
+	va_list args;
+	va_start(args, format);
+	vsnprintf(buffer, sizeof(buffer), format, args);
+	va_end(args);
+
+	if (file != NULL)
+		fputs(buffer, file);
+	else
+		debug_printf("%s", buffer);
+}
 
 
 static status_t
@@ -208,13 +228,15 @@ private:
 	thread_id _EnterDebugger(bool saveReport);
 	status_t _SetupGDBArguments(BStringList &arguments, bool usingConsoled);
 	status_t _WriteCoreFile();
+	bool _IsDebuggerAvailable() const;
+	status_t _SaveReport();
 	void _KillTeam();
 
 	int32 _HandleMessage(DebugMessage *message);
 
 	void _LookupSymbolAddress(debug_symbol_lookup_context *lookupContext,
 		const void *address, char *buffer, int32 bufferSize);
-	void _PrintStackTrace(thread_id thread);
+	void _PrintStackTrace(thread_id thread, FILE* file = NULL);
 	void _NotifyAppServer(team_id team);
 	void _NotifyRegistrar(team_id team, bool openAlert, bool stopShutdown);
 
@@ -241,6 +263,8 @@ private:
 	char					fExecutablePath[B_PATH_NAME_LENGTH];
 	thread_id				fHandlerThread;
 	debug_context			fDebugContext;
+	thread_id				fCrashedThread;
+	char					fCrashReason[512];
 };
 
 
@@ -392,12 +416,14 @@ TeamDebugHandler::TeamDebugHandler(team_id team)
 	fMessages(),
 	fMessageCountSem(-1),
 	fTeam(team),
-	fHandlerThread(-1)
+	fHandlerThread(-1),
+	fCrashedThread(-1)
 {
 	fDebugContext.nub_port = -1;
 	fDebugContext.reply_port = -1;
 
 	fExecutablePath[0] = '\0';
+	fCrashReason[0] = '\0';
 }
 
 
@@ -796,6 +822,118 @@ TeamDebugHandler::_WriteCoreFile()
 }
 
 
+bool
+TeamDebugHandler::_IsDebuggerAvailable() const
+{
+	BPath path;
+	if (find_directory(B_SYSTEM_APPS_DIRECTORY, &path) != B_OK
+		|| path.Append("Debugger") != B_OK) {
+		return false;
+	}
+	return BEntry(path.Path()).Exists();
+}
+
+
+/*!	Writes a plain text report of the team to the desktop, for when the
+	Debugger, which normally writes it, is not available (it does not exist
+	for every architecture).
+*/
+status_t
+TeamDebugHandler::_SaveReport()
+{
+	BPath directoryPath;
+	status_t error = find_directory(B_DESKTOP_DIRECTORY, &directoryPath);
+	if (error != B_OK) {
+		debug_printf("debug_server: Couldn't get desktop directory: %s\n",
+			strerror(error));
+		return error;
+	}
+
+	const char* executableName = _LastPathComponent(fExecutablePath);
+	if (executableName[0] == '\0')
+		executableName = "team";
+	time_t now = time(NULL);
+	char date[32];
+	strftime(date, sizeof(date), "%Y-%m-%d-%H-%M-%S", localtime(&now));
+
+	BString fileName;
+	fileName.SetToFormat("%s-%" B_PRId32 "-debug-%s.report", executableName,
+		fTeam, date);
+	BPath filePath;
+	error = filePath.SetTo(directoryPath.Path(), fileName.String());
+	if (error != B_OK)
+		return error;
+
+	FILE* file = fopen(filePath.Path(), "w");
+	if (file == NULL) {
+		error = errno;
+		debug_printf("debug_server: Couldn't create report %s: %s\n",
+			filePath.Path(), strerror(error));
+		return error;
+	}
+
+	fprintf(file, "Debug information for team %s (%" B_PRId32 "):\n",
+		fTeamInfo.args, fTeam);
+	fprintf(file, "Written by debug_server: the Debugger is not available.\n");
+
+	struct utsname name;
+	if (uname(&name) == 0) {
+		fprintf(file, "System: %s %s %s %s\n", name.sysname, name.release,
+			name.version, name.machine);
+	}
+	system_info systemInfo;
+	if (get_system_info(&systemInfo) == B_OK) {
+		fprintf(file, "CPUs: %" B_PRIu32 ", memory: %" B_PRIu64 " MB, used %"
+			B_PRIu64 " MB\n", systemInfo.cpu_count,
+			systemInfo.max_pages * B_PAGE_SIZE / 1024 / 1024,
+			systemInfo.used_pages * B_PAGE_SIZE / 1024 / 1024);
+	}
+	fprintf(file, "Date: %s", ctime(&now));
+	fprintf(file, "\nThread %" B_PRId32 " stopped: %s\n\n", fCrashedThread,
+		fCrashReason);
+
+	// the thread that stopped first, then the others, which have to be
+	// stopped to read their state
+	thread_info threadInfo;
+	if (fCrashedThread >= 0
+		&& get_thread_info(fCrashedThread, &threadInfo) == B_OK) {
+		fprintf(file, "Thread %" B_PRId32 " \"%s\" (stopped here):\n",
+			threadInfo.thread, threadInfo.name);
+		_PrintStackTrace(fCrashedThread, file);
+	}
+
+	int32 cookie = 0;
+	while (get_next_thread_info(fTeam, &cookie, &threadInfo) == B_OK) {
+		if (threadInfo.thread == fCrashedThread)
+			continue;
+		debug_thread(threadInfo.thread);
+	}
+	snooze(100000);
+
+	cookie = 0;
+	while (get_next_thread_info(fTeam, &cookie, &threadInfo) == B_OK) {
+		if (threadInfo.thread == fCrashedThread)
+			continue;
+		fprintf(file, "\nThread %" B_PRId32 " \"%s\":\n", threadInfo.thread,
+			threadInfo.name);
+		_PrintStackTrace(threadInfo.thread, file);
+	}
+
+	fprintf(file, "\nLoaded images:\n");
+	image_info imageInfo;
+	cookie = 0;
+	while (get_next_image_info(fTeam, &cookie, &imageInfo) == B_OK) {
+		fprintf(file, "  %p - %p  %s\n", imageInfo.text,
+			(uint8*)imageInfo.text + imageInfo.text_size, imageInfo.name);
+	}
+
+	fclose(file);
+	debug_printf("debug_server: Saved the report of team %" B_PRId32
+		" to %s\n", fTeam, filePath.Path());
+	return B_OK;
+}
+
+
 int32
 TeamDebugHandler::_HandleMessage(DebugMessage *message)
 {
@@ -850,8 +988,10 @@ TeamDebugHandler::_HandleMessage(DebugMessage *message)
 			break;
 	}
 
-	debug_printf("debug_server: Thread %" B_PRId32 " entered the debugger: %s\n",
-		thread, buffer);
+	debug_printf("debug_server: Thread %" B_PRId32 " of %s entered the "
+		"debugger: %s\n", thread, fTeamInfo.args, buffer);
+	fCrashedThread = thread;
+	strlcpy(fCrashReason, buffer, sizeof(fCrashReason));
 
 	_PrintStackTrace(thread);
 
@@ -946,13 +1086,14 @@ TeamDebugHandler::_LookupSymbolAddress(
 
 
 void
-TeamDebugHandler::_PrintStackTrace(thread_id thread)
+TeamDebugHandler::_PrintStackTrace(thread_id thread, FILE* file)
 {
 	// print a stacktrace
 	void *ip = NULL;
 	void *stackFrameAddress = NULL;
 	status_t error = debug_get_instruction_pointer(&fDebugContext, thread, &ip,
 		&stackFrameAddress);
+	status_t ipError = error;
 
 	if (error == B_OK) {
 		// create a symbol lookup context
@@ -968,7 +1109,27 @@ TeamDebugHandler::_PrintStackTrace(thread_id thread)
 		_LookupSymbolAddress(lookupContext, ip, symbolBuffer,
 			sizeof(symbolBuffer) - 1);
 
-		debug_printf("stack trace, current PC %p  %s:\n", ip, symbolBuffer);
+		print_to(file, "stack trace, current PC %p  %s:\n", ip, symbolBuffer);
+
+#if defined(__arm__)
+		// Without frame pointers the scan of the stack cannot see the caller
+		// of a function that keeps its return address in a register.
+		debug_cpu_state cpuState;
+		if (debug_get_cpu_state(&fDebugContext, thread, NULL, &cpuState)
+				== B_OK) {
+			_LookupSymbolAddress(lookupContext, (void*)cpuState.r14,
+				symbolBuffer, sizeof(symbolBuffer) - 1);
+			print_to(file, "  LR %p  %s\n", (void*)cpuState.r14, symbolBuffer);
+			print_to(file, "  r0 %08lx r1 %08lx r2 %08lx r3 %08lx\n"
+				"  r4 %08lx r5 %08lx r6 %08lx r7 %08lx\n"
+				"  r8 %08lx r9 %08lx r10 %08lx r11 %08lx\n"
+				"  r12 %08lx sp %08lx cpsr %08lx\n",
+				cpuState.r0, cpuState.r1, cpuState.r2, cpuState.r3,
+				cpuState.r4, cpuState.r5, cpuState.r6, cpuState.r7,
+				cpuState.r8, cpuState.r9, cpuState.r10, cpuState.r11,
+				cpuState.r12, cpuState.r13, cpuState.cpsr);
+		}
+#endif
 
 		for (int32 i = 0; i < 50; i++) {
 			debug_stack_frame_info stackFrameInfo;
@@ -982,7 +1143,7 @@ TeamDebugHandler::_PrintStackTrace(thread_id thread)
 			_LookupSymbolAddress(lookupContext, stackFrameInfo.return_address,
 				symbolBuffer, sizeof(symbolBuffer) - 1);
 
-			debug_printf("  (%p)  %p  %s\n", stackFrameInfo.frame,
+			print_to(file, "  (%p)  %p  %s\n", stackFrameInfo.frame,
 				stackFrameInfo.return_address, symbolBuffer);
 
 			stackFrameAddress = stackFrameInfo.parent_frame;
@@ -991,6 +1152,10 @@ TeamDebugHandler::_PrintStackTrace(thread_id thread)
 		// delete the symbol lookup context
 		if (lookupContext)
 			debug_delete_symbol_lookup_context(lookupContext);
+	}
+	if (ipError != B_OK) {
+		print_to(file, "%sno stack trace: %s\n",
+			file == NULL ? "debug_server: " : "", strerror(ipError));
 	}
 }
 
@@ -1066,6 +1231,10 @@ TeamDebugHandler::_HandlerThread()
 		// nothing here.
 	} else if (debugAction == kActionWriteCoreFile) {
 		_WriteCoreFile();
+		debugAction = kActionKillTeam;
+	} else if (debugAction == kActionSaveReportTeam
+		&& !_IsDebuggerAvailable()) {
+		_SaveReport();
 		debugAction = kActionKillTeam;
 	} else if ((debuggerThread = _EnterDebugger(
 			debugAction == kActionSaveReportTeam)) >= 0) {
