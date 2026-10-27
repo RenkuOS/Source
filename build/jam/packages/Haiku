@@ -144,6 +144,9 @@ AddNewDriversToPackage disk virtual :
 	ram_disk
 	virtio_block@arm,arm64,riscv64
 	;
+AddNewDriversToPackage gpio :
+	baytrail_gpio@x86,x86_64
+	;
 AddNewDriversToPackage graphics :
 	virtio_gpu
 	;
