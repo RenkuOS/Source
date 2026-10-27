@@ -396,7 +396,7 @@ update_media_formats()
 		ssize_t size;
 		if (reply.FindData("formats", MEDIA_META_FORMAT_TYPE, index,
 				&newItem, &size) == B_OK && size == sizeof(meta_format)) {
-			alignas(meta_format) char buffer[sizeof(meta_format)];
+			char buffer[sizeof(meta_format)] __attribute__((aligned(8)));
 			memcpy(buffer, newItem, sizeof(meta_format));
 			*item = *(const meta_format*)buffer;
 		}
@@ -409,7 +409,7 @@ update_media_formats()
 		ssize_t size;
 		if (reply.FindData("formats", MEDIA_META_FORMAT_TYPE, index,
 				&newItem, &size) == B_OK && size == sizeof(meta_format)) {
-			alignas(meta_format) char buffer[sizeof(meta_format)];
+			char buffer[sizeof(meta_format)] __attribute__((aligned(8)));
 			memcpy(buffer, newItem, sizeof(meta_format));
 			sFormats.AddItem(new meta_format(*(const meta_format*)buffer));
 		}
