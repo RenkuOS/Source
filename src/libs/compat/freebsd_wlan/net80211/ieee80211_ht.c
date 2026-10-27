@@ -928,6 +928,15 @@ ampdu_rx_flush(struct ieee80211_node *ni, struct ieee80211_rx_ampdu *rap)
 		if (rap->rxa_qframes == 0)
 			break;
 	}
+#ifdef __HAIKU__
+	/*
+	 * Move the BA window past the last frame dispatched, or the
+	 * frames that follow are queued behind the hole that caused the
+	 * flush again.
+	 */
+	if (i < rap->rxa_wnd)
+		rap->rxa_start = IEEE80211_SEQ_ADD(rap->rxa_start, i + 1);
+#endif
 }
 
 /*
@@ -1131,6 +1140,27 @@ again:
 		if (rap->rxa_qframes != 0) {
 			/* XXX honor batimeout? */
 			if (ticks - rap->rxa_age > ieee80211_ampdu_age) {
+#ifdef __HAIKU__
+				int qframes = rap->rxa_qframes;
+
+				/*
+				 * Too long since we received the first
+				 * frame; release the frames before this one
+				 * and move the window up to it.  Frames
+				 * after it must not go up before it, or it
+				 * fails the CCMP replay check.  Not while
+				 * subframes of this A-MSDU are held: that
+				 * would release them, and the run after
+				 * them, and move the window past this one.
+				 */
+				if (mbufq_empty(&rap->rxa_mq[off])) {
+					ampdu_rx_flush_upto(ni, rap, rxseq);
+					vap->iv_stats.is_ampdu_rx_age +=
+					    qframes - rap->rxa_qframes;
+					rap->rxa_age = ticks;
+					goto again;
+				}
+#else
 				/*
 				 * Too long since we received the first
 				 * frame; flush the reorder buffer.
@@ -1159,6 +1189,7 @@ again:
 					    IEEE80211_SEQ_INC(rxseq);
 				}
 				return PROCESS;
+#endif
 			}
 		} else {
 			/*
@@ -2512,11 +2543,27 @@ ht_recv_action_ba_addba_request(struct ieee80211_node *ni,
 	 */
 	if ((ni->ni_flags & IEEE80211_NODE_AMPDU_RX) &&
 	    (vap->iv_flags_ht & IEEE80211_FHT_AMPDU_RX)) {
+#ifdef __HAIKU__
+		/*
+		 * If the driver did not set the session up, accepting it
+		 * has the peer aggregate while nothing reorders.
+		 */
+		if (ic->ic_ampdu_rx_start(ni, rap,
+		    baparamset, batimeout, baseqctl) != 0) {
+			IEEE80211_NOTE(vap,
+			    IEEE80211_MSG_ACTION | IEEE80211_MSG_11N, ni,
+			    "reject ADDBA request: %s", "driver failed");
+			vap->iv_stats.is_addba_reject++;
+			args[1] = IEEE80211_STATUS_UNSPECIFIED;
+		} else
+			args[1] = IEEE80211_STATUS_SUCCESS;
+#else
 		/* XXX TODO: handle ampdu_rx_start failure */
 		ic->ic_ampdu_rx_start(ni, rap,
 		    baparamset, batimeout, baseqctl);
 
 		args[1] = IEEE80211_STATUS_SUCCESS;
+#endif
 	} else {
 		IEEE80211_NOTE(vap, IEEE80211_MSG_ACTION | IEEE80211_MSG_11N,
 		    ni, "reject ADDBA request: %s",

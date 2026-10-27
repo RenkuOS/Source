@@ -2681,8 +2681,45 @@ ieee80211_scanreq(struct ieee80211vap *vap, struct ieee80211_scan_req *sr)
 			    sr->sr_ssid[i].ssid, sr->sr_ssid[i].len);
 		}
 		vap->iv_flags_ext |= IEEE80211_FEXT_SCANREQ;
+#ifdef __HAIKU__
+		/*
+		 * While another transition is queued or still running (an
+		 * earlier scan or join request, or a driver newstate that
+		 * drops the lock on its way to INIT),
+		 * ieee80211_new_state_locked() may discard this one (-1), or
+		 * drop it with its task slots full (EAGAIN).  Then no
+		 * scan of ours runs and no scan-done event is sent, while
+		 * BNetworkDevice::Scan() would wait for that event forever.
+		 * If the last queued transition is already a SCAN it will use
+		 * the params stashed above, so report success; otherwise fail
+		 * the request, leaving FEXT_SCANREQ to any SCAN still queued.
+		 * Compare exactly: EINPROGRESS (queued) is negative here too.
+		 */
+		error = ieee80211_new_state_locked(vap, IEEE80211_S_SCAN, 0);
+		if (error == -1 || error == EAGAIN) {
+			enum ieee80211_state qstate = IEEE80211_S_INIT;
+			bool scan_queued = false;
+
+			for (i = 0; i < vap->iv_nstate_n; i++) {
+				qstate = vap->iv_nstates[(vap->iv_nstate_b + i) %
+				    NET80211_IV_NSTATE_NUM];
+				if (qstate == IEEE80211_S_SCAN)
+					scan_queued = true;
+			}
+			if (vap->iv_nstate_n == 0 ||
+			    qstate != IEEE80211_S_SCAN) {
+				if (!scan_queued)
+					vap->iv_flags_ext &=
+					    ~IEEE80211_FEXT_SCANREQ;
+				IEEE80211_UNLOCK(ic);
+				return EBUSY;
+			}
+		}
+		IEEE80211_UNLOCK(ic);
+#else
 		IEEE80211_UNLOCK(ic);
 		ieee80211_new_state(vap, IEEE80211_S_SCAN, 0);
+#endif
 	} else {
 		vap->iv_flags_ext &= ~IEEE80211_FEXT_SCANREQ;
 		IEEE80211_UNLOCK(ic);
