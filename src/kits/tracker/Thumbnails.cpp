@@ -215,9 +215,12 @@ GenerateThumbnailJob::Execute()
 		BBitmap* thumbPointer = &thumb;
 		BBitmapStream thumbStream(thumbPointer);
 		BMallocIO stream;
-		if (BTranslatorRoster::Default()->Translate(&thumbStream,
-					NULL, NULL, &stream, B_WEBP_FORMAT) == B_OK
-				&& thumbStream.DetachBitmap(&thumbPointer) == B_OK) {
+		status_t translated = BTranslatorRoster::Default()->Translate(
+			&thumbStream, NULL, NULL, &stream, B_WEBP_FORMAT);
+		// the stream must never delete the bitmap, which lives on the stack,
+		// also when there is no WebP translator
+		if (thumbStream.DetachBitmap(&thumbPointer) == B_OK
+				&& translated == B_OK) {
 			// write WebP image data into an attribute
 			status = fFile->WriteAttr(kAttrThumbnail, B_RAW_TYPE, 0,
 				stream.Buffer(), stream.BufferLength());
