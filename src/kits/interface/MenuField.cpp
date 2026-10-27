@@ -554,6 +554,13 @@ BMenuField::MouseUp(BPoint where)
 void
 BMenuField::DetachedFromWindow()
 {
+	// MouseDown() adds the filter to the window and MouseUp() removes it,
+	// but the mouse up does not always reach us (the menu may take it).
+	// Left there, the window would delete it once more after our
+	// destructor did.
+	if (fMouseDownFilter->Looper() != NULL)
+		Window()->RemoveCommonFilter(fMouseDownFilter);
+
 	BView::DetachedFromWindow();
 }
 
