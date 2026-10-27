@@ -157,6 +157,7 @@ public:
 											bigtime_t activeTime);
 
 	inline				int32			GetLoad() const;
+	inline				int32			GetUncappedLoad() const;
 	inline				uint32			LoadMeasurementEpoch() const
 											{ return fLoadMeasurementEpoch; }
 
@@ -402,6 +403,18 @@ CoreEntry::GetLoad() const
 
 	ASSERT(fCPUCount > 0);
 	return std::min(fLoad / fCPUCount, kMaxLoad);
+}
+
+
+// the load of the threads assigned to this core, even beyond what its CPUs
+// can take: tells two busy threads on a core from one
+inline int32
+CoreEntry::GetUncappedLoad() const
+{
+	SCHEDULER_ENTER_FUNCTION();
+
+	ASSERT(fCPUCount > 0);
+	return fLoad / fCPUCount;
 }
 
 
