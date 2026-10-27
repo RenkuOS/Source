@@ -167,7 +167,7 @@ init_device(device_node* node, void** device_cookie)
 	bus->info.scan_bus = acpi_scan_bus;
 
 	// Attach devices for I2C resources
-	struct pch_i2c_crs crs;
+	struct pch_i2c_crs crs = {};
 	status = acpi->walk_resources(device, (ACPI_STRING)"_CRS",
 		pch_i2c_scan_parse_callback, &crs);
 	if (status != B_OK) {
