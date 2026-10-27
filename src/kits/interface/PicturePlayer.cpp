@@ -19,6 +19,7 @@
 
 #include <AffineTransform.h>
 #include <DataIO.h>
+#include <List.h>
 #include <Font.h>
 #include <Gradient.h>
 #include <PictureProtocol.h>
@@ -774,6 +775,12 @@ public:
 		{
 		}
 
+		~DataReader()
+		{
+			for (int32 i = 0; i < fCopies.CountItems(); i++)
+				free(fCopies.ItemAt(i));
+		}
+
 		size_t
 		Remaining() const
 		{
@@ -788,6 +795,8 @@ public:
 				return false;
 
 			typed = reinterpret_cast<const T *>(fBuffer);
+			if (!_Align(typed, sizeof(T) * count))
+				return false;
 			fRemaining -= sizeof(T) * count;
 			fBuffer += sizeof(T) * count;
 			return true;
@@ -821,8 +830,32 @@ public:
 		}
 
 private:
+		/*!	The picture data is packed: the values are often not aligned for
+			their type, which is fine on x86 but makes floats fault on ARM.
+			Hand out an aligned copy then, which lives as long as the reader.
+		*/
+		template<typename T>
+		bool
+		_Align(const T*& typed, size_t size)
+		{
+			if ((addr_t)typed % __alignof__(T) == 0 || size == 0)
+				return true;
+
+			void* copy = malloc(size);
+			if (copy == NULL)
+				return false;
+			if (!fCopies.AddItem(copy)) {
+				free(copy);
+				return false;
+			}
+			memcpy(copy, typed, size);
+			typed = reinterpret_cast<const T*>(copy);
+			return true;
+		}
+
 		const uint8*	fBuffer;
 		size_t			fRemaining;
+		BList			fCopies;
 };
 
 
