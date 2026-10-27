@@ -61,6 +61,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          submodules: recursive
           # Full history and tags: the revision comes from `git describe`
           # against upstream's hrev tags, and the package version is built from
           # it. Depth-1 leaves no tags and an unusable revision.
