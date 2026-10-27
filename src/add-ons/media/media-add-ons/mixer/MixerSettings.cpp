@@ -11,11 +11,13 @@
 
 #include <string.h>
 
+#include <Entry.h>
 #include <File.h>
 #include <Locker.h>
 #include <MediaDefs.h>
 #include <OS.h>
 #include <Path.h>
+#include <String.h>
 
 #include "MixerCore.h"
 #include "MixerDebug.h"
@@ -374,17 +376,27 @@ MixerSettings::Save()
 	for (int i = 0; i < MAX_INPUT_SETTINGS; i++)
 		msg.AddMessage("input", &fInputSetting[i]);
 
-	char *buffer;
-    size_t length;
+	// Write a new file and move it over the old one, so that an interrupted
+	// write can not leave a truncated settings file behind.
+	BString tempPath(fSettingsFile->Path());
+	tempPath << ".tmp";
+	BFile file(tempPath.String(), B_WRITE_ONLY | B_CREATE_FILE | B_ERASE_FILE);
+	if (file.InitCheck() != B_OK || msg.Flatten(&file) != B_OK
+		|| file.Sync() != B_OK) {
+		ERROR("MixerSettings: can't write settings file\n");
+		BEntry(tempPath.String()).Remove();
+		fLocker->Unlock();
+		return;
+	}
+	file.Unset();
 
-    length = msg.FlattenedSize();
-    buffer = new char [length];
-    msg.Flatten(buffer, length);
-
-	BFile file(fSettingsFile->Path(), B_READ_WRITE | B_CREATE_FILE);
-	file.Write(buffer, length);
-
-   	delete [] buffer;
+	BEntry entry(tempPath.String());
+	if (entry.Rename(fSettingsFile->Path(), true) != B_OK) {
+		ERROR("MixerSettings: can't replace settings file\n");
+		entry.Remove();
+		fLocker->Unlock();
+		return;
+	}
 
 	fSettingsDirty = false;
 	fLocker->Unlock();
@@ -411,32 +423,22 @@ MixerSettings::Load()
 		return;
 	}
 
-	BFile file(fSettingsFile->Path(), B_READ_WRITE);
-	off_t size = 0;
-	file.GetSize(&size);
-	if (size == 0) {
+	BFile file(fSettingsFile->Path(), B_READ_ONLY);
+	if (file.InitCheck() != B_OK) {
 		fLocker->Unlock();
 		TRACE("MixerSettings: no settings file\n");
 		return;
 	}
 
-	char * buffer = new char[size];
-	if (size != file.Read(buffer, size)) {
-		delete [] buffer;
-		fLocker->Unlock();
-		TRACE("MixerSettings: can't read settings file\n");
-		return;
-	}
-
+	// Unflattening from the file checks the sizes in the message header
+	// against what the file holds; a truncated file is rejected instead of
+	// being read past its end.
 	BMessage msg;
-	if (B_OK != msg.Unflatten(buffer)) {
-		delete [] buffer;
+	if (B_OK != msg.Unflatten(&file)) {
 		fLocker->Unlock();
 		TRACE("MixerSettings: can't unflatten settings\n");
 		return;
 	}
-
-	delete [] buffer;
 
 	if (msg.FindInt32("version") != SETTINGS_VERSION) {
 		fLocker->Unlock();
