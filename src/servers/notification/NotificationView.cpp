@@ -19,8 +19,10 @@
 
 
 #include <Bitmap.h>
+#include <Button.h>
 #include <ControlLook.h>
 #include <GroupLayout.h>
+#include <GroupView.h>
 #include <LayoutUtils.h>
 #include <MessageRunner.h>
 #include <Messenger.h>
@@ -29,6 +31,7 @@
 #include <Path.h>
 #include <PropertyInfo.h>
 #include <Roster.h>
+#include <SpaceLayoutItem.h>
 #include <StatusBar.h>
 
 #include <Notifications.h>
@@ -38,6 +41,9 @@
 
 
 const int kIconStripeWidth			= 32;
+
+// One of the action buttons, with its "index"
+const uint32 kActionClicked			= 'nsAc';
 
 property_info message_prop_list[] = {
 	{ "type", {B_GET_PROPERTY, B_SET_PROPERTY, 0},
@@ -69,7 +75,8 @@ NotificationView::NotificationView(BNotification* notification, bigtime_t timeou
 	fRunner(NULL),
 	fBitmap(NULL),
 	fCloseClicked(false),
-	fPreviewModeOn(false)
+	fPreviewModeOn(false),
+	fActionsView(NULL)
 {
 	if (fNotification->Icon() != NULL) {
 		fBitmap = new BBitmap(fNotification->Icon());
@@ -112,6 +119,20 @@ NotificationView::NotificationView(BNotification* notification, bigtime_t timeou
 				B_DARKEN_1_TINT);
 			break;
 	}
+
+	// The actions, as a row of buttons under the text and progress bar
+	if (fNotification->CountActions() > 0) {
+		fActionsView = new BGroupView(B_HORIZONTAL,
+			be_control_look->DefaultItemSpacing() / 2);
+		fActionsView->GroupLayout()->AddItem(BSpaceLayoutItem::CreateGlue());
+		for (int32 i = 0; i < fNotification->CountActions(); i++) {
+			BMessage* message = new BMessage(kActionClicked);
+			message->AddInt32("index", i);
+			fActionsView->AddChild(new BButton(
+				fNotification->ActionLabelAt(i), message));
+		}
+		layout->AddView(fActionsView);
+	}
 }
 
 
@@ -134,6 +155,14 @@ NotificationView::AttachedToWindow()
 
 	fGroupView = dynamic_cast<AppGroupView*>(Parent());
 
+	if (fActionsView != NULL) {
+		for (int32 i = 0; BView* child = fActionsView->ChildAt(i); i++) {
+			BButton* button = dynamic_cast<BButton*>(child);
+			if (button != NULL)
+				button->SetTarget(this);
+		}
+	}
+
 	if (!fDisableTimeout) {
 		BMessage msg(kRemoveView);
 		msg.AddPointer("view", this);
@@ -146,6 +175,21 @@ void
 NotificationView::MessageReceived(BMessage* msg)
 {
 	switch (msg->what) {
+		case kActionClicked:
+		{
+			// Send the action's message, then close, as after a click
+			int32 index = msg->GetInt32("index", -1);
+			const BMessage* action = fNotification->ActionMessageAt(index);
+			if (action != NULL) {
+				BMessage message(*action);
+				fNotification->ActionTargetAt(index).SendMessage(&message);
+			}
+
+			BMessage remove(kRemoveView);
+			remove.AddPointer("view", this);
+			BMessenger(Parent()).SendMessage(&remove);
+			break;
+		}
 		case B_GET_PROPERTY:
 		{
 			BMessage specifier;
@@ -548,6 +592,11 @@ NotificationView::_CalculateSize()
 		be_plain_font->GetHeight(&fh);
 		float fontHeight = fh.ascent + fh.descent + fh.leading;
 		height += fGroupView->CloseButtonSize() + fontHeight * 2;
+	}
+
+	if (fActionsView != NULL) {
+		height += fActionsView->PreferredSize().height
+			+ be_control_look->DefaultItemSpacing();
 	}
 
 	SetExplicitMinSize(BSize(0, height));
