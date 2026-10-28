@@ -1,4 +1,5 @@
 /*
+ * SPDX-License-Identifier: Apache-2.0
  * Copyright (C) 2003 - 2016 Sony Corporation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -64,4 +65,3 @@ DECLFUNC int get_bit_length_ldac(INT32);
 DECLFUNC INT32 get_absmax_ldac(INT32 *, int);
 
 #endif /* _FIXP_LDAC_H */
-

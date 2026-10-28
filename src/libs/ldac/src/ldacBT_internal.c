@@ -1,4 +1,5 @@
 /*
+ * SPDX-License-Identifier: Apache-2.0
  * Copyright (C) 2013 - 2016 Sony Corporation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -532,4 +533,3 @@ DECLFUNC int ldacBT_get_eqmid_from_frmlen( int frmlen, int nch, int flgFrmHdr, i
     }
     return eqmid;
 }
-

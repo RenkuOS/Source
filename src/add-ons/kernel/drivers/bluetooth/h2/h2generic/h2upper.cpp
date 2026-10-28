@@ -29,17 +29,14 @@ submit_next_acl(bt_usb_dev* bdev)
 {
 	for (;;) {
 		net_buffer* buffer;
-		{
-			MutexLocker locker(&bdev->aclTxLock);
-			if (bdev->aclTxClosing || bdev->aclTxPending
-				|| list_is_empty(&bdev->nbuffersTx[BT_ACL]))
-				return;
+		MutexLocker locker(&bdev->aclTxLock);
+		if (bdev->aclTxClosing || bdev->aclTxPending
+			|| list_is_empty(&bdev->nbuffersTx[BT_ACL]))
+			return;
 
-			buffer = (net_buffer*)list_remove_head_item(
-				&bdev->nbuffersTx[BT_ACL]);
-			bdev->aclTxQueued--;
-			bdev->aclTxPending = true;
-		}
+		buffer = (net_buffer*)list_remove_head_item(&bdev->nbuffersTx[BT_ACL]);
+		bdev->aclTxQueued--;
+		bdev->aclTxPending = true;
 
 		if (submit_tx_acl(bdev, buffer) == B_OK)
 			return;
@@ -48,7 +45,6 @@ submit_next_acl(bt_usb_dev* bdev)
 		// buffer here, clear the in-flight slot, and continue with the next
 		// packet so a transient failure cannot stall the entire ACL queue.
 		nb_destroy(buffer);
-		MutexLocker locker(&bdev->aclTxLock);
 		bdev->aclTxPending = false;
 	}
 }
@@ -70,14 +66,12 @@ queue_acl_packet(hci_id hid, net_buffer* buffer)
 			return B_OK;
 		}
 
-		// Audio is real-time.  If a consumer outruns the controller, discard
-		// the oldest queued packet instead of accumulating audible latency.
+		// ACL packets may be fragments of reliable control traffic. Refuse
+		// further submissions rather than discarding an arbitrary fragment.
 		if (bdev->aclTxQueued == kMaxQueuedAclPackets) {
-			net_buffer* oldest = (net_buffer*)list_remove_head_item(
-				&bdev->nbuffersTx[BT_ACL]);
-			nb_destroy(oldest);
-			bdev->aclTxQueued--;
 			bdev->stat.rejectedTX++;
+			nb_destroy(buffer);
+			return B_WOULD_BLOCK;
 		}
 		list_add_item(&bdev->nbuffersTx[BT_ACL], buffer);
 		bdev->aclTxQueued++;
@@ -147,23 +141,6 @@ sched_tx_processing(bt_usb_dev* bdev)
 					// re-head it
 					list_insert_item_before(&bdev->nbuffersTx[BT_SCO],
 						list_get_first_item(&bdev->nbuffersTx[BT_SCO]), nbuf);
-				}
-			}
-
-			// check ACl
-#ifdef EMPTY_ACL_QUEUE
-			while (!list_is_empty(&bdev->nbuffersTx[BT_ACL])) {
-#else
-			if (!list_is_empty(&bdev->nbuffersTx[BT_ACL])) {
-#endif
-				nbuf = (net_buffer*)
-					list_remove_head_item(&bdev->nbuffersTx[BT_ACL]);
-				err = submit_tx_acl(bdev, nbuf);
-				if (err != B_OK) {
-					// re-head it
-					list_insert_item_before(&bdev->nbuffersTx[BT_ACL],
-							list_get_first_item(&bdev->nbuffersTx[BT_ACL]),
-							nbuf);
 				}
 			}
 

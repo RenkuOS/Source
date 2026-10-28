@@ -14,6 +14,11 @@ SimpleTest bluetooth_ldac_test :
 ;
 
 UseBuildFeatureHeaders ffmpeg ;
+Includes
+	[ FGristFiles AudioTest.cpp A2dpProtocol.cpp AudioEncoder.cpp A2dpSession.cpp
+		MediaTest.cpp BluetoothAudioNode.cpp ]
+	: [ BuildFeatureAttribute ffmpeg : headers ]
+;
 UseHeaders [ BuildFeatureAttribute ffmpeg : headers : path ] ;
 SimpleTest bluetooth_audio_test :
 	AudioTest.cpp A2dpProtocol.cpp AudioEncoder.cpp A2dpSession.cpp

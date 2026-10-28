@@ -121,7 +121,10 @@ DiscoveryListener::MessageReceived(BMessage* message)
 				for (int32 index = 0; index < fRemoteDevicesList.CountItems(); index++) {
 					RemoteDevice* existingDevice = fRemoteDevicesList.ItemAt(index);
 					bdaddr_t b1 = existingDevice->GetBluetoothAddress();
-					if (bdaddrUtils::Compare(*bdaddr, b1)) {
+					if (bdaddrUtils::Compare(*bdaddr, b1)
+						&& existingDevice->fLowEnergy == lowEnergy
+						&& (!lowEnergy
+							|| existingDevice->fAddressType == addressType)) {
 						bool wasUnnamed = existingDevice->fFriendlyName.IsEmpty();
 
 						// update these values
@@ -134,8 +137,6 @@ DiscoveryListener::MessageReceived(BMessage* message)
 							existingDevice->fFriendlyNameIsComplete = friendlyNameIsComplete;
 							existingDevice->fFriendlyName = friendlyName;
 						}
-						existingDevice->fLowEnergy = lowEnergy;
-						existingDevice->fAddressType = addressType;
 						duplicatedFound = true;
 
 						// A peripheral commonly advertises before it answers
@@ -165,11 +166,7 @@ DiscoveryListener::MessageReceived(BMessage* message)
 					rd->fLowEnergy = lowEnergy;
 					rd->fAddressType = addressType;
 
-					// Report it only once its name is known. A device is
-					// tracked either way, so a later report that carries the
-					// name will announce it then.
-					if (!rd->fFriendlyName.IsEmpty())
-						DeviceDiscovered(rd, rd->GetDeviceClass());
+					DeviceDiscovered(rd, rd->GetDeviceClass());
 				}
 			}
 			break;

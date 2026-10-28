@@ -43,6 +43,9 @@ ExistConnectionByHandle(uint16 handle, hci_id hid)
 status_t
 PostEvent(bluetooth_device* ndev, void* event, size_t size)
 {
+	if (size < sizeof(hci_event_header))
+		return B_BAD_DATA;
+
 	struct hci_event_header* outgoingEvent = (struct hci_event_header*) event;
 	status_t err;
 
@@ -72,6 +75,13 @@ PostEvent(bluetooth_device* ndev, void* event, size_t size)
 
 		case HCI_EVENT_LE_META:
 		{
+			if (outgoingEvent->elen < sizeof(hci_ev_le_meta)
+					+ sizeof(hci_ev_le_conn_complete)
+				|| size < sizeof(hci_event_header) + sizeof(hci_ev_le_meta)
+					+ sizeof(hci_ev_le_conn_complete)) {
+				break;
+			}
+
 			struct hci_ev_le_meta* meta
 				= (struct hci_ev_le_meta*)(outgoingEvent + 1);
 

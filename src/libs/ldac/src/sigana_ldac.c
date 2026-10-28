@@ -1,4 +1,5 @@
 /*
+ * SPDX-License-Identifier: Apache-2.0
  * Copyright (C) 2003 - 2016 Sony Corporation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -181,4 +182,3 @@ int nlnn)
         return min_ldac(a_status[0], a_status[1]);
     }
 }
-

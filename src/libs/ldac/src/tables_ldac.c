@@ -1,4 +1,5 @@
 /*
+ * SPDX-License-Identifier: Apache-2.0
  * Copyright (C) 2003 - 2016 Sony Corporation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -500,6 +501,5 @@ DECLFUNC HCENC ga_hcenc_sf1_ldac[LDAC_MAXSFCBLEN_2-LDAC_MINSFCBLEN_2+1] = {
     {sa_hc_sf1_blen4_ldac, 16,  4, 15},
     {sa_hc_sf1_blen5_ldac, 32,  5, 31},
 };
-
 
 

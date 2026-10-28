@@ -68,6 +68,8 @@ RemoteDevice::GetRemoteDevices(LocalDevice* localDevice)
 		device.FindString("name", &rd->fFriendlyName);
 		device.FindUInt16("clock_offset", &rd->fClockOffset);
 		device.FindUInt8("pscan_rep_mode", &rd->fPageRepetitionMode);
+		device.FindBool("low_energy", &rd->fLowEnergy);
+		device.FindUInt8("bdaddr_type", &rd->fAddressType);
 
 		rdList.AddItem(rd);
 	}

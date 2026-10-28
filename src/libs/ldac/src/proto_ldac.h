@@ -1,4 +1,5 @@
 /*
+ * SPDX-License-Identifier: Apache-2.0
  * Copyright (C) 2003 - 2016 Sony Corporation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -67,4 +68,3 @@ DECLFUNC size_t align_ldac(size_t);
 DECLFUNC void *calloc_ldac(SFINFO *, size_t, size_t);
 
 #endif /* _PROTO_LDAC_H */
-

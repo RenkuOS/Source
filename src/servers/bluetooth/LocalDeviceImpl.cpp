@@ -141,6 +141,8 @@ LocalDeviceImpl::SaveRemoteDevices()
 			sizeof(rd->classOfDevice));
 		device.AddData("link key", B_ANY_TYPE, &link_key, sizeof(linkkey_t));
 		device.AddUInt8("link type", rd->link_type);
+		device.AddBool("low_energy", rd->low_energy);
+		device.AddUInt8("bdaddr_type", rd->bdaddr_type);
 
 		devices.AddMessage("remote", &device);
 	}
@@ -207,6 +209,10 @@ LocalDeviceImpl::LoadRemoteDevices()
 		else
 			rd->link_key = LinkKeyUtils::NullKey();
 		device.FindUInt8("link type", &rd->link_type);
+		rd->low_energy = false;
+		device.FindBool("low_energy", &rd->low_energy);
+		rd->bdaddr_type = LE_PUBLIC_ADDRESS;
+		device.FindUInt8("bdaddr_type", &rd->bdaddr_type);
 		rd->conn_state = RemoteDevice::DISCONNECTED;
 
 		fRemoteDevicesList.AddItem(rd);

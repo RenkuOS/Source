@@ -1,4 +1,5 @@
 /*
+ * SPDX-License-Identifier: MIT
  * Connects to a Low Energy peripheral by address, the same way the Bluetooth
  * preferences window's Pair button does, so the stack can be exercised
  * without a mouse and a screen.

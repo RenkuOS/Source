@@ -4,6 +4,7 @@
 
 
 /*!	Everything the Security Manager exchanges is least significant octet
+ * SPDX-License-Identifier: MIT!	Everything the Security Manager exchanges is least significant octet
 	first, while AES works most significant octet first.
 */
 static void

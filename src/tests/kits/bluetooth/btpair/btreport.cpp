@@ -1,4 +1,5 @@
 /*
+ * SPDX-License-Identifier: MIT
  * Posts a synthetic HID report to the Bluetooth input device, so the path
  * from the kernel's HID over GATT support through to the input server can be
  * exercised without moving a real mouse.
@@ -16,7 +17,9 @@
 int
 main(int argc, char** argv)
 {
-	if (argc < 4) {
+	if (argc < 2
+		|| (strcmp(argv[1], "mouse") == 0 && argc < 4)
+		|| (strcmp(argv[1], "key") == 0 && argc < 3)) {
 		printf("usage: btreport mouse <dx> <dy> [buttons]\n");
 		printf("       btreport key <usage> [modifiers]\n");
 		return 1;

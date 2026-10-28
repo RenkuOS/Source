@@ -157,7 +157,6 @@ RemoveConnections(hci_id hid)
 				HciConnection* candidate = iterator.Next();
 				if (candidate->Hid == hid) {
 					connection = candidate;
-					sConnectionList.Remove(connection);
 					break;
 				}
 			}
@@ -171,6 +170,10 @@ RemoveConnections(hci_id hid)
 		DisconnectL2capEndpoints(connection);
 		if (connection->disconnect_hook != NULL)
 			connection->disconnect_hook(connection);
+		{
+			MutexLocker locker(&sConnectionListLock);
+			sConnectionList.Remove(connection);
+		}
 		delete connection;
 	}
 }

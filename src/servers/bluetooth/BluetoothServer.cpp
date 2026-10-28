@@ -280,6 +280,8 @@ void BluetoothServer::MessageReceived(BMessage* message)
 					sizeof(rd->classOfDevice));
 				device.AddUInt16("clock_offset", rd->clock_offset);
 				device.AddUInt8("pscan_rep_mode", rd->pscan_rep_mode);
+				device.AddBool("low_energy", rd->low_energy);
+				device.AddUInt8("bdaddr_type", rd->bdaddr_type);
 
 				reply.AddMessage("remote", &device);
 			}

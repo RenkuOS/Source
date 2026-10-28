@@ -1,4 +1,5 @@
 /*
+ * SPDX-License-Identifier: Apache-2.0
  * Copyright (C) 2013 - 2016 Sony Corporation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -172,4 +173,3 @@ DECLSPEC LDAC_RESULT ldaclib_clear_internal_error_code(HANDLE_LDAC);
 }
 #endif /* __cplusplus */
 #endif /* _LDACLIB_H */
-

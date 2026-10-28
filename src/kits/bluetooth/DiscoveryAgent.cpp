@@ -198,14 +198,13 @@ DiscoveryAgent::StartInquiry(uint32 accessCode, DiscoveryListener* listener,
 	send_simple_command(fMessenger, fLocalDevice->ID(), inquiryModeCommand,
 		modeSize, PACK_OPCODE(OGF_CONTROL_BASEBAND, OCF_WRITE_INQUIRY_MODE));
 
-	// A controller without Low Energy support just fails these, which is not a
-	// reason to skip the inquiry.
+	if (fMessenger->SendMessage(&request, listener) != B_OK)
+		return B_ERROR;
+
+	// Register the LE Meta petition before enabling scanning; otherwise a
+	// controller may discard the only advertising report for a device.
 	set_le_scan_enabled(fMessenger, fLocalDevice->ID(), true);
-
-	if (fMessenger->SendMessage(&request, listener) == B_OK)
-		return B_OK;
-
-	return B_ERROR;
+	return B_OK;
 }
 
 

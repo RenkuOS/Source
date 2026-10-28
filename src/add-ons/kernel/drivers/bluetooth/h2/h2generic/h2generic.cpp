@@ -429,6 +429,10 @@ device_removed(void* cookie)
 		ERROR("%s: Device not present in driver.\n", __func__);
 		return B_ERROR;
 	}
+	{
+		MutexLocker locker(&bdev->aclTxLock);
+		bdev->aclTxClosing = true;
+	}
 
 	if (!TEST_AND_CLEAR(&bdev->state, RUNNING))
 		ERROR("%s: wasnt running?\n", __func__);
