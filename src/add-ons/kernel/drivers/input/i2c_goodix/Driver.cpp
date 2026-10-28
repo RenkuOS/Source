@@ -17,6 +17,14 @@
 	On Bay Trail that line is a GPIO, so the baytrail_gpio driver has to be
 	loaded first; the driver retries until the controller answers.
 
+	Gestures follow the usual convention of touch screens on desktop systems:
+	a tap is a click of the primary button and two taps are a double click; a
+	finger that moves drags with the primary button; a finger that is held
+	still for a while is a click of the secondary button (context menu).
+	Because a contact can only be classified once the finger moves, is lifted
+	or has been held long enough, the button is pressed at that moment, at
+	the place where the finger first touched.
+
 	Settings (in the "i2c_goodix" driver settings file):
 		swap_xy, invert_x, invert_y		to match the screen orientation
 */
@@ -65,12 +73,27 @@
 #define GOODIX_MAX_TOUCHES			10
 #define GOODIX_POINT_SIZE			8
 
+// mouse buttons, as in InterfaceDefs.h
+#define BUTTON_PRIMARY				0x01
+#define BUTTON_SECONDARY			0x02
+
 static const bigtime_t kPollInterval = 10000;
 static const bigtime_t kIdlePollInterval = 100000;
 static const bigtime_t kRetryInterval = 1000000;
 static const uint32 kMaxErrors = 20;
 static const int32 kQueueSize = 32;
+static const float kTapDistance = 0.02f;
+	// how far a finger may move and still be a tap, and how far apart the
+	// taps of a double tap may be, relative to the screen size
+static const bigtime_t kLongPressTime = 800000;
 
+
+enum gesture_state {
+	GESTURE_NONE,		// no contact
+	GESTURE_PENDING,	// contact, not classified yet
+	GESTURE_DRAG,		// moving with the primary button pressed
+	GESTURE_DONE,		// long press reported, waiting for the release
+};
 
 struct goodix_device {
 	device_node*			node;
@@ -88,9 +111,14 @@ struct goodix_device {
 	uint32					maxX;
 	uint32					maxY;
 	uint32					errors;
-	bool					contact;
+	gesture_state			state;
+	bigtime_t				contactTime;
+	float					startX;
+	float					startY;
 	float					lastX;
 	float					lastY;
+	float					lastClickX;
+	float					lastClickY;
 	bigtime_t				lastClickTime;
 	int32					clickCount;
 
@@ -114,6 +142,13 @@ struct goodix_cookie {
 
 
 static device_manager_info* sDeviceManager;
+
+
+static inline float
+distance(float delta)
+{
+	return delta < 0 ? -delta : delta;
+}
 
 
 static bool
@@ -204,30 +239,28 @@ start_controller(goodix_device* device)
 //	#pragma mark - event queue
 
 
+/*!	Queues the state of the pointer: \a buttons is a mask of BUTTON_PRIMARY
+	and BUTTON_SECONDARY, \a clicks the click count of a button press.
+*/
 static void
-queue_movement(goodix_device* device, bool pressed, float x, float y)
+queue_movement(goodix_device* device, uint32 buttons, int32 clicks, float x,
+	float y)
 {
 	tablet_movement movement;
 	memset(&movement, 0, sizeof(movement));
 	movement.xpos = x;
 	movement.ypos = y;
-	// The tablet add-on only sends events while there is contact, so the
-	// release is reported as a contact without the tip switch.
+	// The tablet add-on only sends events while there is contact, so a
+	// release is reported as a contact without a button.
 	movement.has_contact = true;
-	movement.switches = pressed ? B_TIP_SWITCH : 0;
-	movement.pressure = pressed ? 1.0f : 0.0f;
+	// the tablet add-on maps the tip switch to the primary button
+	movement.switches = (buttons & BUTTON_PRIMARY) != 0 ? B_TIP_SWITCH : 0;
+	movement.buttons = buttons & BUTTON_SECONDARY;
+	movement.pressure = buttons != 0 ? 1.0f : 0.0f;
+	movement.clicks = clicks;
 	movement.timestamp = system_time();
 
 	MutexLocker locker(device->lock);
-
-	if (pressed && !device->contact) {
-		if (device->lastClickTime + device->clickSpeed > movement.timestamp)
-			device->clickCount++;
-		else
-			device->clickCount = 1;
-		device->lastClickTime = movement.timestamp;
-	}
-	movement.clicks = pressed ? device->clickCount : 0;
 
 	if (device->queueCount == kQueueSize) {
 		// drop the oldest event
@@ -239,6 +272,61 @@ queue_movement(goodix_device* device, bool pressed, float x, float y)
 	device->queueCount++;
 
 	device->condition.NotifyAll();
+}
+
+
+static bigtime_t
+click_speed(goodix_device* device)
+{
+	MutexLocker locker(device->lock);
+	return device->clickSpeed;
+}
+
+
+/*!	Presses the primary button where the finger first touched, counting
+	clicks for double clicks.
+*/
+static void
+press_primary(goodix_device* device)
+{
+	bigtime_t now = system_time();
+	float x = device->startX;
+	float y = device->startY;
+
+	if (device->lastClickTime + click_speed(device) > now
+		&& distance(x - device->lastClickX) < kTapDistance
+		&& distance(y - device->lastClickY) < kTapDistance) {
+		// put the second tap exactly on the first one
+		device->clickCount++;
+		x = device->lastClickX;
+		y = device->lastClickY;
+		device->startX = x;
+		device->startY = y;
+	} else
+		device->clickCount = 1;
+
+	device->lastClickTime = now;
+	device->lastClickX = x;
+	device->lastClickY = y;
+
+	queue_movement(device, BUTTON_PRIMARY, device->clickCount, x, y);
+}
+
+
+/*!	Reports a long press as a click of the secondary button. */
+static void
+check_long_press(goodix_device* device)
+{
+	if (device->state != GESTURE_PENDING
+		|| system_time() - device->contactTime < kLongPressTime) {
+		return;
+	}
+
+	queue_movement(device, BUTTON_SECONDARY, 1, device->startX,
+		device->startY);
+	queue_movement(device, 0, 0, device->startX, device->startY);
+	device->lastClickTime = 0;
+	device->state = GESTURE_DONE;
 }
 
 
@@ -271,10 +359,20 @@ poll_controller(goodix_device* device)
 		return result;
 
 	if (touches == 0) {
-		if (device->contact) {
-			queue_movement(device, false, device->lastX, device->lastY);
-			device->contact = false;
+		// the finger has been lifted
+		switch (device->state) {
+			case GESTURE_PENDING:
+				// a tap
+				press_primary(device);
+				queue_movement(device, 0, 0, device->startX, device->startY);
+				break;
+			case GESTURE_DRAG:
+				queue_movement(device, 0, 0, device->lastX, device->lastY);
+				break;
+			default:
+				break;
 		}
+		device->state = GESTURE_NONE;
 		return B_OK;
 	}
 
@@ -301,13 +399,37 @@ poll_controller(goodix_device* device)
 	if (device->invertY)
 		y = 1.0f - y;
 
-	if (!device->contact || x != device->lastX || y != device->lastY) {
-		queue_movement(device, true, x, y);
-		device->contact = true;
-		device->lastX = x;
-		device->lastY = y;
+	switch (device->state) {
+		case GESTURE_NONE:
+			// a new contact: move the pointer there, without a button
+			device->state = GESTURE_PENDING;
+			device->contactTime = system_time();
+			device->startX = x;
+			device->startY = y;
+			queue_movement(device, 0, 0, x, y);
+			break;
+
+		case GESTURE_PENDING:
+			if (distance(x - device->startX) >= kTapDistance
+				|| distance(y - device->startY) >= kTapDistance) {
+				// the finger moves: drag from where it started
+				press_primary(device);
+				device->state = GESTURE_DRAG;
+				queue_movement(device, BUTTON_PRIMARY, 0, x, y);
+			}
+			break;
+
+		case GESTURE_DRAG:
+			if (x != device->lastX || y != device->lastY)
+				queue_movement(device, BUTTON_PRIMARY, 0, x, y);
+			break;
+
+		case GESTURE_DONE:
+			break;
 	}
 
+	device->lastX = x;
+	device->lastY = y;
 	return B_OK;
 }
 
@@ -344,6 +466,7 @@ poll_thread(void* data)
 		} else
 			device->errors = 0;
 
+		check_long_press(device);
 		snooze(kPollInterval);
 	}
 
@@ -524,6 +647,10 @@ goodix_register_device(device_node* node)
 	device_attr attrs[] = {
 		{ B_DEVICE_PRETTY_NAME, B_STRING_TYPE,
 			{ .string = "Goodix touch screen" }},
+		// Keep the controller and the I2C bus initialized: unloading and
+		// reloading the stack under a powered touch controller made the
+		// boot hang on the Teclast X98 Air III.
+		{ B_DEVICE_FLAGS, B_UINT32_TYPE, { .ui32 = B_KEEP_DRIVER_LOADED }},
 		{ NULL }
 	};
 
