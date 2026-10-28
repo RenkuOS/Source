@@ -182,12 +182,14 @@ NotificationView::MessageReceived(BMessage* msg)
 			const BMessage* action = fNotification->ActionMessageAt(index);
 			if (action != NULL) {
 				BMessage message(*action);
-				fNotification->ActionTargetAt(index).SendMessage(&message);
+				BMessenger target = fNotification->ActionTargetAt(index);
+				target.SendMessage(&message);
 			}
 
 			BMessage remove(kRemoveView);
 			remove.AddPointer("view", this);
-			BMessenger(Parent()).SendMessage(&remove);
+			BMessenger parent(Parent());
+			parent.SendMessage(&remove);
 			break;
 		}
 		case B_GET_PROPERTY:
