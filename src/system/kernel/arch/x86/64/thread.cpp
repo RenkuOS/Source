@@ -396,6 +396,16 @@ arch_setup_signal_frame(Thread* thread, struct sigaction* action,
 	// Store syscall_restart_return_value.
 	signalFrameData->syscall_restart_return_value = frame->orig_rax;
 
+	// Only a syscall can be restarted when the handler returns: restoring the
+	// frame rewinds the instruction pointer by the size of the syscall
+	// instruction, which in code interrupted elsewhere lands inside the
+	// instruction before (summit#119: a JavaScriptCore GC thread resumed two
+	// bytes into a call, an invalid opcode).
+	if ((frame->type & IFRAME_TYPE_MASK) != IFRAME_TYPE_SYSCALL) {
+		signalFrameData->thread_flags &= ~(THREAD_FLAGS_RESTART_SYSCALL
+			| THREAD_FLAGS_64_BIT_SYSCALL_RETURN);
+	}
+
 	// Get the stack to use and copy the frame data to it.
 	uint8* userStack = get_signal_stack(thread, frame, action,
 		sizeof(*signalFrameData) + sizeof(frame->ip));

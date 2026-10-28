@@ -357,6 +357,14 @@ STATIC_FUNCTION(intr_bottom_user):
 	// them after.
 	sti
 	call	thread_at_kernel_exit
+	// The thread was interrupted in userland, not in a syscall: there is
+	// nothing to restart. handle_signals() still asks for it when it takes
+	// the thread for one in sigsuspend() (it may be just before restarting
+	// it), and a flag left behind rewinds whatever comes next, the next
+	// syscall (run twice) or a signal frame's instruction pointer (two bytes
+	// into the instruction before it).
+	lock
+	andl	$~THREAD_FLAGS_RESTART_SYSCALL, THREAD_flags(%r12)
 	jmp		.Lkernel_exit_work_done
 FUNCTION_END(intr_bottom_user)
 
