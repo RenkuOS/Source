@@ -163,6 +163,7 @@ AddNewDriversToPackage network :
 AddNewDriversToPackage input :
 	hyperv_hid@x86,x86_64
 	i2c_elan
+	i2c_goodix@x86,x86_64
 	i2c_hid
 	virtio_input
 	;
