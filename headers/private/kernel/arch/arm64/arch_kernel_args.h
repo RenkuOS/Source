@@ -18,6 +18,7 @@
 #define _PACKED __attribute__((packed))
 
 #define MAX_VIRTUAL_RANGES_TO_KEEP	32
+#define MAX_CACHEABLE_MEMORY_RANGES	32
 
 typedef struct {
 	uint64	phys_pgdir;
@@ -37,6 +38,13 @@ typedef struct {
 
 	// PSCI conduit for SYSTEM_OFF/SYSTEM_RESET: 0 none, 1 smc, 2 hvc
 	uint32		psci_conduit;
+
+	// Physical memory the firmware reports as write-back cacheable (EFI
+	// memory map entries with EFI_MEMORY_WB, other than MMIO). Unlike
+	// physical_memory_range, this includes the ACPI tables and other
+	// firmware-owned RAM, and it has no holes that aren't RAM.
+	uint32		num_cacheable_memory_ranges;
+	addr_range	cacheable_memory_range[MAX_CACHEABLE_MEMORY_RANGES];
 
 } _PACKED arch_kernel_args;
 
