@@ -322,6 +322,7 @@ Brcmf::Brcmf(SdioHost* host)
 	fTxBuffer(NULL),
 	fRunning(false),
 	fProbed(false),
+	fClosed(false),
 	fReaderThread(-1),
 	fStopReader(false),
 	fInterruptSem(-1),
@@ -1662,11 +1663,27 @@ Brcmf::Receive(net_buffer** _buffer, bool block)
 		}
 		if (!block)
 			return B_WOULD_BLOCK;
+		if (fClosed) {
+			// The entry was added before this check, so a SetClosed() that
+			// comes after it wakes us up.
+			return B_FILE_ERROR;
+		}
 
 		status_t status = entry.Wait(B_RELATIVE_TIMEOUT | B_CAN_INTERRUPT,
 			1000000);
 		if (status != B_OK && status != B_TIMED_OUT)
 			return status;
+	}
+}
+
+
+void
+Brcmf::SetClosed(bool closed)
+{
+	fClosed = closed;
+	if (closed) {
+		fRxCondition.NotifyAll();
+		fTxCondition.NotifyAll();
 	}
 }
 
@@ -2148,10 +2165,14 @@ Brcmf::_HandleScanResult(uint8* data, size_t length, uint32 status)
 			break;
 
 		const uint8* bssid = bss + 8;
-		uint16 ieOffset = get16(bss + 116);
+		// Both values come from the firmware; check them without letting
+		// the sum overflow.
+		uint32 ieOffset = get16(bss + 116);
 		uint32 ieLength = get32(bss + 120);
-		if (ieOffset + ieLength > bssLength)
+		if (ieOffset > bssLength || ieLength > bssLength - ieOffset) {
+			ieOffset = 0;
 			ieLength = 0;
+		}
 
 		brcmf_scan_entry* entry = NULL;
 		for (int32 j = 0; j < fScanCount; j++) {

@@ -169,6 +169,8 @@ public:
 			// data path
 			status_t			Send(net_buffer* buffer);
 			status_t			Receive(net_buffer** _buffer, bool block);
+			void				SetClosed(bool closed);
+									// makes blocked Receive() calls return
 
 			// management
 			status_t			StartScan(const uint8* ssid, size_t ssidLength);
@@ -298,6 +300,7 @@ private:
 			uint8*				fTxBuffer;		// frame assembly
 			bool				fRunning;
 			bool				fProbed;
+			volatile bool		fClosed;
 
 			// protocol state
 			thread_id			fReaderThread;

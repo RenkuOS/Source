@@ -418,6 +418,7 @@ brcmf_open(void* _info, const char* path, int openMode, void** _cookie)
 		}
 	}
 
+	info->brcmf->SetClosed(false);
 	info->nonblocking = (openMode & O_NONBLOCK) != 0;
 	*_cookie = info;
 	return B_OK;
@@ -427,6 +428,12 @@ brcmf_open(void* _info, const char* path, int openMode, void** _cookie)
 static status_t
 brcmf_close(void* cookie)
 {
+	brcmf_info* info = (brcmf_info*)cookie;
+
+	// "ifconfig down" closes the device and then waits for the stack's
+	// reader thread, which is blocked in Receive() as long as no frame
+	// arrives. Wake it up, so the down doesn't hang on a quiet network.
+	info->brcmf->SetClosed(true);
 	return B_OK;
 }
 
