@@ -130,7 +130,9 @@
 #	include <boot_item.h>
 #	include <kernel.h>
 #	include <vm/vm.h>
-#	include <vm/vm_page.h>
+#	if defined(__HAIKU_ARCH_ARM) || defined(__HAIKU_ARCH_ARM64)
+#		include <boot/addr_range.h>
+#	endif
 #endif
 
 __BEGIN_DECLS
@@ -506,9 +508,24 @@ AcpiOsMapMemory(ACPI_PHYSICAL_ADDRESS where, ACPI_SIZE length)
 	// mapped cacheable. Operation regions also point at device registers
 	// (e.g. PCIe configuration space on the Raspberry Pi 4); accessing those
 	// through a cacheable mapping results in external aborts (SError).
-	const uint32 memoryType
-		= vm_lookup_page(where / B_PAGE_SIZE) != NULL
-			? B_WRITE_BACK_MEMORY : B_UNCACHED_MEMORY;
+	// The boot loader passes the firmware's list of cacheable memory; without
+	// it, keep the previous behaviour of mapping everything cacheable.
+	uint32 memoryType = B_WRITE_BACK_MEMORY;
+	size_t rangesSize;
+	const addr_range* ranges = (const addr_range*)get_boot_item(
+		"CACHEABLE_MEMORY_RANGES", &rangesSize);
+	if (ranges != NULL) {
+		memoryType = B_UNCACHED_MEMORY;
+		const uint64 start = where;
+		const uint64 end = start + length;
+		for (size_t i = 0; i < rangesSize / sizeof(addr_range); i++) {
+			if (start >= ranges[i].start
+				&& end <= ranges[i].start + ranges[i].size) {
+				memoryType = B_WRITE_BACK_MEMORY;
+				break;
+			}
+		}
+	}
 #else
 	const uint32 memoryType = 0;
 #endif
