@@ -129,12 +129,17 @@ struct gpio_controller {
 	uint32						irq;
 	area_id						area;
 	addr_t						registers;
-	spinlock					lock;
 	bool						regionHandlerInstalled;
 };
 
 
 static device_manager_info* sDeviceManager;
+
+// The SoC cannot handle concurrent accesses to the GPIO registers, not even
+// to different communities: reads may return 0xffffffff and writes may be
+// dropped (Intel Atom Z3600/Z3700 specification update 329475, erratum VLT61).
+// All register accesses therefore go through this one lock.
+static spinlock sRegisterLock = B_SPINLOCK_INITIALIZER;
 
 
 //	#pragma mark - pad access
@@ -161,9 +166,23 @@ pad_in_range(gpio_controller* controller, uint32 pin)
 
 
 static uint32
+read_pad(gpio_controller* controller, uint32 pin, uint32 offset)
+{
+	cpu_status state = disable_interrupts();
+	acquire_spinlock(&sRegisterLock);
+
+	uint32 value = *pad_register(controller, pin, offset);
+
+	release_spinlock(&sRegisterLock);
+	restore_interrupts(state);
+	return value;
+}
+
+
+static uint32
 read_level(gpio_controller* controller, uint32 pin)
 {
-	return *pad_register(controller, pin, PAD_VAL) & PAD_VAL_LEVEL;
+	return read_pad(controller, pin, PAD_VAL) & PAD_VAL_LEVEL;
 }
 
 
@@ -171,7 +190,7 @@ static void
 write_level(gpio_controller* controller, uint32 pin, uint32 level)
 {
 	cpu_status state = disable_interrupts();
-	acquire_spinlock(&controller->lock);
+	acquire_spinlock(&sRegisterLock);
 
 	volatile uint32* val = pad_register(controller, pin, PAD_VAL);
 	uint32 value = *val;
@@ -181,7 +200,7 @@ write_level(gpio_controller* controller, uint32 pin, uint32 level)
 		value |= PAD_VAL_LEVEL;
 	*val = value;
 
-	release_spinlock(&controller->lock);
+	release_spinlock(&sRegisterLock);
 	restore_interrupts(state);
 
 	if (enabledOutput) {
@@ -205,8 +224,8 @@ dump_pins(gpio_controller* controller)
 
 		length += snprintf(line + length, sizeof(line) - length,
 			" %3" B_PRIu32 ": %08" B_PRIx32 " %" B_PRIx32, pin,
-			*pad_register(controller, pin, PAD_CONF0),
-			*pad_register(controller, pin, PAD_VAL) & 0x7);
+			read_pad(controller, pin, PAD_CONF0),
+			read_pad(controller, pin, PAD_VAL) & 0x7);
 		if ((pin % 4) == 3 || pin + 1 == community->pinCount) {
 			dprintf("baytrail_gpio:%s\n", line);
 			length = 0;
@@ -391,7 +410,6 @@ baytrail_gpio_init_driver(device_node* node, void** _driverCookie)
 
 	controller->node = node;
 	controller->area = -1;
-	B_INITIALIZE_SPINLOCK(&controller->lock);
 
 	device_node* parent = sDeviceManager->get_parent_node(node);
 	sDeviceManager->get_driver(parent, (driver_module_info**)&controller->acpi,
