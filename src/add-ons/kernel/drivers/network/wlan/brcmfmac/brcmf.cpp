@@ -1,10 +1,44 @@
 /*
  * Copyright 2026, Bryan Irvine
- * All rights reserved. Distributed under the terms of the MIT license.
- * SPDX-License-Identifier: MIT
+ * Copyright (c) 2010-2016 Broadcom Corporation
+ * Copyright (c) 2016,2017 Patrick Wildt <patrick@blueri.se>
+ * SPDX-License-Identifier: ISC
  *
+ * Permission to use, copy, modify, and/or distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ */
+
+/*
  * Chip bring-up and firmware protocol for Broadcom/Cypress FullMAC SDIO WLAN
- * chips. Follows OpenBSD's bwfm(4) and Plan 9's ether4330 driver.
+ * chips.
+ *
+ * Provenance: the chip/core handling, the SDPCM framing, the BCDC control
+ * protocol, the firmware event handling and the NVRAM conversion follow
+ * OpenBSD's bwfm(4), and the firmware download and power-up order also
+ * follow Plan 9's ether4330. Most of that is the chip's interface rather
+ * than expression, but the structure of several functions (notably
+ * _ConvertNvram()) follows bwfm closely, so this file carries bwfm's
+ * copyright notices and ISC licence above. The Haiku-side code is offered
+ * under the same terms.
+ *
+ * Acknowledgements: thanks to the authors of the drivers this one was
+ * written with, or checked against:
+ *  - OpenBSD bwfm(4) (sys/dev/ic/bwfm.c, sys/dev/sdmmc/if_bwfm_sdio.c),
+ *    Patrick Wildt and Broadcom Corporation (ISC)
+ *  - Plan 9's ether4330 from Richard Miller's Raspberry Pi port, as
+ *    carried by 9front (MIT)
+ *  - Linux brcmfmac, Broadcom Corporation and contributors (ISC), and
+ *    Linux sdhci-iproc, Broadcom Corporation (GPL-2.0): compared against
+ *    only; no code was taken from either
  */
 
 

@@ -6,6 +6,14 @@
  * Minimal access to the VideoCore firmware property mailbox and to the GPIO
  * block of the BCM2711, as needed to power up the WLAN chip of the
  * Raspberry Pi 4 / 400.
+ *
+ * The mailbox registers and property tags are those documented by
+ * Raspberry Pi Ltd for the VideoCore firmware; that the WLAN chip's power
+ * line (WL_ON) is on the firmware-controlled GPIO expander comes from the
+ * Raspberry Pi 400 device tree (Linux bcm2711-rpi-400.dts, GPL-2.0). Only
+ * these hardware facts were used. Thanks to the authors of the mailbox code
+ * in Linux (raspberrypi.c), U-Boot, FreeBSD, Circle and Plan 9's vcore.c,
+ * which this was compared with; no code was taken from them.
  */
 
 

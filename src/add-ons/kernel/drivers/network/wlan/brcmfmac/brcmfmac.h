@@ -1,14 +1,30 @@
 /*
  * Copyright 2026, Bryan Irvine
- * All rights reserved. Distributed under the terms of the MIT license.
- * SPDX-License-Identifier: MIT
+ * Copyright (c) 2010-2016 Broadcom Corporation
+ * Copyright (c) 2016,2017 Patrick Wildt <patrick@blueri.se>
+ * SPDX-License-Identifier: ISC
  *
+ * Permission to use, copy, modify, and/or distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ */
+
+/*
  * Native driver for the Broadcom/Cypress FullMAC SDIO WLAN chips found on the
  * Raspberry Pi 4 (CYW43455) and Pi 400 (CYW43456), attached to the "Arasan"
  * SDHCI controller of the BCM2711 (ACPI HID "BCM2847").
  *
- * The chip handling and the SDPCM/BCDC protocol follow OpenBSD's bwfm(4)
- * (sys/dev/ic/bwfm.c, sys/dev/sdmmc/if_bwfm_sdio.c) and Plan 9's ether4330.
+ * The register, core and protocol definitions follow OpenBSD's bwfm(4)
+ * (bwfmreg.h, bwfmvar.h, if_bwfm_sdio.h), hence its notices and the ISC
+ * licence above. See brcmf.cpp for the full acknowledgements.
  */
 #ifndef BRCMFMAC_H
 #define BRCMFMAC_H

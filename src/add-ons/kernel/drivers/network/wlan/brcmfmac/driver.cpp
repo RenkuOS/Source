@@ -7,6 +7,9 @@
  * The 802.11 configuration requests (SIOCG80211/SIOCS80211) are answered
  * directly, as the chip is a FullMAC device: scanning, joining and (where
  * the firmware supports it) the WPA handshake are done by its firmware.
+ *
+ * Written for Haiku/RenkuOS. The chip-side behaviour it relies on is
+ * described in brcmf.cpp, together with the acknowledgements.
  */
 
 

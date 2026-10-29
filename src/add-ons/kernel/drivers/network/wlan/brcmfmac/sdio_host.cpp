@@ -13,6 +13,14 @@
  *    may be lost, which matters at identification clock speeds.
  * All transfers are done by PIO and completion is polled; only the SDIO card
  * interrupt is used as an interrupt.
+ *
+ * The quirks above are hardware facts, taken from the comments of Linux'
+ * sdhci-iproc.c (Broadcom Corporation, GPL-2.0), which documents them; no
+ * code was taken from it (a provenance check found no shared code). Thanks also to the authors of the SDHCI drivers of U-Boot
+ * (bcm2835_sdhci.c), FreeBSD (bcm2835_sdhci.c), Circle (emmc.cpp) and
+ * Plan 9/9front (emmc.c), which this was compared with.
+ * The SDIO command layer follows the SD Association's simplified
+ * specifications.
  */
 
 
