@@ -181,6 +181,22 @@ init_device(device_node* node, void** device_cookie)
 		return B_BAD_VALUE;
 	}
 
+	// Bay Trail and Cherry Trail: the bus to the PMIC is shared with the
+	// P-Unit, which ACPI marks with a _SEM method returning 1.
+	{
+		acpi_object_type object;
+		acpi_data buffer;
+		buffer.pointer = &object;
+		buffer.length = sizeof(object);
+		if (acpi->evaluate_method(device, "_SEM", NULL, &buffer) == B_OK
+			&& object.object_type == ACPI_TYPE_INTEGER
+			&& object.integer.integer == 1) {
+			dprintf("pch_i2c: bus at %#" B_PRIx32 " is shared with the "
+				"P-Unit (PMIC bus), using its semaphore\n", crs.addr_bas);
+			bus->info.punit_semaphore = true;
+		}
+	}
+
 	bus->info.base_addr = crs.addr_bas;
 	bus->info.map_size = crs.addr_len;
 	bus->info.irq = crs.irq;

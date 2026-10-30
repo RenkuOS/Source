@@ -124,6 +124,10 @@ typedef struct {
 
 	mutex	lock;
 	status_t (*scan_bus)(i2c_bus_cookie cookie);
+
+	// The bus is shared with the P-Unit (ACPI _SEM returns 1): every
+	// transfer has to hold the P-Unit semaphore.
+	bool	punit_semaphore;
 } pch_i2c_sim_info;
 
 
