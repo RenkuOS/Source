@@ -1,0 +1,10 @@
+SubDir HAIKU_TOP src add-ons kernel drivers power axp288 ;
+
+SubDirC++Flags -fno-rtti ;
+
+UsePrivateHeaders drivers device i2c ;
+UsePrivateKernelHeaders ;
+
+KernelAddon axp288 :
+	axp288.cpp
+	;
