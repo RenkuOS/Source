@@ -17,8 +17,13 @@
 	This driver gives the ACPI interpreter access to the pins: it installs the
 	handler of the GeneralPurposeIo operation region of each controller, so
 	that AML code which reads or writes GPIO fields (for example the reset line
-	of a touch screen in its _PS0 method) works. Interrupts are not handled
-	yet.
+	of a touch screen in its _PS0 method) works.
+
+	Once all controllers are up, the edge triggered ACPI GPIO events (_AEI) are
+	run once, so that the AML can bring the board into the state that matches
+	the pins, as other operating systems do at boot. On Intel reference boards
+	the event of the USB ID pin switches the OTG port to the host controller.
+	GPIO interrupts are not handled yet, so later changes are not seen.
 */
 
 
@@ -134,6 +139,12 @@ struct gpio_controller {
 
 
 static device_manager_info* sDeviceManager;
+
+// The controllers whose region handler is installed, for running the ACPI
+// GPIO events at boot.
+static gpio_controller* sControllers[B_COUNT_OF(kCommunities)];
+static int32 sControllerCount;
+static int32 sBootEventsStarted;
 
 // The SoC cannot handle concurrent accesses to the GPIO registers, not even
 // to different communities: reads may return 0xffffffff and writes may be
@@ -330,6 +341,131 @@ gpio_region_setup(acpi_handle region, uint32 function, void* handlerContext,
 }
 
 
+//	#pragma mark - ACPI GPIO events at boot
+
+
+#define MAX_BOOT_EVENTS			16
+#define BOOT_EVENT_ATTEMPTS		40
+#define BOOT_EVENT_RETRY_DELAY	250000
+
+struct boot_event {
+	gpio_controller*	controller;
+	uint16				pin;
+};
+
+struct boot_event_list {
+	gpio_controller*	controller;
+	boot_event			events[MAX_BOOT_EVENTS];
+	uint32				count;
+};
+
+
+static acpi_status
+collect_boot_events(ACPI_RESOURCE* resource, void* context)
+{
+	boot_event_list* list = (boot_event_list*)context;
+	if (resource->Type != ACPI_RESOURCE_TYPE_GPIO)
+		return AE_OK;
+
+	const ACPI_RESOURCE_GPIO& gpio = resource->Data.Gpio;
+	if (gpio.ConnectionType != ACPI_RESOURCE_GPIO_TYPE_INT
+		|| gpio.Triggering != ACPI_EDGE_SENSITIVE) {
+		// Like other systems, only edge events are run at boot.
+		return AE_OK;
+	}
+
+	for (uint32 i = 0; i < gpio.PinTableLength; i++) {
+		uint16 pin = gpio.PinTable[i];
+		gpio_controller* controller = list->controller;
+		if (pin > 0xff || !pad_in_range(controller, pin)) {
+			// Pins above 255 use _EVT, which is not supported yet.
+			continue;
+		}
+
+		// Run the event if the pin is in the state that it signals.
+		uint32 level = read_level(controller, pin);
+		if ((gpio.Polarity == ACPI_ACTIVE_HIGH && level == 0)
+			|| (gpio.Polarity == ACPI_ACTIVE_LOW && level != 0)) {
+			continue;
+		}
+
+		if (list->count < MAX_BOOT_EVENTS) {
+			list->events[list->count].controller = controller;
+			list->events[list->count].pin = pin;
+			list->count++;
+		}
+	}
+
+	return AE_OK;
+}
+
+
+static status_t
+boot_event_thread(void* /*data*/)
+{
+	// Events may use the pins of all communities (and check that their
+	// regions are available), so wait for all of them, but not forever.
+	for (int32 i = 0; i < 50
+			&& atomic_get(&sControllerCount) < (int32)B_COUNT_OF(kCommunities);
+			i++) {
+		snooze(100000);
+	}
+
+	for (uint32 c = 0; c < B_COUNT_OF(kCommunities); c++) {
+		gpio_controller* controller = sControllers[c];
+		if (controller == NULL)
+			continue;
+
+		boot_event_list list;
+		list.controller = controller;
+		list.count = 0;
+		if (controller->acpi->walk_resources(controller->acpiCookie,
+				(char*)"_AEI", collect_boot_events, &list) != B_OK) {
+			continue;
+		}
+
+		for (uint32 i = 0; i < list.count; i++) {
+			char method[5];
+			snprintf(method, sizeof(method), "_E%02X", list.events[i].pin);
+
+			// The event may need other operation regions (for example a PMIC
+			// on an I2C bus) whose drivers are not up yet: retry for a while.
+			status_t status = B_ERROR;
+			for (int32 attempt = 0; attempt < BOOT_EVENT_ATTEMPTS; attempt++) {
+				status = controller->acpi->evaluate_method(
+					controller->acpiCookie, method, NULL, NULL);
+				if (status == B_OK)
+					break;
+				snooze(BOOT_EVENT_RETRY_DELAY);
+			}
+
+			dprintf("baytrail_gpio: %s pin %" B_PRIu16 ": %s %s\n",
+				controller->community->name, list.events[i].pin, method,
+				status == B_OK ? "done" : "failed");
+		}
+	}
+
+	return B_OK;
+}
+
+
+static void
+controller_ready(gpio_controller* controller)
+{
+	uint32 index = controller->community - kCommunities;
+	sControllers[index] = controller;
+	atomic_add(&sControllerCount, 1);
+
+	if (atomic_test_and_set(&sBootEventsStarted, 1, 0) != 0)
+		return;
+
+	thread_id thread = spawn_kernel_thread(boot_event_thread,
+		"baytrail_gpio boot events", B_NORMAL_PRIORITY, NULL);
+	if (thread >= 0)
+		resume_thread(thread);
+}
+
+
 //	#pragma mark - driver module API
 
 
@@ -465,9 +601,10 @@ baytrail_gpio_init_driver(device_node* node, void** _driverCookie)
 	status = controller->acpi->install_address_space_handler(
 		controller->acpiCookie, ACPI_ADR_SPACE_GPIO, gpio_region_handler,
 		gpio_region_setup, controller);
-	if (status == B_OK)
+	if (status == B_OK) {
 		controller->regionHandlerInstalled = true;
-	else {
+		controller_ready(controller);
+	} else {
 		ERROR("%s: installing the GPIO region handler failed\n",
 			controller->community->name);
 	}
@@ -481,6 +618,14 @@ static void
 baytrail_gpio_uninit_driver(void* driverCookie)
 {
 	gpio_controller* controller = (gpio_controller*)driverCookie;
+
+	// The driver stays loaded (B_KEEP_DRIVER_LOADED); this only runs when the
+	// device goes away.
+	uint32 index = controller->community - kCommunities;
+	if (sControllers[index] == controller) {
+		sControllers[index] = NULL;
+		atomic_add(&sControllerCount, -1);
+	}
 
 	if (controller->regionHandlerInstalled) {
 		controller->acpi->remove_address_space_handler(controller->acpiCookie,
