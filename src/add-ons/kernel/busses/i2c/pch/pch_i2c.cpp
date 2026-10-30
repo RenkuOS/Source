@@ -390,6 +390,24 @@ exec_command(i2c_bus_cookie cookie, i2c_op op, i2c_addr slaveAddress,
 }
 
 
+/*!	A complete transfer for users inside this driver (the ACPI operation
+	region): serializes with the I2C bus manager through the bus lock.
+*/
+status_t
+pch_i2c_transfer(pch_i2c_sim_info* bus, i2c_op op, i2c_addr slaveAddress,
+	const void* cmdBuffer, size_t cmdLength, void* dataBuffer,
+	size_t dataLength)
+{
+	status_t status = mutex_lock(&bus->lock);
+	if (status != B_OK)
+		return status;
+	status = exec_command(bus, op, slaveAddress, cmdBuffer, cmdLength,
+		dataBuffer, dataLength);
+	mutex_unlock(&bus->lock);
+	return status;
+}
+
+
 static acpi_status
 pch_i2c_scan_parse_callback(ACPI_RESOURCE *res, void *context)
 {
@@ -641,6 +659,8 @@ init_bus(device_node* node, void** bus_cookie)
 	}
 
 	*bus_cookie = bus;
+	if (bus->bus_started != NULL)
+		bus->bus_started(bus->bus_hook_cookie);
 	return status;
 
 err:
@@ -654,6 +674,9 @@ static void
 uninit_bus(void* bus_cookie)
 {
 	pch_i2c_sim_info* bus = (pch_i2c_sim_info*)bus_cookie;
+
+	if (bus->bus_stopping != NULL)
+		bus->bus_stopping(bus->bus_hook_cookie);
 
 	mutex_destroy(&bus->lock);
 	remove_io_interrupt_handler(bus->irq,
