@@ -13,12 +13,115 @@
 #include <bus/PCI.h>
 
 
+#include <cpu.h>
+
 #include "pch_i2c.h"
 
 
 device_manager_info* gDeviceManager;
 i2c_for_controller_interface* gI2c;
 acpi_module_info* gACPI;
+static pci_module_info* sPCI;
+
+
+//	#pragma mark - P-Unit semaphore (Intel Bay Trail)
+
+
+// The SoC message bus, reached through the configuration space of the host
+// bridge (Atom Z36xxx/Z37xxx datasheet volume 2, 329518, "MCR Description":
+// MCR D0h, MDR D4h, MCRX D8h, typically opcode 10h to read and 11h to
+// write). The P-Unit is port 04h.
+#define MBI_MCR					0xd0
+#define MBI_MDR					0xd4
+#define MBI_MCRX				0xd8
+#define MBI_REG_READ			0x10
+#define MBI_REG_WRITE			0x11
+#define MBI_UNIT_PUNIT			0x04
+
+// The semaphore that arbitrates the PMIC bus between the host and the
+// P-Unit. Bit 0 reads back as "owned by the host", writing bit 1 requests it.
+#define PUNIT_SEMAPHORE			0x07
+#define PUNIT_SEMAPHORE_OWNED	(1 << 0)
+#define PUNIT_SEMAPHORE_REQUEST	(1 << 1)
+#define PUNIT_SEMAPHORE_TIMEOUT	500000
+
+static spinlock sMessageBusLock = B_SPINLOCK_INITIALIZER;
+
+
+static uint32
+mbi_command(uint8 opcode, uint8 unit, uint32 offset)
+{
+	return ((uint32)opcode << 24) | ((uint32)unit << 16)
+		| ((offset & 0xff) << 8) | 0xf0;
+}
+
+
+static uint32
+mbi_read(uint8 unit, uint32 offset)
+{
+	cpu_status state = disable_interrupts();
+	acquire_spinlock(&sMessageBusLock);
+	sPCI->write_pci_config(0, 0, 0, MBI_MCRX, 4, offset & 0xffffff00);
+	sPCI->write_pci_config(0, 0, 0, MBI_MCR, 4,
+		mbi_command(MBI_REG_READ, unit, offset));
+	uint32 value = sPCI->read_pci_config(0, 0, 0, MBI_MDR, 4);
+	release_spinlock(&sMessageBusLock);
+	restore_interrupts(state);
+	return value;
+}
+
+
+static void
+mbi_write(uint8 unit, uint32 offset, uint32 value)
+{
+	cpu_status state = disable_interrupts();
+	acquire_spinlock(&sMessageBusLock);
+	sPCI->write_pci_config(0, 0, 0, MBI_MDR, 4, value);
+	sPCI->write_pci_config(0, 0, 0, MBI_MCRX, 4, offset & 0xffffff00);
+	sPCI->write_pci_config(0, 0, 0, MBI_MCR, 4,
+		mbi_command(MBI_REG_WRITE, unit, offset));
+	release_spinlock(&sMessageBusLock);
+	restore_interrupts(state);
+}
+
+
+static void
+release_punit_semaphore()
+{
+	uint32 value = mbi_read(MBI_UNIT_PUNIT, PUNIT_SEMAPHORE);
+	mbi_write(MBI_UNIT_PUNIT, PUNIT_SEMAPHORE,
+		value & ~(uint32)PUNIT_SEMAPHORE_OWNED);
+	cpu_unblock_deep_idle();
+}
+
+
+static status_t
+acquire_punit_semaphore()
+{
+	if (sPCI == NULL)
+		return B_NO_INIT;
+
+	// The P-Unit needs this bus to enter C6 and C7; a CPU entering them
+	// while the host owns the semaphore hangs the SoC.
+	cpu_block_deep_idle();
+
+	mbi_write(MBI_UNIT_PUNIT, PUNIT_SEMAPHORE, PUNIT_SEMAPHORE_REQUEST);
+
+	bigtime_t timeout = system_time() + PUNIT_SEMAPHORE_TIMEOUT;
+	while (true) {
+		if ((mbi_read(MBI_UNIT_PUNIT, PUNIT_SEMAPHORE)
+				& PUNIT_SEMAPHORE_OWNED) != 0) {
+			return B_OK;
+		}
+		if (system_time() > timeout)
+			break;
+		snooze(1000);
+	}
+
+	ERROR("PMIC bus: timed out waiting for the P-Unit semaphore\n");
+	release_punit_semaphore();
+	return B_TIMED_OUT;
+}
 
 
 static void
@@ -100,12 +203,10 @@ set_sim(i2c_bus_cookie cookie, i2c_bus sim)
 
 
 static status_t
-exec_command(i2c_bus_cookie cookie, i2c_op op, i2c_addr slaveAddress,
+exec_command_unlocked(pch_i2c_sim_info* bus, i2c_op op, i2c_addr slaveAddress,
 	const void *cmdBuffer, size_t cmdLength, void* dataBuffer,
 	size_t dataLength)
 {
-	CALLED();
-	pch_i2c_sim_info* bus = (pch_i2c_sim_info*)cookie;
 
 	if (atomic_test_and_set(&bus->busy, 1, 0) != 0)
 		return B_BUSY;
@@ -263,6 +364,29 @@ exec_command(i2c_bus_cookie cookie, i2c_op op, i2c_addr slaveAddress,
 	bus->busy = 0;
 
 	return err;
+}
+
+
+static status_t
+exec_command(i2c_bus_cookie cookie, i2c_op op, i2c_addr slaveAddress,
+	const void *cmdBuffer, size_t cmdLength, void* dataBuffer,
+	size_t dataLength)
+{
+	CALLED();
+	pch_i2c_sim_info* bus = (pch_i2c_sim_info*)cookie;
+
+	if (!bus->punit_semaphore) {
+		return exec_command_unlocked(bus, op, slaveAddress, cmdBuffer,
+			cmdLength, dataBuffer, dataLength);
+	}
+
+	status_t status = acquire_punit_semaphore();
+	if (status != B_OK)
+		return status;
+	status = exec_command_unlocked(bus, op, slaveAddress, cmdBuffer,
+		cmdLength, dataBuffer, dataLength);
+	release_punit_semaphore();
+	return status;
 }
 
 
@@ -546,6 +670,7 @@ module_dependency module_dependencies[] = {
 	{ B_DEVICE_MANAGER_MODULE_NAME, (module_info**)&gDeviceManager },
 	{ B_ACPI_MODULE_NAME, (module_info**)&gACPI },
 	{ I2C_FOR_CONTROLLER_MODULE_NAME, (module_info**)&gI2c },
+	{ B_PCI_MODULE_NAME, (module_info**)&sPCI },
 	{}
 };
 
