@@ -29,7 +29,9 @@ static const char* const kShortUsage =
 
 static const char* const kLongUsage =
 	"Usage: %program% %command% <package> ...\n"
-	"Uninstalls the specified packages.\n"
+	"Uninstalls the specified packages, the packages that depend on them, and\n"
+	"the packages that were installed only as their dependencies and that no\n"
+	"other package needs.\n"
 	"\n"
 	"Options:\n"
 	"  --debug <level>\n"
