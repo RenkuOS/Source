@@ -16,6 +16,8 @@
 
 #include <string.h>
 
+#include <KernelExport.h>
+
 #include <cpufreq.h>
 #include <cpuidle.h>
 
@@ -35,6 +37,7 @@ static cpu_topology_node sCPUTopology;
 
 static cpufreq_module_info* sCPUPerformanceModule;
 static cpuidle_module_info* sCPUIdleModule;
+static int32 sDeepIdleBlocks;
 
 static spinlock sSetCpuLock;
 
@@ -344,10 +347,43 @@ cpu_idle(void)
 		panic("cpu_idle() called with interrupts disabled.");
 #endif
 
-	if (sCPUIdleModule != NULL)
+	if (sCPUIdleModule != NULL && atomic_get(&sDeepIdleBlocks) == 0)
 		sCPUIdleModule->cpuidle_idle();
 	else
 		arch_cpu_idle();
+}
+
+
+static void
+wake_up_cpu(void* /*cookie*/, int /*cpu*/)
+{
+	// Nothing to do: receiving the call is what takes the CPU out of its
+	// idle state. On its next pass through cpu_idle() it sees the block.
+}
+
+
+/*!	Keeps all CPUs out of the C-states that the cpuidle module offers, and
+	only allows the shallow arch_cpu_idle() (HLT), until
+	cpu_unblock_deep_idle() is called. Calls nest.
+
+	Needed on Intel Bay Trail and Cherry Trail: the P-Unit talks to the PMIC
+	over a shared I2C bus to enter C6 or C7. While a driver holds the P-Unit
+	semaphore of that bus, a CPU entering such a state hangs the SoC.
+
+	Returns when every CPU has left any state it was in.
+*/
+void
+cpu_block_deep_idle(void)
+{
+	atomic_add(&sDeepIdleBlocks, 1);
+	call_all_cpus_sync(&wake_up_cpu, NULL);
+}
+
+
+void
+cpu_unblock_deep_idle(void)
+{
+	atomic_add(&sDeepIdleBlocks, -1);
 }
 
 

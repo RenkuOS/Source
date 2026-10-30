@@ -122,6 +122,9 @@ status_t decrease_cpu_performance(int delta);
 void cpu_idle(void);
 void cpu_wait(int32* variable, int32 test);
 
+void cpu_block_deep_idle(void);
+void cpu_unblock_deep_idle(void);
+
 
 static inline void
 cpu_pause(void)
