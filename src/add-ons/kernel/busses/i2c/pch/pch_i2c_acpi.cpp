@@ -14,6 +14,10 @@
 
 #include "pch_i2c.h"
 
+extern "C" {
+#	include "amlcode.h"
+}
+
 
 struct {
 	const char* name;
@@ -40,12 +44,151 @@ struct {
 	{NULL, PCH_NONE}
 };
 
+struct pch_i2c_region_context {
+	// Must be the first member: ACPICA passes the handler context to the
+	// region handler and fills in the connection of the accessed field there.
+	ACPI_CONNECTION_INFO connection;
+	pch_i2c_sim_info* bus;
+};
+
 typedef struct {
 	pch_i2c_sim_info info;
 	acpi_device_module_info* acpi;
 	acpi_device device;
 
+	pch_i2c_region_context region;
+	bool region_handler_installed;
 } pch_i2c_acpi_sim_info;
+
+
+//	#pragma mark - ACPI GenericSerialBus operation region
+
+
+// Buffer of a GenericSerialBus field access: status, length, then the data
+// (ACPI 6.x, section 5.5.2.4.6.2).
+#define GSBUS_STATUS_OK			0x00
+#define GSBUS_STATUS_ERROR		0x01
+#define GSBUS_HEADER_SIZE		2
+
+
+/*!	Returns the 7-bit slave address of an I2cSerialBus descriptor, as found in
+	the AML byte stream of a Connection() (ACPI 6.x, section 6.4.3.8.2.1).
+*/
+static bool
+parse_i2c_connection(const uint8* descriptor, uint32 length,
+	i2c_addr* _address)
+{
+	// large resource, serial bus type 1 (I2C), 7-bit addressing
+	if (descriptor == NULL || length < 18 || descriptor[0] != 0x8e
+		|| descriptor[5] != 1 || (descriptor[7] & 1) != 0) {
+		return false;
+	}
+
+	uint16 address;
+	memcpy(&address, descriptor + 16, sizeof(uint16));
+	*_address = B_LENDIAN_TO_HOST_INT16(address);
+	return true;
+}
+
+
+static acpi_status
+gsbus_region_handler(uint32 function, acpi_physical_address address,
+	uint32 bitWidth, int* _value, void* handlerContext, void* regionContext)
+{
+	pch_i2c_region_context* context = (pch_i2c_region_context*)handlerContext;
+	uint8* buffer = (uint8*)_value;
+
+	i2c_addr slave;
+	if (!parse_i2c_connection(context->connection.Connection,
+			context->connection.Length, &slave)) {
+		ERROR("GenericSerialBus: unsupported connection\n");
+		return AE_BAD_PARAMETER;
+	}
+
+	size_t length;
+	switch (function >> 16) {
+		case AML_FIELD_ATTRIB_BYTE:
+			length = 1;
+			break;
+		case AML_FIELD_ATTRIB_WORD:
+			length = 2;
+			break;
+		case AML_FIELD_ATTRIB_BYTES:
+			length = context->connection.AccessLength;
+			break;
+		default:
+			ERROR("GenericSerialBus: access attribute %#" B_PRIx32
+				" not supported\n", function >> 16);
+			return AE_BAD_PARAMETER;
+	}
+	if (length == 0 || length > 32 || address > 0xff)
+		return AE_BAD_PARAMETER;
+
+	uint8* data = buffer + GSBUS_HEADER_SIZE;
+	uint8 command = (uint8)address;
+	status_t status;
+	if ((function & ACPI_IO_MASK) == ACPI_WRITE) {
+		uint8 out[33];
+		out[0] = command;
+		memcpy(out + 1, data, length);
+		status = pch_i2c_transfer(context->bus, I2C_OP_WRITE_STOP, slave,
+			out, length + 1, NULL, 0);
+	} else {
+		status = pch_i2c_transfer(context->bus, I2C_OP_READ_STOP, slave,
+			&command, 1, data, length);
+	}
+
+	TRACE("GenericSerialBus: %s %#x register %#x, %" B_PRIuSIZE
+		" bytes: %s\n", (function & ACPI_IO_MASK) == ACPI_WRITE ? "write"
+			: "read", slave, command, length, strerror(status));
+
+	buffer[0] = status == B_OK ? GSBUS_STATUS_OK : GSBUS_STATUS_ERROR;
+	buffer[1] = (uint8)length;
+	return status == B_OK ? AE_OK : AE_ERROR;
+}
+
+
+static acpi_status
+gsbus_region_setup(acpi_handle region, uint32 function, void* handlerContext,
+	void** regionContext)
+{
+	if (function == ACPI_REGION_DEACTIVATE)
+		*regionContext = NULL;
+	else
+		*regionContext = handlerContext;
+
+	return AE_OK;
+}
+
+
+static void
+install_region_handler(void* cookie)
+{
+	pch_i2c_acpi_sim_info* bus = (pch_i2c_acpi_sim_info*)cookie;
+
+	// Installing the handler runs the _REG methods of the regions: from now
+	// on AML code may access devices on this bus (for example a PMIC).
+	bus->region.bus = &bus->info;
+	if (bus->acpi->install_address_space_handler(bus->device,
+			ACPI_ADR_SPACE_GSBUS, gsbus_region_handler, gsbus_region_setup,
+			&bus->region) == B_OK) {
+		bus->region_handler_installed = true;
+	} else
+		ERROR("installing the GenericSerialBus region handler failed\n");
+}
+
+
+static void
+remove_region_handler(void* cookie)
+{
+	pch_i2c_acpi_sim_info* bus = (pch_i2c_acpi_sim_info*)cookie;
+	if (!bus->region_handler_installed)
+		return;
+
+	bus->acpi->remove_address_space_handler(bus->device, ACPI_ADR_SPACE_GSBUS,
+		gsbus_region_handler);
+	bus->region_handler_installed = false;
+}
 
 
 static status_t
@@ -165,6 +308,9 @@ init_device(device_node* node, void** device_cookie)
 	bus->device = device;
 	bus->info.driver_node = node;
 	bus->info.scan_bus = acpi_scan_bus;
+	bus->info.bus_started = install_region_handler;
+	bus->info.bus_stopping = remove_region_handler;
+	bus->info.bus_hook_cookie = bus;
 
 	// Attach devices for I2C resources
 	struct pch_i2c_crs crs = {};
