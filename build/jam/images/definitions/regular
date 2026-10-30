@@ -339,6 +339,7 @@ SYSTEM_ADD_ONS_DRIVERS_POWER += [ FFilterByBuildFeatures
 	acpi_ac@x86,x86_64
 	acpi_battery@x86,x86_64
 	acpi_lid@x86,x86_64
+	axp288@x86,x86_64
 ] ;
 
 SYSTEM_ADD_ONS_FILE_SYSTEMS +=
