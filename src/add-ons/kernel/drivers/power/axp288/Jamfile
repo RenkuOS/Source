@@ -5,6 +5,9 @@ SubDirC++Flags -fno-rtti ;
 UsePrivateHeaders drivers device i2c ;
 UsePrivateKernelHeaders ;
 
+SubDirHdrs [ FDirName $(HAIKU_TOP) src add-ons kernel bus_managers acpi acpica include ] ;
+SubDirHdrs [ FDirName $(HAIKU_TOP) src add-ons kernel bus_managers acpi acpica include platform ] ;
+
 KernelAddon axp288 :
 	axp288.cpp
 	;
