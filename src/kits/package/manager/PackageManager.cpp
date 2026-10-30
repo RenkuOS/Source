@@ -381,38 +381,74 @@ BPackageManager::Autoremove()
 void
 BPackageManager::_UninstallPackages(PackageList& foundPackages)
 {
-	// Determine the inverse base package closure for the found packages and
-	// add the auto-installed packages nothing needs anymore, until neither
-	// adds another package.
-// TODO: Optimize!
 	InstalledRepository& installationRepository = InstallationRepository();
 	status_t error;
-	int32 previousCount;
-	do {
-		previousCount = foundPackages.CountItems();
-
-		bool foundAnotherPackage;
+	int32 disabledCount = 0;
+	for (;;) {
+		// Determine the inverse base package closure for the found packages
+		// and add the auto-installed packages nothing needs anymore, until
+		// neither adds another package.
+// TODO: Optimize!
+		int32 previousCount;
 		do {
-			foundAnotherPackage = false;
-			int32 count = installationRepository.CountPackages();
-			for (int32 i = 0; i < count; i++) {
-				BSolverPackage* package = installationRepository.PackageAt(i);
-				if (foundPackages.HasItem(package))
-					continue;
+			previousCount = foundPackages.CountItems();
 
-				if (_FindBasePackage(foundPackages, package->Info()) >= 0) {
-					foundPackages.AddItem(package);
-					foundAnotherPackage = true;
+			bool foundAnotherPackage;
+			do {
+				foundAnotherPackage = false;
+				int32 count = installationRepository.CountPackages();
+				for (int32 i = 0; i < count; i++) {
+					BSolverPackage* package
+						= installationRepository.PackageAt(i);
+					if (foundPackages.HasItem(package))
+						continue;
+
+					if (_FindBasePackage(foundPackages, package->Info()) >= 0) {
+						foundPackages.AddItem(package);
+						foundAnotherPackage = true;
+					}
 				}
+			} while (foundAnotherPackage);
+
+			_AddOrphanedPackages(foundPackages);
+		} while (foundPackages.CountItems() != previousCount);
+
+		// remove the packages from the repository
+		for (; disabledCount < foundPackages.CountItems(); disabledCount++) {
+			installationRepository.DisablePackage(
+				foundPackages.ItemAt(disabledCount));
+		}
+
+		// The packages that need the removed ones have to go as well, which
+		// may leave more auto-installed packages that nothing needs.
+		error = fSolver->VerifyInstallation(BSolver::B_VERIFY_ALLOW_UNINSTALL);
+		if (error != B_OK)
+			DIE(error, "Failed to compute packages to uninstall");
+
+		_HandleProblems();
+
+		BSolverResult result;
+		error = fSolver->GetResult(result);
+		if (error != B_OK)
+			DIE(error, "Failed to compute packages to uninstall");
+
+		bool foundDependentPackage = false;
+		for (int32 i = 0; const BSolverResultElement* element
+				= result.ElementAt(i); i++) {
+			BSolverPackage* package = element->Package();
+			if (element->Type() != BSolverResultElement::B_TYPE_UNINSTALL
+				|| package->Repository() != &installationRepository
+				|| foundPackages.HasItem(package)) {
+				continue;
 			}
-		} while (foundAnotherPackage);
+			if (!foundPackages.AddItem(package))
+				throw std::bad_alloc();
+			foundDependentPackage = true;
+		}
 
-		_AddOrphanedPackages(foundPackages);
-	} while (foundPackages.CountItems() != previousCount);
-
-	// remove the packages from the repository
-	for (int32 i = 0; BSolverPackage* package = foundPackages.ItemAt(i); i++)
-		installationRepository.DisablePackage(package);
+		if (!foundDependentPackage)
+			break;
+	}
 
 	for (;;) {
 		error = fSolver->VerifyInstallation(BSolver::B_VERIFY_ALLOW_UNINSTALL);
