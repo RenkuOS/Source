@@ -12,10 +12,17 @@
 
 #include <glob.h>
 
+#include <vector>
+
 #include <Catalog.h>
 #include <Directory.h>
+#include <Entry.h>
+#include <File.h>
+#include <FindDirectory.h>
+#include <Path.h>
 #include <package/CommitTransactionResult.h>
 #include <package/DownloadFileRequest.h>
+#include <package/PackageInfoSet.h>
 #include <package/PackageRoster.h>
 #include <package/RefreshRepositoryRequest.h>
 #include <package/RepositoryCache.h>
@@ -29,6 +36,7 @@
 #include <CopyEngine.h>
 #include <package/ActivationTransaction.h>
 #include <package/DaemonClient.h>
+#include <package/PackagesDirectoryDefs.h>
 #include <package/manager/RepositoryBuilder.h>
 
 #include "FetchFileJob.h"
@@ -50,6 +58,121 @@ namespace BPackageKit {
 namespace BManager {
 
 namespace BPrivate {
+
+
+// Names of the packages that were installed only to satisfy the dependencies
+// of other packages, one per line, in the administrative directory of the
+// installation location. Packages not listed count as explicitly installed.
+static const char* const kAutoInstalledPackagesFileName
+	= "auto_installed_packages";
+
+
+static status_t
+get_auto_installed_packages_path(BPackageInstallationLocation location,
+	BPath& _path)
+{
+	directory_which packagesWhich;
+	switch (location) {
+		case B_PACKAGE_INSTALLATION_LOCATION_SYSTEM:
+			packagesWhich = B_SYSTEM_PACKAGES_DIRECTORY;
+			break;
+		case B_PACKAGE_INSTALLATION_LOCATION_HOME:
+			packagesWhich = B_USER_PACKAGES_DIRECTORY;
+			break;
+		default:
+			return B_BAD_VALUE;
+	}
+
+	status_t error = find_directory(packagesWhich, &_path);
+	if (error == B_OK)
+		error = _path.Append(PACKAGES_DIRECTORY_ADMIN_DIRECTORY);
+	if (error == B_OK)
+		error = _path.Append(kAutoInstalledPackagesFileName);
+	return error;
+}
+
+
+static void
+get_package_names(const BSolverRepository& repository, BStringList& _names)
+{
+	int32 count = repository.CountPackages();
+	for (int32 i = 0; i < count; i++) {
+		if (!_names.Add(repository.PackageAt(i)->Name()))
+			throw std::bad_alloc();
+	}
+}
+
+
+// Compares like the solver does: a required version without a revision stands
+// for all revisions of that version (e.g. "foo == 1.2" matches "foo 1.2-3").
+static int
+compare_to_required(const BPackageVersion& version,
+	const BPackageVersion& required)
+{
+	if (required.Revision() != 0 || version.Revision() == 0)
+		return version.Compare(required);
+
+	return BPackageVersion(version.Major(), version.Minor(), version.Micro(),
+		version.PreRelease(), 0).Compare(required);
+}
+
+
+// Returns whether a resolvable providing all versions from lowest to highest
+// might satisfy the given expression. Errs on the side of a match.
+static bool
+might_satisfy(const BPackageResolvableExpression& expression,
+	const BPackageVersion& lowest, const BPackageVersion& highest)
+{
+	const BPackageVersion& version = expression.Version();
+	if (version.InitCheck() != B_OK || highest.InitCheck() != B_OK)
+		return true;
+
+	switch (expression.Operator()) {
+		case B_PACKAGE_RESOLVABLE_OP_LESS:
+			return compare_to_required(lowest, version) < 0;
+		case B_PACKAGE_RESOLVABLE_OP_LESS_EQUAL:
+			return compare_to_required(lowest, version) <= 0;
+		case B_PACKAGE_RESOLVABLE_OP_EQUAL:
+			return compare_to_required(lowest, version) <= 0
+				&& compare_to_required(highest, version) >= 0;
+		case B_PACKAGE_RESOLVABLE_OP_GREATER_EQUAL:
+			return compare_to_required(highest, version) >= 0;
+		case B_PACKAGE_RESOLVABLE_OP_GREATER:
+			return compare_to_required(highest, version) > 0;
+		default:
+			return true;
+	}
+}
+
+
+// Returns whether the package might satisfy the given expression, i.e. whether
+// the solver could have picked it for it. Errs on the side of a match, so that
+// in doubt a package is kept.
+static bool
+might_satisfy(const BPackageInfo& info,
+	const BPackageResolvableExpression& expression)
+{
+	BString name = expression.Name();
+	if (name.StartsWith("pkg:"))
+		name.Remove(0, 4);
+	if (info.Name() == name)
+		return might_satisfy(expression, info.Version(), info.Version());
+
+	int32 count = info.ProvidesList().CountItems();
+	for (int32 i = 0; i < count; i++) {
+		const BPackageResolvable* provides = info.ProvidesList().ItemAt(i);
+		if (provides->Name() != name)
+			continue;
+
+		const BPackageVersion& lowest
+			= provides->CompatibleVersion().InitCheck() == B_OK
+				? provides->CompatibleVersion() : provides->Version();
+		if (might_satisfy(expression, lowest, provides->Version()))
+			return true;
+	}
+
+	return false;
+}
 
 
 // #pragma mark - BPackageManager
@@ -174,6 +297,13 @@ BPackageManager::Install(const BSolverPackageSpecifierList& packages, bool refre
 
 	Init(flags);
 
+	// remember what was asked for and what is installed already, so that the
+	// packages pulled in only as dependencies can be told apart
+	BStringList requestedPackages;
+	_GetPackageNames(packages, requestedPackages);
+	BStringList installedPackages;
+	get_package_names(InstallationRepository(), installedPackages);
+
 	// solve
 	const BSolverPackageSpecifier* unmatchedSpecifier;
 	status_t error = fSolver->Install(packages, &unmatchedSpecifier);
@@ -189,8 +319,16 @@ BPackageManager::Install(const BSolverPackageSpecifierList& packages, bool refre
 
 	// install/uninstall packages
 	_AnalyzeResult();
-	_ConfirmChanges();
+	try {
+		_ConfirmChanges();
+	} catch (BNothingToDoException&) {
+		// Asking for a package that is already installed as a dependency
+		// still marks it as explicitly installed.
+		_UpdateAutoInstalledPackages(requestedPackages, installedPackages);
+		throw;
+	}
 	_ApplyPackageChanges();
+	_UpdateAutoInstalledPackages(requestedPackages, installedPackages);
 }
 
 
@@ -222,24 +360,55 @@ BPackageManager::Uninstall(const BSolverPackageSpecifierList& packages)
 			DIE(error, "Failed to compute packages to uninstall");
 	}
 
-	// determine the inverse base package closure for the found packages
+	_UninstallPackages(foundPackages);
+}
+
+
+void
+BPackageManager::Autoremove()
+{
+	Init(B_ADD_INSTALLED_REPOSITORIES);
+
+	PackageList orphanedPackages;
+	_AddOrphanedPackages(orphanedPackages);
+	if (orphanedPackages.IsEmpty())
+		throw BNothingToDoException();
+
+	_UninstallPackages(orphanedPackages);
+}
+
+
+void
+BPackageManager::_UninstallPackages(PackageList& foundPackages)
+{
+	// Determine the inverse base package closure for the found packages and
+	// add the auto-installed packages nothing needs anymore, until neither
+	// adds another package.
 // TODO: Optimize!
 	InstalledRepository& installationRepository = InstallationRepository();
-	bool foundAnotherPackage;
+	status_t error;
+	int32 previousCount;
 	do {
-		foundAnotherPackage = false;
-		int32 count = installationRepository.CountPackages();
-		for (int32 i = 0; i < count; i++) {
-			BSolverPackage* package = installationRepository.PackageAt(i);
-			if (foundPackages.HasItem(package))
-				continue;
+		previousCount = foundPackages.CountItems();
 
-			if (_FindBasePackage(foundPackages, package->Info()) >= 0) {
-				foundPackages.AddItem(package);
-				foundAnotherPackage = true;
+		bool foundAnotherPackage;
+		do {
+			foundAnotherPackage = false;
+			int32 count = installationRepository.CountPackages();
+			for (int32 i = 0; i < count; i++) {
+				BSolverPackage* package = installationRepository.PackageAt(i);
+				if (foundPackages.HasItem(package))
+					continue;
+
+				if (_FindBasePackage(foundPackages, package->Info()) >= 0) {
+					foundPackages.AddItem(package);
+					foundAnotherPackage = true;
+				}
 			}
-		}
-	} while (foundAnotherPackage);
+		} while (foundAnotherPackage);
+
+		_AddOrphanedPackages(foundPackages);
+	} while (foundPackages.CountItems() != previousCount);
 
 	// remove the packages from the repository
 	for (int32 i = 0; BSolverPackage* package = foundPackages.ItemAt(i); i++)
@@ -283,6 +452,28 @@ BPackageManager::Uninstall(const BSolverPackageSpecifierList& packages)
 
 	_ConfirmChanges(true);
 	_ApplyPackageChanges(true);
+
+	// forget about the removed packages
+	for (int32 i = 0;
+			InstalledRepository* repository = fInstalledRepositories.ItemAt(i);
+			i++) {
+		BStringList autoInstalled;
+		_ReadAutoInstalledPackages(repository->Location(), autoInstalled);
+
+		bool changed = false;
+		PackageList& packagesToDeactivate = repository->PackagesToDeactivate();
+		for (int32 k = 0; BSolverPackage* package
+				= packagesToDeactivate.ItemAt(k); k++) {
+			changed |= autoInstalled.Remove(package->Name());
+		}
+
+		if (changed
+			&& _WriteAutoInstalledPackages(repository->Location(),
+				autoInstalled) != B_OK) {
+			fUserInteractionHandler->Warn(B_OK, B_TRANSLATE("Failed to write "
+				"the list of auto-installed packages"));
+		}
+	}
 }
 
 
@@ -300,6 +491,15 @@ BPackageManager::Update(const BSolverPackageSpecifierList& packages)
 {
 	Init(B_ADD_INSTALLED_REPOSITORIES | B_ADD_REMOTE_REPOSITORIES
 		| B_REFRESH_REPOSITORIES);
+
+	// Requested packages that aren't installed yet are installed as well, new
+	// dependencies must be told apart from those. Updating a package doesn't
+	// change why it is installed, though.
+	BStringList installedPackages;
+	get_package_names(InstallationRepository(), installedPackages);
+	BStringList requestedPackages;
+	_GetPackageNames(packages, requestedPackages);
+	requestedPackages.Remove(installedPackages);
 
 	// solve
 	const BSolverPackageSpecifier* unmatchedSpecifier;
@@ -319,6 +519,7 @@ BPackageManager::Update(const BSolverPackageSpecifierList& packages)
 	_AnalyzeResult();
 	_ConfirmChanges();
 	_ApplyPackageChanges();
+	_UpdateAutoInstalledPackages(requestedPackages, installedPackages);
 }
 
 
@@ -327,6 +528,9 @@ BPackageManager::FullSync()
 {
 	Init(B_ADD_INSTALLED_REPOSITORIES | B_ADD_REMOTE_REPOSITORIES
 		| B_REFRESH_REPOSITORIES);
+
+	BStringList installedPackages;
+	get_package_names(InstallationRepository(), installedPackages);
 
 	// solve
 	status_t error = fSolver->FullSync();
@@ -339,6 +543,7 @@ BPackageManager::FullSync()
 	_AnalyzeResult();
 	_ConfirmChanges();
 	_ApplyPackageChanges();
+	_UpdateAutoInstalledPackages(BStringList(), installedPackages);
 }
 
 
@@ -366,6 +571,52 @@ BPackageManager::VerifyInstallation()
 
 	_ConfirmChanges();
 	_ApplyPackageChanges();
+}
+
+
+void
+BPackageManager::SetAutoInstalled(const char* const* packages,
+	int packageCount, bool autoInstalled)
+{
+	Init(B_ADD_INSTALLED_REPOSITORIES);
+
+	BSolverPackageSpecifierList specifiers;
+	if (!specifiers.AppendSpecifiers(packages, packageCount))
+		throw std::bad_alloc();
+
+	const BSolverPackageSpecifier* unmatchedSpecifier;
+	PackageList foundPackages;
+	status_t error = fSolver->FindPackages(specifiers,
+		BSolver::B_FIND_INSTALLED_ONLY, foundPackages, &unmatchedSpecifier);
+	if (error != B_OK) {
+		if (unmatchedSpecifier != NULL) {
+			DIE(error, "Failed to find a match for \"%s\"",
+				unmatchedSpecifier->SelectString().String());
+		} else
+			DIE(error, "Failed to find packages to mark");
+	}
+
+	BPackageInstallationLocation location = InstallationRepository().Location();
+	BStringList autoInstalledPackages;
+	_ReadAutoInstalledPackages(location, autoInstalledPackages);
+
+	bool changed = false;
+	for (int32 i = 0; BSolverPackage* package = foundPackages.ItemAt(i); i++) {
+		if (!autoInstalled) {
+			changed |= autoInstalledPackages.Remove(package->Name());
+		} else if (!autoInstalledPackages.HasString(package->Name())) {
+			if (!autoInstalledPackages.Add(package->Name()))
+				throw std::bad_alloc();
+			changed = true;
+		}
+	}
+
+	if (!changed)
+		throw BNothingToDoException();
+
+	error = _WriteAutoInstalledPackages(location, autoInstalledPackages);
+	if (error != B_OK)
+		DIE(error, "Failed to write the list of auto-installed packages");
 }
 
 
@@ -759,6 +1010,216 @@ BPackageManager::_FindBasePackage(const PackageList& packages,
 	}
 
 	return -1;
+}
+
+
+void
+BPackageManager::_AddOrphanedPackages(PackageList& packages)
+{
+	InstalledRepository& installationRepository = InstallationRepository();
+	BStringList autoInstalled;
+	_ReadAutoInstalledPackages(installationRepository.Location(),
+		autoInstalled);
+	if (autoInstalled.IsEmpty())
+		return;
+
+	// Mark the auto-installed packages something still needs, starting from
+	// the packages that stay and weren't auto-installed. A package is needed,
+	// when a package that stays requires it, or when it supplements one (the
+	// solver installs supplementing packages, e.g. documentation, on its own).
+	std::vector<const BPackageInfo*> pendingPackages;
+	for (int32 i = 0;
+			InstalledRepository* repository = fInstalledRepositories.ItemAt(i);
+			i++) {
+		int32 count = repository->CountPackages();
+		for (int32 k = 0; k < count; k++) {
+			BSolverPackage* package = repository->PackageAt(k);
+			if (packages.HasItem(package)
+				|| (repository == &installationRepository
+					&& autoInstalled.HasString(package->Name()))) {
+				continue;
+			}
+			pendingPackages.push_back(&package->Info());
+		}
+	}
+
+	// The home packages aren't loaded when working on the system location,
+	// but they may depend on system packages all the same.
+	BPackageInfoSet homePackages;
+	if (installationRepository.Location()
+			== B_PACKAGE_INSTALLATION_LOCATION_SYSTEM
+		&& BPackageRoster().GetActivePackages(
+			B_PACKAGE_INSTALLATION_LOCATION_HOME, homePackages) == B_OK) {
+		BPackageInfoSet::Iterator it = homePackages.GetIterator();
+		while (it.HasNext())
+			pendingPackages.push_back(it.Next());
+	}
+
+	PackageList neededPackages;
+	int32 count = installationRepository.CountPackages();
+	while (!pendingPackages.empty()) {
+		const BPackageInfo* info = pendingPackages.back();
+		pendingPackages.pop_back();
+
+		for (int32 i = 0; i < count; i++) {
+			BSolverPackage* package = installationRepository.PackageAt(i);
+			if (packages.HasItem(package) || neededPackages.HasItem(package)
+				|| !autoInstalled.HasString(package->Name())) {
+				continue;
+			}
+
+			// Uninstalling a base package uninstalls the packages based on it
+			// as well, so never let a version mismatch decide on that.
+			bool needed = info->BasePackage() == package->Name();
+			int32 requiresCount = info->RequiresList().CountItems();
+			for (int32 k = 0; !needed && k < requiresCount; k++) {
+				needed = might_satisfy(package->Info(),
+					*info->RequiresList().ItemAt(k));
+			}
+
+			const BPackageInfo& packageInfo = package->Info();
+			int32 supplementsCount = packageInfo.SupplementsList().CountItems();
+			for (int32 k = 0; !needed && k < supplementsCount; k++) {
+				needed = might_satisfy(*info,
+					*packageInfo.SupplementsList().ItemAt(k));
+			}
+
+			if (!needed)
+				continue;
+			if (!neededPackages.AddItem(package))
+				throw std::bad_alloc();
+			pendingPackages.push_back(&packageInfo);
+		}
+	}
+
+	// all other auto-installed packages are orphaned
+	for (int32 i = 0; i < count; i++) {
+		BSolverPackage* package = installationRepository.PackageAt(i);
+		if (autoInstalled.HasString(package->Name())
+			&& !packages.HasItem(package)
+			&& !neededPackages.HasItem(package)) {
+			if (!packages.AddItem(package))
+				throw std::bad_alloc();
+		}
+	}
+}
+
+
+void
+BPackageManager::_GetPackageNames(const BSolverPackageSpecifierList& packages,
+	BStringList& _names)
+{
+	// Errors are ignored here, solving reports them in more detail.
+	PackageList foundPackages;
+	if (fSolver->FindPackages(packages, 0, foundPackages) != B_OK)
+		return;
+
+	for (int32 i = 0; BSolverPackage* package = foundPackages.ItemAt(i); i++) {
+		if (!_names.HasString(package->Name()) && !_names.Add(package->Name()))
+			throw std::bad_alloc();
+	}
+}
+
+
+void
+BPackageManager::_UpdateAutoInstalledPackages(
+	const BStringList& requestedPackages, const BStringList& installedPackages)
+{
+	InstalledRepository& installationRepository = InstallationRepository();
+	BStringList autoInstalled;
+	_ReadAutoInstalledPackages(installationRepository.Location(),
+		autoInstalled);
+
+	// newly installed packages nobody asked for are dependencies
+	bool changed = false;
+	PackageList& packagesToActivate
+		= installationRepository.PackagesToActivate();
+	for (int32 i = 0; BSolverPackage* package = packagesToActivate.ItemAt(i);
+			i++) {
+		const BString& name = package->Name();
+		if (requestedPackages.HasString(name)
+			|| installedPackages.HasString(name)
+			|| autoInstalled.HasString(name)) {
+			continue;
+		}
+		if (!autoInstalled.Add(name))
+			throw std::bad_alloc();
+		changed = true;
+	}
+
+	for (int32 i = 0; i < requestedPackages.CountStrings(); i++)
+		changed |= autoInstalled.Remove(requestedPackages.StringAt(i));
+
+	if (changed
+		&& _WriteAutoInstalledPackages(installationRepository.Location(),
+			autoInstalled) != B_OK) {
+		fUserInteractionHandler->Warn(B_OK, B_TRANSLATE("Failed to write the "
+			"list of auto-installed packages"));
+	}
+}
+
+
+void
+BPackageManager::_ReadAutoInstalledPackages(
+	BPackageInstallationLocation location, BStringList& _packages)
+{
+	BPath path;
+	if (get_auto_installed_packages_path(location, path) != B_OK)
+		return;
+
+	// no file means that nothing has been auto-installed
+	BFile file(path.Path(), B_READ_ONLY);
+	off_t size;
+	if (file.InitCheck() != B_OK || file.GetSize(&size) != B_OK || size == 0)
+		return;
+
+	BString content;
+	char* buffer = content.LockBuffer(size);
+	if (buffer == NULL)
+		throw std::bad_alloc();
+	ssize_t bytesRead = file.Read(buffer, size);
+	content.UnlockBuffer(bytesRead > 0 ? bytesRead : 0);
+
+	if (!content.Split("\n", true, _packages))
+		throw std::bad_alloc();
+}
+
+
+status_t
+BPackageManager::_WriteAutoInstalledPackages(
+	BPackageInstallationLocation location, const BStringList& packages)
+{
+	BPath path;
+	status_t error = get_auto_installed_packages_path(location, path);
+	if (error != B_OK)
+		return error;
+
+	BString content = packages.Join("\n");
+	if (!content.IsEmpty())
+		content << '\n';
+
+	// write to a temporary file first, so that the list is never cut short
+	BString temporaryPath(path.Path());
+	temporaryPath << ".tmp";
+	BFile file(temporaryPath.String(),
+		B_WRITE_ONLY | B_CREATE_FILE | B_ERASE_FILE);
+	error = file.InitCheck();
+	if (error == B_OK) {
+		ssize_t written = file.Write(content.String(), content.Length());
+		if (written < 0)
+			error = written;
+		else if (written != content.Length())
+			error = B_IO_ERROR;
+	}
+	if (error == B_OK)
+		error = file.Sync();
+	file.Unset();
+	if (error == B_OK)
+		error = BEntry(temporaryPath.String()).Rename(path.Path(), true);
+
+	if (error != B_OK)
+		BEntry(temporaryPath.String()).Remove();
+	return error;
 }
 
 
