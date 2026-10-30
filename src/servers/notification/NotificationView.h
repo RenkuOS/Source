@@ -16,6 +16,7 @@
 
 class AppGroupView;
 class BBitmap;
+class BGroupView;
 class BMessageRunner;
 class BNotification;
 
@@ -76,6 +77,7 @@ private:
 			rgb_color			fStripeColor;
 			bool				fCloseClicked;
 			bool				fPreviewModeOn;
+			BGroupView*			fActionsView;
 };
 
 #endif	// _NOTIFICATION_VIEW_H
