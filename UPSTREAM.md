@@ -28,6 +28,7 @@ upstream honest and the fix attributable.
 | 2026-10-20 | `1d73eca40b` | freebsd_network: enable on arm64 | Prerequisite of `ae25f101ad`, which rewrites the same lines |
 | 2026-10-20 | `ae25f101ad` | freebsd_network: use generic bus.h and cpufunc.h for all non-x86 architectures | The FreeBSD compatibility layer did not build for 32-bit ARM, so no FreeBSD network driver could be built there (the USB Ethernet adapters used with the Toshiba AC100) |
 | 2026-10-20 | `5f79cf3d8e` | freebsd_network: add missing bpf stub | Companion of `ae25f101ad`: a stub the drivers need once the layer builds on the other architectures |
+| 2026-10-30 | `ad3afc3a2f` | tcp: _Spawn() resets local address | Fixes a kernel panic on shutdown (#167, "bound endpoint not in hash!"). A spawned connection that failed to bind kept the listening socket's local address, so destroying it tried to remove it from a hash it was never added to |
 
 ## Declined
 
