@@ -365,6 +365,7 @@ MediaWindow::MessageReceived(BMessage* message)
 			break;
 		}
 
+		case ML_UPDATE_DEFAULTS:
 		case B_MEDIA_SERVER_STARTED:
 		case B_MEDIA_SERVER_QUIT:
 		{
@@ -497,7 +498,9 @@ MediaWindow::_InitMedia(bool first)
 	fListView->SortItems(&MediaListItem::Compare);
 	_UpdateListViewMinWidth();
 
-	// Set default nodes for our setting views
+	// Show the server's default nodes in our setting views. They must not be
+	// set back: a default may be a fallback for a device that is missing, and
+	// setting it would make the fallback the saved choice.
 	media_node defaultNode;
 	dormant_node_info nodeInfo;
 	int32 outputID;
