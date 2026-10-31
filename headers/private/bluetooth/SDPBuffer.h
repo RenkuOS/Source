@@ -152,8 +152,9 @@ public:
 			case SDP_DATA_STR32:
 			{
 				size_t length = ReadStringLength();
-				char value[length];
+				char value[length + 1];
 				ReadString(value);
+				value[length] = '\0';
 				if (fReadingStatus == B_OK)
 					message->AddString(label, value);
 			}
@@ -233,7 +234,7 @@ public:
 		status_t status = B_OK;
 
 		if (fNextStringLength > 0)
-			status = fBuffer->ReadExactly(&str, fNextStringLength);
+			status = fBuffer->ReadExactly(str, fNextStringLength);
 
 		if (status != B_OK) {
 			fReadingStatus = status;
