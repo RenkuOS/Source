@@ -13,6 +13,7 @@
 
 #include <ByteOrder.h>
 #include <kernel.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "Errors.h"
@@ -310,11 +311,72 @@ command_complete(void* cookie, status_t status, void* data, size_t actual_len)
 }
 
 
+struct acl_tx_transfer {
+	bt_usb_dev*	bdev;
+	net_buffer*	nbuf;
+	void*		copy;
+	void*		data;
+	int32		retries;
+};
+
+
+static void free_acl_tx_transfer(acl_tx_transfer* transfer);
+
+
+/*!	The controller refused a packet (a CSR one does while it starts the
+	encryption of the link): clear the halt, then send the packet again a bit
+	later, as L2CAP does not resend its commands.
+*/
+static status_t
+clear_bulk_out_halt(void* cookie)
+{
+	acl_tx_transfer* transfer = (acl_tx_transfer*)cookie;
+	bt_usb_dev* bdev = transfer->bdev;
+
+	status_t status = B_OK;
+	if (atomic_get_and_set(&bdev->bulk_out_clearing, 1) == 0) {
+		status = usb->clear_feature(bdev->bulk_out_ep->handle,
+			USB_FEATURE_ENDPOINT_HALT);
+		TRACE("%s: cleared the halt of the ACL endpoint: %s\n", __func__,
+			strerror(status));
+		atomic_set(&bdev->bulk_out_clearing, 0);
+	} else {
+		// the packets queued after the refused one: wait for the halt to be
+		// cleared by the thread of the first one
+		for (int i = 0; i < 100 && atomic_get(&bdev->bulk_out_clearing) != 0;
+				i++) {
+			snooze(1000);
+		}
+	}
+
+	snooze(10000);
+	if (status == B_OK) {
+		status = usb->queue_bulk(bdev->bulk_out_ep->handle, transfer->data,
+			transfer->nbuf->size, acl_tx_complete, transfer);
+	}
+	if (status != B_OK) {
+		ERROR("%s: ACL packet of %" B_PRIu32 " bytes lost: %s\n", __func__,
+			transfer->nbuf->size, strerror(status));
+		free_acl_tx_transfer(transfer);
+	}
+	return B_OK;
+}
+
+
+static void
+free_acl_tx_transfer(acl_tx_transfer* transfer)
+{
+	nb_destroy(transfer->nbuf);
+	free(transfer->copy);
+	free(transfer);
+}
+
+
 void
 acl_tx_complete(void* cookie, status_t status, void* data, size_t actual_len)
 {
-	net_buffer* nbuf = (net_buffer*)cookie;
-	bt_usb_dev* bdev = GET_DEVICE(nbuf);
+	acl_tx_transfer* transfer = (acl_tx_transfer*)cookie;
+	bt_usb_dev* bdev = transfer->bdev;
 
 	//debugf("fetched=%p type %lx %p\n", bdev, nbuf->type, data);
 
@@ -323,10 +385,22 @@ acl_tx_complete(void* cookie, status_t status, void* data, size_t actual_len)
 		bdev->stat.bytesTX += actual_len;
 	} else {
 		bdev->stat.errorTX++;
-		// the packet has been lost, too late to requeue it
+
+		// A halted endpoint refuses everything that follows: clear it and
+		// send the packet again, from a thread as this is the completion of
+		// the USB stack
+		if (status == B_DEV_STALLED && transfer->retries++ < 3) {
+			thread_id thread = spawn_kernel_thread(clear_bulk_out_halt,
+				"h2generic resend", B_NORMAL_PRIORITY, transfer);
+			if (thread >= 0 && resume_thread(thread) == B_OK)
+				return;
+		}
+
+		ERROR("%s: ACL packet of %" B_PRIu32 " bytes lost: %s\n", __func__,
+			transfer->nbuf->size, strerror(status));
 	}
 
-	nb_destroy(nbuf);
+	free_acl_tx_transfer(transfer);
 
 #ifdef BT_RESCHEDULING_AFTER_COMPLETITIONS
 	schedTxProcessing(bdev);
@@ -412,10 +486,34 @@ submit_tx_acl(bt_usb_dev* bdev, net_buffer* nbuf)
 	}
 	*/
 
-	error = usb->queue_bulk(bdev->bulk_out_ep->handle, nb_get_whole_buffer(nbuf),
-		nbuf->size, acl_tx_complete, (void*)nbuf);
+	acl_tx_transfer* transfer = (acl_tx_transfer*)malloc(sizeof(*transfer));
+	if (transfer == NULL)
+		return B_NO_MEMORY;
+	transfer->bdev = bdev;
+	transfer->nbuf = nbuf;
+	transfer->copy = NULL;
+	transfer->retries = 0;
+
+	// L2CAP can hand over a packet in pieces; USB wants it in one
+	void* data;
+	if (nb->direct_access(nbuf, 0, nbuf->size, &data) != B_OK) {
+		transfer->copy = malloc(nbuf->size);
+		if (transfer->copy == NULL
+			|| nb->read(nbuf, 0, transfer->copy, nbuf->size) != B_OK) {
+			free(transfer->copy);
+			free(transfer);
+			return B_NO_MEMORY;
+		}
+		data = transfer->copy;
+	}
+	transfer->data = data;
+
+	error = usb->queue_bulk(bdev->bulk_out_ep->handle, data, nbuf->size,
+		acl_tx_complete, transfer);
 
 	if (error != B_OK) {
+		free(transfer->copy);
+		free(transfer);
 		bdev->stat.rejectedTX++;
 	} else {
 		bdev->stat.acceptedTX++;
