@@ -232,17 +232,17 @@ RemoteDevice::Connect()
 	request.AddString("name", GetFriendlyName());
 	request.AddUInt32("record", fDeviceClass.Record());
 
-	uint16 packetType;
-	fDiscovererLocalDevice->GetProperty("packet_type", (uint32*)&packetType);
-	request.AddUInt16("packet type", packetType);
+	uint32 packetType = 0;
+	fDiscovererLocalDevice->GetProperty("packet_type", &packetType);
+	request.AddUInt16("packet type", (uint16)packetType);
 
 	request.AddUInt8("pscan_rep_mode", fPageRepetitionMode);
 	request.AddUInt8("pscan_mode", fScanMode);
 	request.AddUInt16("clock_offset", fClockOffset);
 
-	uint8 roleSwitch;
-	fDiscovererLocalDevice->GetProperty("role_switch_capable", (uint32*)&roleSwitch);
-	request.AddUInt8("role_switch", roleSwitch);
+	uint32 roleSwitch = 0;
+	fDiscovererLocalDevice->GetProperty("role_switch_capable", &roleSwitch);
+	request.AddUInt8("role_switch", roleSwitch != 0 ? 1 : 0);
 
 	if (fMessenger->SendMessage(&request) == B_OK)
 		return B_OK;
@@ -356,7 +356,9 @@ RemoteDevice::RemoteDevice(const bdaddr_t address, uint8 record[3])
 	:
 	BluetoothDevice(),
 	fDiscovererLocalDevice(NULL),
-	fScanMode(0)
+	fPageRepetitionMode(1),
+	fScanMode(0),
+	fClockOffset(0)
 {
 	CALLED();
 	fBdaddr = address;
@@ -369,7 +371,9 @@ RemoteDevice::RemoteDevice(const BString& address)
 	:
 	BluetoothDevice(),
 	fDiscovererLocalDevice(NULL),
-	fScanMode(0)
+	fPageRepetitionMode(1),
+	fScanMode(0),
+	fClockOffset(0)
 {
 	CALLED();
 	fBdaddr = bdaddrUtils::FromString((const char*)address.String());
