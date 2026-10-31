@@ -10,6 +10,7 @@
 
 #include "MediaViews.h"
 
+#include <Alert.h>
 #include <AutoDeleter.h>
 #include <Box.h>
 #include <Button.h>
@@ -120,7 +121,11 @@ SettingsView::MessageReceived(BMessage* message)
 				break;
 			NodeMenuItem* item
 				= static_cast<NodeMenuItem*>(fInputMenu->ItemAt(index));
-			SetDefaultInput(item->NodeInfo());
+			if (item == NULL)
+				break;
+			status_t status = _ChangeDefaultInput(item->NodeInfo());
+			if (status != B_OK)
+				_ChangeFailed(item->NodeInfo(), status);
 			break;
 		}
 		case MEDIA_DEFAULT_OUTPUT_CHANGE:
@@ -130,7 +135,11 @@ SettingsView::MessageReceived(BMessage* message)
 				break;
 			NodeMenuItem* item
 				= static_cast<NodeMenuItem*>(fOutputMenu->ItemAt(index));
-			SetDefaultOutput(item->NodeInfo());
+			if (item == NULL)
+				break;
+			status_t status = _ChangeDefaultOutput(item->NodeInfo());
+			if (status != B_OK)
+				_ChangeFailed(item->NodeInfo(), status);
 			break;
 		}
 		default:
@@ -152,6 +161,56 @@ MediaWindow*
 SettingsView::_MediaWindow() const
 {
 	return static_cast<MediaWindow*>(Window());
+}
+
+
+status_t
+SettingsView::_ChangeDefaultInput(const dormant_node_info* info)
+{
+	return B_NOT_SUPPORTED;
+}
+
+
+status_t
+SettingsView::_ChangeDefaultOutput(const dormant_node_info* info)
+{
+	return B_NOT_SUPPORTED;
+}
+
+
+/*!	Returns the node of \a info, and instantiates it as a global node if it
+	has none yet: a device that appeared after the media services started may
+	not have one.
+*/
+status_t
+SettingsView::_GetNode(const dormant_node_info* info, media_node* node)
+{
+	BMediaRoster* roster = BMediaRoster::Roster();
+	media_node_id nodeID;
+	int32 instanceCount = 1;
+
+	status_t status = roster->GetInstancesFor(info->addon, info->flavor_id,
+		&nodeID, &instanceCount);
+	if (status != B_OK || instanceCount == 0)
+		return roster->InstantiateDormantNode(*info, node, B_FLAVOR_IS_GLOBAL);
+	return roster->GetNodeFor(nodeID, node);
+}
+
+
+void
+SettingsView::_ChangeFailed(const dormant_node_info* info, status_t status)
+{
+	BString text(B_TRANSLATE("Could not make \"%device%\" the default:\n"
+		"%error%"));
+	text.ReplaceFirst("%device%", info->name);
+	text.ReplaceFirst("%error%", strerror(status));
+
+	BAlert* alert = new BAlert(B_TRANSLATE("Error"), text, B_TRANSLATE("OK"),
+		NULL, NULL, B_WIDTH_AS_USUAL, B_STOP_ALERT);
+	alert->Go(NULL);
+
+	// The menu has marked the item already; show what is in use instead.
+	Window()->PostMessage(ML_UPDATE_DEFAULTS);
 }
 
 
@@ -351,7 +410,6 @@ AudioSettingsView::SetDefaultInput(const dormant_node_info* info)
 {
 	SettingsView::SetDefaultInput(info);
 	_MediaWindow()->UpdateInputListItem(MediaListItem::AUDIO_TYPE, info);
-	BMediaRoster::Roster()->SetAudioInput(*info);
 }
 
 
@@ -361,7 +419,32 @@ AudioSettingsView::SetDefaultOutput(const dormant_node_info* info)
 	SettingsView::SetDefaultOutput(info);
 	_MediaWindow()->UpdateOutputListItem(MediaListItem::AUDIO_TYPE, info);
 	_FillChannelMenu(info);
-	BMediaRoster::Roster()->SetAudioOutput(*info);
+}
+
+
+status_t
+AudioSettingsView::_ChangeDefaultInput(const dormant_node_info* info)
+{
+	media_node node;
+	status_t status = _GetNode(info, &node);
+	if (status == B_OK)
+		status = BMediaRoster::Roster()->SetAudioInput(node);
+	if (status == B_OK)
+		SetDefaultInput(info);
+	return status;
+}
+
+
+status_t
+AudioSettingsView::_ChangeDefaultOutput(const dormant_node_info* info)
+{
+	media_node node;
+	status_t status = _GetNode(info, &node);
+	if (status == B_OK)
+		status = BMediaRoster::Roster()->SetAudioOutput(node);
+	if (status == B_OK)
+		SetDefaultOutput(info);
+	return status;
 }
 
 
@@ -397,17 +480,7 @@ AudioSettingsView::_FillChannelMenu(const dormant_node_info* nodeInfo)
 
 	BMediaRoster* roster = BMediaRoster::Roster();
 	media_node node;
-	media_node_id node_id;
-	int32 instanceCount = 1;
-
-	status_t err
-		= roster->GetInstancesFor(nodeInfo->addon, nodeInfo->flavor_id, &node_id, &instanceCount);
-	if (err != B_OK || instanceCount == 0)
-		err = roster->InstantiateDormantNode(*nodeInfo, &node,
-			B_FLAVOR_IS_GLOBAL);
-	else
-		err = roster->GetNodeFor(node_id, &node);
-
+	status_t err = _GetNode(nodeInfo, &node);
 	if (err == B_OK) {
 		int32 inputCount = 4;
 		media_input* inputs = new media_input[inputCount];
@@ -523,7 +596,6 @@ VideoSettingsView::SetDefaultInput(const dormant_node_info* info)
 {
 	SettingsView::SetDefaultInput(info);
 	_MediaWindow()->UpdateInputListItem(MediaListItem::VIDEO_TYPE, info);
-	BMediaRoster::Roster()->SetVideoInput(*info);
 }
 
 
@@ -532,5 +604,30 @@ VideoSettingsView::SetDefaultOutput(const dormant_node_info* info)
 {
 	SettingsView::SetDefaultOutput(info);
 	_MediaWindow()->UpdateOutputListItem(MediaListItem::VIDEO_TYPE, info);
-	BMediaRoster::Roster()->SetVideoOutput(*info);
+}
+
+
+status_t
+VideoSettingsView::_ChangeDefaultInput(const dormant_node_info* info)
+{
+	media_node node;
+	status_t status = _GetNode(info, &node);
+	if (status == B_OK)
+		status = BMediaRoster::Roster()->SetVideoInput(node);
+	if (status == B_OK)
+		SetDefaultInput(info);
+	return status;
+}
+
+
+status_t
+VideoSettingsView::_ChangeDefaultOutput(const dormant_node_info* info)
+{
+	media_node node;
+	status_t status = _GetNode(info, &node);
+	if (status == B_OK)
+		status = BMediaRoster::Roster()->SetVideoOutput(node);
+	if (status == B_OK)
+		SetDefaultOutput(info);
+	return status;
 }

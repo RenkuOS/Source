@@ -197,6 +197,7 @@ MediaWindow::MediaWindow(BRect frame)
 		B_MEDIA_SERVER_STARTED);
 	roster->StartWatching(BMessenger(this, this),
 		B_MEDIA_SERVER_QUIT);
+	_WatchFlavors();
 }
 
 
@@ -220,6 +221,8 @@ MediaWindow::~MediaWindow()
 	}
 
 	BMediaRoster* roster = BMediaRoster::CurrentRoster();
+	roster->StopWatching(BMessenger(this, this),
+		B_MEDIA_FLAVORS_CHANGED);
 	roster->StopWatching(BMessenger(this, this),
 		B_MEDIA_SERVER_STARTED);
 	roster->StartWatching(BMessenger(this, this),
@@ -366,6 +369,10 @@ MediaWindow::MessageReceived(BMessage* message)
 		}
 
 		case B_MEDIA_SERVER_STARTED:
+			_WatchFlavors();
+			// fall through
+		case ML_UPDATE_DEFAULTS:
+		case B_MEDIA_FLAVORS_CHANGED:
 		case B_MEDIA_SERVER_QUIT:
 		{
 			PRINT_OBJECT(*message);
@@ -497,7 +504,9 @@ MediaWindow::_InitMedia(bool first)
 	fListView->SortItems(&MediaListItem::Compare);
 	_UpdateListViewMinWidth();
 
-	// Set default nodes for our setting views
+	// Show the server's default nodes in our setting views. They must not be
+	// set back: a default may be a fallback for a device that is missing, and
+	// setting it would make the fallback the saved choice.
 	media_node defaultNode;
 	dormant_node_info nodeInfo;
 	int32 outputID;
@@ -538,6 +547,25 @@ MediaWindow::_InitMedia(bool first)
 	Unlock();
 
 	return B_OK;
+}
+
+
+/*!	Watches for add-ons whose flavors change, such as a sound card that is
+	plugged in or out, so that the device lists stay current. media_server
+	keeps the watch, and a restarted one does not know it any more: this is
+	called again on every B_MEDIA_SERVER_STARTED, and cancels the old watch
+	first so that it is never there twice.
+*/
+void
+MediaWindow::_WatchFlavors()
+{
+	BMediaRoster* roster = BMediaRoster::CurrentRoster();
+	if (roster == NULL)
+		return;
+
+	BMessenger messenger(this, this);
+	roster->StopWatching(messenger, B_MEDIA_FLAVORS_CHANGED);
+	roster->StartWatching(messenger, B_MEDIA_FLAVORS_CHANGED);
 }
 
 

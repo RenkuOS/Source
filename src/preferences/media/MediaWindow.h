@@ -60,6 +60,7 @@ private:
 
 			void				_InitWindow();
 			status_t			_InitMedia(bool first);
+			void				_WatchFlavors();
 
 			void				_FindNodes();
 			void				_FindNodes(media_type type, uint64 kind,
