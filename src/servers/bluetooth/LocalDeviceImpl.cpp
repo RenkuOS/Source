@@ -23,12 +23,17 @@
 #include <Entry.h>
 #include <FindDirectory.h>
 #include <stdio.h>
+#include <syslog.h>
 #include <new>
 
 
 #if 0
 #pragma mark - Class methods -
 #endif
+
+
+// the size of one response in an inquiry result event, with or without RSSI
+static const size_t kInquiryResponseSize = 14;
 
 
 // Factory methods
@@ -371,7 +376,7 @@ LocalDeviceImpl::HandleExpectedRequest(struct hci_event_header* event,
 			break;
 
 		case HCI_EVENT_INQUIRY_RESULT:
-			InquiryResult(JumpEventHeader<uint8>(event), request);
+			InquiryResult(JumpEventHeader<uint8>(event), event->elen, request);
 			break;
 
 		case HCI_EVENT_AUTH_COMPLETE:
@@ -456,10 +461,12 @@ LocalDeviceImpl::HandleExpectedRequest(struct hci_event_header* event,
 			break;
 
 		case HCI_EVENT_INQUIRY_RESULT_WITH_RSSI:
-			InquiryResultWithRSSI(JumpEventHeader<uint8>(event), request);
+			InquiryResultWithRSSI(JumpEventHeader<uint8>(event), event->elen,
+				request);
 			break;
 		case HCI_EVENT_EXTENDED_INQUIRY_RESULT:
-			ExtendedInquiryResult(JumpEventHeader<uint8>(event), request);
+			ExtendedInquiryResult(JumpEventHeader<uint8>(event), event->elen,
+				request);
 			break;
 
 		case HCI_EVENT_REMOTE_EXTENDED_FEATURES:
@@ -1139,12 +1146,20 @@ LocalDeviceImpl::CommandStatus(struct hci_ev_cmd_status* event,
 
 
 void
-LocalDeviceImpl::InquiryResult(uint8* numberOfResponses, BMessage* request)
+LocalDeviceImpl::InquiryResult(uint8* numberOfResponses, size_t length,
+	BMessage* request)
 {
 	uint8 count = *numberOfResponses;
 	TRACE_BT("LocalDeviceImpl: %s #responses=%d\n", __FUNCTION__, count);
 	if (count == 0 || request == NULL)
 		return;
+
+	// the count comes from the air: the responses must fit in the event
+	if (count > (length - 1) / kInquiryResponseSize) {
+		syslog(LOG_WARNING, "bluetooth_server: inquiry result with %d "
+			"responses in %d bytes\n", count, (int)length);
+		return;
+	}
 
 	uint8* base_ptr = numberOfResponses + 1;
 
@@ -1180,12 +1195,19 @@ LocalDeviceImpl::InquiryResult(uint8* numberOfResponses, BMessage* request)
 
 
 void
-LocalDeviceImpl::InquiryResultWithRSSI(uint8* numberOfResponses, BMessage* request)
+LocalDeviceImpl::InquiryResultWithRSSI(uint8* numberOfResponses,
+	size_t length, BMessage* request)
 {
 	uint8 count = *numberOfResponses;
 	TRACE_BT("LocalDeviceImpl: %s #responses=%d\n", __FUNCTION__, count);
 	if (count == 0 || request == NULL)
 		return;
+
+	if (count > (length - 1) / kInquiryResponseSize) {
+		syslog(LOG_WARNING, "bluetooth_server: inquiry result with %d "
+			"responses in %d bytes\n", count, (int)length);
+		return;
+	}
 
 	uint8* base_ptr = numberOfResponses + 1;
 
@@ -1221,13 +1243,15 @@ LocalDeviceImpl::InquiryResultWithRSSI(uint8* numberOfResponses, BMessage* reque
 
 
 void
-LocalDeviceImpl::ExtendedInquiryResult(uint8* numberOfResponses, BMessage* request)
+LocalDeviceImpl::ExtendedInquiryResult(uint8* numberOfResponses,
+	size_t length, BMessage* request)
 {
 	uint8 count = *numberOfResponses;
 	TRACE_BT("LocalDeviceImpl: %s #responses=%d\n", __FUNCTION__, count);
 
 	// the spec says count always equals 1
-	if (count != 1 || request == NULL)
+	if (count != 1 || request == NULL
+		|| length < 1 + sizeof(hci_ev_extended_inquiry_info))
 		return;
 
 	hci_ev_extended_inquiry_info* info = (hci_ev_extended_inquiry_info*)(numberOfResponses + 1);
