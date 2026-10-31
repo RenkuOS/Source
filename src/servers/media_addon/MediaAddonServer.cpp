@@ -66,6 +66,11 @@
 typedef std::vector<media_node> NodeVector;
 
 
+// Posted by the control thread to the application looper, which owns
+// fInfoMap, for every node it instantiated on request.
+static const uint32 kMsgNodeInstantiated = 'mnin';
+
+
 struct AddOnInfo {
 			media_addon_id		id;
 			bool				wants_autostart;
@@ -362,6 +367,28 @@ MediaAddonServer::MessageReceived(BMessage* message)
 			return;
 		}
 
+		case kMsgNodeInstantiated:
+		{
+			// Remember the node like the ones instantiated at startup, so
+			// that QuitRequested() and _AddOnRemoved() release it before the
+			// add-on's image goes away. A node that its creator released
+			// meanwhile is skipped there: stopping it fails.
+			media_addon_id addOnID;
+			media_node node;
+			if (message->FindInt32("add_on_id", &addOnID) != B_OK
+				|| message->FindInt32("node", &node.node) != B_OK
+				|| message->FindInt32("port", &node.port) != B_OK
+				|| message->FindUInt32("kind", &node.kind) != B_OK)
+				break;
+
+			InfoMap::iterator found = fInfoMap.find(addOnID);
+			if (found == fInfoMap.end())
+				break;
+
+			found->second.active_flavors.push_back(node);
+			break;
+		}
+
 		default:
 			BApplication::MessageReceived(message);
 			break;
@@ -386,6 +413,17 @@ MediaAddonServer::_HandleMessage(int32 code, const void* data, size_t size)
 					request->add_on_id, request->flavor_id,
 					request->creator_team, &reply.node);
 			request->SendReply(status, &reply, sizeof(reply));
+
+			if (status == B_OK) {
+				// The node lives in this team and runs the add-on's code,
+				// so it must be released before the add-on is unloaded.
+				BMessage message(kMsgNodeInstantiated);
+				message.AddInt32("add_on_id", request->add_on_id);
+				message.AddInt32("node", reply.node.node);
+				message.AddInt32("port", reply.node.port);
+				message.AddUInt32("kind", reply.node.kind);
+				PostMessage(&message);
+			}
 			break;
 		}
 
