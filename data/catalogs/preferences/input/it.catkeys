@@ -60,3 +60,9 @@ Defaults	InputKeyboard		Predefiniti
 Key repeat rate	KeyboardView		Velocità ripetizione tasto
 Horizontal	TouchpadPrefView		Orizzontale
 3-Button	SettingsView		3 Pulsanti
+Move the sticks and press the buttons to try them.	GamepadView		Muovi le levette e premi i tasti per provarli.
+Connected by USB	GamepadView		Collegato via USB
+Connected by Bluetooth	GamepadView		Collegato via Bluetooth
+Connected by Bluetooth, battery %level%%	GamepadView		Collegato via Bluetooth, batteria %level%%
+Bluetooth gamepad	InputWindow		Gamepad Bluetooth
+USB gamepad %number%	InputWindow		Gamepad USB %number%

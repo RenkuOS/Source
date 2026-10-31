@@ -42,3 +42,17 @@ Handheld	Settings view		Palmare
  packets: 	Device View		 pacchetti: 
 About Bluetooth…	Window		Informazioni su Bluetooth…
 Starting scan…	Inquiry panel		Avvia scansione…
+Computer	Device kind		Computer
+Phone	Device kind		Telefono
+Audio	Device kind		Audio
+Keyboard	Device kind		Tastiera
+Mouse	Device kind		Mouse
+Gamepad	Device kind		Gamepad
+Device	Device kind		Dispositivo
+Connected	Device list		Connesso
+Connecting…	Device list		Connessione…
+Not connected	Device list		Non connesso
+Connect	Remote devices		Connetti
+Cancel	Remote devices		Annulla
+Pair	Inquiry panel		Associa
+Add device	Remote devices		Aggiungi
