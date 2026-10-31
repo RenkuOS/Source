@@ -7,6 +7,7 @@
 #include <sys/time.h>
 
 #include "Debug.h"
+#include "HIDProfile.h"
 #include "SDPClient.h"
 
 
@@ -38,6 +39,11 @@ SDPClient::Start()
 	status_t status;
 
 	fClientSocket = socket(PF_BLUETOOTH, SOCK_SEQPACKET, BLUETOOTH_PROTO_L2CAP);
+
+	// a device that does not answer must not block the server forever
+	timeval connectTimeout = { 10, 0 };
+	setsockopt(fClientSocket, SOL_SOCKET, SO_SNDTIMEO, &connectTimeout,
+		sizeof(connectTimeout));
 
 	status = connect(fClientSocket, (sockaddr*)&fSockAddrL2cap, sizeof(sockaddr_l2cap));
 	if (status < 0) {
@@ -268,5 +274,5 @@ status_t
 SDPClient::_NotifyHIDProfile(BMessage* attrList)
 {
 	TRACE_BT("Notifying HID Profile...\n");
-	return B_NOT_SUPPORTED;
+	return HIDProfile::Connect(fRemoteDevice->bdaddr, *attrList);
 }

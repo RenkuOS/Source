@@ -25,6 +25,14 @@ target desktop {
 		no_safemode
 	}
 
+	service x-vnd.Haiku-bluetooth_server {
+		# paired devices (keyboards, gamepads) connect when switched on
+		launch /system/servers/bluetooth_server
+		on initial_volumes_mounted
+		requires x-vnd.Be-TSKB
+		no_safemode
+	}
+
 	service x-vnd.Be-POST {
 		launch /system/servers/mail_daemon
 		if setting ~/config/settings/Mail/new_mail_daemon DaemonAutoStarts
