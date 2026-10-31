@@ -69,6 +69,9 @@ typedef std::vector<media_node> NodeVector;
 // Posted by the control thread to the application looper, which owns
 // fInfoMap, for every node it instantiated on request.
 static const uint32 kMsgNodeInstantiated = 'mnin';
+// Posted by the control thread to the application looper after an add-on's
+// flavors have been rescanned.
+static const uint32 kMsgFlavorsChanged = 'mnfc';
 
 
 struct AddOnInfo {
@@ -389,6 +392,40 @@ MediaAddonServer::MessageReceived(BMessage* message)
 			break;
 		}
 
+		case kMsgFlavorsChanged:
+		{
+			// A physical input or output that appeared after the add-on was
+			// loaded (a USB sound card plugged in, or one that enumerated
+			// late) gets its node now, as it would have at startup, and the
+			// media_server is asked to look at the defaults again.
+			media_addon_id addOnID;
+			if (message->FindInt32("add_on_id", &addOnID) != B_OK)
+				break;
+
+			InfoMap::iterator found = fInfoMap.find(addOnID);
+			if (found == fInfoMap.end())
+				break;
+
+			AddOnInfo& info = found->second;
+			if (info.addon == NULL) {
+				// _PutAddonIfPossible() released it: no active flavors.
+				info.addon = gDormantNodeManager->GetAddOn(addOnID);
+				if (info.addon == NULL)
+					break;
+			}
+
+			size_t activeCount = info.active_flavors.size();
+			_InstantiatePhysicalInputsAndOutputs(info);
+			bool instantiated = info.active_flavors.size() > activeCount;
+			_PutAddonIfPossible(info);
+
+			if (instantiated) {
+				server_rescan_defaults_command cmd;
+				SendToServer(SERVER_RESCAN_DEFAULTS, &cmd, sizeof(cmd));
+			}
+			break;
+		}
+
 		default:
 			BApplication::MessageReceived(message);
 			break;
@@ -440,6 +477,10 @@ MediaAddonServer::_HandleMessage(int32 code, const void* data, size_t size)
 			}
 			_ScanAddOnFlavors(addOn);
 			gDormantNodeManager->PutAddOn(command->add_on_id);
+
+			BMessage message(kMsgFlavorsChanged);
+			message.AddInt32("add_on_id", command->add_on_id);
+			PostMessage(&message);
 			break;
 		}
 
@@ -754,6 +795,14 @@ MediaAddonServer::_InstantiatePhysicalInputsAndOutputs(AddOnInfo& info)
 			continue;
 		}
 		if ((flavorinfo->kinds & (B_PHYSICAL_INPUT | B_PHYSICAL_OUTPUT)) != 0) {
+			// After a rescan of the flavors, most of them already have
+			// their node.
+			media_node_id instance;
+			int32 instanceCount = 1;
+			if (fMediaRoster->GetInstancesFor(info.id, flavorinfo->internal_id,
+					&instance, &instanceCount) == B_OK && instanceCount > 0)
+				continue;
+
 			media_node node;
 
 			dormant_node_info dormantNodeInfo;
