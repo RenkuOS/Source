@@ -17,6 +17,8 @@
 #include <IconUtils.h>
 #include <MenuItem.h>
 #include <Message.h>
+#include <MessageRunner.h>
+#include <Messenger.h>
 #include <PopUpMenu.h>
 #include <Resources.h>
 #include <Roster.h>
@@ -30,6 +32,7 @@ status_t our_image(image_info& image);
 
 const uint32 kMsgOpenBluetoothPreferences = 'obtp';
 const uint32 kMsgQuitBluetoothServer = 'qbts';
+const uint32 kMsgPollConnections = 'pbtc';
 
 const char* kDeskbarItemName = "BluetoothServerReplicant";
 const char* kClassName = "DeskbarReplicant";
@@ -66,6 +69,7 @@ void
 DeskbarReplicant::_Init()
 {
 	fIcon = NULL;
+	fPoll = NULL;
 
 	image_info info;
 	if (our_image(info) != B_OK)
@@ -127,6 +131,29 @@ DeskbarReplicant::AttachedToWindow()
 		SetLowColor(ViewColor());
 	else
 		SetLowUIColor(ViewUIColor());
+
+	// the connected devices change the icon: ask the server now and then,
+	// without waiting for its answer
+	BMessage poll(kMsgPollConnections);
+	fPoll = new BMessageRunner(BMessenger(this), &poll, 2000000);
+	_AskConnectedDevices();
+}
+
+
+void
+DeskbarReplicant::DetachedFromWindow()
+{
+	delete fPoll;
+	fPoll = NULL;
+	BView::DetachedFromWindow();
+}
+
+
+void
+DeskbarReplicant::_AskConnectedDevices()
+{
+	BMessage request(BT_MSG_GET_CONNECTED_DEVICES);
+	BMessenger(BLUETOOTH_SIGNATURE).SendMessage(&request, this);
 }
 
 
@@ -159,6 +186,30 @@ DeskbarReplicant::MessageReceived(BMessage* msg)
 			_QuitBluetoothServer();
 			break;
 
+		case kMsgPollConnections:
+			_AskConnectedDevices();
+			break;
+
+		case BT_MSG_GET_CONNECTED_DEVICES:
+		{
+			int32 after = 0;
+			msg->GetInfo("name", NULL, &after);
+			fConnected = *msg;
+
+			BString tip(B_TRANSLATE("Bluetooth"));
+			const char* name;
+			for (int32 i = 0; fConnected.FindString("name", i, &name) == B_OK;
+					i++) {
+				tip << "\n" << (name[0] != '\0' ? name
+					: B_TRANSLATE("Unnamed device"));
+			}
+			if (after == 0)
+				tip << "\n" << B_TRANSLATE("No device connected");
+			SetToolTip(tip.String());
+
+			break;
+		}
+
 		default:
 			BView::MessageReceived(msg);
 	}
@@ -168,26 +219,40 @@ DeskbarReplicant::MessageReceived(BMessage* msg)
 void
 DeskbarReplicant::MouseDown(BPoint where)
 {
-	BPoint point;
-	uint32 buttons;
-	GetMouse(&point, &buttons);
-	if (!(buttons & B_SECONDARY_MOUSE_BUTTON)) {
-		return;
-	}
+	_ShowMenu(where);
+}
 
+
+void
+DeskbarReplicant::_ShowMenu(BPoint where)
+{
 	BPopUpMenu* menu = new BPopUpMenu(B_EMPTY_STRING, false, false);
+
+	// the connected devices on top
+	const char* name;
+	for (int32 i = 0; fConnected.FindString("name", i, &name) == B_OK; i++) {
+		BMenuItem* item = new BMenuItem(name[0] != '\0' ? name
+			: B_TRANSLATE("Unnamed device"), NULL);
+		item->SetEnabled(false);
+		menu->AddItem(item);
+	}
+	if (menu->CountItems() == 0) {
+		BMenuItem* item = new BMenuItem(B_TRANSLATE("No device connected"),
+			NULL);
+		item->SetEnabled(false);
+		menu->AddItem(item);
+	}
+	menu->AddSeparatorItem();
 
 	menu->AddItem(new BMenuItem(B_TRANSLATE("Settings" B_UTF8_ELLIPSIS),
 		new BMessage(kMsgOpenBluetoothPreferences)));
-
-	// TODO show list of known/paired devices
 
 	menu->AddItem(new BMenuItem(B_TRANSLATE("Quit"),
 		new BMessage(kMsgQuitBluetoothServer)));
 
 	menu->SetTargetForItems(this);
-	ConvertToScreen(&point);
-	menu->Go(point, true, true, true);
+	ConvertToScreen(&where);
+	menu->Go(where, true, true, true);
 
 	delete menu;
 }

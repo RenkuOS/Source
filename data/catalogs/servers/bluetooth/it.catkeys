@@ -5,3 +5,16 @@ Settings…	BluetoothReplicant		Impostazioni…
 OK	BluetoothReplicant		OK
 Error: %status%	BluetoothReplicant		Errore: %status%
 Quit	BluetoothReplicant		Esci
+Bluetooth	BluetoothReplicant		Bluetooth
+Unnamed device	BluetoothReplicant		Dispositivo senza nome
+No device connected	BluetoothReplicant		Nessun dispositivo collegato
+Bluetooth device %address%	Notifications		Dispositivo Bluetooth %address%
+Bluetooth	Notifications		Bluetooth
+Connected	Notifications		Collegato
+%device% is connected.	Notifications		%device% è collegato.
+Disconnected	Notifications		Scollegato
+%device% is disconnected.	Notifications		%device% è scollegato.
+Paired	Notifications		Associato
+%device% is paired and connects when it is switched on.	Notifications		%device% è associato e si collegherà da solo quando lo accendi.
+Pairing failed	Notifications		Associazione non riuscita
+%device% could not be paired. Put it in pairing mode and try again.	Notifications		Non è stato possibile associare %device%. Mettilo in modalità di associazione e riprova.

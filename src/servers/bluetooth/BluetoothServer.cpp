@@ -13,6 +13,7 @@
 #include <Deskbar.h>
 #include <Directory.h>
 #include <Message.h>
+#include <MessageRunner.h>
 #include <Path.h>
 #include <Roster.h>
 #include <String.h>
@@ -25,8 +26,13 @@
 #include <bluetooth/HCI/btHCI_command.h>
 #include <bluetooth/L2CAP/btL2CAP.h>
 #include <bluetooth/bluetooth.h>
+#include <bluetooth/bdaddrUtils.h>
 
 #include "BluetoothServer.h"
+
+
+static const uint32 kMsgSetConnectable = 'stCn';
+static const uint32 kMsgAllowRoleSwitch = 'alRs';
 #include "Debug.h"
 #include "DeskbarReplicant.h"
 #include "LocalDeviceImpl.h"
@@ -156,6 +162,17 @@ void BluetoothServer::MessageReceived(BMessage* message)
 			status = B_WOULD_BLOCK;
 			/* TODO: This should be by user request only! */
 			lDeviceImpl->Launch();
+
+			// Commands sent right after the controller is opened, or right
+			// after another one, can get lost: one at a time, a bit later.
+			BMessage connectable(kMsgSetConnectable);
+			connectable.AddInt32("hci_id", lDeviceImpl->GetID());
+			BMessageRunner::StartSending(be_app_messenger, &connectable,
+				1000000, 1);
+			BMessage roleSwitch(kMsgAllowRoleSwitch);
+			roleSwitch.AddInt32("hci_id", lDeviceImpl->GetID());
+			BMessageRunner::StartSending(be_app_messenger, &roleSwitch,
+				1500000, 1);
 		}
 		break;
 
@@ -168,6 +185,19 @@ void BluetoothServer::MessageReceived(BMessage* message)
 			}
 		}
 		break;
+
+		case kMsgSetConnectable:
+		case kMsgAllowRoleSwitch:
+		{
+			LocalDeviceImpl* lDeviceImpl = LocateDelegateFromMessage(message);
+			if (lDeviceImpl == NULL)
+				return;
+			if (message->what == kMsgSetConnectable)
+				lDeviceImpl->SetConnectable();
+			else
+				lDeviceImpl->AllowRoleSwitch();
+			return;
+		}
 
 		case BT_MSG_COUNT_LOCAL_DEVICES:
 			status = HandleLocalDevicesCount(message, &reply);
@@ -288,6 +318,27 @@ void BluetoothServer::MessageReceived(BMessage* message)
 		}
 		break;
 
+		case BT_MSG_GET_CONNECTED_DEVICES:
+		{
+			for (int32 i = 0; i < fLocalDevicesList.CountItems(); i++) {
+				RemoteDevicesList* devices
+					= fLocalDevicesList.ItemAt(i)->GetRemoteDevicesList();
+				for (int32 j = 0; j < devices->CountItems(); j++) {
+					ServerRemoteDevice* rd = devices->ItemAt(j);
+					if (rd->conn_state != RemoteDevice::CONNECTED)
+						continue;
+					reply.AddString("name", rd->friendly_name);
+					reply.AddData("class_of_device", B_RAW_TYPE,
+						rd->classOfDevice, sizeof(rd->classOfDevice));
+					reply.AddString("address",
+						bdaddrUtils::ToString(rd->bdaddr));
+				}
+			}
+			reply.what = BT_MSG_GET_CONNECTED_DEVICES;
+			message->SendReply(&reply);
+			return;
+		}
+
 		case BT_REQ_CONN_STATE:
 		{
 			LocalDeviceImpl* lDeviceImpl = LocateDelegateFromMessage(message);
@@ -344,12 +395,18 @@ void
 BluetoothServer::DiscoverServices(ServerRemoteDevice* rd)
 {
 	TRACE_BT("BluetoothServer: Discovering Services for %s\n", rd->friendly_name.String());
-	SDPClient sdpClient(rd);
-	sdpClient.Start();
-	if (sdpClient.RequestServiceRecords() == B_OK)
-		TRACE_BT("SDP: Service records loaded successfully\n");
-	else
+	// The device can be busy reading our own records right after the
+	// pairing: try again a few times
+	for (int32 attempt = 0; attempt < 3; attempt++) {
+		rd->services.MakeEmpty();
+		SDPClient sdpClient(rd);
+		if (sdpClient.Start() >= 0 && sdpClient.RequestServiceRecords() == B_OK) {
+			TRACE_BT("SDP: Service records loaded successfully\n");
+			return;
+		}
 		TRACE_BT("SDP: Error service records could not be loaded\n");
+		snooze(500000);
+	}
 
 	// rd->services.PrintToStream();
 }
