@@ -34,6 +34,8 @@ struct ServerRemoteDevice
 	uint16				handle;
 	RemoteDevice::ConnectionState			conn_state;
 	BMessage			services;
+	bool				outgoing;
+		// we opened the connection, rather than the device
 };
 
 typedef BObjectList<ServerRemoteDevice> RemoteDevicesList;
@@ -60,6 +62,9 @@ public:
 	void CreateConnection(BMessage* message);
 	void CancelConnection(BMessage* message);
 	void Disconnect(BMessage* message);
+	void		SetConnectable();
+	void		RequestRemoteName(ServerRemoteDevice* rd);
+	void		AllowRoleSwitch();
 	void SetConnEncryption(uint16 handle, bool encryption_enabled);
 
 	ServerRemoteDevice*	RemoteDeviceByAddr(bdaddr_t bdaddr);

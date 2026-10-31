@@ -107,19 +107,25 @@ BluetoothSettingsView::BluetoothSettingsView(const char* name)
 
 	fClassMenu->SetValue(_GetClassForMenu());
 
-	BLayoutBuilder::Grid<>(this, 0)
+	// The settings and the local device side by side, so that the window
+	// fits on small screens (1024 x 600)
+	BLayoutBuilder::Group<>(this, B_HORIZONTAL, 0)
 		.SetInsets(10)
+		.AddGrid(0.0f, 0.0f)
+			.Add(fClassMenu, 0, 0)
+			.Add(fPolicyMenu, 0, 1)
+			.Add(fFriendlyName, 0, 2)
 
-		.Add(fClassMenu, 0, 0)
-		.Add(fPolicyMenu, 0, 1)
-		.Add(fFriendlyName, 0, 2)
+			.Add(fInquiryTimeControl, 0, 3, 2)
 
-		.Add(fInquiryTimeControl, 0, 3, 2)
-
-		.Add(fLocalDevicesMenuField->CreateLabelLayoutItem(), 0, 5)
-		.Add(fLocalDevicesMenuField->CreateMenuBarLayoutItem(), 1, 5)
-
-		.Add(fExtDeviceView, 0, 6, 2)
+			.Add(fLocalDevicesMenuField->CreateLabelLayoutItem(), 0, 5)
+			.Add(fLocalDevicesMenuField->CreateMenuBarLayoutItem(), 1, 5)
+			.AddGlue(0, 6, 2)
+		.End()
+		.AddGroup(B_VERTICAL, 0)
+			.Add(fExtDeviceView)
+			.AddGlue()
+		.End()
 	.End();
 }
 
@@ -282,6 +288,13 @@ BluetoothSettingsView::_BuildLocalDevicesMenu()
 
 			fLocalDevicesMenu->AddItem(item);
 		}
+	}
+
+	// none picked yet: the first one, which usually is the only one
+	if (ActiveLocalDevice == NULL && fLocalDevicesMenu->CountItems() > 0) {
+		BMenuItem* item = fLocalDevicesMenu->ItemAt(0);
+		item->Message()->FindPointer("LocalDevice", (void**)&ActiveLocalDevice);
+		item->SetMarked(true);
 	}
 }
 

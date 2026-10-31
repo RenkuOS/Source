@@ -9,7 +9,11 @@
 #define DESKBAR_REPLICANT_H
 
 
+#include <Message.h>
 #include <View.h>
+
+
+class BMessageRunner;
 
 
 extern const char* kDeskbarItemName;
@@ -25,6 +29,7 @@ class DeskbarReplicant : public BView {
 		virtual	status_t Archive(BMessage* archive, bool deep = true) const;
 
 		virtual	void	AttachedToWindow();
+		virtual	void	DetachedFromWindow();
 
 		virtual	void	Draw(BRect updateRect);
 
@@ -37,8 +42,12 @@ class DeskbarReplicant : public BView {
 		void			_QuitBluetoothServer();
 
 		void			_ShowErrorAlert(BString msg, status_t status);
+		void			_AskConnectedDevices();
+		void			_ShowMenu(BPoint where);
 
 		BBitmap*		fIcon;
+		BMessage		fConnected;
+		BMessageRunner*	fPoll;
 };
 
 #endif	// DESKBAR_REPLICANT_H

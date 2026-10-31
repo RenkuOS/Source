@@ -20,7 +20,8 @@ buildCommand(uint8 ogf, uint8 ocf, void** param, size_t psize,
 	CALLED();
 	struct hci_command_header* header;
 
-	header = (struct hci_command_header*) malloc(psize
+	// zeroed, as the reserved fields of the parameters must be 0
+	header = (struct hci_command_header*) calloc(1, psize
 		+ sizeof(struct hci_command_header));
 	*outsize = psize + sizeof(struct hci_command_header);
 
@@ -147,7 +148,9 @@ buildRemoteNameRequest(bdaddr_t bdaddr, uint8 pscan_rep_mode,
 	if (command != NULL) {
 		param->bdaddr = bdaddr;
 		param->pscan_rep_mode = pscan_rep_mode;
-		param->clock_offset = clock_offset;
+		// bit 15 tells the controller that the offset from the inquiry is
+		// valid
+		param->clock_offset = B_HOST_TO_LENDIAN_INT16(clock_offset | 0x8000);
 	}
 
 	return command;

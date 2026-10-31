@@ -54,7 +54,8 @@ typedef struct _variable_joystick {
 			+ axis_count * sizeof(int16)		// axis values
 			+ hat_count * sizeof(uint8);		// hat values
 
-		data = (uint8 *)malloc(data_size);
+		// zeroed: centered axes and released buttons until the first report
+		data = (uint8 *)calloc(1, data_size);
 		if (data == NULL)
 			return B_NO_MEMORY;
 

@@ -28,8 +28,6 @@ private:
 	void	StopWatchingServer();
 
 			RemoteDevicesView*		fRemoteDevices;
-			BButton*				fDefaultsButton;
-			BButton*				fRevertButton;
 			BMenuBar*				fMenubar;
 
 			BluetoothSettingsView*	fSettingsView;

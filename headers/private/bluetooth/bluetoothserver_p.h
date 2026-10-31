@@ -38,6 +38,10 @@
 #define BT_REQ_REMOVE_DEVICE            'rdRD'
 
 #define BT_REQ_CONN_STATE               'rdCS'
+#define BT_MSG_GET_CONNECTED_DEVICES    'gtCD'
+	// replies with "name" (string), "class_of_device" (3 bytes), "address"
+	// (string) and "battery" (int32 percent, -1 unknown) for every connected
+	// device
 
 
 #endif

@@ -200,6 +200,7 @@ AddDriversToPackage dvb :
 AddDriversToPackage graphics
 	: $(SYSTEM_ADD_ONS_DRIVERS_GRAPHICS) ;
 AddDriversToPackage input :
+	bluetooth_hid
 	ps2_hid
 	usb_hid
 	wacom

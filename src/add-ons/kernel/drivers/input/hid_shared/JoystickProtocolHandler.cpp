@@ -35,7 +35,8 @@ JoystickProtocolHandler::JoystickProtocolHandler(HIDReport &report)
 	fMaxButton(0),
 	fButtons(NULL),
 	fOpenCount(0),
-	fUpdateThread(-1)
+	fUpdateThread(-1),
+	fLastUpdateThread(-1)
 {
 	mutex_init(&fUpdateLock, "joystick update lock");
 	memset(&fJoystickModuleInfo, 0, sizeof(joystick_module_info));
@@ -119,6 +120,16 @@ JoystickProtocolHandler::JoystickProtocolHandler(HIDReport &report)
 
 JoystickProtocolHandler::~JoystickProtocolHandler()
 {
+	// The update thread can still be on its way out after the last close:
+	// it must be gone before its data is. The device is removed by now, so
+	// waiting for a report returns at once.
+	if (fLastUpdateThread >= 0) {
+		fUpdateThread = -1;
+		status_t result;
+		wait_for_thread_etc(fLastUpdateThread, B_RELATIVE_TIMEOUT, 1000000,
+			&result);
+	}
+
 	free(fCurrentValues.data);
 	free(fAxis);
 	free(fHats);
@@ -200,8 +211,10 @@ JoystickProtocolHandler::Open(uint32 flags, uint32 *cookie)
 
 		if (fUpdateThread < 0)
 			result = fUpdateThread;
-		else
+		else {
+			fLastUpdateThread = fUpdateThread;
 			resume_thread(fUpdateThread);
+		}
 	}
 
 	if (result == B_OK)

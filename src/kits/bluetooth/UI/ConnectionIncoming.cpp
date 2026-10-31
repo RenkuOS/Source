@@ -38,8 +38,11 @@ ConnectionIncoming::ConnectionIncoming(RemoteDevice* rDevice)
 	SetPulseRate(1 * 1000 * 1000);
 		// 1 second
 
+	// only the name known already: asking the device would block the caller,
+	// which can be the thread that handles the answer
 	if (rDevice != NULL)
-		fView = new ConnectionView(BRect(0, 0, 400, 80), rDevice->GetFriendlyName(),
+		fView = new ConnectionView(BRect(0, 0, 400, 80),
+					rDevice->GetCachedFriendlyName(),
 					bdaddrUtils::ToString(rDevice->GetBluetoothAddress()));
 	else
 		fView = new ConnectionView(BRect(0, 0, 400, 80), "<unknown_device>",

@@ -9,6 +9,7 @@
 
 #include "ExtendedLocalDeviceView.h"
 
+#include <bluetooth/HCI/btHCI_command.h>
 #include <bluetooth/bdaddrUtils.h>
 
 #include "defs.h"
@@ -131,6 +132,10 @@ ExtendedLocalDeviceView::MessageReceived(BMessage* message)
 
 			if (fVisible->Value() && fDiscoverable->Value())
 				fScanMode = 3;
+
+			// Page scan always: the paired devices (keyboards, gamepads)
+			// connect to us when they are switched on.
+			fScanMode |= HCI_SCAN_PAGE;
 
 			if (fDevice != NULL)
 				fDevice->SetDiscoverable(fScanMode);

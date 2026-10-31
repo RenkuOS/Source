@@ -39,14 +39,6 @@ BluetoothWindow::BluetoothWindow(BRect frame)
 	BWindow(frame, B_TRANSLATE_SYSTEM_NAME("Bluetooth"), B_TITLED_WINDOW,
 		B_NOT_ZOOMABLE | B_AUTO_UPDATE_SIZE_LIMITS)
 {
-	fDefaultsButton = new BButton("defaults", B_TRANSLATE("Defaults"),
-		new BMessage(kMsgSetDefaults), B_WILL_DRAW);
-	fDefaultsButton->SetEnabled(false);
-
-	fRevertButton = new BButton("revert", B_TRANSLATE("Revert"),
-		new BMessage(kMsgRevert), B_WILL_DRAW);
-	fRevertButton->SetEnabled(false);
-
 	// Add the menu bar
 	fMenubar = new BMenuBar(Bounds(), "menu_bar");
 
@@ -84,15 +76,6 @@ BluetoothWindow::BluetoothWindow(BRect frame)
 		.Add(fMenubar)
 		.AddStrut(B_USE_HALF_ITEM_SPACING)
 		.Add(tabView)
-		.AddStrut(B_USE_HALF_ITEM_SPACING)
-		.Add(new BSeparatorView(B_HORIZONTAL))
-		.AddGroup(B_HORIZONTAL)
-			.SetInsets(B_USE_WINDOW_SPACING, B_USE_DEFAULT_SPACING,
-				B_USE_WINDOW_SPACING, B_USE_WINDOW_SPACING)
-			.Add(fDefaultsButton)
-			.Add(fRevertButton)
-			.AddGlue()
-		.End()
 	.End();
 
 	StartWatchingServer();

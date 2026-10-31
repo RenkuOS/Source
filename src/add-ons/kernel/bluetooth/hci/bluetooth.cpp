@@ -116,7 +116,7 @@ Assemble(bluetooth_device* bluetoothDevice, bt_packet_t type, void* data,
 
 						if (count >= bluetoothDevice->fExpectedPacketSize[type]) {
 							// the whole packet is here so it can be already posted.
-							ERROR("%s: EVENT posted in HCI!!!\n", __func__);
+							TRACE("%s: EVENT posted in HCI!!!\n", __func__);
 							btCoreData->PostEvent(bluetoothDevice, data,
 								bluetoothDevice->fExpectedPacketSize[type]);
 
