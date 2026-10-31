@@ -238,6 +238,10 @@ allocate_command_ident(HciConnection* conn, void* pointer)
 	while (ident != conn->fNextIdent) {
 		if (conn->fInUseIdents.Find(ident) == conn->fInUseIdents.End()) {
 			conn->fInUseIdents.Insert(ident, pointer);
+			// the next command must not reuse this ident: the remote side
+			// takes a request with the ident of the previous one for a
+			// retransmission
+			conn->fNextIdent = ident;
 			return ident;
 		}
 
