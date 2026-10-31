@@ -69,8 +69,10 @@ public:
 	void
 	DeviceDiscovered(RemoteDevice* btDevice, DeviceClass cod)
 	{
+		DeviceListItem* item = new DeviceListItem(btDevice);
+		item->SetShowAddress(true);
 		BMessage* message = new BMessage(kMsgAddListDevice);
-		message->AddPointer("remoteItem", new DeviceListItem(btDevice));
+		message->AddPointer("remoteItem", item);
 		fInquiryPanel->PostMessage(message);
 	}
 
@@ -137,7 +139,7 @@ InquiryPanel::InquiryPanel(BRect frame, LocalDevice* lDevice)
 		new BMessage(kMsgCancel), B_WILL_DRAW);
 	fCancelButton->SetEnabled(false);
 
-	fAddButton = new BButton("add", B_TRANSLATE("Add device to list"),
+	fAddButton = new BButton("add", B_TRANSLATE("Pair"),
 		new BMessage(kMsgAddToRemoteList), B_WILL_DRAW);
 	fAddButton->SetEnabled(false);
 
@@ -176,6 +178,10 @@ InquiryPanel::InquiryPanel(BRect frame, LocalDevice* lDevice)
 			.Add(fScanButton)
 		.End()
 	.End();
+
+	// the panel is opened to look for devices: start right away
+	if (fLocalDevice != NULL)
+		PostMessage(kMsgInquiry);
 }
 
 
@@ -210,15 +216,26 @@ InquiryPanel::MessageReceived(BMessage* message)
 
 		case kMsgAddToRemoteList:
 		{
-			message->PrintToStream();
 			int32 index = fRemoteList->CurrentSelection(0);
-			DeviceListItem* item = (DeviceListItem*) fRemoteList->RemoveItem(index);;
+			DeviceListItem* item = (DeviceListItem*) fRemoteList->RemoveItem(index);
+			if (item == NULL)
+				break;
 
+			// a device stays in pairing mode only for a short time: stop the
+			// inquiry and pair it right away
+			if (fScanning)
+				fDiscoveryAgent->CancelInquiry(fDiscoveryListener);
+			fScanning = false;
+			fRetrieving = false;
+
+			item->SetShowAddress(false);
 			BMessage message(kMsgAddToRemoteList);
 			message.AddPointer("device", item);
+			message.AddBool("pair", true);
 
 			be_app->PostMessage(&message);
 			// TODO: all others listitems can be deleted
+			PostMessage(B_QUIT_REQUESTED);
 		}
 		break;
 
@@ -342,7 +359,8 @@ InquiryPanel::MessageReceived(BMessage* message)
 void
 InquiryPanel::UpdateListStatus(void)
 {
-	if (fRemoteList->CurrentSelection() < 0 || fScanning || fRetrieving)
+	// the device can be paired as soon as it is found
+	if (fRemoteList->CurrentSelection() < 0)
 		fAddButton->SetEnabled(false);
 	else
 		fAddButton->SetEnabled(true);

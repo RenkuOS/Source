@@ -47,13 +47,13 @@ protected:
 
 	void	SetCurrentColor(rgb_color color);
 	void	UpdateControls();
+	void	PairDevice(DeviceListItem* device);
 	void	UpdateAllColors();
 
 	BButton*		addButton;
 	BButton*		removeButton;
-	BButton*		pairButton;
-	BButton*		disconnectButton;
-	BButton*		cancelButton;
+	BButton*		fConnectButton;
+		// connects, disconnects or cancels, depending on the device
 //	BButton*		blockButton;
 //	BButton*		availButton;
 	DeviceListView* fDeviceList;

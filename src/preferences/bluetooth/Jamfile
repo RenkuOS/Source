@@ -11,6 +11,7 @@ Application Bluetooth :
 	BluetoothSettings.cpp
 	BluetoothSettingsView.cpp
 	BluetoothWindow.cpp
+	DeviceIcon.cpp
 	DeviceListItem.cpp
 	ExtendedLocalDeviceView.cpp
 	InquiryPanel.cpp
@@ -25,6 +26,8 @@ DoCatalogs Bluetooth :
 	BluetoothMain.cpp
 	BluetoothSettingsView.cpp
 	BluetoothWindow.cpp
+	DeviceIcon.cpp
+	DeviceListItem.cpp
 	ExtendedLocalDeviceView.cpp
 	InquiryPanel.cpp
 	RemoteDevicesView.cpp

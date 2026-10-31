@@ -23,12 +23,15 @@ class DeviceListItem : public BListItem
 
 		void 			DrawItem(BView*, BRect, bool = false);
 		void 			Update(BView* owner, const BFont* font);
+		static float	IconSize();
 
 		static int 		Compare(const void* firstArg, const void* secondArg);
 		void 			SetDevice(RemoteDevice* bDevice);
 		RemoteDevice* 	Device() const;
 
 		void 			SetConnectionState(RemoteDevice::ConnectionState connectionState);
+		void			SetShowAddress(bool showAddress)
+							{ fShowAddress = showAddress; }
 		RemoteDevice::ConnectionState 	GetConnectionState();
 
 	private:
@@ -39,6 +42,7 @@ class DeviceListItem : public BListItem
 		int32			fRSSI;
 
 		RemoteDevice::ConnectionState		fConnectionState;
+		bool			fShowAddress;
 };
 
 }
