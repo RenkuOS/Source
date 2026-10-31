@@ -22,7 +22,8 @@ InputIcons::InputIcons()
 	:
 	mouseIcon(NULL, false),
 	touchpadIcon(NULL, false),
-	keyboardIcon(NULL, false)
+	keyboardIcon(NULL, false),
+	gamepadIcon(NULL, false)
 {
 	if (!sBounds.IsValid()) {
 		*const_cast<BRect*>(&sBounds) = BRect(BPoint(0, 0),
@@ -67,6 +68,13 @@ InputIcons::_LoadBitmap(BResources* resources)
 	if (keyboard) {
 		keyboardIcon = new BBitmap(sBounds, 0, B_RGBA32);
 		BIconUtils::GetVectorIcon(keyboard, size, &keyboardIcon);
+	}
+
+	const uint8* gamepad = (const uint8*)resources->LoadResource(
+		B_VECTOR_ICON_TYPE, "gamepad_icon", &size);
+	if (gamepad) {
+		gamepadIcon = new BBitmap(sBounds, 0, B_RGBA32);
+		BIconUtils::GetVectorIcon(gamepad, size, &gamepadIcon);
 	}
 }
 

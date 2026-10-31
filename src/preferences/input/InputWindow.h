@@ -15,6 +15,7 @@
 #include <Input.h>
 #include <ListView.h>
 #include <Message.h>
+#include <MessageRunner.h>
 #include <Window.h>
 
 #include "MouseSettings.h"
@@ -31,12 +32,14 @@ public:
 private:
 		status_t			FindDevice();
 		void				AddDevice(BInputDevice* device);
+		void				_ScanGamepads();
 
 private:
 		BListView*			fDeviceListView;
 		BCardView*			fCardView;
 
 		MultipleMouseSettings 	fMultipleMouseSettings;
+		BMessageRunner*		fGamepadRunner;
 };
 
 #endif /* INPUT_WINDOW_H */

@@ -25,7 +25,8 @@ class InputIcons;
 enum input_type {
 	MOUSE_TYPE,
 	TOUCHPAD_TYPE,
-	KEYBOARD_TYPE
+	KEYBOARD_TYPE,
+	GAMEPAD_TYPE
 };
 
 class DeviceListItemView : public BListItem {

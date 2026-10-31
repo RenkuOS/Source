@@ -18,6 +18,7 @@ struct InputIcons {
 			BBitmap				mouseIcon;
 			BBitmap				touchpadIcon;
 			BBitmap				keyboardIcon;
+			BBitmap				gamepadIcon;
 
 	static	BRect				IconRectAt(const BPoint& topLeft);
 

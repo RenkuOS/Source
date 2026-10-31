@@ -1,8 +1,9 @@
 SubDir HAIKU_TOP src preferences input ;
 
-UsePrivateHeaders input ;
+UsePrivateHeaders input bluetooth ;
 
 Application Input :
+	GamepadView.cpp
 	Input.cpp
 	InputDeviceView.cpp
 	InputIcons.cpp
@@ -16,12 +17,13 @@ Application Input :
 	MouseView.cpp
 	MouseSettings.cpp
 	SettingsView.cpp
-	: be [ TargetLibsupc++ ] localestub
+	: be device [ TargetLibsupc++ ] localestub
 	: Input.rdef
 	;
 DoCatalogs Input :
 	x-vnd.Haiku-Input
 	:
+	GamepadView.cpp
 	Input.cpp
 	InputDeviceView.cpp
 	InputKeyboard.cpp

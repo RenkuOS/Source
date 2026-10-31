@@ -149,5 +149,7 @@ DeviceListItemView::SetRenderParameters(Renderer& renderer)
 			renderer.AddIcon(&Icons()->touchpadIcon);
 		else if (fInputType == KEYBOARD_TYPE)
 			renderer.AddIcon(&Icons()->keyboardIcon);
+		else if (fInputType == GAMEPAD_TYPE)
+			renderer.AddIcon(&Icons()->gamepadIcon);
 	}
 }

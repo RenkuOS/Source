@@ -15,10 +15,16 @@
 #include <ControlLook.h>
 #include <LayoutBuilder.h>
 #include <ScrollView.h>
+#include <StringList.h>
 
+#include <Joystick.h>
+#include <Messenger.h>
 #include <private/input/InputServerTypes.h>
 
+#include <bluetoothserver_p.h>
+
 #include "InputConstants.h"
+#include "GamepadView.h"
 #include "InputDeviceView.h"
 #include "InputKeyboard.h"
 #include "InputMouse.h"
@@ -30,6 +36,9 @@
 
 #undef B_TRANSLATION_CONTEXT
 #define B_TRANSLATION_CONTEXT "InputWindow"
+
+
+static const uint32 kMsgScanGamepads = 'scGp';
 
 
 InputWindow::InputWindow(BRect rect)
@@ -55,6 +64,11 @@ InputWindow::InputWindow(BRect rect)
 		.Add(fCardView, 3);
 
 	FindDevice();
+
+	// the gamepads are not input_server devices: look for them now and then
+	_ScanGamepads();
+	BMessage scan(kMsgScanGamepads);
+	fGamepadRunner = new BMessageRunner(BMessenger(this), &scan, 2000000);
 }
 
 
@@ -103,6 +117,10 @@ InputWindow::MessageReceived(BMessage* message)
 				message, fCardView->CardLayout()->VisibleItem()->View());
 			break;
 		}
+
+		case kMsgScanGamepads:
+			_ScanGamepads();
+			break;
 
 		case B_INPUT_DEVICES_CHANGED:
 		{
@@ -208,4 +226,84 @@ InputWindow::AddDevice(BInputDevice* dev)
 		fDeviceListView->AddItem(keyboard);
 	} else
 		delete dev;
+}
+
+
+void
+InputWindow::_ScanGamepads()
+{
+	BJoystick joystick;
+	BStringList paths;
+	int32 count = joystick.CountDevices();
+	for (int32 i = 0; i < count; i++) {
+		char name[B_OS_NAME_LENGTH];
+		if (joystick.GetDeviceName(i, name, sizeof(name)) == B_OK)
+			paths.Add(name);
+	}
+
+	// the cards of the gamepads gone
+	for (int32 i = fCardView->CountChildren() - 1; i >= 0; i--) {
+		GamepadView* view = dynamic_cast<GamepadView*>(fCardView->ChildAt(i));
+		if (view == NULL || paths.HasString(view->Path()))
+			continue;
+		delete fDeviceListView->RemoveItem(i);
+		fCardView->RemoveChild(view);
+		delete view;
+	}
+
+	// the names of the Bluetooth ones, from the Bluetooth server
+	BMessage connected;
+	BMessage request(BT_MSG_GET_CONNECTED_DEVICES);
+	if (BMessenger(BLUETOOTH_SIGNATURE).SendMessage(&request, &connected,
+			500000, 500000) != B_OK)
+		connected.MakeEmpty();
+
+	int32 usbIndex = 0;
+	int32 bluetoothIndex = 0;
+	for (int32 i = 0; i < paths.CountStrings(); i++) {
+		BString path = paths.StringAt(i);
+		bool bluetooth = path.StartsWith("bluetooth/");
+		int32 index = bluetooth ? bluetoothIndex++ : usbIndex++;
+
+		bool known = false;
+		for (int32 j = 0; j < fCardView->CountChildren(); j++) {
+			GamepadView* view
+				= dynamic_cast<GamepadView*>(fCardView->ChildAt(j));
+			if (view != NULL && path == view->Path())
+				known = true;
+		}
+		if (known)
+			continue;
+
+		BString name;
+		if (bluetooth) {
+			// the gamepads among the connected devices, in their order
+			int32 gamepad = 0;
+			const void* data;
+			ssize_t size;
+			for (int32 j = 0; connected.FindData("class_of_device", B_RAW_TYPE,
+					j, &data, &size) == B_OK; j++) {
+				const uint8* deviceClass = (const uint8*)data;
+				int kind = (deviceClass[0] >> 2) & 0x0f;
+				if (size < 3 || (deviceClass[1] & 0x1f) != 5 || kind < 1
+					|| kind > 2)
+					continue;
+				if (gamepad++ == index) {
+					name = connected.GetString("name", j, "");
+					break;
+				}
+			}
+			if (name.IsEmpty())
+				name = B_TRANSLATE("Bluetooth gamepad");
+		} else {
+			name = B_TRANSLATE("USB gamepad %number%");
+			BString number;
+			number << index + 1;
+			name.ReplaceFirst("%number%", number.String());
+		}
+
+		fCardView->AddChild(new GamepadView(path.String(), name.String(),
+			bluetooth ? index : -1));
+		fDeviceListView->AddItem(new DeviceListItemView(name, GAMEPAD_TYPE));
+	}
 }
