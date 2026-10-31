@@ -66,7 +66,10 @@ LocalDeviceImpl::CreateTransportAccessor(BPath* path)
 }
 
 
-LocalDeviceImpl::LocalDeviceImpl(HCIDelegate* hd) : LocalDeviceHandler(hd)
+LocalDeviceImpl::LocalDeviceImpl(HCIDelegate* hd)
+	:
+	LocalDeviceHandler(hd),
+	fDiscoverable(false)
 {
 	LoadRemoteDevices();
 }
@@ -74,6 +77,13 @@ LocalDeviceImpl::LocalDeviceImpl(HCIDelegate* hd) : LocalDeviceHandler(hd)
 
 LocalDeviceImpl::~LocalDeviceImpl()
 {
+	// the links of a controller that goes away are gone with it
+	for (int32 i = 0; i < fRemoteDevicesList.CountItems(); i++) {
+		ServerRemoteDevice* rd = fRemoteDevicesList.ItemAt(i);
+		if (rd->conn_state != RemoteDevice::DISCONNECTED)
+			_LinkDown(rd);
+	}
+
 	SaveRemoteDevices();
 }
 
@@ -194,7 +204,8 @@ LocalDeviceImpl::RemoteDeviceByHandle(uint16 handle)
 {
 	for (int32 i = 0; i < fRemoteDevicesList.CountItems(); i++) {
 		ServerRemoteDevice* rd = fRemoteDevicesList.ItemAt(i);
-		if (rd->handle == handle)
+		// the controller hands the handle of a closed link to the next one
+		if (rd->conn_state == RemoteDevice::CONNECTED && rd->handle == handle)
 			return rd;
 	}
 	return NULL;
@@ -223,6 +234,76 @@ RemoteDevicesList*
 LocalDeviceImpl::GetRemoteDevicesList()
 {
 	return &fRemoteDevicesList;
+}
+
+
+/*!	A link to \a rd is up, with \a handle for its packets.
+	The connection state of a remote device changes only here and in
+	_LinkDown(): DISCONNECTED -> CONNECTING (we or the device asked) ->
+	CONNECTED -> DISCONNECTED. Its handle is valid only while it is CONNECTED.
+*/
+void
+LocalDeviceImpl::_LinkUp(ServerRemoteDevice* rd, uint16 handle)
+{
+	rd->handle = handle;
+	rd->conn_state = RemoteDevice::CONNECTED;
+	Notifications::Connected(rd);
+}
+
+
+/*!	The link to \a rd is gone, or it never came up. The watchers and the user
+	hear about it only when it had been up.
+*/
+void
+LocalDeviceImpl::_LinkDown(ServerRemoteDevice* rd)
+{
+	bool wasConnected = rd->conn_state == RemoteDevice::CONNECTED;
+
+	rd->conn_state = RemoteDevice::DISCONNECTED;
+	rd->handle = kInvalidHandle;
+	rd->encryption_enabled = 0;
+	rd->outgoing = false;
+
+	if (!wasConnected)
+		return;
+
+	Notifications::Disconnected(rd);
+
+	BMessage notice(BT_MSG_DISCONN_COMPLETED);
+	notice.AddUInt8("status", BT_OK);
+	notice.AddData("bdaddr", B_ANY_TYPE, &rd->bdaddr, sizeof(bdaddr_t));
+	((BluetoothServer*)be_app)->NotifyWatchers(&notice);
+}
+
+
+/*!	Closes every link, so that the devices know at once that we are going
+	away instead of finding out after their supervision timeout.
+*/
+void
+LocalDeviceImpl::DisconnectAll()
+{
+	for (int32 i = 0; i < fRemoteDevicesList.CountItems(); i++) {
+		ServerRemoteDevice* rd = fRemoteDevicesList.ItemAt(i);
+		if (rd->conn_state != RemoteDevice::CONNECTED)
+			continue;
+
+		BluetoothCommand<typed_command(hci_disconnect)> command(
+			OGF_LINK_CONTROL, OCF_DISCONNECT);
+		command->handle = rd->handle;
+		command->reason = BT_REMOTE_POWER_OFF;
+		fHCIDelegate->IssueCommand(command.Data(), command.Size());
+	}
+}
+
+
+bool
+LocalDeviceImpl::HasLinks()
+{
+	for (int32 i = 0; i < fRemoteDevicesList.CountItems(); i++) {
+		if (fRemoteDevicesList.ItemAt(i)->conn_state == RemoteDevice::CONNECTED)
+			return true;
+	}
+	return false;
 }
 
 
@@ -989,12 +1070,25 @@ LocalDeviceImpl::CommandStatus(struct hci_ev_cmd_status* event,
 					break;
 
 				default:
+				{
+					// the controller refused to try: no connection complete
+					// event will come
+					const bdaddr_t* bdaddr;
+					ssize_t size;
+					if (request->FindData("bdaddr", B_ANY_TYPE,
+							(const void**)&bdaddr, &size) == B_OK) {
+						ServerRemoteDevice* rd = RemoteDeviceByAddr(*bdaddr);
+						if (rd != NULL && rd->conn_state == RemoteDevice::CONNECTING)
+							_LinkDown(rd);
+					}
+
 					reply.what = BT_MSG_CONN_FAILED;
 					reply.AddUInt8("status", event->status);
 					request->SendReply(&reply);
 
 					ClearWantedEvent(request);
 					break;
+				}
 			}
 		}
 		break;
@@ -1343,6 +1437,11 @@ LocalDeviceImpl::ConnectionRequest(struct hci_ev_conn_request* event,
 			serverRd->link_key = LinkKeyUtils::NullKey();
 		}
 
+		// the controller does not ask for a device it still has a link to:
+		// that link went away without our hearing of it
+		if (serverRd->conn_state == RemoteDevice::CONNECTED)
+			_LinkDown(serverRd);
+
 		serverRd->link_type = event->link_type;
 		serverRd->conn_state = RemoteDevice::CONNECTING;
 		serverRd->outgoing = false;
@@ -1445,6 +1544,7 @@ LocalDeviceImpl::CreateConnection(BMessage* message)
 
 	newRequest->AddInt32("hci_id", fHCIDelegate->Id());
 
+	newRequest->AddData("bdaddr", B_ANY_TYPE, bdaddr, sizeof(bdaddr_t));
 	newRequest->AddInt16("eventExpected",  HCI_EVENT_CMD_STATUS);
 	newRequest->AddInt16("opcodeExpected", PACK_OPCODE(OGF_LINK_CONTROL, OCF_CREATE_CONN));
 
@@ -1553,11 +1653,14 @@ LocalDeviceImpl::RequestRemoteName(ServerRemoteDevice* rd)
 
 
 void
-LocalDeviceImpl::SetConnectable()
+LocalDeviceImpl::SetConnectable(bool discoverable)
 {
-	// page scan: the devices paired before can connect to us
+	// page scan: the devices paired before can connect to us; inquiry scan:
+	// the others can find us
+	fDiscoverable = discoverable;
 	size_t size;
-	void* command = buildWriteScan(HCI_SCAN_PAGE, &size);
+	void* command = buildWriteScan(discoverable
+		? HCI_SCAN_INQUIRY_PAGE : HCI_SCAN_PAGE, &size);
 	if (command == NULL)
 		return;
 
@@ -1649,13 +1752,10 @@ LocalDeviceImpl::ConnectionComplete(struct hci_ev_conn_complete* event)
 	reply.AddUInt8("status", event->status);
 	if (event->status == BT_OK) {
 		if (rd != NULL) {
-			rd->handle = event->handle;
 			rd->link_type = event->link_type;
-			rd->conn_state = RemoteDevice::CONNECTED;
 			rd->encryption_enabled = event->encrypt_mode;
+			_LinkUp(rd, event->handle);
 		}
-
-		Notifications::Connected(rd);
 
 		TRACE_BT("LocalDeviceImpl: %s: Address %s handle=%#x type=%d encrypt=%d\n", __FUNCTION__,
 				bdaddrUtils::ToString(event->bdaddr).String(), event->handle,
@@ -1703,7 +1803,7 @@ LocalDeviceImpl::ConnectionComplete(struct hci_ev_conn_complete* event)
 		else if (LinkKeyUtils::Compare(&rd->link_key, &nullLinkKey))
 			RemoveRemoteDevice(rd);
 		else
-			rd->conn_state = RemoteDevice::DISCONNECTED;
+			_LinkDown(rd);
 
 		TRACE_BT("LocalDeviceImpl: %s: failed with error %s\n", __FUNCTION__,
 			BluetoothError(event->status));
@@ -1721,21 +1821,19 @@ LocalDeviceImpl::DisconnectionComplete(hci_ev_disconnection_complete_reply* even
 	TRACE_BT("LocalDeviceImpl: %s: Handle=%#x, reason=%s status=%x\n", __FUNCTION__, event->handle,
 		BluetoothError(event->reason), event->status);
 
-	ServerRemoteDevice* rd;
-	rd = RemoteDeviceByHandle(event->handle);
-	BMessage reply(BT_MSG_DISCONN_COMPLETED);
-	reply.AddUInt8("status", event->status);
-
-	if (rd != NULL)
-		reply.AddData("bdaddr", B_ANY_TYPE, &rd->bdaddr, sizeof(bdaddr_t));
-
-	if (rd != NULL && (event->status == BT_OK || event->status == BT_NO_CONNECTION)) {
-		rd->conn_state = RemoteDevice::DISCONNECTED;
-		Notifications::Disconnected(rd);
+	ServerRemoteDevice* rd = RemoteDeviceByHandle(event->handle);
+	bool linkGone = event->status == BT_OK || event->status == BT_NO_CONNECTION;
+	if (rd != NULL && linkGone) {
+		_LinkDown(rd);
+		return;
 	}
 
-
-	((BluetoothServer*)be_app)->NotifyWatchers(&reply);
+	// the link is still up, or was not ours: the watchers hear the outcome
+	BMessage notice(BT_MSG_DISCONN_COMPLETED);
+	notice.AddUInt8("status", event->status);
+	if (rd != NULL)
+		notice.AddData("bdaddr", B_ANY_TYPE, &rd->bdaddr, sizeof(bdaddr_t));
+	((BluetoothServer*)be_app)->NotifyWatchers(&notice);
 }
 
 
@@ -1998,11 +2096,9 @@ LocalDeviceImpl::AuthComplete(struct hci_ev_auth_complete* eventData, BMessage* 
 
 	if (status == BT_OK) {
 		TRACE_BT("LocalDeviceImpl: Authentication Successful for handle %d\n", handle);
-		ServerRemoteDevice* rd = RemoteDeviceByHandle(eventData->handle);
-
 		// the services are read once the link is encrypted: data sent while
 		// the controller starts the encryption can get refused
-		SetConnEncryption(rd->handle, true);
+		SetConnEncryption(handle, true);
 	} else {
 		TRACE_BT("LocalDeviceImpl: Authentication Failed for handle %d with status 0x%02x\n",
 			handle, status);
@@ -2044,10 +2140,9 @@ LocalDeviceImpl::EncryptChange(struct hci_ev_encrypt_change* event)
 
 	rd->encryption_enabled = event->encrypt;
 	if (event->status == BT_OK && rd->encryption_enabled != 0) {
-		if (rd->outgoing) {
-			((BluetoothServer*)be_app)->DiscoverServices(rd);
-			((BluetoothServer*)be_app)->NotifyServices(rd);
-		} else {
+		if (rd->outgoing)
+			((BluetoothServer*)be_app)->StartServices(rd);
+		else {
 			// a device that connects to us opens its channels itself
 			TRACE_BT("LocalDeviceImpl: %s connected to us\n",
 				bdaddrUtils::ToString(rd->bdaddr).String());

@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <sys/select.h>
 
+#include <Autolock.h>
 #include <Entry.h>
 #include <Deskbar.h>
 #include <Directory.h>
@@ -49,9 +50,12 @@ DispatchEvent(struct hci_event_header* header, int32 code, size_t size)
 		return B_OK;
 	}
 
+	BluetoothServer* server = (BluetoothServer*)be_app;
+	BAutolock locker(server->DevicesLock());
+
 	// fetch the LocalDevice who belongs this event
-	LocalDeviceImpl* lDeviceImplementation = ((BluetoothServer*)be_app)->
-		LocateLocalDeviceImpl(GET_PORTCODE_HID(code));
+	LocalDeviceImpl* lDeviceImplementation
+		= server->LocateLocalDeviceImpl(GET_PORTCODE_HID(code));
 
 	if (lDeviceImplementation == NULL) {
 		TRACE_BT("BluetoothServer: LocalDevice could not be fetched\n");
@@ -66,7 +70,8 @@ DispatchEvent(struct hci_event_header* header, int32 code, size_t size)
 
 BluetoothServer::BluetoothServer()
 	:
-	BApplication(BLUETOOTH_SIGNATURE)
+	BApplication(BLUETOOTH_SIGNATURE),
+	fDevicesLock("bluetooth devices")
 {
 	fDeviceManager = new DeviceManager();
 	fLocalDevicesList.MakeEmpty();
@@ -80,10 +85,29 @@ BluetoothServer::BluetoothServer()
 
 bool BluetoothServer::QuitRequested(void)
 {
-	LocalDeviceImpl* lDeviceImpl = NULL;
-	while ((lDeviceImpl = (LocalDeviceImpl*)
-		fLocalDevicesList.RemoveItemAt(0)) != NULL)
-		delete lDeviceImpl;
+	// Close the links ourselves: the devices learn at once that we are
+	// gone, and the controller is left without any.
+	fDevicesLock.Lock();
+	for (int32 i = 0; i < fLocalDevicesList.CountItems(); i++)
+		fLocalDevicesList.ItemAt(i)->DisconnectAll();
+	fDevicesLock.Unlock();
+
+	// the disconnection events come through the event thread
+	for (int32 wait = 0; wait < 20; wait++) {
+		BAutolock locker(fDevicesLock);
+		bool links = false;
+		for (int32 i = 0; i < fLocalDevicesList.CountItems(); i++)
+			links |= fLocalDevicesList.ItemAt(i)->HasLinks();
+		if (!links)
+			break;
+		locker.Unlock();
+		snooze(50000);
+	}
+
+	fDevicesLock.Lock();
+	while (!fLocalDevicesList.IsEmpty())
+		_RemoveLocalDevice(fLocalDevicesList.ItemAt(0));
+	fDevicesLock.Unlock();
 
 	_RemoveDeskbarIcon();
 
@@ -137,52 +161,27 @@ void BluetoothServer::MessageReceived(BMessage* message)
 	BMessage reply;
 	status_t status = B_WOULD_BLOCK; // mark somehow to do not reply anything
 
+	BAutolock locker(fDevicesLock);
+
 	switch (message->what) {
 		case BT_MSG_ADD_DEVICE:
 		{
-			BString str;
-			message->FindString("name", &str);
-
-			TRACE_BT("BluetoothServer: Requested LocalDevice %s\n", str.String());
-
-			BPath path(str.String());
-
-			LocalDeviceImpl* lDeviceImpl
-				= LocalDeviceImpl::CreateTransportAccessor(&path);
-
-			if (lDeviceImpl->GetID() >= 0) {
-				fLocalDevicesList.AddItem(lDeviceImpl);
-
-				TRACE_BT("LocalDevice %s id=%" B_PRId32 " added\n", str.String(),
-					lDeviceImpl->GetID());
-			} else {
-				TRACE_BT("BluetoothServer: Adding LocalDevice hci id invalid\n");
-			}
-
-			status = B_WOULD_BLOCK;
-			/* TODO: This should be by user request only! */
-			lDeviceImpl->Launch();
-
-			// Commands sent right after the controller is opened, or right
-			// after another one, can get lost: one at a time, a bit later.
-			BMessage connectable(kMsgSetConnectable);
-			connectable.AddInt32("hci_id", lDeviceImpl->GetID());
-			BMessageRunner::StartSending(be_app_messenger, &connectable,
-				1000000, 1);
-			BMessage roleSwitch(kMsgAllowRoleSwitch);
-			roleSwitch.AddInt32("hci_id", lDeviceImpl->GetID());
-			BMessageRunner::StartSending(be_app_messenger, &roleSwitch,
-				1500000, 1);
+			BString path;
+			if (message->FindString("name", &path) == B_OK)
+				_AddLocalDevice(path.String());
 		}
 		break;
 
 		case BT_MSG_REMOVE_DEVICE:
 		{
+			// by the controller ID when the device failed, by its path when
+			// it left the bus
 			LocalDeviceImpl* lDeviceImpl = LocateDelegateFromMessage(message);
-			if (lDeviceImpl != NULL) {
-				fLocalDevicesList.RemoveItem(lDeviceImpl);
-				delete lDeviceImpl;
-			}
+			BString path;
+			if (lDeviceImpl == NULL && message->FindString("name", &path) == B_OK)
+				lDeviceImpl = _LocalDeviceByPath(path.String());
+			if (lDeviceImpl != NULL)
+				_RemoveLocalDevice(lDeviceImpl);
 		}
 		break;
 
@@ -388,6 +387,99 @@ BluetoothServer::NotifyWatchers(BMessage* notice)
 		}
 		messenger->SendMessage(notice);
 	}
+}
+
+
+/*!	Opens the controller at \a path and brings it up. A controller is opened
+	once: the device monitor can announce the same node more than once.
+*/
+void
+BluetoothServer::_AddLocalDevice(const char* path)
+{
+	if (_LocalDeviceByPath(path) != NULL)
+		return;
+
+	TRACE_BT("BluetoothServer: Requested LocalDevice %s\n", path);
+
+	BPath devicePath(path);
+	LocalDeviceImpl* lDeviceImpl
+		= LocalDeviceImpl::CreateTransportAccessor(&devicePath);
+	if (lDeviceImpl == NULL)
+		return;
+	if (lDeviceImpl->GetID() < 0) {
+		TRACE_BT("BluetoothServer: Adding LocalDevice hci id invalid\n");
+		delete lDeviceImpl;
+		return;
+	}
+
+	fLocalDevicesList.AddItem(lDeviceImpl);
+	TRACE_BT("LocalDevice %s id=%" B_PRId32 " added\n", path,
+		lDeviceImpl->GetID());
+
+	/* TODO: This should be by user request only! */
+	lDeviceImpl->Launch();
+
+	// Commands sent right after the controller is opened, or right
+	// after another one, can get lost: one at a time, a bit later.
+	BMessage connectable(kMsgSetConnectable);
+	connectable.AddInt32("hci_id", lDeviceImpl->GetID());
+	BMessageRunner::StartSending(be_app_messenger, &connectable, 1000000, 1);
+	BMessage roleSwitch(kMsgAllowRoleSwitch);
+	roleSwitch.AddInt32("hci_id", lDeviceImpl->GetID());
+	BMessageRunner::StartSending(be_app_messenger, &roleSwitch, 1500000, 1);
+}
+
+
+/*!	Forgets a controller that failed or left the bus. Its links go with it:
+	closing it makes the kernel drop their connections and wake up whoever
+	uses their channels.
+*/
+void
+BluetoothServer::_RemoveLocalDevice(LocalDeviceImpl* device)
+{
+	TRACE_BT("BluetoothServer: Removing LocalDevice %s id=%" B_PRId32 "\n",
+		device->Path(), device->GetID());
+
+	fLocalDevicesList.RemoveItem(device);
+	delete device;
+}
+
+
+LocalDeviceImpl*
+BluetoothServer::_LocalDeviceByPath(const char* path)
+{
+	for (int32 i = 0; i < fLocalDevicesList.CountItems(); i++) {
+		LocalDeviceImpl* device = fLocalDevicesList.ItemAt(i);
+		if (strcmp(device->Path(), path) == 0)
+			return device;
+	}
+	return NULL;
+}
+
+
+/*!	Reads the services of \a rd and starts its profile, in a thread of its
+	own: reading the records takes seconds, and neither the events of the
+	controllers nor the looper may wait for it. The remote devices are never
+	deleted, so the thread can keep \a rd.
+*/
+void
+BluetoothServer::StartServices(ServerRemoteDevice* rd)
+{
+	thread_id thread = spawn_thread(_ServicesThread, "bluetooth services",
+		B_NORMAL_PRIORITY, rd);
+	if (thread >= 0)
+		resume_thread(thread);
+}
+
+
+/*static*/ status_t
+BluetoothServer::_ServicesThread(void* data)
+{
+	ServerRemoteDevice* rd = (ServerRemoteDevice*)data;
+	BluetoothServer* server = (BluetoothServer*)be_app;
+	server->DiscoverServices(rd);
+	server->NotifyServices(rd);
+	return B_OK;
 }
 
 

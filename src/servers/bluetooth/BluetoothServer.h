@@ -8,6 +8,7 @@
 #include <stdlib.h>
 
 #include <Application.h>
+#include <Locker.h>
 #include <ObjectList.h>
 #include <OS.h>
 
@@ -68,12 +69,25 @@ public:
 	status_t    HandleSimpleRequest(BMessage* message, BMessage* reply);
 
 	void		NotifyWatchers(BMessage* notice);
+	void		StartServices(ServerRemoteDevice* rd);
 	void		DiscoverServices(ServerRemoteDevice* rd);
 	void		NotifyServices(ServerRemoteDevice* rd);
 
     LocalDeviceImpl*    LocateLocalDeviceImpl(hci_id hid);
-	
+
+	/*!	The local devices and their remote devices are used by the looper
+		and by the thread that receives the events of the controllers:
+		both hold this lock while they do.
+	*/
+	BLocker&			DevicesLock() { return fDevicesLock; }
+
 private:
+
+	static status_t		_ServicesThread(void* data);
+
+	void				_AddLocalDevice(const char* path);
+	void				_RemoveLocalDevice(LocalDeviceImpl* device);
+	LocalDeviceImpl*	_LocalDeviceByPath(const char* path);
 
 	LocalDeviceImpl*	LocateDelegateFromMessage(BMessage* message);
 
@@ -82,6 +96,7 @@ private:
 	void				_InstallDeskbarIcon();
 	void				_RemoveDeskbarIcon();
 
+	BLocker				fDevicesLock;
 	LocalDevicesList   	fLocalDevicesList;
 	WatchersList		fWatchersList;
 

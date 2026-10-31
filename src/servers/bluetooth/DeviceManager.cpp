@@ -62,8 +62,24 @@ DeviceManager::MessageReceived(BMessage* msg)
 				break;
 				case B_ENTRY_REMOVED:
 				{
-					TRACE_BT("Something removed from the bus ...\n");
+					// a controller left the bus: the server forgets it, so
+					// that it is opened afresh if it comes back
+					entry_ref ref;
+					const char* name;
+					if (msg->FindInt32("device", &ref.device) != B_OK
+						|| msg->FindInt64("directory", &ref.directory) != B_OK
+						|| msg->FindString("name", &name) != B_OK)
+						return;
+					ref.set_name(name);
 
+					BPath path(&ref);
+					if (path.InitCheck() != B_OK)
+						return;
+					TRACE_BT("DeviceManager: %s removed\n", path.Path());
+
+					BMessage removed(BT_MSG_REMOVE_DEVICE);
+					removed.AddString("name", path.Path());
+					be_app_messenger.SendMessage(&removed);
 				}
 				break;
 				case B_STAT_CHANGED:

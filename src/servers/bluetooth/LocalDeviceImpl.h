@@ -38,6 +38,9 @@ struct ServerRemoteDevice
 		// we opened the connection, rather than the device
 };
 
+// no link uses it: the handles go up to 0x0eff
+static const uint16 kInvalidHandle = 0xffff;
+
 typedef BObjectList<ServerRemoteDevice> RemoteDevicesList;
 
 class LocalDeviceImpl : public LocalDeviceHandler {
@@ -62,7 +65,10 @@ public:
 	void CreateConnection(BMessage* message);
 	void CancelConnection(BMessage* message);
 	void Disconnect(BMessage* message);
-	void		SetConnectable();
+	void DisconnectAll();
+	bool HasLinks();
+	void		SetConnectable(bool discoverable = false);
+	bool		IsDiscoverable() const { return fDiscoverable; }
 	void		RequestRemoteName(ServerRemoteDevice* rd);
 	void		AllowRoleSwitch();
 	void SetConnEncryption(uint16 handle, bool encryption_enabled);
@@ -76,9 +82,13 @@ public:
 private:
 
 	RemoteDevicesList	fRemoteDevicesList;
+	bool				fDiscoverable;
 
 	void SaveRemoteDevices();
 	void LoadRemoteDevices();
+
+	void _LinkUp(ServerRemoteDevice* rd, uint16 handle);
+	void _LinkDown(ServerRemoteDevice* rd);
 
 	void HandleUnexpectedEvent(struct hci_event_header* event);
 	void HandleExpectedRequest(struct hci_event_header* event,
