@@ -87,8 +87,15 @@ RemoteDevice::ParseRemoteDevice(LocalDevice* localDevice, BMessage* message)
 	message->FindData("class_of_device", B_ANY_TYPE, (const void**)&class_of_device, &size);
 	RemoteDevice* rd = new RemoteDevice(*bdaddr, class_of_device);
 
-	// TODO: we should request the remote device's name and other parameters.
-	rd->fDiscovererLocalDevice = localDevice;
+	// the name the server knows, if any
+	BString name;
+	if (message->FindString("name", &name) == B_OK && !name.IsEmpty()) {
+		rd->fFriendlyName = name;
+		rd->fFriendlyNameIsComplete = true;
+	}
+
+	rd->fDiscovererLocalDevice = localDevice != NULL
+		? localDevice : LocalDevice::GetLocalDevice();
 
 	return rd;
 }
@@ -104,10 +111,14 @@ RemoteDevice::GetFriendlyName(bool alwaysAsk)
 	}
 
 	if (fDiscovererLocalDevice == NULL)
-		return BString(B_TRANSLATE("#NoOwnerError#Not Valid name"));
+		fDiscovererLocalDevice = LocalDevice::GetLocalDevice();
 
-	if (fMessenger == NULL)
-		return BString(B_TRANSLATE("#ServerNotReady#Not Valid name"));
+	// without a name, the address is better than an error
+	BString fallback = fFriendlyName.IsEmpty()
+		? bdaddrUtils::ToString(fBdaddr) : fFriendlyName;
+
+	if (fDiscovererLocalDevice == NULL || fMessenger == NULL)
+		return fallback;
 
 	void* remoteNameCommand = NULL;
 	size_t size;
@@ -147,14 +158,11 @@ RemoteDevice::GetFriendlyName(bool alwaysAsk)
 
 		} else {
 			// seems we got a negative event
-			if (!fFriendlyName.IsEmpty())
-				return fFriendlyName;
-
-			return BString(B_TRANSLATE("#CommandFailed#Not Valid name"));
+			return fallback;
 		}
 	}
 
-	return BString(B_TRANSLATE("#NotCompletedRequest#Not Valid name"));
+	return fallback;
 }
 
 
@@ -208,6 +216,12 @@ status_t
 RemoteDevice::Connect()
 {
 	CALLED();
+	// devices loaded from the paired list have no owner yet
+	if (fDiscovererLocalDevice == NULL)
+		fDiscovererLocalDevice = LocalDevice::GetLocalDevice();
+	if (fDiscovererLocalDevice == NULL || fMessenger == NULL)
+		return B_ERROR;
+
 	BMessage request(BT_REQ_CREATE_CONN);
 
 	request.AddInt32("hci_id", fDiscovererLocalDevice->ID());
@@ -240,6 +254,12 @@ status_t
 RemoteDevice::CancelConnection()
 {
 	CALLED();
+	// devices loaded from the paired list have no owner yet
+	if (fDiscovererLocalDevice == NULL)
+		fDiscovererLocalDevice = LocalDevice::GetLocalDevice();
+	if (fDiscovererLocalDevice == NULL || fMessenger == NULL)
+		return B_ERROR;
+
 	BMessage request(BT_REQ_CANCEL_CONN);
 
 	request.AddInt32("hci_id", fDiscovererLocalDevice->ID());
@@ -257,6 +277,12 @@ status_t
 RemoteDevice::Disconnect(bool removeDevice)
 {
 	CALLED();
+	// devices loaded from the paired list have no owner yet
+	if (fDiscovererLocalDevice == NULL)
+		fDiscovererLocalDevice = LocalDevice::GetLocalDevice();
+	if (fDiscovererLocalDevice == NULL || fMessenger == NULL)
+		return B_ERROR;
+
 	BMessage request(BT_REQ_DISCONNECT);
 	if (removeDevice)
 		request.what = BT_REQ_REMOVE_DEVICE;
