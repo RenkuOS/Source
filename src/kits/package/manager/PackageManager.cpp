@@ -1063,18 +1063,14 @@ BPackageManager::_AddOrphanedPackages(PackageList& packages)
 	// the packages that stay and weren't auto-installed. A package is needed,
 	// when a package that stays requires it, or when it supplements one (the
 	// solver installs supplementing packages, e.g. documentation, on its own).
+	// System packages never use home packages, so when working on the home
+	// location, only the home packages count.
 	std::vector<const BPackageInfo*> pendingPackages;
-	for (int32 i = 0;
-			InstalledRepository* repository = fInstalledRepositories.ItemAt(i);
-			i++) {
-		int32 count = repository->CountPackages();
-		for (int32 k = 0; k < count; k++) {
-			BSolverPackage* package = repository->PackageAt(k);
-			if (packages.HasItem(package)
-				|| (repository == &installationRepository
-					&& autoInstalled.HasString(package->Name()))) {
-				continue;
-			}
+	int32 count = installationRepository.CountPackages();
+	for (int32 i = 0; i < count; i++) {
+		BSolverPackage* package = installationRepository.PackageAt(i);
+		if (!packages.HasItem(package)
+			&& !autoInstalled.HasString(package->Name())) {
 			pendingPackages.push_back(&package->Info());
 		}
 	}
@@ -1092,7 +1088,6 @@ BPackageManager::_AddOrphanedPackages(PackageList& packages)
 	}
 
 	PackageList neededPackages;
-	int32 count = installationRepository.CountPackages();
 	while (!pendingPackages.empty()) {
 		const BPackageInfo* info = pendingPackages.back();
 		pendingPackages.pop_back();
