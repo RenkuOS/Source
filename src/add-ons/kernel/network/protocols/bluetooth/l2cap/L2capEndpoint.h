@@ -70,6 +70,7 @@ private:
 			status_t	_WaitForStateChange(bigtime_t absoluteTimeout);
 
 	static	void		_SendTimer(net_timer* timer, void* _endpoint);
+	static	void		_ConfigTimer(net_timer* timer, void* _endpoint);
 			void		_SendQueued();
 
 			void		_SendChannelConfig();
@@ -102,6 +103,10 @@ private:
 
 	net_fifo		fReceiveQueue, fSendQueue;
 	net_timer		fSendTimer;
+	net_timer		fConfigTimer;
+		// sends our configuration request late, and again when unanswered
+	uint8			fConfigIdent;
+	uint8			fConfigRetries;
 
 	struct ConfigState {
 		enum : uint8 {

@@ -11,11 +11,16 @@
 
 #include <new>
 
+#include <driver_settings.h>
+
 #include "l2cap_command.h"
 #include "l2cap_internal.h"
 #include "l2cap_signal.h"
 #include "L2capEndpoint.h"
 #include "L2capEndpointManager.h"
+
+
+bool gL2capTrace = false;
 
 #include <bluetooth/HCI/btHCI_acl.h>
 #include <btModules.h>
@@ -341,6 +346,13 @@ l2cap_std_ops(int32 op, ...)
 		case B_MODULE_INIT:
 		{
 			new(&gL2capEndpointManager) L2capEndpointManager;
+
+			// "trace true" in the "bluetooth" driver settings logs the
+			// signaling commands, to follow the handshakes with a device
+			void* settings = load_driver_settings("bluetooth");
+			gL2capTrace = get_driver_boolean_parameter(settings, "trace",
+				false, true);
+			unload_driver_settings(settings);
 
 			error = gStackModule->register_domain_protocols(AF_BLUETOOTH,
 				SOCK_SEQPACKET, BLUETOOTH_PROTO_L2CAP,

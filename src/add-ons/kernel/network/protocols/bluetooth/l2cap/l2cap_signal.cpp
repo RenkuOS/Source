@@ -3,7 +3,9 @@
  * All rights reserved. Distributed under the terms of the MIT License.
  */
 #include <KernelExport.h>
+#include <stdio.h>
 #include <string.h>
+#include <stdio.h>
 
 #include <net/if_dl.h>
 #include <net_datalink.h>
@@ -61,11 +63,20 @@ l2cap_handle_connection_req(HciConnection* conn, uint8 ident, net_buffer* buffer
 
 
 static void
-l2cap_handle_connection_rsp(L2capEndpoint* endpoint, uint8 ident, net_buffer* buffer)
+l2cap_handle_connection_rsp(L2capEndpoint* endpoint, uint8 ident, net_buffer* buffer,
+	bool& releaseIdent)
 {
 	NetBufferHeaderReader<l2cap_connection_rsp> command(buffer);
 	if (command.Status() != B_OK)
 		return;
+
+	// A pending response is followed by the final one, with the same ident
+	releaseIdent = le16toh(command->result) != l2cap_connection_rsp::RESULT_PENDING;
+
+	if (endpoint == NULL) {
+		ERROR("l2cap: connection response for an unknown ident %d\n", ident);
+		return;
+	}
 
 	l2cap_connection_rsp response;
 	response.dcid = le16toh(command->dcid);
@@ -192,7 +203,9 @@ l2cap_handle_configuration_rsp(HciConnection* conn, L2capEndpoint* endpoint,
 	const uint16 scid = le16toh(command->scid);
 	const uint16 flags = le16toh(command->flags);
 	const uint16 result = le16toh(command->result);
-	releaseIdent = (flags & L2CAP_CFG_FLAG_CONTINUATION) == 0;
+	// a pending response is followed by the final one, with the same ident
+	releaseIdent = (flags & L2CAP_CFG_FLAG_CONTINUATION) == 0
+		&& result != l2cap_configuration_rsp::RESULT_PENDING;
 
 	// Read options (if any).
 	l2cap_config_options options = {};
@@ -246,6 +259,11 @@ l2cap_handle_disconnection_rsp(L2capEndpoint* endpoint, uint8 ident, net_buffer*
 
 	const uint16 dcid = le16toh(command->dcid);
 	const uint16 scid = le16toh(command->scid);
+
+	if (endpoint == NULL) {
+		ERROR("l2cap: disconnection response for an unknown ident %d\n", ident);
+		return B_ERROR;
+	}
 
 	endpoint->_HandleDisconnectionRsp(ident, dcid, scid);
 	return B_OK;
@@ -336,10 +354,38 @@ l2cap_handle_command_reject(L2capEndpoint* endpoint, uint8 ident, net_buffer* bu
 // #pragma mark - outgoing signals
 
 
+
+// with "trace true" in the bluetooth driver settings: every signaling command
+static void
+trace_signaling_command(const char* direction, uint8 code, uint8 ident,
+	net_buffer* buffer, size_t offset)
+{
+	if (!gL2capTrace)
+		return;
+
+	uint8 data[16];
+	size_t length = 0;
+	if (buffer->size > offset) {
+		length = min_c(sizeof(data), buffer->size - offset);
+		if (gBufferModule->read(buffer, offset, data, length) != B_OK)
+			length = 0;
+	}
+
+	char text[3 * sizeof(data) + 1];
+	text[0] = '\0';
+	for (size_t i = 0; i < length; i++)
+		snprintf(text + 3 * i, 4, " %02x", data[i]);
+
+	dprintf("l2cap: %s code %#x ident %u size %" B_PRIu32 ":%s\n", direction,
+		code, ident, buffer->size - (uint32)offset, text);
+}
+
+
 status_t
 send_l2cap_command(HciConnection* conn, uint8 code, uint8 ident, net_buffer* command)
 {
 	// TODO: Command timeouts (probably in L2capEndpoint.)
+	trace_signaling_command("out", code, ident, command, 0);
 	{
 		NetBufferPrepend<l2cap_command_header> header(command);
 		header->code = code;
@@ -449,6 +495,8 @@ send_l2cap_disconnection_rsp(HciConnection* conn, uint8 ident, uint16 dcid, uint
 // #pragma mark - dispatcher
 
 
+
+
 status_t
 l2cap_handle_signaling_command(HciConnection* connection, net_buffer* buffer)
 {
@@ -465,6 +513,8 @@ l2cap_handle_signaling_command(HciConnection* connection, net_buffer* buffer)
 		const uint8 code = commandHeader->code;
 		const uint8 ident = commandHeader->ident;
 		const uint16 length = le16toh(commandHeader->length);
+		trace_signaling_command("in ", code, ident, buffer,
+			sizeof(l2cap_command_header));
 
 		L2capEndpoint* endpoint = NULL;
 		bool releaseIdent = false;
@@ -498,7 +548,7 @@ l2cap_handle_signaling_command(HciConnection* connection, net_buffer* buffer)
 				break;
 
 			case L2CAP_CONNECTION_RSP:
-				l2cap_handle_connection_rsp(endpoint, ident, buffer);
+				l2cap_handle_connection_rsp(endpoint, ident, buffer, releaseIdent);
 				break;
 
 			case L2CAP_CONFIGURATION_REQ:
