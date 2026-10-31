@@ -550,6 +550,42 @@ LocalDevice::_ReadTimeouts()
 }
 
 
+struct eventMask_t {
+	uint64 param;
+} __attribute__ ((packed));
+
+
+struct simplePairingMode_t {
+	uint8 param;
+} __attribute__ ((packed));
+
+
+status_t
+LocalDevice::_EnableSimplePairing()
+{
+	// Secure Simple Pairing came with Bluetooth 2.1 (LMP version 4). Without
+	// it the controller falls back to PIN codes, which devices without a
+	// keypad, like gamepads, refuse.
+	uint32 lmpVersion = 0;
+	if (GetProperty("lmp_version", &lmpVersion) != B_OK || lmpVersion < 4)
+		return B_NOT_SUPPORTED;
+
+	// The default event mask of a controller leaves out the events of the
+	// simple pairing: add them (IO capability request and response, user
+	// confirmation, passkey request, remote OOB data, pairing complete,
+	// extended inquiry result, passkey notification, keypress notification,
+	// remote host features) to the default of the version 2.0.
+	SingleParameterCommandRequest<struct eventMask_t, uint64>
+		(OGF_CONTROL_BASEBAND, OCF_SET_EVENT_MASK,
+		B_HOST_TO_LENDIAN_INT64(0x1c7f1fffffffffffULL), NULL, fHid,
+		fMessenger);
+
+	return SingleParameterCommandRequest<struct simplePairingMode_t, uint8>
+		(OGF_CONTROL_BASEBAND, OCF_WRITE_SIMPLE_PAIRING_MODE, 1, NULL,
+		fHid, fMessenger);
+}
+
+
 status_t
 LocalDevice::Reset()
 {
@@ -599,6 +635,7 @@ LocalDevice::LocalDevice(hci_id hid)
 	_ReadLocalVersion();
 	_ReadLocalSupportedCommands();
 	_ReadTimeouts();
+	_EnableSimplePairing();
 	_ReadLinkKeys();
 
 	// Uncomment this if you want your device to have a nicer default name

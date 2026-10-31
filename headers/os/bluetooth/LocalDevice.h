@@ -60,6 +60,7 @@ private:
 			status_t		_ReadBufferSize();
 			status_t		_ReadLocalFeatures();
 			status_t		_ReadTimeouts();
+			status_t		_EnableSimplePairing();
 			status_t		_ReadLinkKeys();
 			status_t		Reset();
 
