@@ -7,6 +7,7 @@
 
 #include "h2upper.h"
 
+#include <util/AutoLock.h>
 #include <string.h>
 
 #include <bluetooth/bluetooth.h>
@@ -16,7 +17,82 @@
 #include "h2debug.h"
 #include "h2generic.h"
 #include "h2transactions.h"
+#include "h2util.h"
 #include "snet_buffer.h"
+
+
+static const uint32 kMaxQueuedAclPackets = 64;
+
+
+static void
+submit_next_acl(bt_usb_dev* bdev)
+{
+	for (;;) {
+		net_buffer* buffer;
+		MutexLocker locker(&bdev->aclTxLock);
+		if (bdev->aclTxClosing || bdev->aclTxPending
+			|| list_is_empty(&bdev->nbuffersTx[BT_ACL]))
+			return;
+
+		buffer = (net_buffer*)list_remove_head_item(&bdev->nbuffersTx[BT_ACL]);
+		bdev->aclTxQueued--;
+		bdev->aclTxPending = true;
+
+		if (submit_tx_acl(bdev, buffer) == B_OK)
+			return;
+
+		// A failed USB submission has no completion callback. Release its
+		// buffer here, clear the in-flight slot, and continue with the next
+		// packet so a transient failure cannot stall the entire ACL queue.
+		nb_destroy(buffer);
+		bdev->aclTxPending = false;
+	}
+}
+
+
+status_t
+queue_acl_packet(hci_id hid, net_buffer* buffer)
+{
+	bt_usb_dev* bdev = fetch_device(NULL, hid);
+	if (bdev == NULL) {
+		nb_destroy(buffer);
+		return B_ERROR;
+	}
+
+	{
+		MutexLocker locker(&bdev->aclTxLock);
+		if (bdev->aclTxClosing || (bdev->state & RUNNING) == 0) {
+			nb_destroy(buffer);
+			return B_OK;
+		}
+
+		// ACL packets may be fragments of reliable control traffic. Refuse
+		// further submissions rather than discarding an arbitrary fragment.
+		if (bdev->aclTxQueued == kMaxQueuedAclPackets) {
+			bdev->stat.rejectedTX++;
+			nb_destroy(buffer);
+			return B_WOULD_BLOCK;
+		}
+		list_add_item(&bdev->nbuffersTx[BT_ACL], buffer);
+		bdev->aclTxQueued++;
+	}
+
+	submit_next_acl(bdev);
+	return B_OK;
+}
+
+
+void
+acl_packet_complete(bt_usb_dev* bdev)
+{
+	{
+		MutexLocker locker(&bdev->aclTxLock);
+		bdev->aclTxPending = false;
+		if (bdev->aclTxClosing)
+			return;
+	}
+	submit_next_acl(bdev);
+}
 
 
 // TODO: split for commands and comunication (ACL & SCO)
@@ -68,23 +144,6 @@ sched_tx_processing(bt_usb_dev* bdev)
 				}
 			}
 
-			// check ACl
-#ifdef EMPTY_ACL_QUEUE
-			while (!list_is_empty(&bdev->nbuffersTx[BT_ACL])) {
-#else
-			if (!list_is_empty(&bdev->nbuffersTx[BT_ACL])) {
-#endif
-				nbuf = (net_buffer*)
-					list_remove_head_item(&bdev->nbuffersTx[BT_ACL]);
-				err = submit_tx_acl(bdev, nbuf);
-				if (err != B_OK) {
-					// re-head it
-					list_insert_item_before(&bdev->nbuffersTx[BT_ACL],
-							list_get_first_item(&bdev->nbuffersTx[BT_ACL]),
-							nbuf);
-				}
-			}
-
 		} while ((bdev->state & SENDING) != 0);
 
 		bdev->state &= ~PROCESSING;
@@ -94,33 +153,6 @@ sched_tx_processing(bt_usb_dev* bdev)
 		bdev->state |= SENDING;
 	}
 }
-
-
-#if 0
-// DEPRECATED
-status_t
-post_packet_up(bt_usb_dev* bdev, bt_packet_t type, void* buf)
-{
-	status_t err = B_ERROR;
-
-	debugf("Frame up type=%d\n", type);
-
-	if (type == BT_EVENT) {
-		snet_buffer* snbuf = (snet_buffer*)buf;
-		btCoreData->PostEvent(bdev->ndev, snb_get(snbuf),
-			(size_t)snb_size(snbuf));
-		snb_park(&bdev->snetBufferRecycleTrash, snbuf);
-		debugf("to btDataCore len=%d\n", snb_size(snbuf));
-	} else {
-		net_buffer* nbuf = (net_buffer*) buf;
-		// No need to free the buffer at allocation is gonna be reused
-		btDevices->receive_data(bdev->ndev, &nbuf);
-		TRACE("to net_device\n");
-	}
-
-	return err;
-}
-#endif
 
 
 status_t

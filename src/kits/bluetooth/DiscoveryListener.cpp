@@ -109,12 +109,24 @@ DiscoveryListener::MessageReceived(BMessage* message)
 
 				message->FindString("friendly_name", i, &friendlyName);
 
+				// Low Energy peripherals answer no Remote Name Request, so the
+				// name they advertised is the only one there will ever be.
+				bool lowEnergy = false;
+				message->FindBool("low_energy", i, &lowEnergy);
+				uint8 addressType = LE_PUBLIC_ADDRESS;
+				message->FindUInt8("bdaddr_type", i, &addressType);
+
 				// Skip duplicated replies
 				bool duplicatedFound = false;
 				for (int32 index = 0; index < fRemoteDevicesList.CountItems(); index++) {
 					RemoteDevice* existingDevice = fRemoteDevicesList.ItemAt(index);
 					bdaddr_t b1 = existingDevice->GetBluetoothAddress();
-					if (bdaddrUtils::Compare(*bdaddr, b1)) {
+					if (bdaddrUtils::Compare(*bdaddr, b1)
+						&& existingDevice->fLowEnergy == lowEnergy
+						&& (!lowEnergy
+							|| existingDevice->fAddressType == addressType)) {
+						bool wasUnnamed = existingDevice->fFriendlyName.IsEmpty();
+
 						// update these values
 						existingDevice->fPageRepetitionMode = pageRepetitionMode;
 						existingDevice->fScanPeriodMode = scanPeriodMode;
@@ -126,6 +138,15 @@ DiscoveryListener::MessageReceived(BMessage* message)
 							existingDevice->fFriendlyName = friendlyName;
 						}
 						duplicatedFound = true;
+
+						// A peripheral commonly advertises before it answers
+						// with its name, so this repeat report is the first
+						// moment the device is worth showing.
+						if (wasUnnamed
+							&& !existingDevice->fFriendlyName.IsEmpty()) {
+							DeviceDiscovered(existingDevice,
+								existingDevice->GetDeviceClass());
+						}
 						break;
 					}
 				}
@@ -142,6 +163,9 @@ DiscoveryListener::MessageReceived(BMessage* message)
 					rd->fRSSI = rssi;
 					rd->fFriendlyNameIsComplete = friendlyNameIsComplete;
 					rd->fFriendlyName = friendlyName;
+					rd->fLowEnergy = lowEnergy;
+					rd->fAddressType = addressType;
+
 					DeviceDiscovered(rd, rd->GetDeviceClass());
 				}
 			}

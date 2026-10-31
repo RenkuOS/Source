@@ -50,7 +50,6 @@ static const uint32 kMsgAddListDevice = 'aDdv';
 
 static const uint32 kMsgSelected = 'isLt';
 static const uint32 kMsgSecond = 'sCMs';
-static const uint32 kMsgRetrieve = 'IrEt';
 
 
 class PanelDiscoveryListener : public DiscoveryListener {
@@ -111,11 +110,10 @@ private:
 
 InquiryPanel::InquiryPanel(BRect frame, LocalDevice* lDevice)
 	:
-	BWindow(frame, B_TRANSLATE_SYSTEM_NAME("Bluetooth"), B_FLOATING_WINDOW,
+	BWindow(frame, B_TRANSLATE("Scan for Bluetooth devices"), B_FLOATING_WINDOW,
 	B_NOT_ZOOMABLE | B_AUTO_UPDATE_SIZE_LIMITS,	B_ALL_WORKSPACES ),
 	fMessenger(this),
  	fScanning(false),
- 	fRetrieving(false),
 	fLocalDevice(lDevice)
 
 {
@@ -155,13 +153,11 @@ InquiryPanel::InquiryPanel(BRect frame, LocalDevice* lDevice)
 		fDiscoveryAgent = fLocalDevice->GetDiscoveryAgent();
 		fDiscoveryListener = new PanelDiscoveryListener(this);
 
-		SetTitle((const char*)(fLocalDevice->GetFriendlyName().String()));
 	} else {
 		fMessage->SetText(B_TRANSLATE("This computer doesn't seem to have Bluetooth support."));
 		fScanButton->SetEnabled(false);
 	}
 
-	fRetrieveMessage = new BMessage(kMsgRetrieve);
 	fSecondsMessage = new BMessage(kMsgSecond);
 
 	BLayoutBuilder::Group<>(this, B_VERTICAL, B_USE_SMALL_SPACING)
@@ -184,8 +180,6 @@ InquiryPanel::MessageReceived(BMessage* message)
 {
 	static float timer = 0; // expected time of the inquiry process
 	static float scanningTime = 0;
-	static int32 retrievalIndex = 0;
-	static bool labelPlaced = false;
 
 	switch (message->what) {
 		case kMsgInquiry:
@@ -245,29 +239,18 @@ InquiryPanel::MessageReceived(BMessage* message)
 		break;
 
 		case kMsgFinish:
-
-			retrievalIndex = 0;
-			fScanning = false;
-			fRetrieving = true;
-			labelPlaced = false;
-			fCancelButton->SetEnabled(false);
-			fScanProgress->SetTo(100);
-			fScanProgress->SetTrailingText(B_TRANSLATE("Retrieving names" B_UTF8_ELLIPSIS));
-			BMessageRunner::StartSending(fMessenger, fRetrieveMessage, 1000000, 1);
-
-		break;
-
 		case kMsgCancel:
 
-			fDiscoveryAgent->CancelInquiry(fDiscoveryListener);
-			retrievalIndex = 0;
+			if (message->what == kMsgCancel)
+				fDiscoveryAgent->CancelInquiry(fDiscoveryListener);
+
 			fScanning = false;
-			fRetrieving = true;
-			labelPlaced = false;
 			fCancelButton->SetEnabled(false);
 			fScanProgress->SetTo(100);
-			fScanProgress->SetTrailingText(B_TRANSLATE("Canceling scan" B_UTF8_ELLIPSIS));
-			BMessageRunner::StartSending(fMessenger, fRetrieveMessage, 1000000, 1);
+			fScanProgress->SetBarColor(ui_color(B_PANEL_BACKGROUND_COLOR));
+			fScanProgress->SetTrailingText(B_TRANSLATE("Scan finished"));
+			fScanButton->SetEnabled(true);
+			UpdateListStatus();
 
 		break;
 
@@ -287,51 +270,6 @@ InquiryPanel::MessageReceived(BMessage* message)
 			}
 		break;
 
-		case kMsgRetrieve:
-
-			if (fRetrieving) {
-
-				if (retrievalIndex < fDiscoveryAgent->RetrieveDevices(0).CountItems()) {
-
-					if (!labelPlaced) {
-
-						labelPlaced = true;
-						BString progressText(B_TRANSLATE("Retrieving name of '%1'"));
-
-						BString namestr;
-						namestr << bdaddrUtils::ToString(fDiscoveryAgent
-							->RetrieveDevices(0).ItemAt(retrievalIndex)
-							->GetBluetoothAddress());
-						progressText.ReplaceFirst("%1", namestr.String());
-						fScanProgress->SetTrailingText(progressText.String());
-
-					} else {
-						// Really erally expensive operation should be done in a separate thread
-						// once Haiku gets a BarberPole in API replacing the progress bar
-						((DeviceListItem*)fRemoteList->ItemAt(retrievalIndex))
-							->SetDevice(fDiscoveryAgent->RetrieveDevices(0).ItemAt(retrievalIndex));
-						fRemoteList->InvalidateItem(retrievalIndex);
-
-						retrievalIndex++;
-						labelPlaced = false;
-					}
-
-					BMessageRunner::StartSending(fMessenger, fRetrieveMessage, 500000, 1);
-
-				} else {
-
-					fRetrieving = false;
-					retrievalIndex = 0;
-
-					fScanProgress->SetBarColor(ui_color(B_PANEL_BACKGROUND_COLOR));
-					fScanProgress->SetTrailingText(B_TRANSLATE("Scan finished"));
-					fScanButton->SetEnabled(true);
-					UpdateListStatus();
-				}
-			}
-
-		break;
-
 		default:
 			BWindow::MessageReceived(message);
 			break;
@@ -342,7 +280,7 @@ InquiryPanel::MessageReceived(BMessage* message)
 void
 InquiryPanel::UpdateListStatus(void)
 {
-	if (fRemoteList->CurrentSelection() < 0 || fScanning || fRetrieving)
+	if (fRemoteList->CurrentSelection() < 0 || fScanning)
 		fAddButton->SetEnabled(false);
 	else
 		fAddButton->SetEnabled(true);

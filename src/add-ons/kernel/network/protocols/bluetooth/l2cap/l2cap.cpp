@@ -14,6 +14,8 @@
 #include "l2cap_command.h"
 #include "l2cap_internal.h"
 #include "l2cap_signal.h"
+#include "att.h"
+#include "smp.h"
 #include "L2capEndpoint.h"
 #include "L2capEndpointManager.h"
 
@@ -108,6 +110,16 @@ l2cap_getsockopt(net_protocol* protocol, int level, int option,
 	void* value, int* _length)
 {
 	CALLED();
+	if (level == BLUETOOTH_PROTO_L2CAP) {
+		if (option != SO_L2CAP_OUTGOING_MTU)
+			return EOPNOTSUPP;
+		if (*_length < (int)sizeof(uint16))
+			return B_BAD_VALUE;
+		uint16 mtu = ((L2capEndpoint*)protocol)->OutgoingMTU();
+		memcpy(value, &mtu, sizeof(mtu));
+		*_length = sizeof(mtu);
+		return B_OK;
+	}
 	return gSocketModule->get_option(protocol->socket, level, option, value,
 		_length);
 }
@@ -220,6 +232,36 @@ connection_for(net_buffer* buffer)
 }
 
 
+/*!	Installed on every Low Energy link. Without it a button or key held when
+	the link drops is never released, and whatever was tracking it goes on
+	waiting for an up that cannot arrive.
+*/
+static void
+le_connection_closed(HciConnection* connection)
+{
+	smp_connection_closed(connection);
+	att_connection_closed(connection);
+}
+
+
+/*! Starts the fixed-channel protocols belonging to every Low Energy link.
+
+	Some peripherals send an LE signalling request immediately after connecting,
+	but others wait for the central to initiate ATT and security. Starting from
+	the connection-complete event supports both without relying on packet timing.
+*/
+static void
+le_connection_established(HciConnection* connection)
+{
+	if (connection == NULL || !connection->low_energy)
+		return;
+
+	connection->disconnect_hook = &le_connection_closed;
+	smp_link_established(connection);
+	att_start_discovery(connection);
+}
+
+
 status_t
 l2cap_receive_data(net_buffer* buffer)
 {
@@ -237,8 +279,6 @@ l2cap_receive_data(net_buffer* buffer)
 	uint16 length = le16toh(bufferHeader->length);
 	uint16 dcid = le16toh(bufferHeader->dcid);
 
-	TRACE("%s: len=%d cid=%x\n", __func__, length, dcid);
-
 	bufferHeader.Remove();
 
 	if (length != buffer->size) {
@@ -254,11 +294,56 @@ l2cap_receive_data(net_buffer* buffer)
 			// We need to find the connection this packet is associated with.
 			struct HciConnection* connection = connection_for(buffer);
 			if (connection == NULL) {
-				panic("no connection for received L2CAP command");
+				ERROR("bt: %s: no connection for received L2CAP command\n", __func__);
+				gBufferModule->free(buffer);
 				return ENOTCONN;
 			}
 
 			status = l2cap_handle_signaling_command(connection, buffer);
+			break;
+		}
+
+		case L2CAP_LE_SIGNALING_CID:
+		{
+			struct HciConnection* connection = connection_for(buffer);
+			if (connection == NULL) {
+				ERROR("%s: no connection for LE signal\n", __func__);
+				gBufferModule->free(buffer);
+				return ENOTCONN;
+			}
+
+			status = handle_le_signaling_command(connection, buffer);
+
+			// This normally ran at connection-complete time. Keep the call as
+			// an idempotent fallback in case L2CAP loaded after that event.
+			le_connection_established(connection);
+			break;
+		}
+
+		case L2CAP_SMP_CID:
+		{
+			struct HciConnection* connection = connection_for(buffer);
+			if (connection == NULL) {
+				ERROR("%s: no connection for Security Manager packet\n",
+					__func__);
+				gBufferModule->free(buffer);
+				return ENOTCONN;
+			}
+
+			status = smp_receive(connection, buffer);
+			break;
+		}
+
+		case L2CAP_ATT_CID:
+		{
+			struct HciConnection* connection = connection_for(buffer);
+			if (connection == NULL) {
+				ERROR("%s: no connection for attribute packet\n", __func__);
+				gBufferModule->free(buffer);
+				return ENOTCONN;
+			}
+
+			status = att_receive(connection, buffer);
 			break;
 		}
 
@@ -354,10 +439,16 @@ l2cap_std_ops(int32 op, ...)
 			if (error != B_OK)
 				return error;
 
+			btCoreData->le_connection_established
+				= &le_connection_established;
 			return B_OK;
 		}
 
 		case B_MODULE_UNINIT:
+			if (btCoreData->le_connection_established
+					== &le_connection_established) {
+				btCoreData->le_connection_established = NULL;
+			}
 			gL2capEndpointManager.~L2capEndpointManager();
 			return B_OK;
 

@@ -61,8 +61,15 @@ l2cap_handle_connection_req(HciConnection* conn, uint8 ident, net_buffer* buffer
 
 
 static void
-l2cap_handle_connection_rsp(L2capEndpoint* endpoint, uint8 ident, net_buffer* buffer)
+l2cap_handle_connection_rsp(L2capEndpoint* endpoint, uint8 ident,
+	net_buffer* buffer, bool& releaseIdent)
 {
+	if (endpoint == NULL) {
+		ERROR("l2cap: unexpected connection response: ident %d unknown\n",
+			ident);
+		return;
+	}
+
 	NetBufferHeaderReader<l2cap_connection_rsp> command(buffer);
 	if (command.Status() != B_OK)
 		return;
@@ -76,7 +83,7 @@ l2cap_handle_connection_rsp(L2capEndpoint* endpoint, uint8 ident, net_buffer* bu
 	TRACE("%s: dcid=%d scid=%d result=%d status%d\n",
 		__func__, response.dcid, response.scid, response.result, response.status);
 
-	endpoint->_HandleConnectionRsp(ident, response);
+	releaseIdent = endpoint->_HandleConnectionRsp(ident, response);
 }
 
 
@@ -240,6 +247,12 @@ l2cap_handle_disconnection_req(HciConnection* conn, uint8 ident, net_buffer* buf
 static status_t
 l2cap_handle_disconnection_rsp(L2capEndpoint* endpoint, uint8 ident, net_buffer* buffer)
 {
+	if (endpoint == NULL) {
+		ERROR("l2cap: unexpected disconnection response: ident %d unknown\n",
+			ident);
+		return B_ERROR;
+	}
+
 	NetBufferHeaderReader<l2cap_disconnection_rsp> command(buffer);
 	if (command.Status() != B_OK)
 		return ENOBUFS;
@@ -337,7 +350,8 @@ l2cap_handle_command_reject(L2capEndpoint* endpoint, uint8 ident, net_buffer* bu
 
 
 status_t
-send_l2cap_command(HciConnection* conn, uint8 code, uint8 ident, net_buffer* command)
+send_l2cap_command_on_channel(HciConnection* conn, uint8 code, uint8 ident,
+	net_buffer* command, uint16 cid)
 {
 	// TODO: Command timeouts (probably in L2capEndpoint.)
 	{
@@ -348,13 +362,149 @@ send_l2cap_command(HciConnection* conn, uint8 code, uint8 ident, net_buffer* com
 	} {
 		NetBufferPrepend<l2cap_basic_header> basicHeader(command);
 		basicHeader->length = htole16(command->size - sizeof(l2cap_basic_header));
-		basicHeader->dcid = htole16(L2CAP_SIGNALING_CID);
+		basicHeader->dcid = htole16(cid);
 	}
 	command->type = conn->handle;
 	status_t status = btDevices->PostACL(conn->Hid, command);
 	if (status != B_OK)
 		gBufferModule->free(command);
 	return status;
+}
+
+
+status_t
+send_l2cap_command(HciConnection* conn, uint8 code, uint8 ident,
+	net_buffer* command)
+{
+	return send_l2cap_command_on_channel(conn, code, ident, command,
+		L2CAP_SIGNALING_CID);
+}
+
+
+/*!	A Low Energy peripheral asks the central to adopt the connection parameters
+	it prefers. The central must both accept the L2CAP request and ask the
+	controller to apply it; merely acknowledging the request leaves the original,
+	often much slower, connection interval in effect.
+*/
+static bool
+valid_le_connection_parameters(uint16 minInterval, uint16 maxInterval,
+	uint16 latency, uint16 supervisionTimeout)
+{
+	// Vol 3, Part A, section 4.20: interval units are 1.25 ms and the
+	// supervision timeout is in 10 ms units.
+	return minInterval >= 0x0006 && maxInterval <= 0x0c80
+		&& minInterval <= maxInterval && latency <= 0x01f3
+		&& supervisionTimeout >= 0x000a
+		&& supervisionTimeout <= 0x0c80
+		&& (uint32)supervisionTimeout * 4
+			> (uint32)(latency + 1) * maxInterval;
+}
+
+
+static status_t
+update_le_connection_parameters(HciConnection* connection,
+	uint16 minInterval, uint16 maxInterval, uint16 latency,
+	uint16 supervisionTimeout)
+{
+	hci_command_header header;
+	hci_cp_le_conn_update parameters;
+
+	parameters.handle = htole16(connection->handle);
+	parameters.min_interval = htole16(minInterval);
+	parameters.max_interval = htole16(maxInterval);
+	parameters.latency = htole16(latency);
+	parameters.supervision_timeout = htole16(supervisionTimeout);
+	parameters.min_ce_length = 0;
+	parameters.max_ce_length = 0;
+
+	header.opcode = htole16(PACK_OPCODE(OGF_LE_CONTROL,
+		OCF_LE_CONN_UPDATE));
+	header.clen = sizeof(parameters);
+
+	net_buffer* command = gBufferModule->create(128);
+	if (command == NULL)
+		return B_NO_MEMORY;
+
+	void* payload = NULL;
+	status_t status = gBufferModule->prepend_size(command,
+		sizeof(header) + sizeof(parameters), &payload);
+	if (status != B_OK || payload == NULL) {
+		gBufferModule->free(command);
+		return status != B_OK ? status : B_ERROR;
+	}
+
+	memcpy(payload, &header, sizeof(header));
+	memcpy((uint8*)payload + sizeof(header), &parameters, sizeof(parameters));
+
+	status = btDevices->PostCommand(connection->Hid, command);
+	if (status != B_OK)
+		gBufferModule->free(command);
+	return status;
+}
+
+
+status_t
+handle_le_signaling_command(HciConnection* conn, net_buffer* buffer)
+{
+	uint8 code;
+	uint8 ident;
+	{
+		// Scoped, so the buffer is not freed under a live reader.
+		NetBufferHeaderReader<l2cap_command_header> command(buffer);
+		if (command.Status() != B_OK) {
+			gBufferModule->free(buffer);
+			return ENOBUFS;
+		}
+
+		code = command->code;
+		ident = command->ident;
+		command.Remove();
+	}
+
+	if (code != L2CAP_CONNECTION_PARAMETER_UPDATE_REQ) {
+		TRACE("%s: unhandled LE signal 0x%x\n", __func__, code);
+		gBufferModule->free(buffer);
+		return B_OK;
+	}
+
+	uint16 minInterval = 0;
+	uint16 maxInterval = 0;
+	uint16 latency = 0;
+	uint16 supervisionTimeout = 0;
+	{
+		NetBufferHeaderReader<l2cap_connection_parameter_update_req> request(
+			buffer);
+		if (request.Status() == B_OK) {
+			minInterval = le16toh(request->min_interval);
+			maxInterval = le16toh(request->max_interval);
+			latency = le16toh(request->latency);
+			supervisionTimeout = le16toh(request->supervision_timeout);
+		}
+	}
+
+	bool valid = valid_le_connection_parameters(minInterval, maxInterval,
+		latency, supervisionTimeout);
+	TRACE("LE connection %#x parameter request: interval %u-%u (1.25 ms "
+		"units), latency %u, timeout %u ms (%s)\n", conn->handle,
+		minInterval, maxInterval, latency,
+		supervisionTimeout * 10, valid ? "accepted" : "rejected");
+
+	gBufferModule->free(buffer);
+
+	uint8 replyCode = 0;
+	net_buffer* reply = make_l2cap_connection_parameter_update_rsp(replyCode,
+		valid ? l2cap_connection_parameter_update_rsp::RESULT_ACCEPTED
+			: l2cap_connection_parameter_update_rsp::RESULT_REJECTED);
+	if (reply == NULL)
+		return ENOMEM;
+
+	status_t status = send_l2cap_command_on_channel(conn, replyCode, ident, reply,
+		L2CAP_LE_SIGNALING_CID);
+	if (status != B_OK || !valid)
+		return status;
+
+	return update_le_connection_parameters(conn, minInterval, maxInterval,
+		latency, supervisionTimeout);
 }
 
 
@@ -498,7 +648,8 @@ l2cap_handle_signaling_command(HciConnection* connection, net_buffer* buffer)
 				break;
 
 			case L2CAP_CONNECTION_RSP:
-				l2cap_handle_connection_rsp(endpoint, ident, buffer);
+				l2cap_handle_connection_rsp(endpoint, ident, buffer,
+					releaseIdent);
 				break;
 
 			case L2CAP_CONFIGURATION_REQ:

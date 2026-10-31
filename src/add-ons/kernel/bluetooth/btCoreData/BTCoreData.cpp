@@ -8,6 +8,8 @@
 #include <bluetooth/bdaddrUtils.h>
 #include <bluetooth/bluetooth_error.h>
 #include <bluetooth/HCI/btHCI_transport.h>
+#include <bluetooth/HCI/btHCI_acl.h>
+#include <bluetooth/HCI/btHCI_command.h>
 #include <bluetooth/HCI/btHCI_event.h>
 
 #define BT_DEBUG_THIS_MODULE
@@ -20,6 +22,8 @@ int32 api_version = B_CUR_DRIVER_API_VERSION;
 mutex sConnectionListLock = MUTEX_INITIALIZER("bt connection list");
 DoublyLinkedList<HciConnection> sConnectionList;
 net_buffer_module_info* gBufferModule = NULL;
+
+extern bluetooth_core_data_module_info sBCDModule;
 
 
 inline bool
@@ -39,6 +43,9 @@ ExistConnectionByHandle(uint16 handle, hci_id hid)
 status_t
 PostEvent(bluetooth_device* ndev, void* event, size_t size)
 {
+	if (size < sizeof(hci_event_header))
+		return B_BAD_DATA;
+
 	struct hci_event_header* outgoingEvent = (struct hci_event_header*) event;
 	status_t err;
 
@@ -56,11 +63,59 @@ PostEvent(bluetooth_device* ndev, void* event, size_t size)
 			HciConnection* conn = AddConnection(data->handle, BT_ACL,
 				data->bdaddr, ndev->index);
 
-			if (conn == NULL)
-				panic("no mem for conn desc");
+			if (conn == NULL) {
+				ERROR("bt: %s: no memory for connection descriptor\n", __func__);
+				return B_NO_MEMORY;
+			}
 			conn->ndevice = ndev;
 			TRACE("%s: Registered connection handle=%#x\n", __func__,
 				data->handle);
+			break;
+		}
+
+		case HCI_EVENT_LE_META:
+		{
+			if (outgoingEvent->elen < sizeof(hci_ev_le_meta)
+					+ sizeof(hci_ev_le_conn_complete)
+				|| size < sizeof(hci_event_header) + sizeof(hci_ev_le_meta)
+					+ sizeof(hci_ev_le_conn_complete)) {
+				break;
+			}
+
+			struct hci_ev_le_meta* meta
+				= (struct hci_ev_le_meta*)(outgoingEvent + 1);
+
+			// The enhanced completion repeats every field of the plain one in
+			// the same order up to the address, which is all that matters
+			// here, so one cast serves both.
+			if (meta->subevent != HCI_EV_LE_CONN_COMPLETE
+				&& meta->subevent != HCI_EV_LE_ENHANCED_CONN_COMPLETE) {
+				break;
+			}
+
+			struct hci_ev_le_conn_complete* data
+				= (struct hci_ev_le_conn_complete*)(meta + 1);
+
+			if (data->status != BT_OK)
+				break;
+
+			// Without this the ACL layer meets an unknown handle and invents a
+			// connection with no address, which no L2CAP endpoint can match.
+			HciConnection* conn = AddConnection(get_acl_handle(data->handle),
+				BT_ACL, data->bdaddr, ndev->index);
+
+			if (conn == NULL) {
+				ERROR("bt: %s: no memory for connection descriptor\n", __func__);
+				return B_NO_MEMORY;
+			}
+			conn->ndevice = ndev;
+			conn->destination_type = data->bdaddr_type;
+			conn->low_energy = true;
+			TRACE("%s: Registered LE connection handle=%#x type=%d\n",
+				__func__, get_acl_handle(data->handle), data->bdaddr_type);
+
+			if (sBCDModule.le_connection_established != NULL)
+				sBCDModule.le_connection_established(conn);
 			break;
 		}
 
@@ -72,8 +127,49 @@ PostEvent(bluetooth_device* ndev, void* event, size_t size)
 				(outgoingEvent + 1);
 
 			RemoveConnection(data->handle, ndev->index);
-			TRACE("%s: unRegistered connection handle=%#x\n", __func__,
-				data->handle);
+			TRACE("%s: unRegistered connection handle=%#x status=%#x reason=%#x\n",
+				__func__, data->handle, data->status, data->reason);
+			break;
+		}
+
+		case HCI_EVENT_CMD_COMPLETE:
+		{
+			struct hci_ev_cmd_complete* complete
+				= (struct hci_ev_cmd_complete*)(outgoingEvent + 1);
+			uint16 opcode = B_LENDIAN_TO_HOST_INT16(complete->opcode);
+
+			if (opcode == PACK_OPCODE(OGF_INFORMATIONAL_PARAM,
+					OCF_READ_BUFFER_SIZE)) {
+				if (size < sizeof(hci_event_header) + sizeof(hci_ev_cmd_complete)
+						+ sizeof(hci_rp_read_buffer_size))
+					break;
+				struct hci_rp_read_buffer_size* reply
+					= (struct hci_rp_read_buffer_size*)(complete + 1);
+				uint16 mtu = B_LENDIAN_TO_HOST_INT16(reply->acl_mtu);
+				if (reply->status == BT_OK && mtu != 0) {
+					ndev->mtu = min_c(mtu, HCI_MAX_ACL_SIZE);
+					TRACE("%s: controller ACL MTU is %u (%u packets)\n",
+						__func__, ndev->mtu,
+						B_LENDIAN_TO_HOST_INT16(reply->acl_max_pkt));
+				}
+				break;
+			}
+
+			if (opcode != PACK_OPCODE(OGF_INFORMATIONAL_PARAM,
+					OCF_READ_BD_ADDR)) {
+				break;
+			}
+
+			struct hci_rp_read_bd_addr* reply
+				= (struct hci_rp_read_bd_addr*)(complete + 1);
+			if (reply->status != BT_OK)
+				break;
+
+			ndev->localAddress = reply->bdaddr;
+			TRACE("%s: local address is "
+				"%2.2X:%2.2X:%2.2X:%2.2X:%2.2X:%2.2X\n", __func__,
+				reply->bdaddr.b[5], reply->bdaddr.b[4], reply->bdaddr.b[3],
+				reply->bdaddr.b[2], reply->bdaddr.b[1], reply->bdaddr.b[0]);
 			break;
 		}
 
@@ -133,6 +229,7 @@ bluetooth_core_data_module_info sBCDModule = {
 	AddConnection,
 	// RemoveConnection,
 	RemoveConnection,
+	RemoveConnections,
 
 	RouteConnection,
 
@@ -142,6 +239,8 @@ bluetooth_core_data_module_info sBCDModule = {
 	allocate_command_ident,
 	lookup_command_ident,
 	free_command_ident,
+
+	NULL,	// le_connection_established, installed by L2CAP
 };
 
 
