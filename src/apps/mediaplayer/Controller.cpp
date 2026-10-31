@@ -256,6 +256,11 @@ Controller::SetTo(const PlaylistItemRef& item)
 	fAudioSupplier->SetSupplier(NULL, fVideoFrameRate);
 	fVideoSupplier->SetSupplier(NULL);
 
+	// The audio track supplier reads its track in a thread of its own; stop
+	// it before the track supplier that owns the track is released.
+	delete fAudioTrackSupplier;
+	fAudioTrackSupplier = NULL;
+
 	if (fItem != NULL)
 		TrackSupplierReleaser oldSupplierReleaser(fItem);
 
@@ -265,11 +270,8 @@ Controller::SetTo(const PlaylistItemRef& item)
 	// NodeManager::Init() to setup a new media node chain
 	ObjectDeleter<VideoTrackSupplier> videoSupplierDeleter(
 		fVideoTrackSupplier);
-	ObjectDeleter<AudioTrackSupplier> audioSupplierDeleter(
-		fAudioTrackSupplier);
 
 	fVideoTrackSupplier = NULL;
-	fAudioTrackSupplier = NULL;
 	fSubTitles = NULL;
 	fSubTitlesIndex = -1;
 
@@ -473,7 +475,10 @@ Controller::SelectAudioTrack(int n)
 	if (fItem == NULL || !fItem->HasTrackSupplier())
 		return B_NO_INIT;
 
-	ObjectDeleter<AudioTrackSupplier> deleter(fAudioTrackSupplier);
+	// Stop using the current supplier and delete it first: it reads its
+	// track in a thread of its own, and the new one may read the same track.
+	fAudioSupplier->SetSupplier(NULL, fVideoFrameRate);
+	delete fAudioTrackSupplier;
 	fAudioTrackSupplier
 		= fItem->GetTrackSupplier()->CreateAudioTrackForIndex(n);
 	if (fAudioTrackSupplier == NULL)
