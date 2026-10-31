@@ -25,6 +25,7 @@
 #include <arch/x86/arch_system_info.h>
 #include <arch/x86/arch_hpet.h>
 
+#include "efi_platform.h"
 #include "mmu.h"
 #include "acpi.h"
 
@@ -44,6 +45,15 @@ void prepare_trampoline_args(uint64 trampolineCode, uint64 trampolineStack,
 	uint32 pagedir, uint64 kernelEntry, addr_t virtKernelArgs,
 	uint32 currentCpu);
 uint32 get_sentinel(uint64 trampolineStack);
+
+#ifdef KERNEL_FIXUP_FOR_LONG_MODE
+// From arch_smp_long.cpp, for a 64-bit kernel started by a 32-bit loader.
+void copy_hybrid_trampoline_code(uint64 trampolineCode);
+void prepare_hybrid_trampoline_args(uint64 trampolineCode,
+	uint64 trampolineStack, uint32 pagedir, uint64 kernelEntry,
+	addr_t virtKernelArgs, uint32 currentCpu);
+uint32 get_hybrid_sentinel(uint64 trampolineStack);
+#endif
 
 static bool sX2APIC = false;
 
@@ -292,7 +302,12 @@ arch_smp_boot_other_cpus(addr_t pagedir, uint64 kernelEntry, addr_t virtKernelAr
 	uint64 trampolineStack = 0x8000;
 
 	// copy the trampoline code over
-	copy_trampoline_code(trampolineCode, trampolineStack);
+#ifdef KERNEL_FIXUP_FOR_LONG_MODE
+	if (gIsHybridPlatform)
+		copy_hybrid_trampoline_code(trampolineCode);
+	else
+#endif
+		copy_trampoline_code(trampolineCode, trampolineStack);
 
 	// boot the cpus
 	TRACE("we have %" B_PRId32 " CPUs to boot...\n", gKernelArgs.num_cpus - 1);
@@ -302,8 +317,16 @@ arch_smp_boot_other_cpus(addr_t pagedir, uint64 kernelEntry, addr_t virtKernelAr
 		uint64 numStartups;
 		uint32 j;
 
-		prepare_trampoline_args(trampolineCode, trampolineStack,
-			pagedir, kernelEntry, virtKernelArgs, i);
+#ifdef KERNEL_FIXUP_FOR_LONG_MODE
+		if (gIsHybridPlatform) {
+			prepare_hybrid_trampoline_args(trampolineCode, trampolineStack,
+				pagedir, kernelEntry, virtKernelArgs, i);
+		} else
+#endif
+		{
+			prepare_trampoline_args(trampolineCode, trampolineStack,
+				pagedir, kernelEntry, virtKernelArgs, i);
+		}
 
 		/* clear apic errors */
 		if (gKernelArgs.arch_args.cpu_apic_version[i] & 0xf0) {
@@ -353,8 +376,17 @@ arch_smp_boot_other_cpus(addr_t pagedir, uint64 kernelEntry, addr_t virtKernelAr
 		// Wait for the trampoline code to clear the final stack location.
 		// This serves as a notification for us that it has loaded the address
 		// and it is safe for us to overwrite it to trampoline the next CPU.
-		while (get_sentinel(trampolineStack) != 0)
+		while (true) {
+#ifdef KERNEL_FIXUP_FOR_LONG_MODE
+			if (gIsHybridPlatform) {
+				if (get_hybrid_sentinel(trampolineStack) == 0)
+					break;
+			} else
+#endif
+			if (get_sentinel(trampolineStack) == 0)
+				break;
 			spin(1000);
+		}
 	}
 
 	TRACE("done trampolining\n");

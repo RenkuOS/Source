@@ -54,6 +54,8 @@ static const int kLongKernelCodeSegment = 1;
 static const int kLongKernelDataSegment = 2;
 static const int kLongBootGDTSegmentCount = 3;
 
+static uint64 *sLongBootGDT = NULL;
+
 
 /*!	Builds a long mode code/data segment descriptor, the same as
 	set_segment_descriptor() from arch/x86/64/descriptors.h. That header can
@@ -89,6 +91,8 @@ arch_mmu_init_long_gdt(gdt_idt_descr &longBootGDTDescriptor)
 		panic("Failed to allocate GDT.\n");
 	}
 
+	sLongBootGDT = longBootGDT;
+
 	longBootGDT[0] = 0;
 	longBootGDT[kLongKernelCodeSegment]
 		= make_long_segment_descriptor(DT_CODE_EXECUTE_ONLY, DPL_KERNEL);
@@ -102,6 +106,17 @@ arch_mmu_init_long_gdt(gdt_idt_descr &longBootGDTDescriptor)
 
 	TRACE("gdt base = 0x%08" PRIx32 ", limit = %" PRIu16 "\n",
 		longBootGDTDescriptor.base, longBootGDTDescriptor.limit);
+}
+
+
+/*!	Returns the GDT of arch_mmu_init_long_gdt(), for the application processors.
+	It is in memory that is identity mapped.
+*/
+void
+arch_mmu_get_long_gdt(uint64 *base, uint16 *limit)
+{
+	*base = (uint64)(addr_t)sLongBootGDT;
+	*limit = kLongBootGDTSegmentCount * sizeof(uint64) - 1;
 }
 
 
