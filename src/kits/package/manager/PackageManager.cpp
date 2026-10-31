@@ -117,28 +117,38 @@ compare_to_required(const BPackageVersion& version,
 }
 
 
-// Returns whether a resolvable providing all versions from lowest to highest
-// might satisfy the given expression. Errs on the side of a match.
+// Returns whether a resolvable of the given version, which is compatible back
+// to compatibleVersion (if set), might satisfy the given expression. Errs on
+// the side of a match.
 static bool
 might_satisfy(const BPackageResolvableExpression& expression,
-	const BPackageVersion& lowest, const BPackageVersion& highest)
+	const BPackageVersion& version, const BPackageVersion& compatibleVersion)
 {
-	const BPackageVersion& version = expression.Version();
-	if (version.InitCheck() != B_OK || highest.InitCheck() != B_OK)
+	const BPackageVersion& required = expression.Version();
+	if (required.InitCheck() != B_OK || version.InitCheck() != B_OK)
 		return true;
 
+	// Like for the solver, a minimum version is only satisfied by a version
+	// that is still compatible with it (e.g. "lib:libavcodec >= 60.31" isn't
+	// satisfied by libavcodec 62.28, compatible >= 62).
+	bool hasCompatible = compatibleVersion.InitCheck() == B_OK;
+	const BPackageVersion& lowest = hasCompatible ? compatibleVersion : version;
 	switch (expression.Operator()) {
 		case B_PACKAGE_RESOLVABLE_OP_LESS:
-			return compare_to_required(lowest, version) < 0;
+			return compare_to_required(lowest, required) < 0;
 		case B_PACKAGE_RESOLVABLE_OP_LESS_EQUAL:
-			return compare_to_required(lowest, version) <= 0;
+			return compare_to_required(lowest, required) <= 0;
 		case B_PACKAGE_RESOLVABLE_OP_EQUAL:
-			return compare_to_required(lowest, version) <= 0
-				&& compare_to_required(highest, version) >= 0;
+			return compare_to_required(lowest, required) <= 0
+				&& compare_to_required(version, required) >= 0;
 		case B_PACKAGE_RESOLVABLE_OP_GREATER_EQUAL:
-			return compare_to_required(highest, version) >= 0;
+			return compare_to_required(version, required) >= 0
+				&& (!hasCompatible
+					|| compare_to_required(compatibleVersion, required) <= 0);
 		case B_PACKAGE_RESOLVABLE_OP_GREATER:
-			return compare_to_required(highest, version) > 0;
+			return compare_to_required(version, required) > 0
+				&& (!hasCompatible
+					|| compare_to_required(compatibleVersion, required) <= 0);
 		default:
 			return true;
 	}
@@ -156,19 +166,16 @@ might_satisfy(const BPackageInfo& info,
 	if (name.StartsWith("pkg:"))
 		name.Remove(0, 4);
 	if (info.Name() == name)
-		return might_satisfy(expression, info.Version(), info.Version());
+		return might_satisfy(expression, info.Version(), BPackageVersion());
 
 	int32 count = info.ProvidesList().CountItems();
 	for (int32 i = 0; i < count; i++) {
 		const BPackageResolvable* provides = info.ProvidesList().ItemAt(i);
-		if (provides->Name() != name)
-			continue;
-
-		const BPackageVersion& lowest
-			= provides->CompatibleVersion().InitCheck() == B_OK
-				? provides->CompatibleVersion() : provides->Version();
-		if (might_satisfy(expression, lowest, provides->Version()))
+		if (provides->Name() == name
+			&& might_satisfy(expression, provides->Version(),
+				provides->CompatibleVersion())) {
 			return true;
+		}
 	}
 
 	return false;
@@ -1063,18 +1070,14 @@ BPackageManager::_AddOrphanedPackages(PackageList& packages)
 	// the packages that stay and weren't auto-installed. A package is needed,
 	// when a package that stays requires it, or when it supplements one (the
 	// solver installs supplementing packages, e.g. documentation, on its own).
+	// System packages never use home packages, so when working on the home
+	// location, only the home packages count.
 	std::vector<const BPackageInfo*> pendingPackages;
-	for (int32 i = 0;
-			InstalledRepository* repository = fInstalledRepositories.ItemAt(i);
-			i++) {
-		int32 count = repository->CountPackages();
-		for (int32 k = 0; k < count; k++) {
-			BSolverPackage* package = repository->PackageAt(k);
-			if (packages.HasItem(package)
-				|| (repository == &installationRepository
-					&& autoInstalled.HasString(package->Name()))) {
-				continue;
-			}
+	int32 count = installationRepository.CountPackages();
+	for (int32 i = 0; i < count; i++) {
+		BSolverPackage* package = installationRepository.PackageAt(i);
+		if (!packages.HasItem(package)
+			&& !autoInstalled.HasString(package->Name())) {
 			pendingPackages.push_back(&package->Info());
 		}
 	}
@@ -1092,7 +1095,6 @@ BPackageManager::_AddOrphanedPackages(PackageList& packages)
 	}
 
 	PackageList neededPackages;
-	int32 count = installationRepository.CountPackages();
 	while (!pendingPackages.empty()) {
 		const BPackageInfo* info = pendingPackages.back();
 		pendingPackages.pop_back();
