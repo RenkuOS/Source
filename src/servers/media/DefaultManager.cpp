@@ -416,6 +416,29 @@ DefaultManager::_RescanThread()
 		if (fPhysicalAudioIn == -1)
 			_FindPhysical(&fPhysicalAudioIn, kMsgTypeAudioIn, true,
 				B_MEDIA_RAW_AUDIO);
+
+		// A default that only stands in for an absent saved device goes
+		// back to that device once it has a node, e.g. a USB sound card
+		// plugged in after the media services started. The mixer is
+		// reconnected to the new output below, live.
+		if (fPhysicalAudioOut != -1
+			&& fUsingFallback[_TypeIndex(kMsgTypeAudioOut)]) {
+			media_node_id saved = fPhysicalAudioOut;
+			_FindPhysical(&saved, kMsgTypeAudioOut, false, B_MEDIA_RAW_AUDIO,
+				true);
+			if (saved != fPhysicalAudioOut) {
+				fPhysicalAudioOut = saved;
+				fMixerConnected = false;
+			}
+		}
+		if (fPhysicalAudioIn != -1
+			&& fUsingFallback[_TypeIndex(kMsgTypeAudioIn)]) {
+			media_node_id saved = fPhysicalAudioIn;
+			_FindPhysical(&saved, kMsgTypeAudioIn, true, B_MEDIA_RAW_AUDIO,
+				true);
+			fPhysicalAudioIn = saved;
+		}
+
 		if (fAudioMixer == -1)
 			_FindAudioMixer();
 
@@ -455,7 +478,7 @@ DefaultManager::_RescanThread()
 
 void
 DefaultManager::_FindPhysical(volatile media_node_id *id, uint32 default_type,
-	bool isInput, media_type type)
+	bool isInput, media_type type, bool savedOnly)
 {
 	live_node_info info[MAX_NODE_INFOS];
 	media_format format;
@@ -487,7 +510,8 @@ DefaultManager::_FindPhysical(volatile media_node_id *id, uint32 default_type,
 			strlcpy(msgDninfo.name, name, sizeof(msgDninfo.name));
 		if (path)
 			msgPath = BPath(path);
-	}
+	} else if (savedOnly)
+		return;
 
 	format.type = type;
 	count = MAX_NODE_INFOS;
@@ -526,7 +550,8 @@ DefaultManager::_FindPhysical(volatile media_node_id *id, uint32 default_type,
 			if (isInput) {
 				if (0 == strcmp(info[i].name, "None In")) {
 					// we keep the Null audio driver if none else matchs
-					*id = info[i].node.node;
+					if (!savedOnly)
+						*id = info[i].node.node;
 					continue;
 				}
 				// skip the Firewire audio driver
@@ -535,9 +560,11 @@ DefaultManager::_FindPhysical(volatile media_node_id *id, uint32 default_type,
 			} else {
 				if (0 == strcmp(info[i].name, "None Out")) {
 					// we keep the Null audio driver if none else matchs
-					*id = info[i].node.node;
-					if (msg)
-						fPhysicalAudioOutInputID = input_id;
+					if (!savedOnly) {
+						*id = info[i].node.node;
+						if (msg)
+							fPhysicalAudioOutInputID = input_id;
+					}
 					continue;
 				}
 				// skip the Firewire audio driver
@@ -591,12 +618,17 @@ DefaultManager::_FindPhysical(volatile media_node_id *id, uint32 default_type,
 		if (isAudio && !isInput)
 			fPhysicalAudioOutInputID = input_id;
 		fUsingFallback[typeIndex] = false;
+		if (savedOnly) {
+			syslog(LOG_NOTICE, "media_server: default %s %s \"%s\" is present"
+				" again; using it\n", isAudio ? "audio" : "video",
+				isInput ? "input" : "output", msgDninfo.name);
+		}
 		TRACE("Default physical %s %s restored!\n",
 			isAudio ? "audio" : "video", isInput ? "input" : "output");
 		return;
 	}
 
-	if (firstReal < 0) {
+	if (savedOnly || firstReal < 0) {
 		// Only "None" (if anything) was found; *id already says so.
 		return;
 	}
@@ -605,8 +637,8 @@ DefaultManager::_FindPhysical(volatile media_node_id *id, uint32 default_type,
 	if (msg != NULL) {
 		// The saved device is not here. Use the first real one for this
 		// session, but keep the preference: the next start with the device
-		// present restores it. (Switching back when it is plugged in later
-		// needs the mixer rewired live, which this server cannot do.)
+		// present restores it, and so does _RescanThread() once it is
+		// plugged in.
 		fUsingFallback[typeIndex] = true;
 		syslog(LOG_NOTICE, "media_server: default %s %s \"%s\" not present;"
 			" using \"%s\" until it is\n", isAudio ? "audio" : "video",

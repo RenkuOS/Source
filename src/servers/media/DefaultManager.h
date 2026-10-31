@@ -50,9 +50,11 @@ private:
 			static int32		rescan_thread(void *arg);
 			void				_RescanThread();
 
+			// savedOnly: only look for the saved default, and leave *id
+			// alone if it is not there.
 			void				_FindPhysical(volatile media_node_id *id,
 									uint32 default_type, bool isInput,
-									media_type type);
+									media_type type, bool savedOnly = false);
 			void				_FindAudioMixer();
 			void				_FindTimeSource();
 
