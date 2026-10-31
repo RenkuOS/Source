@@ -15,6 +15,7 @@
 
 #include <Directory.h>
 #include <ObjectList.h>
+#include <StringList.h>
 #include <package/Context.h>
 #include <package/PackageDefs.h>
 #include <package/PackageRoster.h>
@@ -98,6 +99,7 @@ public:
 									int packageCount);
 			void				Uninstall(const BSolverPackageSpecifierList&
 									packages);
+			void				Autoremove();
 			void				Update(const char* const* packages,
 									int packageCount);
 			void				Update(const BSolverPackageSpecifierList&
@@ -105,6 +107,9 @@ public:
 			void				FullSync();
 
 			void				VerifyInstallation();
+
+			void				SetAutoInstalled(const char* const* packages,
+									int packageCount, bool autoInstalled);
 
 
 	virtual	status_t			DownloadPackage(const BString& fileURL,
@@ -139,6 +144,21 @@ private:
 							 		const BEntry& entry);
 			int32				_FindBasePackage(const PackageList& packages,
 									const BPackageInfo& info);
+
+			void				_UninstallPackages(PackageList& packages);
+			void				_AddOrphanedPackages(PackageList& packages);
+			void				_GetPackageNames(
+									const BSolverPackageSpecifierList& packages,
+									BStringList& _names);
+			void				_UpdateAutoInstalledPackages(
+									const BStringList& requestedPackages,
+									const BStringList& installedPackages);
+			void				_ReadAutoInstalledPackages(
+									BPackageInstallationLocation location,
+									BStringList& _packages);
+			status_t			_WriteAutoInstalledPackages(
+									BPackageInstallationLocation location,
+									const BStringList& packages);
 
 			void				_AddInstalledRepository(
 									InstalledRepository* repository);
