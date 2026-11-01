@@ -31,6 +31,7 @@ Stream::Stream(Device* device, size_t interface, usb_interface_list* List)
 	fConsecutiveErrors(0),
 	fErrorParked(0),
 	fUSBConfig(NULL),
+	fArmed(false),
 	fStreamEndpoint(0),
 	fIsRunning(false),
 	fMaxPacketSize(0),
@@ -990,26 +991,23 @@ Stream::_ResolveEndpoints(usb_interface_info* interface)
 // Our historical order - active alternate at configure time, clock programmed
 // whenever the format ioctl arrived - never starts the device's engine.
 //
-// When another stream of the device is already running the (shared) clock is
-// locked and must not be reprogrammed mid-stream; only this stream's
-// alternate is then cycled.
+// A fresh run arms all of the device's streams together, before any of them
+// queues a transfer (Device::_ArmStreams): every streaming interface is parked,
+// each clock is programmed once, then every interface gets its active
+// alternate. Arming them one at a time instead parks and re-selects the second
+// interface while the first stream is already streaming on the same clock,
+// which the Behringer UMC204HD answers by playing nothing at all for as long
+// as its capture stream runs.
+//
+// This per-stream sequence is left for a stream that starts while another one
+// of the device is running. The (shared) clock is then locked and must not be
+// reprogrammed mid-stream; only this stream's alternate is cycled.
 status_t
 Stream::_ArmClockAndActivate()
 {
-	if (fUSBConfig == NULL)
-		return B_NO_INIT;
-
-	usb_interface_info* park = &fUSBConfig->interface[fInterface].alt[0];
-	usb_interface_info* active
-		= &fUSBConfig->interface[fInterface].alt[fActiveAlternate];
-
-	status_t status = gUSBModule->set_alt_interface(fDevice->fDevice, park);
-	if (status != B_OK) {
-		TRACE(ERR, "%s arm: park alt 0 failed %#x\n",
-			fIsInput ? "input" : "output", (int)status);
-		// Continue: some devices may refuse a redundant alt 0; the clock
-		// writes and the alt switch below are the essential part.
-	}
+	ParkAlternate();
+		// A failure is logged; some devices may refuse a redundant alt 0, and
+		// the clock writes and the alt switch below are the essential part.
 
 	bool clockBusy = false;
 	for (int i = 0; i < fDevice->fStreams.Count(); i++) {
@@ -1017,16 +1015,59 @@ Stream::_ArmClockAndActivate()
 			clockBusy = true;
 	}
 
-	if (!clockBusy) {
-		fControlInterface->RouteClockSelectors();
-		status = _SetDeviceSamplingRate();
-		if (status != B_OK) {
-			TRACE(ERR, "%s arm: set rate failed %#x\n",
-				fIsInput ? "input" : "output", (int)status);
-		}
-	}
+	if (!clockBusy)
+		ProgramClock();
 
-	status = gUSBModule->set_alt_interface(fDevice->fDevice, active);
+	return ActivateAlternate();
+}
+
+
+bool
+Stream::ReadyToStart()
+{
+	return !fDevice->fRemoved && !fIsRunning && !IsStartParked()
+		&& fUSBConfig != NULL && fDescriptorsCount != 0 && fSamplesCount != 0;
+}
+
+
+status_t
+Stream::ParkAlternate()
+{
+	if (fUSBConfig == NULL)
+		return B_NO_INIT;
+
+	status_t status = gUSBModule->set_alt_interface(fDevice->fDevice,
+		&fUSBConfig->interface[fInterface].alt[0]);
+	if (status != B_OK) {
+		TRACE(ERR, "%s arm: park alt 0 failed %#x\n",
+			fIsInput ? "input" : "output", (int)status);
+	}
+	return status;
+}
+
+
+status_t
+Stream::ProgramClock()
+{
+	fControlInterface->RouteClockSelectors();
+	status_t status = _SetDeviceSamplingRate();
+	if (status != B_OK) {
+		TRACE(ERR, "%s arm: set rate failed %#x\n",
+			fIsInput ? "input" : "output", (int)status);
+	}
+	return status;
+}
+
+
+status_t
+Stream::ActivateAlternate()
+{
+	if (fUSBConfig == NULL)
+		return B_NO_INIT;
+
+	usb_interface_info* active
+		= &fUSBConfig->interface[fInterface].alt[fActiveAlternate];
+	status_t status = gUSBModule->set_alt_interface(fDevice->fDevice, active);
 	if (status != B_OK) {
 		TRACE(ERR, "%s arm: alt %d failed %#x\n",
 			fIsInput ? "input" : "output", (int)fActiveAlternate, (int)status);
@@ -1131,6 +1172,10 @@ Stream::Start()
 status_t
 Stream::_Start()
 {
+	// Whatever happens below, an arming done for this start is used up now.
+	const bool armed = fArmed;
+	fArmed = false;
+
 	// Never (re)start a stream on a removed device: the USB stack is tearing
 	// the pipes down, and freshly queued transfers keep their reference
 	// counts from ever reaching idle (KDL in the pipe destructor).
@@ -1158,8 +1203,9 @@ Stream::_Start()
 		// run; without it the RMX2 never starts its audio engine (see
 		// _ArmClockAndActivate). R1 keeps its configure-time alternate: the
 		// full-speed RMX plays correctly with it, and its endpoints STALL
-		// alt changes for a long window after configuration.
-		if (fControlInterface->SpecReleaseNumber() >= 0x200) {
+		// alt changes for a long window after configuration. A stream that
+		// Device::_ArmStreams() armed with the others is ready already.
+		if (fControlInterface->SpecReleaseNumber() >= 0x200 && !armed) {
 			result = _ArmClockAndActivate();
 			if (result != B_OK)
 				return result;

@@ -159,6 +159,7 @@ private:
 			status_t		_MultiGetGlobalFormat(multi_format_info* Format);
 			status_t		_MultiSetGlobalFormat(multi_format_info* Format);
 			uint8			_SharedClockId();
+			void			_ArmStreams();
 			status_t		_MultiGetMix(multi_mix_value_info* Info);
 			status_t		_MultiSetMix(multi_mix_value_info* Info);
 			status_t		_MultiListMixControls(multi_mix_control_info* Info);

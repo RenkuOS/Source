@@ -36,6 +36,16 @@ public:
 									|| atomic_get(&fErrorParked) != 0; }
 			void			OnRemove();
 
+			// UAC2 stream-start steps, for Device::_ArmStreams(), which runs
+			// them for every stream of a fresh run before any stream starts.
+			// ReadyToStart(): Start() would queue transfers (buffers set up,
+			// device present, not running, not parked).
+			bool			ReadyToStart();
+			status_t		ParkAlternate();
+			status_t		ProgramClock();
+			status_t		ActivateAlternate();
+			void			SetArmed() { fArmed = true; }
+
 			// Rate-id queries used when streams share one clock and their
 			// requested rates have to be reconciled (Device::_SharedClockId).
 			// HasRateId asks "is this already what I am set to", i.e. did the
@@ -129,6 +139,12 @@ protected:
 			// this stream's alternate settings (see _ArmClockAndActivate).
 			// Owned by the USB stack; same lifetime as the endpoint handles.
 			const usb_configuration_info* fUSBConfig;
+
+			// Set by Device::_ArmStreams() once it has parked, clocked and
+			// activated this stream together with the device's other streams;
+			// the next _Start() then queues without arming again. Cleared by
+			// every _Start().
+			bool			fArmed;
 
 			usb_pipe		fStreamEndpoint;
 
