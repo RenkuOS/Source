@@ -84,7 +84,10 @@
 #define IO_APIC_INTERRUPT_VECTOR_SHIFT		0
 #define IO_APIC_INTERRUPT_VECTOR_MASK		0xff
 
-#define MAX_SUPPORTED_REDIRECTION_ENTRIES	64
+// The redirection table starts at register 0x10, takes two registers per entry
+// and the register index is 8 bits wide, which allows for 120 entries.
+#define MAX_SUPPORTED_REDIRECTION_ENTRIES	120
+#define PIN_MASK_WORD_COUNT					((MAX_SUPPORTED_REDIRECTION_ENTRIES + 63) / 64)
 #define ISA_INTERRUPT_COUNT					16
 
 
@@ -102,8 +105,8 @@ struct ioapic {
 	uint8				max_redirection_entry;
 	uint8				global_interrupt_base;
 	uint8				global_interrupt_last;
-	uint64				level_triggered_mask;
-	uint64				nmi_mask;
+	uint64				level_triggered_mask[PIN_MASK_WORD_COUNT];
+	uint64				nmi_mask[PIN_MASK_WORD_COUNT];
 
 	spinlock			registers_lock;
 	area_id				register_area;
@@ -111,6 +114,28 @@ struct ioapic {
 
 	ioapic*				next;
 };
+
+
+// A mask has one bit per pin of an io-apic.
+static inline bool
+pin_mask_test(const uint64* mask, uint8 pin)
+{
+	return (mask[pin / 64] & ((uint64)1 << (pin % 64))) != 0;
+}
+
+
+static inline void
+pin_mask_set(uint64* mask, uint8 pin)
+{
+	mask[pin / 64] |= (uint64)1 << (pin % 64);
+}
+
+
+static inline void
+pin_mask_clear(uint64* mask, uint8 pin)
+{
+	mask[pin / 64] &= ~((uint64)1 << (pin % 64));
+}
 
 
 static int32 sIOAPICPhys = 0;
@@ -205,10 +230,10 @@ ioapic_configure_pin(struct ioapic& ioapic, uint8 pin, uint8 vector,
 
 	if (triggerMode == B_LEVEL_TRIGGERED) {
 		entry |= IO_APIC_TRIGGER_MODE_LEVEL;
-		ioapic.level_triggered_mask |= ((uint64)1 << pin);
+		pin_mask_set(ioapic.level_triggered_mask, pin);
 	} else {
 		entry |= IO_APIC_TRIGGER_MODE_EDGE;
-		ioapic.level_triggered_mask &= ~((uint64)1 << pin);
+		pin_mask_clear(ioapic.level_triggered_mask, pin);
 	}
 
 	if (triggerPolarity == B_LOW_ACTIVE_POLARITY)
@@ -238,7 +263,7 @@ ioapic_get_interrupt_trigger(int32 gsi)
 		return B_EDGE_TRIGGERED;
 
 	uint8 pin = gsi - ioapic->global_interrupt_base;
-	if ((ioapic->level_triggered_mask & ((uint64)1 << pin)) != 0)
+	if (pin_mask_test(ioapic->level_triggered_mask, pin))
 		return B_LEVEL_TRIGGERED;
 	else
 		return B_EDGE_TRIGGERED;
@@ -370,7 +395,8 @@ ioapic_map_ioapic(struct ioapic& ioapic, phys_addr_t physicalAddress)
 			& IO_APIC_MAX_REDIRECTION_ENTRY_MASK);
 	if (ioapic.max_redirection_entry >= MAX_SUPPORTED_REDIRECTION_ENTRIES) {
 		dprintf("io-apic %u entry count %d exceeds max supported, only using the "
-			"first %u entries\n", ioapic.number, ioapic.max_redirection_entry,
+			"first %u entries\n", ioapic.number,
+			ioapic.max_redirection_entry + 1,
 			(uint8)MAX_SUPPORTED_REDIRECTION_ENTRIES);
 		ioapic.max_redirection_entry = MAX_SUPPORTED_REDIRECTION_ENTRIES - 1;
 	}
@@ -378,7 +404,7 @@ ioapic_map_ioapic(struct ioapic& ioapic, phys_addr_t physicalAddress)
 	ioapic.global_interrupt_last
 		= ioapic.global_interrupt_base + ioapic.max_redirection_entry;
 
-	ioapic.nmi_mask = 0;
+	memset(ioapic.nmi_mask, 0, sizeof(ioapic.nmi_mask));
 
 	return B_OK;
 }
@@ -391,7 +417,7 @@ ioapic_initialize_ioapic(struct ioapic& ioapic, uint8 targetAPIC)
 	ioapic_write_32(ioapic, IO_APIC_ID, ioapic.apic_id << IO_APIC_ID_SHIFT);
 
 	// program the interrupt vectors of the io-apic
-	ioapic.level_triggered_mask = 0;
+	memset(ioapic.level_triggered_mask, 0, sizeof(ioapic.level_triggered_mask));
 	uint8 gsi = ioapic.global_interrupt_base;
 	for (uint8 i = 0; i <= ioapic.max_redirection_entry; i++, gsi++) {
 		// initialize everything to deliver to the boot CPU in physical mode
@@ -415,7 +441,7 @@ ioapic_initialize_ioapic(struct ioapic& ioapic, uint8 targetAPIC)
 			entry |= IO_APIC_TRIGGER_MODE_LEVEL
 				| IO_APIC_PIN_POLARITY_LOW_ACTIVE
 				| IO_APIC_DELIVERY_MODE_FIXED;
-			ioapic.level_triggered_mask |= ((uint64)1 << i);
+			pin_mask_set(ioapic.level_triggered_mask, i);
 		}
 
 		ioapic_write_64(ioapic, IO_APIC_REDIRECTION_TABLE + 2 * i, entry, true);
@@ -502,7 +528,7 @@ acpi_enumerate_ioapics(acpi_table_madt* madt)
 				}
 
 				uint8 pin = info->GlobalIrq - ioapic->global_interrupt_base;
-				ioapic->nmi_mask |= (uint64)1 << pin;
+				pin_mask_set(ioapic->nmi_mask, pin);
 				break;
 			}
 		}
@@ -686,7 +712,7 @@ ioapic_is_interrupt_available(int32 gsi)
 		return false;
 
 	uint8 pin = gsi - ioapic->global_interrupt_base;
-	return (ioapic->nmi_mask & ((uint64)1 << pin)) == 0;
+	return !pin_mask_test(ioapic->nmi_mask, pin);
 }
 
 
