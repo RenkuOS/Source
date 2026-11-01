@@ -74,6 +74,26 @@ EscapeArgument(const char* arg, BString& outStr)
 		outStr << temp;
 	}
 }
+static void
+EscapeShellArgument(const char* arg, BString& outStr)
+{
+	if (arg == NULL) {
+		outStr = "";
+		return;
+	}
+
+	outStr = "";
+	for (int32 i = 0; arg[i] != '\0'; i++) {
+		char c = arg[i];
+		// Caratteri speciali che la shell o il parser interpretano e a cui serve il backslash
+		if (c == ' ' || c == '(' || c == ')' || c == '"' || c == '\'' 
+			|| c == '\\' || c == '$' || c == '`' || c == ';' || c == '&' 
+			|| c == '|' || c == '<' || c == '>' || c == '*' || c == '?') {
+			outStr << '\\';
+		}
+		outStr << c;
+	}
+}
 int
 main(int argc, char **argv)
 {
@@ -110,7 +130,7 @@ main(int argc, char **argv)
 	
 	bool correctCmd = true;
 	
-	bool removePresence = false;
+	//bool removePresence = false;
 	for (int32 i = 1; argv[i]!=NULL; i++) {
 		if (strcmp(argv[i], "--help") == 0)
 			break;
@@ -226,8 +246,8 @@ main(int argc, char **argv)
 				title->Truncate(index);
 				BString *action = new BString(argv[i] + 4);
 				action->Remove(0, index+1);
-				const char* lookfor = "desklink --remove";
-				if (action->FindFirst(lookfor)>-1) removePresence=true;
+				//const char* lookfor = "desklink --remove";
+				//if (action->FindFirst(lookfor)>-1) removePresence=true;
 				BMessage* param = new BMessage();
 				param->AddString("title",title->String());
 				param->AddString("action",action->String());
@@ -255,14 +275,38 @@ main(int argc, char **argv)
 			return 1;
 		}
 		
+		/* vecchia logica che non supporta più di un "--remove"
 		if (!removePresence) {
 			//aggiungiamo sempre una rimozione
 			BString *remtitle = new BString("Remove replicant");
 			BString *remaction = new BString("desklink --remove=");
-			remaction->Append(ref.name);
+			EscapeArgument(ref.name, *remaction);
+			titleList.AddItem(remtitle);
+			actionList.AddItem(remaction);
+		}*/
+		BString expectedRemove = "desklink --remove=";
+		BString escapedName;
+		EscapeShellArgument(ref.name, escapedName);
+		expectedRemove << escapedName;
+
+		bool hasSelfRemove = false;
+		for (int32 j = 0; j < actionList.CountItems(); j++) {
+			BString *act = (BString*)actionList.ItemAt(j);
+			if (act != NULL && act->FindFirst(expectedRemove)>-1) {
+				hasSelfRemove = true;
+				break;
+			}
+		}
+
+		// Se non c'è già un comando che rimuove questo specifico replicante, lo aggiungiamo
+		if (!hasSelfRemove) {
+			BString *remtitle = new BString("Remove replicant");
+			BString *remaction = new BString("desklink --remove=");
+			EscapeArgument(ref.name, *remaction);
 			titleList.AddItem(remtitle);
 			actionList.AddItem(remaction);
 		}
+
 		appToSave->AddString("refname", ref.name);
 
 		err = deskbar.AddItem(&ref);
