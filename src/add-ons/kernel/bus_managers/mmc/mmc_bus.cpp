@@ -392,7 +392,7 @@ MMCBus::_WorkerThread(void* cookie)
 		// If ACMD41 also does not work, it may be an SDIO card, too
 		uint32_t probe = (HOST_27_36V << 8) | kVoltageCheckPattern;
 		uint32_t hcs = 1 << 30;
-		uint32_t ocr;
+		uint32_t ocr = 0;
 		status_t status = bus->ExecuteCommand(0, SD_SEND_IF_COND, probe, &response);
 		if (status == B_OK && response != probe) {
 			// Not an SD 2.0 card echoing the check pattern. What answers here
@@ -453,24 +453,47 @@ MMCBus::_WorkerThread(void* cookie)
 		// We keep repeating ACMD41 until the card replies that it is
 		// initialized. For MMC we already probed using CMD1 above.
 		if ((cardType != CARD_TYPE_MMC) && (cardType != CARD_TYPE_MMC_EXTENDED_CAPACITY)) {
-			do {
-				uint32_t cardStatus;
-				while (bus->ExecuteCommand(0, SD_APP_CMD, 0, &cardStatus) == B_BUSY) {
+			// A card that answers neither CMD1 nor ACMD41 (an SDIO card, or
+			// a slot without a working card) used to keep this loop going
+			// forever: ocr was never written, so whether it ended depended
+			// on what was on the stack. An SD card has to finish its
+			// initialization within 1 second (physical layer specification,
+			// 4.2.3); give up after 2.
+			bool ready = false;
+			for (int attempt = 0; attempt < 20 && !ready; attempt++) {
+				uint32_t cardStatus = 0;
+				status = bus->ExecuteCommand(0, SD_APP_CMD, 0, &cardStatus);
+				while (status == B_BUSY) {
 					ERROR("Card locked after CMD8...\n");
 					snooze(1000000);
+					status = bus->ExecuteCommand(0, SD_APP_CMD, 0, &cardStatus);
+				}
+				if (status != B_OK) {
+					TRACE("CMD55 failed: %s\n", strerror(status));
+					break;
 				}
 				if ((cardStatus & 0xFFFF8000) != 0)
 					ERROR("SD card reports error %x\n", cardStatus);
 				if ((cardStatus & (1 << 5)) == 0)
 					ERROR("Card did not enter ACMD mode\n");
 
-				bus->ExecuteCommand(0, SD_SEND_OP_COND, hcs | 0xFF8000, &ocr);
-
-				if ((ocr & (1 << 31)) == 0) {
+				ocr = 0;
+				status = bus->ExecuteCommand(0, SD_SEND_OP_COND,
+					hcs | 0xFF8000, &ocr);
+				if (status == B_OK && (ocr & (1u << 31)) != 0)
+					ready = true;
+				else {
 					TRACE("Card is busy\n");
 					snooze(100000);
 				}
-			} while ((ocr & (1 << 31)) == 0);
+			}
+
+			if (!ready) {
+				ERROR("no card answered ACMD41, giving up on this scan\n");
+				bus->_InitialScanDone();
+				bus->_AcquireScanSemaphore();
+				continue;
+			}
 		}
 
 		// FIXME this should be asked to each card, when there are multiple
