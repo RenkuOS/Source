@@ -341,9 +341,13 @@ struct usb_xfer {
 	int transferred_length;
 
 	struct task invoker;
+	struct timeout_task idle;
 	struct cv condition;
+	bool idling;
 };
 
+
+static void usbd_invoker(void* arg, int pending);
 
 extern "C" usb_error_t
 usbd_transfer_setup(struct freebsd_usb_device* udev,
@@ -428,6 +432,8 @@ usbd_transfer_setup(struct freebsd_usb_device* udev,
 		xfer->in_progress = false;
 		xfer->transferred_length = 0;
 		cv_init(&xfer->condition, "FreeBSD USB transfer");
+		TIMEOUT_TASK_INIT(sUSBTaskqueue, &xfer->idle, 0, usbd_invoker, xfer);
+		xfer->idling = false;
 
 		if (xfer->flags.proxy_buffer)
 			panic("not yet supported");
@@ -600,6 +606,7 @@ usbd_invoker(void* arg, int pending)
 	struct usb_xfer* xfer = (struct usb_xfer*)arg;
 	mtx_lock(xfer->mutex);
 	xfer->in_progress = false;
+	xfer->idling = false;
 	xfer->usb_state = (xfer->result == B_OK) ? USB_ST_TRANSFERRED : USB_ST_ERROR;
 	xfer->callback(xfer, map_usb_error(xfer->result));
 	mtx_unlock(xfer->mutex);
@@ -637,6 +644,22 @@ usbd_transfer_submit(struct usb_xfer* xfer)
 
 	xfer->transferred_length = 0;
 	xfer->in_progress = true;
+
+	size_t length = 0;
+	for (int i = 0; i < xfer->nframes; i++)
+		length += xfer->frames[i].iov_len;
+	if (xfer->type == UE_BULK && length == 0) {
+		// A driver submits no data to let the pipe idle for a while, as
+		// run(4) does when it is out of mbufs; FreeBSD only clears a stall
+		// then. There is nothing for the controller to do (EHCI cannot
+		// queue an empty transfer): complete it a little later, when the
+		// driver can try again.
+		xfer->result = B_OK;
+		xfer->idling = true;
+		taskqueue_enqueue_timeout(sUSBTaskqueue, &xfer->idle, hz / 10);
+		return;
+	}
+
 	status_t status = B_NOT_SUPPORTED;
 	switch (xfer->type) {
 	case UE_BULK:
@@ -668,6 +691,19 @@ usbd_transfer_stop(struct usb_xfer* xfer)
 
 	if (!xfer->in_progress)
 		return;
+
+	if (xfer->idling) {
+		// nothing is queued: complete it as cancelled now, unless it is
+		// being completed already
+		u_int pending = 0;
+		if (taskqueue_cancel_timeout(sUSBTaskqueue, &xfer->idle, &pending) == 0
+			&& pending != 0) {
+			xfer->result = B_CANCELED;
+			TASK_INIT(&xfer->invoker, 0, usbd_invoker, xfer);
+			taskqueue_enqueue(sUSBTaskqueue, &xfer->invoker);
+		}
+		return;
+	}
 
 	// Unfortunately we have no way of cancelling just one transfer.
 	sUSB->cancel_queued_transfers(xfer->pipe);
