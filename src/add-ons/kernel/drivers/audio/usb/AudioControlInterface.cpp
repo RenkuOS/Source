@@ -1673,13 +1673,22 @@ AudioControlInterface::GetTerminalChannels(Vector<multi_channel_info>& Channels,
 	// size mismatch, so playback is silent. Assign the remaining channels
 	// designations in the standard channel order so they form ordinary stereo
 	// pairs, matching how the other multichannel drivers present their outputs.
+	// Past the last known location, carry on in left/right stereo pairs, as
+	// ice1712 labels all of its outputs: a channel with no designation joins
+	// whatever group precedes it, so they would all end up in one.
 	while ((uint32)(Channels.Count() - startCount) < channelCount) {
 		uint32 index = Channels.Count() - startCount;
 		multi_channel_info info;
 		info.channel_id	= Channels.Count();
 		info.kind		= kind;
-		info.designations= index < kChannels
-			? gDesignations[index].ch | gDesignations[index].bus : 0;
+		if (index < kChannels) {
+			info.designations = gDesignations[index].ch
+				| gDesignations[index].bus;
+		} else {
+			info.designations = B_CHANNEL_STEREO_BUS
+				| ((index - kChannels) % 2 == 0
+					? B_CHANNEL_LEFT : B_CHANNEL_RIGHT);
+		}
 		info.connectors	= connectors;
 		Channels.PushBack(info);
 	}
