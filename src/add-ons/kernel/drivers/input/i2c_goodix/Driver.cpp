@@ -86,6 +86,10 @@ static const float kTapDistance = 0.02f;
 	// how far a finger may move and still be a tap, and how far apart the
 	// taps of a double tap may be, relative to the screen size
 static const bigtime_t kLongPressTime = 800000;
+static const bigtime_t kClickHoldTime = 60000;
+	// how long a tap holds the button down: applications that poll the
+	// mouse, like menus while they track, miss a press and release that
+	// arrive at the same time
 
 
 enum gesture_state {
@@ -324,6 +328,7 @@ check_long_press(goodix_device* device)
 
 	queue_movement(device, BUTTON_SECONDARY, 1, device->startX,
 		device->startY);
+	snooze(kClickHoldTime);
 	queue_movement(device, 0, 0, device->startX, device->startY);
 	device->lastClickTime = 0;
 	device->state = GESTURE_DONE;
@@ -364,6 +369,7 @@ poll_controller(goodix_device* device)
 			case GESTURE_PENDING:
 				// a tap
 				press_primary(device);
+				snooze(kClickHoldTime);
 				queue_movement(device, 0, 0, device->startX, device->startY);
 				break;
 			case GESTURE_DRAG:
