@@ -331,4 +331,6 @@ mmc_bus_interface gSDHCIPCIDeviceModule = {
 	.set_card_type = set_card_type,
 	.read_data = read_data,
 	.set_timing = set_timing,
+	.transfer_io = transfer_io,
+	.set_card_interrupt = set_card_interrupt,
 };

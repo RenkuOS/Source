@@ -74,7 +74,9 @@ SdhciBus::SdhciBus(struct registers* registers, uint8_t irq, bool poll)
 	fReference(NULL),
 	fUseDataTransferMode(false),
 	fDataTransferMode(0),
-	fSelectedRca(0)
+	fSelectedRca(0),
+	fCardInterruptHandler(NULL),
+	fCardInterruptCookie(NULL)
 {
 	const bool haveIrq = irq != 0 && irq != 0xff;
 	if (!haveIrq) {
@@ -356,6 +358,7 @@ SdhciBus::ExecuteCommand(uint8_t command, uint32_t argument, uint32_t* response)
 		case SD_WRITE_SINGLE_BLOCK:
 		case SD_WRITE_MULTIPLE_BLOCKS:
 		case MMC_SEND_TUNING_BLOCK:
+		case SDIO_IO_RW_EXTENDED:
 			if (!fUseDataTransferMode) {
 				ERROR("Data command %d sent outside of the data transfer code\n",
 					command);
@@ -781,7 +784,8 @@ SdhciBus::_TransferChunk(uint8 command, uint32 argument, uint32 blockCount,
 	phys_addr_t physical, uint8* buffer, bigtime_t timeout)
 {
 	const bool multi = command == SD_READ_MULTIPLE_BLOCKS
-		|| command == SD_WRITE_MULTIPLE_BLOCKS;
+		|| command == SD_WRITE_MULTIPLE_BLOCKS
+		|| (command == SDIO_IO_RW_EXTENDED && blockCount > 1);
 	const size_t length = (size_t)blockCount * blockSize;
 
 	if (blockSize == 0 || blockSize > kBlockSize || (blockSize % 4) != 0
@@ -878,7 +882,14 @@ SdhciBus::_TransferChunk(uint8 command, uint32 argument, uint32 blockCount,
 		return status;
 	}
 
-	if ((response & kCardStatusErrorBits) != 0)
+	if (command == SDIO_IO_RW_EXTENDED) {
+		// R5: COM_CRC_ERROR, ILLEGAL_COMMAND, ERROR, FUNCTION_NUMBER and
+		// OUT_OF_RANGE in bits 15:8
+		if ((response & 0xCB00) != 0) {
+			ERROR("CMD53 %08" B_PRIx32 " failed, R5 flags %02" B_PRIx32 "\n",
+				argument, (response >> 8) & 0xFF);
+		}
+	} else if ((response & kCardStatusErrorBits) != 0)
 		_LogCardStatus("in response to the data command", response);
 
 	uint32 intStatus = 0;
@@ -1545,6 +1556,53 @@ SdhciBus::ReadData(uint8_t command, uint32_t argument, void* buffer,
 }
 
 
+/*!	Executes an SDIO CMD53 with its data phase, through the bounce buffer
+	and PIO. PIO keeps this independent of the transfer mode self test,
+	which reads blocks of a memory card.
+*/
+status_t
+SdhciBus::TransferIO(uint32 argument, bool isWrite, void* buffer,
+	uint32 blockCount, uint32 blockSize)
+{
+	const size_t length = (size_t)blockCount * blockSize;
+	if (buffer == NULL || length == 0 || length > B_PAGE_SIZE)
+		return B_BAD_VALUE;
+
+	if (isWrite)
+		memcpy(fBounceBuffer, buffer, length);
+
+	status_t status = _TransferChunk(SDIO_IO_RW_EXTENDED, argument,
+		blockCount, blockSize, isWrite, kDataModePio, kStopModeSingle,
+		fBouncePhysical, fBounceBuffer, kTransferTimeout);
+	if (status != B_OK) {
+		TRACE("CMD53 %08" B_PRIx32 " (%" B_PRIu32 " x %" B_PRIu32 ") failed: "
+			"%s\n", argument, blockCount, blockSize, strerror(status));
+		return status;
+	}
+
+	if (!isWrite)
+		memcpy(buffer, fBounceBuffer, length);
+	return B_OK;
+}
+
+
+void
+SdhciBus::SetCardInterrupt(void (*handler)(void*), void* cookie)
+{
+	cpu_status state = disable_interrupts();
+	fCardInterruptHandler = handler;
+	fCardInterruptCookie = cookie;
+	restore_interrupts(state);
+
+	if (handler != NULL)
+		EnableInterrupts(SDHCI_INT_CARD_STATUS);
+	else {
+		fRegisters->interrupt_signal_enable &= ~SDHCI_INT_CARD_STATUS;
+		fRegisters->interrupt_status_enable &= ~SDHCI_INT_CARD_STATUS;
+	}
+}
+
+
 void
 SdhciBus::SetScanSemaphore(sem_id sem)
 {
@@ -1720,6 +1778,15 @@ SdhciBus::HandleInterrupt()
 
 		fRegisters->interrupt_status = SDHCI_INT_CARD_INS;
 		TRACE("Card presence interrupt handled\n");
+	}
+
+	// SDIO card interrupt. It is level triggered in the card: mask it until
+	// the function driver has cleared the source and enables it again.
+	if ((intmask & SDHCI_INT_CARD_STATUS) != 0) {
+		fRegisters->interrupt_signal_enable &= ~SDHCI_INT_CARD_STATUS;
+		fRegisters->interrupt_status_enable &= ~SDHCI_INT_CARD_STATUS;
+		if (fCardInterruptHandler != NULL)
+			fCardInterruptHandler(fCardInterruptCookie);
 	}
 
 	// handling command interrupt
@@ -1992,6 +2059,23 @@ set_timing(void* controller, int timing, uint32_t flags)
 {
 	SdhciBus* bus = (SdhciBus*)controller;
 	return bus->SetTiming(timing, flags);
+}
+
+
+status_t
+transfer_io(void* controller, uint32_t argument, bool isWrite, void* buffer,
+	uint32_t blockCount, uint32_t blockSize)
+{
+	SdhciBus* bus = (SdhciBus*)controller;
+	return bus->TransferIO(argument, isWrite, buffer, blockCount, blockSize);
+}
+
+
+void
+set_card_interrupt(void* controller, void (*handler)(void*), void* cookie)
+{
+	SdhciBus* bus = (SdhciBus*)controller;
+	bus->SetCardInterrupt(handler, cookie);
 }
 
 

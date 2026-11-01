@@ -184,6 +184,15 @@ public:
 									size_t length);
 				status_t		SetTiming(uint16_t rca, int timing,
 									uint32_t flags);
+				status_t		DirectIO(uint16_t rca, bool isWrite,
+									uint8_t function, uint32_t address,
+									uint8_t value, uint8_t* _result);
+				status_t		ExtendedIO(uint16_t rca, bool isWrite,
+									uint8_t function, uint32_t address,
+									bool incrementAddress, void* buffer,
+									uint32_t blockCount, uint32_t blockSize);
+				status_t		SetCardInterrupt(void (*handler)(void*),
+									void* cookie);
 
 				void			SetClock(int frequency);
 				void			SetBusWidth(int width);

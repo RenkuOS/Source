@@ -81,6 +81,11 @@ class SdhciBus {
 			status_t			ReadData(uint8_t command, uint32_t argument,
 									void* buffer, size_t length);
 			status_t			SetTiming(int timing, uint32 flags);
+			status_t			TransferIO(uint32 argument, bool isWrite,
+									void* buffer, uint32 blockCount,
+									uint32 blockSize);
+			void				SetCardInterrupt(void (*handler)(void*),
+									void* cookie);
 
 	private:
 			bool				PowerOn();
@@ -152,6 +157,10 @@ class SdhciBus {
 			// RCA of the selected card, remembered from CMD7, needed for
 			// CMD13 (SEND_STATUS) in error recovery
 			uint16				fSelectedRca;
+
+			// SDIO card interrupt
+			void				(*fCardInterruptHandler)(void*);
+			void*				fCardInterruptCookie;
 };
 
 
@@ -651,6 +660,10 @@ void terminate_bus(void* controller);
 status_t read_data(void* controller, uint8_t command, uint32_t argument,
 	void* buffer, size_t length);
 status_t set_timing(void* controller, int timing, uint32_t flags);
+status_t transfer_io(void* controller, uint32_t argument, bool isWrite,
+	void* buffer, uint32_t blockCount, uint32_t blockSize);
+void set_card_interrupt(void* controller, void (*handler)(void*),
+	void* cookie);
 
 extern mmc_bus_interface gSDHCIACPIDeviceModule;
 extern mmc_bus_interface gSDHCIPCIDeviceModule;
