@@ -305,6 +305,135 @@ BMarkdownView::_DrawFormattedSegment(FormattedSegment* seg, BPoint& drawPt, floa
 	DrawString(seg->text.String(), BPoint(drawPt.x, drawPt.y + lineMaxAscent));
 	drawPt.x += font.StringWidth(seg->text.String());
 }
+
+float
+BMarkdownView::_TableColumnWidth(int32 columnCount) const
+{
+	// Deve coincidere con totalTableRect calcolato in Draw()
+	float tableWidth = Bounds().Width() - 20.0f;
+	if (columnCount <= 0)
+		return tableWidth;
+	return tableWidth / (float)columnCount;
+}
+
+int32
+BMarkdownView::_LayoutTableCell(TableCellRegion* cell, BPoint origin,
+	float colWidth, bool draw)
+{
+	// Disposizione del testo di una cella con word-wrapping. I segmenti
+	// scorrono uno dopo l'altro sulla stessa riga. Restituisce il numero
+	// di righe occupate; se draw == true disegna anche il testo.
+	// Usata sia per riservare le righe nella textview sia nel Draw(),
+	// così le due misure coincidono sempre.
+	if (cell == NULL || cell->segments.IsEmpty())
+		return 1;
+
+	const float cellPadding = 8.0f;
+	float availableWidth = colWidth - 2 * cellPadding;
+	if (availableWidth <= 0)
+		return 1;
+
+	font_height fh;
+	be_plain_font->GetHeight(&fh);
+	float lineHeight = fh.ascent + fh.descent + fh.leading;
+
+	int32 lineCount = 1;
+	float penX = 0.0f;
+
+	int32 segCount = cell->segments.CountItems();
+	for (int32 s = 0; s < segCount; s++) {
+		FormattedSegment* seg = cell->segments.ItemAt(s);
+		if (seg == NULL || seg->text.IsEmpty())
+			continue;
+
+		BFont font(be_plain_font);
+		rgb_color color = ui_color(B_DOCUMENT_TEXT_COLOR);
+		if (seg->isCode) {
+			font = *be_fixed_font;
+			color = (rgb_color){ 200, 40, 40, 255 };
+		} else if (seg->isLink) {
+			color = ui_color(B_LINK_TEXT_COLOR);
+		}
+		uint16 face = font.Face();
+		if (seg->isBold)
+			face |= B_BOLD_FACE;
+		if (seg->isItalic)
+			face |= B_ITALIC_FACE;
+		if (seg->isLink)
+			face |= B_UNDERSCORE_FACE;
+		font.SetFace(face);
+
+		if (draw) {
+			SetFont(&font);
+			SetHighColor(color);
+		}
+
+		const char* p = seg->text.String();
+		while (*p != '\0') {
+			// Spazi: avanzano la penna, ma vengono scartati a inizio riga
+			if (*p == ' ' || *p == '\t') {
+				float spaceWidth = font.StringWidth(" ");
+				if (penX > 0.0f && penX + spaceWidth <= availableWidth)
+					penX += spaceWidth;
+				p++;
+				continue;
+			}
+
+			// Parola: sequenza di caratteri fino al prossimo spazio
+			const char* wordEnd = p;
+			while (*wordEnd != '\0' && *wordEnd != ' ' && *wordEnd != '\t')
+				wordEnd++;
+
+			float wordWidth = font.StringWidth(p, wordEnd - p);
+			if (penX > 0.0f && penX + wordWidth > availableWidth) {
+				lineCount++;
+				penX = 0.0f;
+			}
+
+			if (wordWidth <= availableWidth) {
+				if (draw) {
+					DrawString(p, wordEnd - p, BPoint(origin.x + cellPadding + penX,
+						origin.y + (lineCount - 1) * lineHeight + fh.ascent));
+				}
+				penX += wordWidth;
+				p = wordEnd;
+				continue;
+			}
+
+			// Parola più larga della cella: spezzata carattere per carattere
+			// (rispettando i caratteri UTF-8 multibyte)
+			while (p < wordEnd) {
+				const char* chunkEnd = p;
+				float chunkWidth = 0.0f;
+				while (chunkEnd < wordEnd) {
+					const char* next = chunkEnd + 1;
+					while (next < wordEnd && (*next & 0xC0) == 0x80)
+						next++;
+					float w = font.StringWidth(p, next - p);
+					if (w > availableWidth - penX && chunkEnd > p)
+						break;
+					chunkEnd = next;
+					chunkWidth = w;
+				}
+
+				if (draw) {
+					DrawString(p, chunkEnd - p, BPoint(origin.x + cellPadding + penX,
+						origin.y + (lineCount - 1) * lineHeight + fh.ascent));
+				}
+				penX += chunkWidth;
+				p = chunkEnd;
+
+				if (p < wordEnd) {
+					lineCount++;
+					penX = 0.0f;
+				}
+			}
+		}
+	}
+
+	return lineCount;
+}
+
 void
 BMarkdownView::Draw(BRect updateRect)
 {
@@ -382,40 +511,43 @@ BMarkdownView::Draw(BRect updateRect)
 			TableRowRegion* firstRow = table->rows.ItemAt(0);
 			TableRowRegion* lastRow  = table->rows.ItemAt(rowCount - 1);
 
-			BPoint startPt = PointAt(firstRow->startPos);
-			int32 lastPosAdjusted = std::max(lastRow->startPos, lastRow->endPos - 1);
-			BPoint endPt = PointAt(lastPosAdjusted);
-
-			// 1. Spazio superiore dedicato per il tasto "Copy table" (20px)
-			float headerBarHeight = 20.0f;
-
+			// Ogni riga di celle occupa nella textview le righe vuote che vanno
+			// da startPos a endPos (riservate in _LeaveBlockCb in base al numero
+			// massimo di righe delle sue celle): i confini verticali si
+			// ricavano quindi direttamente dalla textview.
 			BRect totalTableRect;
 			totalTableRect.left = 10.0f;
 			totalTableRect.right = Bounds().Width() - 10.0f;
-			totalTableRect.top = startPt.y - 4.0f;
-			totalTableRect.bottom = endPt.y + LineHeight(lastPosAdjusted) + 4.0f;
+			totalTableRect.top = PointAt(firstRow->startPos).y;
+			totalTableRect.bottom = PointAt(lastRow->endPos).y;
 
+			// 1. Spazio superiore dedicato per il tasto "Copy table" (20px)
+			float headerBarHeight = 20.0f;
 			BRect outerRect = totalTableRect;
 			outerRect.top -= headerBarHeight; // Fa spazio per la label del copia
 
 			if (!outerRect.Intersects(updateRect))
 				continue;
 
+			int32 maxCols = 0;
+			for (int32 r = 0; r < rowCount; r++) {
+				TableRowRegion* row = table->rows.ItemAt(r);
+				if (row != NULL && row->cells.CountItems() > maxCols)
+					maxCols = row->cells.CountItems();
+			}
+			float colWidth = _TableColumnWidth(maxCols);
+
 			// 2. ZEBRA STRIPING DELLE RIGHE (Sfondo e linee orizzontali)
 			for (int32 r = 0; r < rowCount; r++) {
 				TableRowRegion* row = table->rows.ItemAt(r);
-				BPoint rStartPt = PointAt(row->startPos);
-				int32 rEndAdjusted = std::max(row->startPos, row->endPos - 1);
-
-				float rHeight = LineHeight(rEndAdjusted);
-				if (rHeight < fontLineHeight)
-					rHeight = fontLineHeight;
+				if (row == NULL)
+					continue;
 
 				BRect rowRect;
 				rowRect.left = totalTableRect.left;
 				rowRect.right = totalTableRect.right;
-				rowRect.top = rStartPt.y - 2.0f;
-				rowRect.bottom = rowRect.top + rHeight + 4.0f;
+				rowRect.top = PointAt(row->startPos).y;
+				rowRect.bottom = PointAt(row->endPos).y;
 
 				rgb_color rowBg;
 				if (row->isHeader)
@@ -430,22 +562,16 @@ BMarkdownView::Draw(BRect updateRect)
 				FillRect(rowRect);
 
 				// Linea orizzontale sotto ogni riga
-				SetHighColor(tableBorderColor);
-				StrokeLine(BPoint(rowRect.left, rowRect.bottom), BPoint(rowRect.right, rowRect.bottom));
+				if (r < rowCount - 1) {
+					SetHighColor(tableBorderColor);
+					StrokeLine(BPoint(rowRect.left, rowRect.bottom),
+						BPoint(rowRect.right, rowRect.bottom));
+				}
 			}
 
 			// 3. LINEE VERTICALI DIVISORIE TRA LE COLONNE
-			int32 maxCols = 0;
-			for (int32 r = 0; r < rowCount; r++) {
-				TableRowRegion* row = table->rows.ItemAt(r);
-				if (row != NULL && row->cells.CountItems() > maxCols)
-					maxCols = row->cells.CountItems();
-			}
-
 			if (maxCols > 1) {
-				float colWidth = totalTableRect.Width() / (float)maxCols;
 				SetHighColor(tableBorderColor);
-
 				for (int32 c = 1; c < maxCols; c++) {
 					float xLine = totalTableRect.left + (c * colWidth);
 					StrokeLine(
@@ -476,36 +602,25 @@ BMarkdownView::Draw(BRect updateRect)
 
 			DrawString(copyTableStr, BPoint(table->copyRect.left + 2.0f, totalTableRect.top - 5.0f));
 
-			// 6. RIDISEGNO PRECISO DEL TESTO DELLE CELLE ALLINEATO AL CENTRO VERTICALE
-			float colWidth = (maxCols > 0) ? (totalTableRect.Width() / (float)maxCols) : totalTableRect.Width();
-
+			// 6. TESTO DELLE CELLE CON WORD-WRAPPING
 			for (int32 r = 0; r < rowCount; r++) {
 				TableRowRegion* row = table->rows.ItemAt(r);
-				if (row == NULL) continue;
+				if (row == NULL)
+					continue;
 
-				BPoint rStartPt = PointAt(row->startPos);
-				int32 rEndAdjusted = std::max(row->startPos, row->endPos - 1);
-				float rHeight = LineHeight(rEndAdjusted);
-				if (rHeight < fontLineHeight)
-					rHeight = fontLineHeight;
+				float rowTop = PointAt(row->startPos).y;
+				float rowHeight = PointAt(row->endPos).y - rowTop;
 
-				// Baseline calcolata precisamente per centrare il testo nella riga
-				float textY = rStartPt.y + (rHeight - fontLineHeight) / 2.0f;
+				// Il blocco di testo della riga viene centrato verticalmente
+				// nello spazio riservato dalla textview
+				float textHeight = row->lineCount * fontLineHeight;
+				float textY = rowTop + std::max(0.0f, (rowHeight - textHeight) / 2.0f);
 
 				int32 cellCount = row->cells.CountItems();
 				for (int32 c = 0; c < cellCount; c++) {
-					TableCellRegion* cell = row->cells.ItemAt(c);
-					if (cell == NULL || cell->segments.IsEmpty())
-						continue;
-
-					float cellX = totalTableRect.left + (c * colWidth) + 8.0f;
-					BPoint drawPt(cellX, textY);
-
-					int32 segCount = cell->segments.CountItems();
-					for (int32 s = 0; s < segCount; s++) {
-						FormattedSegment* seg = cell->segments.ItemAt(s);
-						_DrawFormattedSegment(seg, drawPt, fh.ascent);
-					}
+					float cellX = totalTableRect.left + (c * colWidth);
+					_LayoutTableCell(row->cells.ItemAt(c), BPoint(cellX, textY),
+						colWidth, true);
 				}
 			}
 		}
@@ -812,7 +927,10 @@ BMarkdownView::AttachedToWindow()
 
 	// Ora che la vista è agganciata alla finestra, Bounds().Width() è valido!
 	// Se ci sono immagini, rieseguiamo il parsing per calcolare le righe esatte
-	if (fImages.CountItems() > 0 && !fRawMarkdown.IsEmpty()) {
+	// Immagini e tabelle dipendono dalla larghezza della vista: le righe
+	// riservate nella textview vanno ricalcolate
+	if ((fImages.CountItems() > 0 || fTables.CountItems() > 0)
+		&& !fRawMarkdown.IsEmpty()) {
 		SetMarkdown(fRawMarkdown);
 	}
 }*/
@@ -822,7 +940,10 @@ BMarkdownView::FrameResized(float width, float height)
 {
 	BTextView::FrameResized(width, height);
 
-	if (fImages.CountItems() > 0 && !fRawMarkdown.IsEmpty()) {
+	// Immagini e tabelle dipendono dalla larghezza della vista: le righe
+	// riservate nella textview vanno ricalcolate
+	if ((fImages.CountItems() > 0 || fTables.CountItems() > 0)
+		&& !fRawMarkdown.IsEmpty()) {
 		SetMarkdown(fRawMarkdown);
 		MakeFocus(IsFocus());
 		Invalidate();
@@ -923,7 +1044,7 @@ BMarkdownView::_EnterBlockCb(MD_BLOCKTYPE type, void* detail, void* userdata)
 		case MD_BLOCK_CODE:
 		{
 			//state->isBlockCode = true;
-			state->view->Insert("\n"); // Riga riservata per l'header della toolbar
+			state->view->Insert("\n\n"); // Riga riservata per l'header della toolbar
 			CodeBlockRegion* region = new CodeBlockRegion();
 			region->startPos = state->view->TextLength();
 			region->endPos = -1;
@@ -1105,8 +1226,33 @@ BMarkdownView::_LeaveBlockCb(MD_BLOCKTYPE type, void* detail, void* userdata)
 		case MD_BLOCK_TR: {
 			if (state->currentTable != NULL && state->currentTable->rows.CountItems() > 0) {
 				TableRowRegion* row = state->currentTable->rows.LastItem();
+
+				// La riga di celle occupa tante righe quante ne servono alla
+				// sua cella più alta: le riserviamo nella textview, così la
+				// riga successiva inizia sotto di essa.
+				TableRowRegion* headerRow = state->currentTable->rows.FirstItem();
+				float colWidth = state->view->_TableColumnWidth(
+					headerRow->cells.CountItems());
+
+				int32 maxLines = 1;
+				int32 cellCount = row->cells.CountItems();
+				for (int32 c = 0; c < cellCount; c++) {
+					int32 lines = state->view->_LayoutTableCell(
+						row->cells.ItemAt(c), B_ORIGIN, colWidth, false);
+					maxLines = std::max(maxLines, lines);
+				}
+				row->lineCount = maxLines;
+
+				int32 startOffset = state->view->TextLength();
+				for (int32 i = 0; i < maxLines; i++)
+					state->view->Insert("\n");
 				row->endPos = state->view->TextLength();
-				state->view->Insert("\n");
+
+				// Le righe riservate devono avere l'altezza del font usato
+				// per disegnare il testo delle celle
+				rgb_color textColor = state->textColor;
+				state->view->SetFontAndColor(startOffset, row->endPos,
+					be_plain_font, B_FONT_ALL, &textColor);
 			}
 			break;
 		}
