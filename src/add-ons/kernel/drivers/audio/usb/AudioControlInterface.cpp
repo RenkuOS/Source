@@ -1653,16 +1653,6 @@ AudioControlInterface::GetTerminalChannels(Vector<multi_channel_info>& Channels,
 	// cluster's declared channel count (bmChannelConfig is untrusted input).
 	for (size_t i = 0; i < kChannels
 			&& (uint32)(Channels.Count() - startCount) < channelCount; i++) {
-		// The Haiku system mixer connects only to a stereo (Left/Right) output,
-		// so expose at most a stereo pair for output terminals; the remaining
-		// physical output channels are reached through the driver's output-pair
-		// routing, not by advertising them to the mixer (which would then
-		// refuse to connect at all). Capture terminals keep every channel.
-		// This must match the channel count Stream::GetBuffers reports, or the
-		// media node's _WriteZeros() walks past its buffer list and crashes.
-		if (kind == B_MULTI_OUTPUT_CHANNEL
-				&& (uint32)(Channels.Count() - startCount) >= 2)
-			break;
 		uint32 designation = 1 << i;
 		if ((cluster->ChannelsConfig() & designation) == designation) {
 			multi_channel_info info;
@@ -1684,10 +1674,6 @@ AudioControlInterface::GetTerminalChannels(Vector<multi_channel_info>& Channels,
 	// designations in the standard channel order so they form ordinary stereo
 	// pairs, matching how the other multichannel drivers present their outputs.
 	while ((uint32)(Channels.Count() - startCount) < channelCount) {
-		// Same stereo cap for output terminals as above.
-		if (kind == B_MULTI_OUTPUT_CHANNEL
-				&& (uint32)(Channels.Count() - startCount) >= 2)
-			break;
 		uint32 index = Channels.Count() - startCount;
 		multi_channel_info info;
 		info.channel_id	= Channels.Count();
