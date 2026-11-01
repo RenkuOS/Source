@@ -296,8 +296,26 @@ status_t
 MMCBus::_ReadDirect(uint16_t rca, uint8_t function, uint32_t address,
 	uint8_t* _value)
 {
-	uint32_t argument = ((uint32_t)(function & 7) << 28)
-		| ((address & 0x1FFFF) << 9);
+	return DirectIO(rca, false, function, address, 0, _value);
+}
+
+
+/*!	CMD52 (SDIO Simplified Specification 3.00, 5.1): reads or writes one
+	byte of the register space of an SDIO function. Function 0 is the CCCR
+	and the FBRs of the card. For a write, \a _result gets the value read
+	back after it (the RAW flag).
+*/
+status_t
+MMCBus::DirectIO(uint16_t rca, bool isWrite, uint8_t function,
+	uint32_t address, uint8_t value, uint8_t* _result)
+{
+	if (function > 7 || address > 0x1FFFF)
+		return B_BAD_VALUE;
+
+	uint32_t argument = ((uint32_t)function << 28) | (address << 9);
+	if (isWrite)
+		argument |= (1u << 31) | (1 << 27) | value;
+
 	uint32_t response;
 	status_t status = ExecuteCommand(rca, SDIO_IO_RW_DIRECT, argument,
 		&response);
@@ -305,14 +323,64 @@ MMCBus::_ReadDirect(uint16_t rca, uint8_t function, uint32_t address,
 		return status;
 
 	// R5: response flags in bits 15:8 (5.2). COM_CRC_ERROR, ILLEGAL_COMMAND,
-	// ERROR, FUNCTION_NUMBER and OUT_OF_RANGE mean the read failed.
+	// ERROR, FUNCTION_NUMBER and OUT_OF_RANGE mean the access failed.
 	if ((response & 0xCB00) != 0) {
-		TRACE("CMD52 read of %u:%05" B_PRIx32 " failed, flags %02" B_PRIx32
-			"\n", function, address, (response >> 8) & 0xFF);
+		TRACE("CMD52 %s of %u:%05" B_PRIx32 " failed, flags %02" B_PRIx32
+			"\n", isWrite ? "write" : "read", function, address,
+			(response >> 8) & 0xFF);
 		return B_IO_ERROR;
 	}
 
-	*_value = response & 0xFF;
+	if (_result != NULL)
+		*_result = response & 0xFF;
+	return B_OK;
+}
+
+
+/*!	CMD53 (SDIO Simplified Specification 3.00, 5.3). \a blockCount 0 is
+	byte mode with \a blockSize bytes, otherwise block mode with the block
+	size the function driver has set in the FBR.
+*/
+status_t
+MMCBus::ExtendedIO(uint16_t rca, bool isWrite, uint8_t function,
+	uint32_t address, bool incrementAddress, void* buffer,
+	uint32_t blockCount, uint32_t blockSize)
+{
+	if (fController->transfer_io == NULL)
+		return B_NOT_SUPPORTED;
+	if (function > 7 || address > 0x1FFFF || blockSize == 0
+		|| blockCount > 511 || (blockCount == 0 && blockSize > 512)) {
+		return B_BAD_VALUE;
+	}
+
+	uint32_t argument = ((uint32_t)function << 28) | (address << 9);
+	if (isWrite)
+		argument |= 1u << 31;
+	if (incrementAddress)
+		argument |= 1 << 26;
+	if (blockCount > 0) {
+		argument |= (1 << 27) | blockCount;
+	} else {
+		// byte mode: a count of 0 means 512 bytes
+		argument |= blockSize & 0x1FF;
+	}
+
+	status_t status = _ActivateDevice(rca);
+	if (status != B_OK)
+		return status;
+
+	return fController->transfer_io(fCookie, argument, isWrite, buffer,
+		blockCount > 0 ? blockCount : 1, blockSize);
+}
+
+
+status_t
+MMCBus::SetCardInterrupt(void (*handler)(void*), void* cookie)
+{
+	if (fController->set_card_interrupt == NULL)
+		return B_NOT_SUPPORTED;
+
+	fController->set_card_interrupt(fCookie, handler, cookie);
 	return B_OK;
 }
 
