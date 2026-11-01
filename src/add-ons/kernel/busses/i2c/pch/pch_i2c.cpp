@@ -12,6 +12,8 @@
 #include <ByteOrder.h>
 #include <bus/PCI.h>
 
+#include <AutoDeleter.h>
+
 
 #include "pch_i2c.h"
 
@@ -319,6 +321,13 @@ acpi_GetInteger(acpi_handle acpiCookie,
 }
 
 
+/*!	Registers the I2C device that \a object describes, if it is one.
+
+	A device that can not be registered is skipped, and the scan goes on with
+	the next one: returning an error would stop the walk over the children of
+	the bus, so that a single broken or unrelated child would hide all devices
+	that come after it.
+*/
 acpi_status
 pch_i2c_scan_bus_callback(acpi_handle object, uint32 nestingLevel,
 	void *context, void** returnValue)
@@ -326,9 +335,21 @@ pch_i2c_scan_bus_callback(acpi_handle object, uint32 nestingLevel,
 	pch_i2c_sim_info* bus = (pch_i2c_sim_info*)context;
 	TRACE("pch_i2c_scan_bus_callback %p\n", object);
 
+	acpi_data buffer;
+	buffer.pointer = NULL;
+	buffer.length = ACPI_ALLOCATE_BUFFER;
+	status_t status = gACPI->ns_handle_to_pathname(object, &buffer);
+	if (status != B_OK) {
+		ERROR("pch_i2c_scan_bus_callback ns_handle_to_pathname failed: %#"
+			B_PRIx32 "\n", status);
+		return B_OK;
+	}
+	MemoryDeleter pathDeleter(buffer.pointer);
+	const char* path = (const char*)buffer.pointer;
+
 	// skip absent devices
 	int64 sta;
-	status_t status = acpi_GetInteger(object, "_STA", &sta);
+	status = acpi_GetInteger(object, "_STA", &sta);
 	if (status == B_OK && (sta & ACPI_STA_DEVICE_PRESENT) == 0)
 		return B_OK;
 
@@ -339,33 +360,26 @@ pch_i2c_scan_bus_callback(acpi_handle object, uint32 nestingLevel,
 	status = gACPI->walk_resources(object, (ACPI_STRING)"_CRS",
 		pch_i2c_scan_parse_callback, &crs);
 	if (status != B_OK) {
-		TRACE("pch_i2c_scan_bus_callback: no resources, skipping\n");
+		TRACE("%s: no I2C resources (%#" B_PRIx32 "), skipping\n", path,
+			status);
 		return B_OK;
 	}
 
 	if (crs.i2c_addr == UINT16_MAX) {
-		TRACE("pch_i2c_scan_bus_callback: no i2c address, skipping\n");
+		TRACE("%s: no I2C address in the device resources, skipping\n",
+			path);
 		return B_OK;
 	}
 
 	TRACE("pch_i2c_scan_bus_callback deviceAddress %x speed %x\n", crs.i2c_addr, crs.bus_speed);
 
-	acpi_data buffer;
-	buffer.pointer = NULL;
-	buffer.length = ACPI_ALLOCATE_BUFFER;
-	status = gACPI->ns_handle_to_pathname(object, &buffer);
-	if (status != B_OK) {
-		ERROR("pch_i2c_scan_bus_callback ns_handle_to_pathname failed\n");
-		return status;
-	}
-
 	char* hid = NULL;
 	char* cidList[8] = { NULL };
-	status = gACPI->get_device_info((const char*)buffer.pointer, &hid,
-		(char**)&cidList, 8, NULL, NULL);
+	status = gACPI->get_device_info(path, &hid, (char**)&cidList, 8, NULL,
+		NULL);
 	if (status != B_OK) {
-		ERROR("pch_i2c_scan_bus_callback get_device_info failed\n");
-		return status;
+		ERROR("%s: get_device_info failed: %#" B_PRIx32 "\n", path, status);
+		return B_OK;
 	}
 
 	status = gI2c->register_device(bus->sim, crs.i2c_addr, hid, cidList,
@@ -373,11 +387,14 @@ pch_i2c_scan_bus_callback(acpi_handle object, uint32 nestingLevel,
 	free(hid);
 	for (int i = 0; cidList[i] != NULL; i++)
 		free(cidList[i]);
-	free(buffer.pointer);
 
 	TRACE("pch_i2c_scan_bus_callback registered device: %s\n", strerror(status));
+	if (status != B_OK) {
+		ERROR("%s: registering the I2C device failed: %s\n", path,
+			strerror(status));
+	}
 
-	return status;
+	return B_OK;
 }
 
 
