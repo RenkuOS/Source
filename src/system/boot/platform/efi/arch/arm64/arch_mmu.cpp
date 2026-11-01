@@ -242,6 +242,27 @@ arch_mmu_post_efi_setup(size_t memory_map_size,
 	build_physical_allocated_list(memory_map_size, memory_map,
 		descriptor_size, descriptor_version);
 
+	// Tell the kernel which physical memory is RAM it may map cacheable,
+	// including firmware-owned RAM such as the ACPI tables.
+	uint32 cacheableCount = 0;
+		// arch_args is packed, so don't take the address of its member
+	for (size_t i = 0; i < memory_map_size / descriptor_size; ++i) {
+		efi_memory_descriptor* entry = (efi_memory_descriptor*)
+			((addr_t)memory_map + i * descriptor_size);
+		if ((entry->Attribute & EFI_MEMORY_WB) == 0
+			|| entry->Type == EfiMemoryMappedIO
+			|| entry->Type == EfiMemoryMappedIOPortSpace)
+			continue;
+		if (insert_address_range(gKernelArgs.arch_args.cacheable_memory_range,
+				&cacheableCount,
+				MAX_CACHEABLE_MEMORY_RANGES, entry->PhysicalStart,
+				entry->NumberOfPages * B_PAGE_SIZE) != B_OK) {
+			dprintf("too many cacheable memory ranges, ignoring the rest\n");
+			break;
+		}
+	}
+	gKernelArgs.arch_args.num_cacheable_memory_ranges = cacheableCount;
+
 	// Switch EFI to virtual mode, using the kernel pmap.
 	kRuntimeServices->SetVirtualAddressMap(memory_map_size, descriptor_size,
 		descriptor_version, memory_map);

@@ -125,6 +125,28 @@ acpi_enumerate_child_devices(device_node* node, const char* root)
 							attrs[attrCount].value.string = uid;
 							attrCount++;
 						}
+						if (cls == NULL && hid != NULL) {
+							// Well known devices that have no _CLS: give them
+							// the matching PCI class, so that the device
+							// manager looks for their drivers in the right
+							// place (ACPI xHCI on the Raspberry Pi 4, ...).
+							static const struct {
+								const char* hid;
+								const char* cls;
+							} kKnownClasses[] = {
+								{ "PNP0D10", "0c0330" },	// xHCI
+								{ "BRCME88C", "080501" },	// BCM2711 EMMC2
+								{ "BCM6E4E", "020000" },	// BCM2711 GENET
+								{ "BCM2847", "028000" },	// Arasan SDIO, WLAN
+							};
+							for (size_t i = 0; i < B_COUNT_OF(kKnownClasses);
+									i++) {
+								if (strcmp(hid, kKnownClasses[i].hid) == 0) {
+									cls = strdup(kKnownClasses[i].cls);
+									break;
+								}
+							}
+						}
 						if (cls != NULL) {
 							uint32 clsClass = strtoul(cls, NULL, 16);
 							attrs[attrCount].name = B_DEVICE_TYPE;
