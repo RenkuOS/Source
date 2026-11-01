@@ -61,6 +61,8 @@ SimpleTest sem_acquire_test1 : sem_acquire_test1.cpp : be ;
 
 SimpleTest spinlock_contention : spinlock_contention.cpp ;
 
+SimpleTest syscall_filter_test : syscall_filter_test.cpp : network ;
+
 SimpleTest syscall_restart_test : syscall_restart_test.cpp
 	: network [ TargetLibsupc++ ] ;
 
