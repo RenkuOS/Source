@@ -43,6 +43,22 @@ LOG(const char *fmt, ...)
 #define CALLED() LOG("%s\n", __PRETTY_FUNCTION__)
 
 
+static void
+release_joystick_data(BList* data)
+{
+	for (int32 i = 0; i < data->CountItems(); i++) {
+		variable_joystick* variableJoystick
+			= (variable_joystick*)data->ItemAt(i);
+		if (variableJoystick == NULL)
+			continue;
+
+		free(variableJoystick->data);
+		delete variableJoystick;
+	}
+	data->MakeEmpty();
+}
+
+
 BJoystick::BJoystick()
 	:
 	// legacy members for standard mode
@@ -87,16 +103,7 @@ BJoystick::~BJoystick()
 	delete fJoystickInfo;
 
 	if (fJoystickData != NULL) {
-		for (int32 i = 0; i < fJoystickData->CountItems(); i++) {
-			variable_joystick *variableJoystick
-				= (variable_joystick *)fJoystickData->ItemAt(i);
-			if (variableJoystick == NULL)
-				continue;
-
-			free(variableJoystick->data);
-			delete variableJoystick;
-		}
-
+		release_joystick_data(fJoystickData);
 		delete fJoystickData;
 	}
 }
@@ -153,6 +160,9 @@ BJoystick::Open(const char *portName, bool enhanced)
 	ioctl(fFD, B_JOYSTICK_GET_DEVICE_MODULE, &fJoystickInfo->module_info,
 		sizeof(joystick_module_info));
 	LOG("ioctl - %d\n", fJoystickInfo->module_info.num_buttons);
+
+	// the ones of an earlier Open() would only add up
+	release_joystick_data(fJoystickData);
 
 	// Allocate the variable_joystick structures to hold the info for each
 	// "stick". Note that the whole num_sticks thing seems a bit bogus, as
