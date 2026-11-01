@@ -6119,6 +6119,7 @@ BPoseView::GetDropPointList(BPoint dropStart, BPoint dropEnd, const PoseList* po
 
 	int32 poseCount = poseList->CountItems();
 	BList* pointList = new BList(poseCount);
+	int32 gridIndex = 0;
 	for (int32 index = 0; index < poseCount; index++) {
 		BPose* pose = poseList->ItemAt(index);
 		if (pose == NULL)
@@ -6129,14 +6130,19 @@ BPoseView::GetDropPointList(BPoint dropStart, BPoint dropEnd, const PoseList* po
 			// drop poses at the end of the list
 			poseLoc = dropEnd + BPoint(0, index * fListElemHeight);
 		} else {
-			if (pose->HasLocation()) {
-				// copy the source location
+			if (sourcePoseView->ViewMode() != kListMode && pose->HasLocation()) {
+				// keep the poses where they are relative to the mouse
 				poseLoc = dropEnd + (pose->Location(sourcePoseView) - dropStart);
 			} else {
-				// no source location, auto-place the pose in the destination
-				BRect destViewBounds(Bounds());
-				const_cast<BPoseView*>(this)->PlacePose(pose, destViewBounds);
-				poseLoc = dropEnd + (pose->Location(this) - dropStart);
+				// A list view has no icon positions (a location a pose may
+				// have is from an icon view of its folder, unrelated to
+				// dropStart). Drop the poses at the mouse: the first one
+				// centered there, the others next to it in our grid, four in
+				// a row.
+				float halfIcon = IconSizeInt() / 2.0f;
+				poseLoc = dropEnd - BPoint(halfIcon, halfIcon)
+					+ BPoint((gridIndex % 4) * fGrid.x, (gridIndex / 4) * fGrid.y);
+				gridIndex++;
 			}
 			if (pinToGrid)
 				poseLoc = PinToGrid(poseLoc, fGrid, fOffset);
