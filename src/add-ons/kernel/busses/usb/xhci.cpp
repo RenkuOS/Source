@@ -2334,6 +2334,8 @@ XHCI::_InsertEndpointForPipe(Pipe *pipe)
 		endpoint->lastFailedTrb = 0;
 		endpoint->failureCount = 0;
 		endpoint->validationCount = 0;
+		endpoint->transactionRecoveryWindow = 0;
+		endpoint->transactionRecoveries = 0;
 
 		endpoint->trbs = device->trbs + id * fRingStride;
 		endpoint->trb_addr = device->trb_addr
@@ -4031,13 +4033,32 @@ XHCI::FinishTransfers()
 			// gone, each failing only after DoCommand()'s ~800 ms of timeouts,
 			// all on this thread. They keep the old path (the next transfer's
 			// timeout resets the endpoint).
-			if (completionCode == COMP_STALL
-					&& transfer->IsochronousData() == NULL) {
-				xhci_endpoint* endpoint = (xhci_endpoint*)
-					transfer->TransferPipe()->ControllerCookie();
-				if (endpoint != NULL)
-					_RecoverHaltedEndpoint(endpoint);
+			//
+			// An interrupt endpoint is the exception: nothing ever times out
+			// there, so a single transaction error left it halted for good.
+			// A low speed keyboard behind a high speed hub on a Bay Trail
+			// xHCI stopped working after its first one. Recover those, but
+			// at most three times a second, so that an unplug cannot keep
+			// this thread busy.
+			bool recover = completionCode == COMP_STALL
+				&& transfer->IsochronousData() == NULL;
+			xhci_endpoint* endpoint = (xhci_endpoint*)
+				transfer->TransferPipe()->ControllerCookie();
+			if (completionCode == COMP_USB_TRANSACTION && endpoint != NULL
+				&& (transfer->TransferPipe()->Type()
+					& USB_OBJECT_INTERRUPT_PIPE) != 0) {
+				const bigtime_t now = system_time();
+				if (now - endpoint->transactionRecoveryWindow > 1000000) {
+					endpoint->transactionRecoveryWindow = now;
+					endpoint->transactionRecoveries = 0;
+				}
+				if (endpoint->transactionRecoveries < 3) {
+					endpoint->transactionRecoveries++;
+					recover = true;
+				}
 			}
+			if (recover && endpoint != NULL)
+				_RecoverHaltedEndpoint(endpoint);
 
 			size_t actualLength = transfer->FragmentLength();
 			if (completionCode != COMP_SUCCESS) {
