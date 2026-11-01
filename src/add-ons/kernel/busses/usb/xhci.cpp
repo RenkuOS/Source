@@ -2676,9 +2676,13 @@ XHCI::ConfigureEndpoint(xhci_endpoint* ep, uint8 slot, uint8 number, uint8 type,
 		// for isochronous endpoints that specifies the maximum ESIT payload.
 		// We don't fetch this yet, so just fall back to the USB2 computation
 		// method if bytesPerInterval is 0.
+		// Low and full speed endpoints need it as well: it is the bandwidth
+		// the controller reserves for the endpoint. Left at 0, an Intel Bay
+		// Trail xHCI failed every interrupt transfer of a low speed keyboard
+		// behind a high speed hub with a USB transaction error.
 		if (speed >= USB_SPEED_SUPERSPEED && bytesPerInterval != 0)
 			dwendpoint4 |= ENDPOINT_4_MAXESITPAYLOAD(bytesPerInterval);
-		else if (speed >= USB_SPEED_HIGHSPEED)
+		else
 			dwendpoint4 |= ENDPOINT_4_MAXESITPAYLOAD((maxBurst + 1) * maxPacketSize);
 	}
 
