@@ -76,6 +76,14 @@ init_bus_acpi(device_node* node, void** bus_cookie)
 	gDeviceManager->put_node(acpiParent);
 	gDeviceManager->put_node(parent);
 
+	// Put the controller into D0. On Intel Bay Trail tablets, _PS0 of the
+	// SDIO controller also switches on the power of the Wi-Fi module behind
+	// it (a GPIO through the GPIO operation region). Most controllers have
+	// no _PS0, which is fine.
+	status_t powerStatus = acpi->evaluate_method(device, "_PS0", NULL, NULL);
+	if (powerStatus == B_OK)
+		TRACE("_PS0 done\n");
+
 	// Ignore invalid bars
 	TRACE("Register SD bus\n");
 

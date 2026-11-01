@@ -204,8 +204,14 @@ private:
 					uint16_t	year;
 					uint16_t	rca;
 					uint8_t		type;
+
+					// SDIO cards: one node is published per function
+					uint8_t		function;
+					uint16_t	sdioVendor;
+					uint16_t	sdioDevice;
+					uint8_t		sdioClass;
 				};
-		static	const int32		kMaxPendingCards = 4;
+		static	const int32		kMaxPendingCards = 8;
 
 				status_t		_ActivateDevice(uint16_t rca);
 				void			_AcquireScanSemaphore();
@@ -213,6 +219,12 @@ private:
 				void			_PublishCard(const card_info& card);
 				void			_RegisterCard(const card_info& card);
 				void			_InitialScanDone();
+				bool			_ProbeSDIO();
+				status_t		_ReadDirect(uint16_t rca, uint8_t function,
+									uint32_t address, uint8_t* _value);
+				status_t		_ReadCISManufacturer(uint16_t rca,
+									uint32_t cisPointer, uint16_t* _vendor,
+									uint16_t* _device);
 		static	status_t		_WorkerThread(void*);
 
 private:

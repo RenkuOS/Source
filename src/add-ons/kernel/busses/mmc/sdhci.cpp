@@ -295,6 +295,8 @@ SdhciBus::ExecuteCommand(uint8_t command, uint32_t argument, uint32_t* response)
 			replyType = Command::kNoReplyType;
 			break;
 		case SD_APP_CMD:
+		case SDIO_IO_RW_DIRECT:
+			// R5 has the size and checks of R1
 		case SD_ERASE_WR_BLK_START:
 		case SD_ERASE_WR_BLK_END:
 		case SEND_STATUS:
@@ -312,6 +314,9 @@ SdhciBus::ExecuteCommand(uint8_t command, uint32_t argument, uint32_t* response)
 			break;
 		case MMC_SEND_OP_COND:
 		case SD_SEND_OP_COND: // SD Application command
+		case SDIO_IO_SEND_OP_COND:
+			// R4, the reply to the SDIO command, has the same format as R3:
+			// 48 bits, no CRC and no command index
 			replyType = Command::kR3Type;
 			break;
 
