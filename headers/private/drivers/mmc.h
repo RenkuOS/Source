@@ -118,8 +118,13 @@ enum SD_COMMANDS {
 	// Application specific commands, class 8
 	SD_APP_CMD = 55,
 
-	// I/O mode commands, class 9
+	// I/O mode commands, class 9 (SDIO Simplified Specification 3.00,
+	// section 5)
+	SDIO_IO_SEND_OP_COND = 5,
+	SDIO_IO_RW_DIRECT = 52,
 	SD_IO_ABORT = 52,
+		// old name of SDIO_IO_RW_DIRECT
+	SDIO_IO_RW_EXTENDED = 53,
 };
 
 
@@ -202,6 +207,16 @@ is_mmc_card_type(card_type type)
 // Device attribute paths for the MMC device
 const char* const kMmcRcaAttribute = "mmc/rca";
 const char* const kMmcTypeAttribute = "mmc/type";
+
+// Device attributes of an SDIO function
+const char* const kSdioFunctionAttribute = "sdio/function";
+	// uint8, the function number, 1 to 7
+const char* const kSdioVendorAttribute = "sdio/vendor";
+	// uint16, the manufacturer code of the card (CISTPL_MANFID)
+const char* const kSdioDeviceAttribute = "sdio/device";
+	// uint16, the card id of the card (CISTPL_MANFID)
+const char* const kSdioClassAttribute = "sdio/class";
+	// uint8, the standard SDIO function interface code of the function
 
 
 #endif /* _MMC_H */

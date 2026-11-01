@@ -160,6 +160,28 @@ MMCBus::_RegisterCard(const card_info& card)
 		{}
 	};
 
+	if (card.type == CARD_TYPE_SDIO) {
+		char name[48];
+		snprintf(name, sizeof(name), "SDIO function %u (%04x:%04x)",
+			card.function, card.sdioVendor, card.sdioDevice);
+		device_attr sdioAttrs[] = {
+			{ B_DEVICE_BUS, B_STRING_TYPE, {.string = "mmc" }},
+			{ B_DEVICE_PRETTY_NAME, B_STRING_TYPE, {.string = name }},
+			{ B_DEVICE_VENDOR_ID, B_UINT16_TYPE, {.ui16 = card.sdioVendor}},
+			{ B_DEVICE_ID, B_UINT16_TYPE, {.ui16 = card.sdioDevice}},
+			{ kMmcRcaAttribute, B_UINT16_TYPE, {.ui16 = card.rca}},
+			{ kMmcTypeAttribute, B_UINT8_TYPE, {.ui8 = card.type}},
+			{ kSdioFunctionAttribute, B_UINT8_TYPE, {.ui8 = card.function}},
+			{ kSdioVendorAttribute, B_UINT16_TYPE, {.ui16 = card.sdioVendor}},
+			{ kSdioDeviceAttribute, B_UINT16_TYPE, {.ui16 = card.sdioDevice}},
+			{ kSdioClassAttribute, B_UINT8_TYPE, {.ui8 = card.sdioClass}},
+			{}
+		};
+		gDeviceManager->register_node(fNode, MMC_BUS_MODULE_NAME, sdioAttrs,
+			NULL, NULL);
+		return;
+	}
+
 	// publish child device for the card
 	gDeviceManager->register_node(fNode, MMC_BUS_MODULE_NAME, attrs, NULL,
 		NULL);
@@ -264,6 +286,181 @@ MMCBus::SetCardType(card_type type)
 	fController->set_card_type(fCookie, type);
 }
 
+
+
+/*!	Reads one byte of the register space of an SDIO function with CMD52
+	(SDIO Simplified Specification 3.00, 5.1). Function 0 is the CCCR and the
+	FBRs of the card.
+*/
+status_t
+MMCBus::_ReadDirect(uint16_t rca, uint8_t function, uint32_t address,
+	uint8_t* _value)
+{
+	uint32_t argument = ((uint32_t)(function & 7) << 28)
+		| ((address & 0x1FFFF) << 9);
+	uint32_t response;
+	status_t status = ExecuteCommand(rca, SDIO_IO_RW_DIRECT, argument,
+		&response);
+	if (status != B_OK)
+		return status;
+
+	// R5: response flags in bits 15:8 (5.2). COM_CRC_ERROR, ILLEGAL_COMMAND,
+	// ERROR, FUNCTION_NUMBER and OUT_OF_RANGE mean the read failed.
+	if ((response & 0xCB00) != 0) {
+		TRACE("CMD52 read of %u:%05" B_PRIx32 " failed, flags %02" B_PRIx32
+			"\n", function, address, (response >> 8) & 0xFF);
+		return B_IO_ERROR;
+	}
+
+	*_value = response & 0xFF;
+	return B_OK;
+}
+
+
+/*!	Walks the CIS at \a cisPointer for the CISTPL_MANFID tuple (SDIO
+	Simplified Specification 3.00, 16.7.1).
+*/
+status_t
+MMCBus::_ReadCISManufacturer(uint16_t rca, uint32_t cisPointer,
+	uint16_t* _vendor, uint16_t* _device)
+{
+	uint32_t address = cisPointer;
+	for (int tuples = 0; tuples < 64; tuples++) {
+		uint8_t code;
+		uint8_t link;
+		if (_ReadDirect(rca, 0, address, &code) != B_OK)
+			return B_IO_ERROR;
+		if (code == 0xFF)
+			break;
+			// CISTPL_END
+		if (code == 0x00) {
+			// CISTPL_NULL has no link field
+			address++;
+			continue;
+		}
+		if (_ReadDirect(rca, 0, address + 1, &link) != B_OK)
+			return B_IO_ERROR;
+
+		if (code == 0x20 && link >= 4) {
+			// CISTPL_MANFID: TPLMID_MANF and TPLMID_CARD, little endian
+			uint8_t bytes[4];
+			for (int i = 0; i < 4; i++) {
+				if (_ReadDirect(rca, 0, address + 2 + i, &bytes[i]) != B_OK)
+					return B_IO_ERROR;
+			}
+			*_vendor = bytes[0] | (bytes[1] << 8);
+			*_device = bytes[2] | (bytes[3] << 8);
+			return B_OK;
+		}
+		if (link == 0xFF)
+			break;
+		address += 2 + link;
+	}
+
+	return B_ENTRY_NOT_FOUND;
+}
+
+
+/*!	Checks whether the card on the bus is an SDIO card, initializes it, and
+	publishes one node for each of its I/O functions. Called after CMD0 and
+	CMD8 (SDIO Simplified Specification 3.00, 3.1.2, figure 3-2). Returns
+	\c false if the card does not answer CMD5, so that it is probed as a
+	memory card.
+*/
+bool
+MMCBus::_ProbeSDIO()
+{
+	uint32_t ocr;
+	if (ExecuteCommand(0, SDIO_IO_SEND_OP_COND, 0, &ocr) != B_OK)
+		return false;
+
+	uint8_t functions = (ocr >> 28) & 7;
+	bool memoryPresent = (ocr & (1 << 27)) != 0;
+	TRACE_ALWAYS("SDIO card: %u I/O functions%s, OCR %08" B_PRIx32 "\n",
+		functions, memoryPresent ? ", with memory" : "", ocr);
+	if (functions == 0)
+		return false;
+
+	// Ask for the voltages the card supports and wait for it to be ready.
+	// 2.7 to 3.6V is all the SDHCI drivers set up.
+	uint32_t voltages = ocr & 0x00FF8000;
+	int attempt = 0;
+	do {
+		if (ExecuteCommand(0, SDIO_IO_SEND_OP_COND, voltages, &ocr) != B_OK) {
+			ERROR("SDIO CMD5 with voltages %06" B_PRIx32 " failed\n",
+				voltages);
+			return true;
+		}
+		if ((ocr & (1u << 31)) != 0)
+			break;
+		snooze(10000);
+	} while (++attempt < 100);
+	if ((ocr & (1u << 31)) == 0) {
+		ERROR("SDIO card did not get ready, OCR %08" B_PRIx32 "\n", ocr);
+		return true;
+	}
+
+	SetCardType(CARD_TYPE_SDIO);
+
+	uint32_t response;
+	if (ExecuteCommand(0, SD_SEND_RELATIVE_ADDR, 0, &response) != B_OK) {
+		ERROR("SDIO card did not answer CMD3\n");
+		return true;
+	}
+	uint16_t rca = response >> 16;
+
+	// CCCR (6.9): revisions, capabilities and the common CIS pointer
+	uint8_t revision = 0;
+	uint8_t specRevision = 0;
+	uint8_t capability = 0;
+	uint8_t cis[3] = {};
+	if (_ReadDirect(rca, 0, 0x00, &revision) != B_OK
+		|| _ReadDirect(rca, 0, 0x01, &specRevision) != B_OK
+		|| _ReadDirect(rca, 0, 0x08, &capability) != B_OK
+		|| _ReadDirect(rca, 0, 0x09, &cis[0]) != B_OK
+		|| _ReadDirect(rca, 0, 0x0A, &cis[1]) != B_OK
+		|| _ReadDirect(rca, 0, 0x0B, &cis[2]) != B_OK) {
+		ERROR("SDIO card: reading the CCCR failed\n");
+		return true;
+	}
+	uint32_t commonCis = cis[0] | (cis[1] << 8) | (cis[2] << 16);
+
+	uint16_t vendor = 0;
+	uint16_t device = 0;
+	if (_ReadCISManufacturer(rca, commonCis, &vendor, &device) != B_OK)
+		ERROR("SDIO card: no manufacturer in the CIS at %05" B_PRIx32 "\n",
+			commonCis);
+
+	TRACE_ALWAYS("SDIO card: RCA %04x, CCCR revision %02x, SD revision %02x, "
+		"capabilities %02x, vendor %04x, device %04x\n", rca, revision,
+		specRevision, capability, vendor, device);
+
+	for (uint8_t function = 1; function <= functions; function++) {
+		// FBR (6.10): the standard interface code is in the low nibble of
+		// the first byte, 0xF means it is in the extended code byte
+		uint8_t code = 0;
+		_ReadDirect(rca, 0, function * 0x100, &code);
+		uint8_t interfaceClass = code & 0x0F;
+		if (interfaceClass == 0x0F)
+			_ReadDirect(rca, 0, function * 0x100 + 1, &interfaceClass);
+
+		TRACE_ALWAYS("SDIO function %u: class %02x\n", function,
+			interfaceClass);
+
+		card_info card = {};
+		card.vendor = vendor;
+		snprintf(card.name, sizeof(card.name), "%04x", device);
+		card.rca = rca;
+		card.type = CARD_TYPE_SDIO;
+		card.function = function;
+		card.sdioVendor = vendor;
+		card.sdioDevice = device;
+		card.sdioClass = interfaceClass;
+		_PublishCard(card);
+	}
+
+	return true;
+}
 
 status_t
 MMCBus::_ActivateDevice(uint16_t rca)
@@ -410,6 +607,15 @@ MMCBus::_WorkerThread(void* cookie)
 			snooze(30000);
 			status = B_ERROR;
 		}
+		// An SDIO card answers CMD5; memory cards and eMMC devices do not
+		// (SDIO Simplified Specification 3.00, figure 3-2)
+		if (bus->_ProbeSDIO()) {
+			bus->SetClock(25000);
+			bus->_InitialScanDone();
+			bus->_AcquireScanSemaphore();
+			continue;
+		}
+
 		if (status != B_OK) {
 			TRACE("Card does not implement CMD8, may be a V1 SD or MMC card\n");
 			// Do not check for SDHC support in this case
