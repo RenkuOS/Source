@@ -153,6 +153,7 @@ private:
 
 // protected:
 			status_t		_MultiGetDescription(multi_description* Description);
+			size_t			_EnableBitsSize();
 			status_t		_MultiGetEnabledChannels(multi_channel_enable* Enable);
 			status_t		_MultiSetEnabledChannels(multi_channel_enable* Enable);
 			status_t		_MultiGetBuffers(multi_buffer_list* List);

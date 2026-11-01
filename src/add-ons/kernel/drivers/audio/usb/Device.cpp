@@ -482,29 +482,22 @@ Device::Control(uint32 op, void* buffer, size_t length)
 	switch (op) {
 		case B_MULTI_GET_DESCRIPTION:
 		{
+			// _MultiGetDescription() copies the channel entries straight to
+			// the caller's array, as many as it asked for, so that array
+			// must be in user space.
 			multi_description description;
-			multi_channel_info channels[16];
-			multi_channel_info* originalChannels;
-
 			if (user_memcpy(&description, buffer, sizeof(multi_description))
 					!= B_OK)
 				return B_BAD_ADDRESS;
-
-			originalChannels = description.channels;
-			description.channels = channels;
-			if (description.request_channel_count > 16)
-				description.request_channel_count = 16;
+			if (description.request_channel_count > 0
+					&& !IS_USER_ADDRESS(description.channels))
+				return B_BAD_ADDRESS;
 
 			status_t status = _MultiGetDescription(&description);
 			if (status != B_OK)
 				return status;
 
-			description.channels = originalChannels;
-			if (user_memcpy(buffer, &description, sizeof(multi_description))
-					!= B_OK)
-				return B_BAD_ADDRESS;
-			return user_memcpy(originalChannels, channels,
-				sizeof(multi_channel_info) * description.request_channel_count);
+			return user_memcpy(buffer, &description, sizeof(multi_description));
 		}
 		case B_MULTI_GET_EVENT_INFO:
 			TRACE(ERR, "B_MULTI_GET_EVENT_INFO n/i\n");
@@ -519,58 +512,43 @@ Device::Control(uint32 op, void* buffer, size_t length)
 			return B_ERROR;
 
 		case B_MULTI_GET_ENABLED_CHANNELS:
+		case B_MULTI_SET_ENABLED_CHANNELS:
 		{
 			multi_channel_enable enable;
-			uint32 enable_bits;
-			uchar* orig_enable_bits;
-
 			if (user_memcpy(&enable, buffer, sizeof(enable)) != B_OK
 					|| !IS_USER_ADDRESS(enable.enable_bits)) {
 				return B_BAD_ADDRESS;
 			}
 
-			orig_enable_bits = enable.enable_bits;
-			enable.enable_bits = (uchar*)&enable_bits;
-			status_t status = _MultiGetEnabledChannels(&enable);
-			if (status != B_OK)
-				return status;
+			// The streams set or test one bit per channel, numbered across
+			// all of them, and the caller's array holds a bit for each of
+			// those channels. Bounce through a buffer of that size: a fixed
+			// one is overrun on a device with more channels than it holds.
+			size_t size = _EnableBitsSize();
+			uchar* bits = (uchar*)calloc(1, max_c(size, 1));
+			if (bits == NULL)
+				return B_NO_MEMORY;
 
-			enable.enable_bits = orig_enable_bits;
-			if (user_memcpy(enable.enable_bits, &enable_bits,
-					sizeof(enable_bits)) != B_OK
-				|| user_memcpy(buffer, &enable,
-					sizeof(multi_channel_enable)) != B_OK) {
-				return B_BAD_ADDRESS;
+			uchar* userBits = enable.enable_bits;
+			status_t status = B_OK;
+			if (op == B_MULTI_SET_ENABLED_CHANNELS
+					&& user_memcpy(bits, userBits, size) != B_OK)
+				status = B_BAD_ADDRESS;
+
+			if (status == B_OK) {
+				enable.enable_bits = bits;
+				status = op == B_MULTI_GET_ENABLED_CHANNELS
+					? _MultiGetEnabledChannels(&enable)
+					: _MultiSetEnabledChannels(&enable);
+				enable.enable_bits = userBits;
 			}
 
-			return B_OK;
-		}
-		case B_MULTI_SET_ENABLED_CHANNELS:
-		{
-			multi_channel_enable enable;
-			uint32 enable_bits;
-			uchar* orig_enable_bits;
+			if (status == B_OK && (user_memcpy(userBits, bits, size) != B_OK
+					|| user_memcpy(buffer, &enable, sizeof(enable)) != B_OK))
+				status = B_BAD_ADDRESS;
 
-			if (user_memcpy(&enable, buffer, sizeof(enable)) != B_OK
-				|| !IS_USER_ADDRESS(enable.enable_bits)) {
-				return B_BAD_ADDRESS;
-			}
-
-			orig_enable_bits = enable.enable_bits;
-			enable.enable_bits = (uchar*)&enable_bits;
-			status_t status = _MultiSetEnabledChannels(&enable);
-			if (status != B_OK)
-				return status;
-
-			enable.enable_bits = orig_enable_bits;
-			if (user_memcpy(enable.enable_bits, &enable_bits,
-					sizeof(enable_bits)) < B_OK
-				|| user_memcpy(buffer, &enable, sizeof(multi_channel_enable))
-					< B_OK) {
-				return B_BAD_ADDRESS;
-			}
-
-			return B_OK;
+			free(bits);
+			return status;
 		}
 		case B_MULTI_GET_GLOBAL_FORMAT:
 		{
@@ -1069,9 +1047,13 @@ Device::_MultiGetDescription(multi_description* multiDescription)
 			sizeof(multi_description)) != B_OK)
 		return B_BAD_ADDRESS;
 
-	if (user_memcpy(multiDescription->channels,
-			&Channels[0], sizeof(multi_channel_info) * min_c(Channels.Count(),
-			Description.request_channel_count)) != B_OK)
+	// Hand out as many entries as the caller has room for. The counts above
+	// still describe every channel, so a caller that asked for too few can
+	// see that and ask again.
+	int32 copyCount = min_c(Channels.Count(),
+		max_c(Description.request_channel_count, 0));
+	if (copyCount > 0 && user_memcpy(Description.channels, &Channels[0],
+			sizeof(multi_channel_info) * copyCount) != B_OK)
 		return B_BAD_ADDRESS;
 
 	return B_OK;
@@ -1116,6 +1098,23 @@ Device::TraceMultiDescription(multi_description* Description,
 
 	TRACE(API, "request_channel_count:%d\n\n",
 		Description->request_channel_count);
+}
+
+
+// Bytes in a multi_channel_enable bitmap for this device: one bit for each
+// channel of each stream, numbered in stream order, as
+// Stream::GetEnabledChannels() and SetEnabledChannels() count them.
+size_t
+Device::_EnableBitsSize()
+{
+	size_t channels = 0;
+	for (int i = 0; i < fStreams.Count(); i++) {
+		AudioChannelCluster* cluster = fStreams[i]->ChannelCluster();
+		if (cluster != NULL)
+			channels += cluster->ChannelsCount();
+	}
+
+	return (channels + 7) / 8;
 }
 
 
