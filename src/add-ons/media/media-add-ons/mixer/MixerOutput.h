@@ -67,10 +67,29 @@ class MixerOutput
 		// To swap byteorder in a buffer is that is needed
 		void							AdjustByteOrder(BBuffer *buffer);
 
+		// Only for use by MixerCore and AudioMixer:
+		// The mixing state of this output. The mix buffer holds
+		// one mixer buffer of frames for each output channel, and
+		// a resampler for each channel converts it to the output
+		// format.
+		void							SetMixBufferFrameCount(
+											int32 frameCount);
+		float*							MixBuffer();
+		void							UpdateResamplers();
+		Resampler*						ChannelResampler(int channel);
+
+		void							SetBufferGroup(BBufferGroup *group);
+		BBufferGroup*					BufferGroup();
+
+		// An output only sends while it is enabled
+		void							SetEnabled(bool enabled);
+		bool							IsEnabled();
+
 	private:
 		void							UpdateByteOrderSwap();
 		void							UpdateOutputChannels();
 		void							AssignDefaultSources();
+		void							DeleteResamplers();
 
 	private:
 
@@ -95,6 +114,12 @@ class MixerOutput
 		output_chan_info				*fOutputChannelInfo; //array
 		ByteSwap						*fOutputByteSwap;
 		bool							fMuted;
+
+		float							*fMixBuffer;
+		Resampler						**fResampler; // array
+		int								fResamplerCount;
+		BBufferGroup					*fBufferGroup;
+		bool							fEnabled;
 };
 
 
@@ -145,6 +170,31 @@ inline bool
 MixerOutput::IsMuted()
 {
 	return fMuted;
+}
+
+inline float*
+MixerOutput::MixBuffer()
+{
+	return fMixBuffer;
+}
+
+inline Resampler*
+MixerOutput::ChannelResampler(int channel)
+{
+	ASSERT(channel >= 0 && channel < fResamplerCount);
+	return fResampler[channel];
+}
+
+inline BBufferGroup*
+MixerOutput::BufferGroup()
+{
+	return fBufferGroup;
+}
+
+inline bool
+MixerOutput::IsEnabled()
+{
+	return fEnabled;
 }
 
 #endif

@@ -17,7 +17,6 @@
 #include <BufferProducer.h>
 #include <MediaNode.h>
 #include <RealtimeAlloc.h>
-#include <StackOrHeapArray.h>
 #include <StopWatch.h>
 #include <TimeSource.h>
 
@@ -69,18 +68,12 @@ MixerCore::MixerCore(AudioMixer *node)
 	fNextInputID(1),
 	fRunning(false),
 	fStarted(false),
-	fOutputEnabled(true),
-	fResampler(0),
-	fMixBuffer(0),
 	fMixBufferFrameRate(0),
 	fMixBufferFrameCount(0),
-	fMixBufferChannelCount(0),
-	fMixBufferChannelTypes(0),
 	fDoubleRateMixing(DOUBLE_RATE_MIXING),
 	fDownstreamLatency(1),
 	fSettings(new MixerSettings),
 	fNode(node),
-	fBufferGroup(0),
 	fTimeSource(0),
 	fMixThread(-1),
 	fMixThreadWaitSem(-1),
@@ -99,19 +92,11 @@ MixerCore::~MixerCore()
 	ASSERT(fMixThreadWaitSem == -1);
 	ASSERT(fMixThread == -1);
 
-	if (fMixBuffer)
-		rtm_free(fMixBuffer);
+	// the output owns the mix buffer and the resamplers
+	delete fOutput;
 
 	if (fTimeSource)
 		fTimeSource->Release();
-
-	if (fResampler) {
-		for (int i = 0; i < fMixBufferChannelCount; i++)
-			delete fResampler[i];
-		delete[] fResampler;
-	}
-
-	delete[] fMixBufferChannelTypes;
 }
 
 
@@ -127,7 +112,7 @@ MixerCore::UpdateResamplingAlgorithm()
 {
 	ASSERT_LOCKED();
 
-	_UpdateResamplers(fOutput->MediaOutput().format.u.raw_audio);
+	fOutput->UpdateResamplers();
 
 	for (int32 i = fInputs->CountItems() - 1; i >= 0; i--) {
 		MixerInput* input
@@ -169,10 +154,8 @@ MixerCore::AddOutput(const media_output& output)
 	// the output format might have been adjusted inside MixerOutput
 	_ApplyOutputFormat();
 
+	// it is disabled until connected, so the mix thread does not start yet
 	ASSERT(!fRunning);
-	if (fStarted && fOutputEnabled)
-		_StartMixThread();
-
 	return fOutput;
 }
 
@@ -205,7 +188,6 @@ MixerCore::RemoveOutput()
 
 	delete fOutput;
 	fOutput = NULL;
-	fOutputEnabled = true;
 	return true;
 }
 
@@ -274,16 +256,8 @@ MixerCore::OutputFormatChanged(const media_multi_audio_format &format)
 	fOutput->ChangeFormat(format);
 	_ApplyOutputFormat();
 
-	if (fStarted)
+	if (fStarted && fOutput->IsEnabled())
 		_StartMixThread();
-}
-
-
-void
-MixerCore::SetOutputBufferGroup(BBufferGroup *group)
-{
-	ASSERT_LOCKED();
-	fBufferGroup = group;
 }
 
 
@@ -313,12 +287,15 @@ MixerCore::EnableOutput(bool enabled)
 {
 	ASSERT_LOCKED();
 	TRACE("MixerCore::EnableOutput %d\n", enabled);
-	fOutputEnabled = enabled;
+	if (fOutput == NULL)
+		return;
 
-	if (fRunning && !fOutputEnabled)
+	fOutput->SetEnabled(enabled);
+
+	if (fRunning && !enabled)
 		_StopMixThread();
 
-	if (!fRunning && fOutput != NULL && fStarted && fOutputEnabled)
+	if (!fRunning && fStarted && enabled)
 		_StartMixThread();
 }
 
@@ -343,7 +320,7 @@ MixerCore::Start()
 	ASSERT(!fRunning);
 
 	// only start the mix thread if we have an output
-	if (fOutput != NULL && fOutputEnabled)
+	if (fOutput != NULL && fOutput->IsEnabled())
 		_StartMixThread();
 
 	return true;
@@ -369,9 +346,9 @@ MixerCore::Stop()
 void
 MixerCore::_StartMixThread()
 {
-	ASSERT(fOutputEnabled);
-	ASSERT(!fRunning);
 	ASSERT(fOutput != NULL);
+	ASSERT(fOutput->IsEnabled());
+	ASSERT(!fRunning);
 
 	fRunning = true;
 	fMixThreadWaitSem = create_sem(0, "mix thread wait");
@@ -402,32 +379,6 @@ MixerCore::_StopMixThread()
 
 
 void
-MixerCore::_UpdateResamplers(const media_multi_audio_format& format)
-{
-	ASSERT_LOCKED();
-
-	if (fResampler != NULL) {
-		for (int i = 0; i < fMixBufferChannelCount; i++)
-			delete fResampler[i];
-		delete[] fResampler;
-	}
-
-	fResampler = new Resampler*[fMixBufferChannelCount];
-	for (int i = 0; i < fMixBufferChannelCount; i++) {
-		switch (Settings()->ResamplingAlgorithm()) {
-			case 2:
-				fResampler[i] = new Interpolate(
-					media_raw_audio_format::B_AUDIO_FLOAT, format.format);
-				break;
-			default:
-				fResampler[i] = new Resampler(
-					media_raw_audio_format::B_AUDIO_FLOAT, format.format);
-		}
-	}
-}
-
-
-void
 MixerCore::_ApplyOutputFormat()
 {
 	ASSERT_LOCKED();
@@ -435,42 +386,119 @@ MixerCore::_ApplyOutputFormat()
 	const media_multi_audio_format& format
 		= fOutput->MediaOutput().format.u.raw_audio;
 
-	if (fMixBuffer != NULL)
-		rtm_free(fMixBuffer);
-
-	delete[] fMixBufferChannelTypes;
-
 	fMixBufferFrameRate = (int32)(0.5 + format.frame_rate);
 	fMixBufferFrameCount = frames_per_buffer(format);
 	if (fDoubleRateMixing) {
 		fMixBufferFrameRate *= 2;
 		fMixBufferFrameCount *= 2;
 	}
-	fMixBufferChannelCount = format.channel_count;
-	ASSERT(fMixBufferChannelCount == fOutput->GetOutputChannelCount());
-	fMixBufferChannelTypes = new int32 [format.channel_count];
 
-	for (int i = 0; i < fMixBufferChannelCount; i++) {
-		 fMixBufferChannelTypes[i]
-		 	= ChannelMaskToChannelType(GetChannelMask(i, format.channel_mask));
-	}
-
-	fMixBuffer = (float*)rtm_alloc(NULL, sizeof(float) * fMixBufferFrameCount
-		* fMixBufferChannelCount);
-	ASSERT(fMixBuffer != NULL);
-
-	_UpdateResamplers(format);
+	fOutput->UpdateResamplers();
+	fOutput->SetMixBufferFrameCount(fMixBufferFrameCount);
 
 	TRACE("MixerCore::OutputFormatChanged:\n");
 	TRACE("  fMixBufferFrameRate %ld\n", fMixBufferFrameRate);
 	TRACE("  fMixBufferFrameCount %ld\n", fMixBufferFrameCount);
-	TRACE("  fMixBufferChannelCount %ld\n", fMixBufferChannelCount);
-	for (int i = 0; i < fMixBufferChannelCount; i++)
-		TRACE("  fMixBufferChannelTypes[%i] %ld\n", i, fMixBufferChannelTypes[i]);
 
 	MixerInput *input;
 	for (int i = 0; (input = Input(i)); i++)
 		input->SetMixBufferFormat(fMixBufferFrameRate, fMixBufferFrameCount);
+}
+
+
+void
+MixerCore::_MixOutput(MixerOutput* output, RtList<chan_info>* inputChanInfos,
+	bool silent, bigtime_t eventTime, bigtime_t bufferRequestTimeout,
+	uint64 bufferIndex)
+{
+	const media_multi_audio_format& format
+		= output->MediaOutput().format.u.raw_audio;
+	int channelCount = output->GetOutputChannelCount();
+	float* mixBuffer = output->MixBuffer();
+
+	if (!silent) {
+		// mix all data from all inputs into the mix buffer
+		memset(mixBuffer, 0,
+			channelCount * fMixBufferFrameCount * sizeof(float));
+		for (int channel = 0; channel < channelCount; channel++) {
+			int sourceCount = output->GetOutputChannelSourceCount(channel);
+			for (int i = 0; i < sourceCount; i++) {
+				int type;
+				float sourceGain;
+				output->GetOutputChannelSourceInfoAt(channel, i, &type,
+					&sourceGain);
+				if (type < 0 || type >= MAX_CHANNEL_TYPES)
+					continue;
+				int count = inputChanInfos[type].CountItems();
+				for (int j = 0; j < count; j++) {
+					chan_info* info = inputChanInfos[type].ItemAt(j);
+					PRINT(5, "_MixThread:   base %p, sample-offset %2d, "
+						"gain %.3f\n", info->base, info->sample_offset,
+						info->gain * sourceGain);
+					// This looks slightly ugly, but the current GCC will
+					// generate the fastest code this way.
+					// fMixBufferFrameCount is always > 0.
+					uint32 dstSampleOffset = channelCount * sizeof(float);
+					uint32 srcSampleOffset = info->sample_offset;
+					char* dst = (char*)&mixBuffer[channel];
+					char* src = (char*)info->base;
+					float gain = info->gain * sourceGain;
+					int k = fMixBufferFrameCount;
+					do {
+						*(float*)dst += *(const float*)src * gain;
+						dst += dstSampleOffset;
+						src += srcSampleOffset;
+					} while (--k);
+				}
+			}
+		}
+	}
+
+	// request a buffer
+	BBuffer* buffer = output->BufferGroup()->RequestBuffer(format.buffer_size,
+		bufferRequestTimeout);
+	if (buffer == NULL) {
+		ERROR("MixerCore: RequestBuffer failed for buffer %lld\n",
+			bufferIndex);
+		return;
+	}
+
+	if (silent) {
+		int middle = 0;
+		if (format.format == media_raw_audio_format::B_AUDIO_UCHAR)
+			middle = 128;
+		memset(buffer->Data(), middle, format.buffer_size);
+	} else {
+		// copy data from mix buffer into output buffer
+		for (int i = 0; i < channelCount; i++) {
+			output->ChannelResampler(i)->Resample(
+				reinterpret_cast<char*>(mixBuffer) + i * sizeof(float),
+				channelCount * sizeof(float), fMixBufferFrameCount,
+				reinterpret_cast<char*>(buffer->Data())
+					+ (i * bytes_per_sample(format)),
+				bytes_per_frame(format), frames_per_buffer(format),
+				fOutputGain * output->GetOutputChannelGain(i));
+		}
+		PRINT(4, "send buffer, inframes %ld, outframes %ld\n",
+			fMixBufferFrameCount, frames_per_buffer(format));
+	}
+
+	// fill in the buffer header
+	media_header* hdr = buffer->Header();
+	hdr->type = B_MEDIA_RAW_AUDIO;
+	hdr->size_used = format.buffer_size;
+	hdr->time_source = fTimeSource->ID();
+	hdr->start_time = eventTime;
+
+	// swap byte order if necessary
+	if (!silent)
+		output->AdjustByteOrder(buffer);
+
+	// send the buffer
+	if (fNode->SendBuffer(buffer, output) != B_OK) {
+		ERROR("MixerCore: SendBuffer failed for buffer %lld\n", bufferIndex);
+		buffer->Recycle();
+	}
 }
 
 
@@ -533,12 +561,6 @@ MixerCore::_MixThread()
 
 	typedef RtList<chan_info> chan_info_list;
 	chan_info_list inputChanInfos[MAX_CHANNEL_TYPES];
-	BStackOrHeapArray<chan_info_list, 16> mixChanInfos(fMixBufferChannelCount);
-		// TODO: this does not support changing output channel count
-	if (!mixChanInfos.IsValid()) {
-		ERROR("MixerCore::_MixThread mixChanInfos allocation failed\n");
-		return;
-	}
 
 	int64 framePos = 0;
 	uint64 bufferIndex = 0;
@@ -565,45 +587,13 @@ MixerCore::_MixThread()
 			continue;
 		}
 
-		// no inputs or output muted, skip further processing and just send an
-		// empty buffer
-		if (fInputs->IsEmpty() || fOutput->IsMuted()) {
-			int size = fOutput->MediaOutput().format.u.raw_audio.buffer_size;
-			BBuffer* buffer = fBufferGroup->RequestBuffer(size,
-				bufferRequestTimeout);
-			if (buffer != NULL) {
-				int middle = 0;
-				if (fOutput->MediaOutput().format.u.raw_audio.format
-						== media_raw_audio_format::B_AUDIO_UCHAR)
-					middle = 128;
-				memset(buffer->Data(), middle, size);
-				// fill in the buffer header
-				media_header* hdr = buffer->Header();
-				hdr->type = B_MEDIA_RAW_AUDIO;
-				hdr->size_used = size;
-				hdr->time_source = fTimeSource->ID();
-				hdr->start_time = eventTime;
-				if (fNode->SendBuffer(buffer, fOutput) != B_OK) {
-					ERROR("MixerCore: SendBuffer failed for buffer %lld\n",
-						bufferIndex);
-					buffer->Recycle();
-				}
-			} else {
-				ERROR("MixerCore: RequestBuffer failed for buffer %lld\n",
-					bufferIndex);
-			}
-
-			bufferIndex++;
-			framePos += fMixBufferFrameCount;
-
-			Unlock();
-			continue;
-		}
+		// With no inputs, or the output muted, there is nothing to mix;
+		// the output just gets an empty buffer.
+		bool silent = fInputs->IsEmpty() || fOutput->IsMuted();
 
 		int64 currentFramePos;
 		currentFramePos = frameBase + framePos;
 
-		// mix all data from all inputs into the mix buffer
 		ASSERT(currentFramePos % fMixBufferFrameCount == 0);
 
 		PRINT(4, "create new buffer event at %lld, reading input frames at "
@@ -611,6 +601,8 @@ MixerCore::_MixThread()
 
 		// Init the channel information for each MixerInput.
 		for (int i = 0; MixerInput* input = Input(i); i++) {
+			if (silent)
+				break;
 			int count = input->GetMixerChannelCount();
 			for (int channel = 0; channel < count; channel++) {
 				int type;
@@ -630,107 +622,12 @@ MixerCore::_MixThread()
 			}
 		}
 
-		for (int channel = 0; channel < fMixBufferChannelCount; channel++) {
-			int sourceCount = fOutput->GetOutputChannelSourceCount(channel);
-			for (int i = 0; i < sourceCount; i++) {
-				int type;
-				float gain;
-				fOutput->GetOutputChannelSourceInfoAt(channel, i, &type,
-					&gain);
-				if (type < 0 || type >= MAX_CHANNEL_TYPES)
-					continue;
-				int count = inputChanInfos[type].CountItems();
-				for (int j = 0; j < count; j++) {
-					chan_info* info = inputChanInfos[type].ItemAt(j);
-					chan_info* newInfo = mixChanInfos[channel].Create();
-					newInfo->base = info->base;
-					newInfo->sample_offset = info->sample_offset;
-					newInfo->gain = info->gain * gain;
-				}
-			}
-		}
-
-		memset(fMixBuffer, 0,
-			fMixBufferChannelCount * fMixBufferFrameCount * sizeof(float));
-		for (int channel = 0; channel < fMixBufferChannelCount; channel++) {
-			PRINT(5, "_MixThread: channel %d has %d sources\n", channel,
-				mixChanInfos[channel].CountItems());
-
-			int count = mixChanInfos[channel].CountItems();
-			for (int i = 0; i < count; i++) {
-				chan_info* info = mixChanInfos[channel].ItemAt(i);
-				PRINT(5, "_MixThread:   base %p, sample-offset %2d, gain %.3f\n",
-					info->base, info->sample_offset, info->gain);
-				// This looks slightly ugly, but the current GCC will generate
-				// the fastest code this way.
-				// fMixBufferFrameCount is always > 0.
-				uint32 dstSampleOffset
-					= fMixBufferChannelCount * sizeof(float);
-				uint32 srcSampleOffset = info->sample_offset;
-				char* dst = (char*)&fMixBuffer[channel];
-				char* src = (char*)info->base;
-				float gain = info->gain;
-				int j = fMixBufferFrameCount;
-				do {
-					*(float*)dst += *(const float*)src * gain;
-					dst += dstSampleOffset;
-					src += srcSampleOffset;
-				 } while (--j);
-			}
-		}
-
-		// request a buffer
-		BBuffer* buffer;
-		buffer = fBufferGroup->RequestBuffer(
-			fOutput->MediaOutput().format.u.raw_audio.buffer_size,
-			bufferRequestTimeout);
-		if (buffer != NULL) {
-			// copy data from mix buffer into output buffer
-			for (int i = 0; i < fMixBufferChannelCount; i++) {
-				fResampler[i]->Resample(
-					reinterpret_cast<char*>(fMixBuffer) + i * sizeof(float),
-					fMixBufferChannelCount * sizeof(float),
-					fMixBufferFrameCount,
-					reinterpret_cast<char*>(buffer->Data())
-						+ (i * bytes_per_sample(
-							fOutput->MediaOutput().format.u.raw_audio)),
-					bytes_per_frame(fOutput->MediaOutput().format.u.raw_audio),
-					frames_per_buffer(
-						fOutput->MediaOutput().format.u.raw_audio),
-					fOutputGain * fOutput->GetOutputChannelGain(i));
-			}
-			PRINT(4, "send buffer, inframes %ld, outframes %ld\n",
-				fMixBufferFrameCount,
-				frames_per_buffer(fOutput->MediaOutput().format.u.raw_audio));
-
-			// fill in the buffer header
-			media_header* hdr = buffer->Header();
-			hdr->type = B_MEDIA_RAW_AUDIO;
-			hdr->size_used
-				= fOutput->MediaOutput().format.u.raw_audio.buffer_size;
-			hdr->time_source = fTimeSource->ID();
-			hdr->start_time = eventTime;
-
-			// swap byte order if necessary
-			fOutput->AdjustByteOrder(buffer);
-
-			// send the buffer
-			status_t res = fNode->SendBuffer(buffer, fOutput);
-			if (res != B_OK) {
-				ERROR("MixerCore: SendBuffer failed for buffer %lld\n",
-					bufferIndex);
-				buffer->Recycle();
-			}
-		} else {
-			ERROR("MixerCore: RequestBuffer failed for buffer %lld\n",
-				bufferIndex);
-		}
+		_MixOutput(fOutput, inputChanInfos, silent, eventTime,
+			bufferRequestTimeout, bufferIndex);
 
 		// make all lists empty
 		for (int i = 0; i < MAX_CHANNEL_TYPES; i++)
 			inputChanInfos[i].MakeEmpty();
-		for (int i = 0; i < fOutput->GetOutputChannelCount(); i++)
-			mixChanInfos[i].MakeEmpty();
 
 		bufferIndex++;
 		framePos += fMixBufferFrameCount;

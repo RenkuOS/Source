@@ -102,7 +102,6 @@ AudioMixer::AudioMixer(BMediaAddOn *addOn, bool isSystemMixer)
 	fAddOn(addOn),
 	fCore(new MixerCore(this)),
 	fWeb(NULL),
-	fBufferGroup(NULL),
 	fDownstreamLatency(1),
 	fInternalLatency(1),
 	fAutoStop(false),
@@ -146,15 +145,16 @@ AudioMixer::~AudioMixer()
 	// stop the mixer
 	fCore->Lock();
 	fCore->Stop();
+	if (fCore->Output() != NULL)
+		delete fCore->Output()->BufferGroup();
 	fCore->Unlock();
 
 	// disconnect all nodes from the mixer
 	// XXX todo
 
 	delete fCore;
-	delete fBufferGroup;
 
-	DEBUG_ONLY(fCore = 0; fBufferGroup = 0; fWeb = 0);
+	DEBUG_ONLY(fCore = 0; fWeb = 0);
 }
 
 
@@ -705,11 +705,10 @@ AudioMixer::FormatChangeRequested(const media_source &source,
 	// apply format change
 	fCore->OutputFormatChanged(io_format->u.raw_audio);
 
-	status = CreateBufferGroup(&group);
+	status = CreateBufferGroup(output, &group);
 	if (status == B_OK) {
-		delete fBufferGroup;
-		fBufferGroup = group;
-		fCore->SetOutputBufferGroup(fBufferGroup);
+		delete output->BufferGroup();
+		output->SetBufferGroup(group);
 	}
 
 err:
@@ -764,22 +763,28 @@ AudioMixer::SetBufferGroup(const media_source &for_source,
 	if (for_source.port != ControlPort() || for_source.id != 0)
 		return B_MEDIA_BAD_SOURCE;
 
-	if (newGroup == fBufferGroup) {
+	fCore->Lock();
+	MixerOutput* output = fCore->Output();
+	if (output == NULL) {
+		fCore->Unlock();
+		return B_MEDIA_BAD_SOURCE;
+	}
+
+	if (newGroup == output->BufferGroup()) {
 		// we're already using this buffergroup
+		fCore->Unlock();
 		return B_OK;
 	}
 
-	fCore->Lock();
 	if (!newGroup) {
-		status_t status = CreateBufferGroup(&newGroup);
+		status_t status = CreateBufferGroup(output, &newGroup);
 		if (status != B_OK) {
 			fCore->Unlock();
 			return status;
 		}
 	}
-	fCore->SetOutputBufferGroup(newGroup);
-	delete fBufferGroup;
-	fBufferGroup = newGroup;
+	delete output->BufferGroup();
+	output->SetBufferGroup(newGroup);
 	fCore->Unlock();
 
 	return B_OK;
@@ -936,7 +941,7 @@ AudioMixer::PrepareToConnect(const media_source &what,
 	output.format = *format;
 	strcpy(output.name, out_name);
 
-	fCore->EnableOutput(false);
+	// it stays disabled until Connect()
 	fCore->AddOutput(output);
 
 	fCore->Unlock();
@@ -964,6 +969,8 @@ AudioMixer::Connect(status_t error, const media_source &source,
 		ERROR("AudioMixer::Connect failed with error 0x%08lX, removing "
 			"connection\n", error);
 		fCore->Lock();
+		if (fCore->Output() != NULL)
+			delete fCore->Output()->BufferGroup();
 		fCore->RemoveOutput();
 		fCore->Unlock();
 		return;
@@ -1019,16 +1026,16 @@ AudioMixer::Connect(status_t error, const media_source &source,
 	// us a buffer group (via SetBufferGroup()) prior to this.  That can
 	// happen, for example, if the consumer calls SetOutputBuffersFor() on
 	// us from within its Connected() method.
-	if (fBufferGroup == NULL) {
+	MixerOutput* output = fCore->Output();
+	ASSERT(output != NULL);
+	if (output->BufferGroup() == NULL) {
 		BBufferGroup *group = NULL;
-		if (CreateBufferGroup(&group) != B_OK) {
+		if (CreateBufferGroup(output, &group) != B_OK) {
 			fCore->Unlock();
 			return;
 		}
-		fBufferGroup = group;
+		output->SetBufferGroup(group);
 	}
-
-	ASSERT(fCore->Output() != 0);
 
 	// our source should still be valid, too
 	ASSERT(fCore->Output()->MediaOutput().source.id == 0);
@@ -1039,10 +1046,10 @@ AudioMixer::Connect(status_t error, const media_source &source,
 	// AudioMixer::PrepareToConnect() and we need to update it.
 	fCore->Output()->MediaOutput().destination = dest;
 
-	fCore->EnableOutput(true);
+	// the mix thread may start as soon as the output is enabled
 	fCore->SetTimingInfo(newTimeSource != NULL ? newTimeSource : TimeSource(),
 		fDownstreamLatency);
-	fCore->SetOutputBufferGroup(fBufferGroup);
+	fCore->EnableOutput(true);
 
 	fCore->Settings()->LoadConnectionSettings(fCore->Output());
 	if (fAutoStop && fCore->CountInputs() > 0)
@@ -1088,13 +1095,13 @@ AudioMixer::Disconnect(const media_source& what, const media_destination& where)
 	if (fAutoStop)
 		_AutoStop();
 
+	// the output owns the buffer group, so take it first
+	BBufferGroup* group = output->BufferGroup();
 	fCore->RemoveOutput();
 	fCore->SetTimingInfo(NULL, 0);
 
 	// destroy buffer group
-	delete fBufferGroup;
-	fBufferGroup = NULL;
-	fCore->SetOutputBufferGroup(0);
+	delete group;
 
 	fCore->Unlock();
 	EventQueue()->FlushEvents(0, BTimedEventQueue::B_ALWAYS);
@@ -1275,7 +1282,7 @@ AudioMixer::PublishEventLatencyChange()
 
 
 status_t
-AudioMixer::CreateBufferGroup(BBufferGroup** buffer) const
+AudioMixer::CreateBufferGroup(MixerOutput* output, BBufferGroup** buffer) const
 {
 	// allocate enough buffers to span our downstream latency
 	// (plus one for rounding up), plus one extra
@@ -1289,7 +1296,7 @@ AudioMixer::CreateBufferGroup(BBufferGroup** buffer) const
 		count = 3;
 
 	fCore->Lock();
-	uint32 size = fCore->Output()->MediaOutput().format.u.raw_audio.buffer_size;
+	uint32 size = output->MediaOutput().format.u.raw_audio.buffer_size;
 	fCore->Unlock();
 
 	TRACE("AudioMixer: allocating %ld buffers of %ld bytes each\n",
