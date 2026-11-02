@@ -163,6 +163,19 @@ protected:
 			area_id			fRecordScratchArea;
 			uint8*			fRecordScratch;
 
+			// Capture carry. The device, not our transfer schedule, decides how
+			// many frames a capture transfer holds, so record buffers are cut
+			// from the delivered frames as they fill: fCaptureSlot is the
+			// record buffer being filled and fCaptureFill the wire bytes it
+			// holds so far. A transfer completes zero, one or two of them, and
+			// the capture stream then runs at the device's clock -- the clock
+			// the feedback-paced playback stream follows. fCaptureGapPhase
+			// sizes the silence standing in for a missed service interval
+			// (16.16 frames).
+			size_t			fCaptureSlot;
+			size_t			fCaptureFill;
+			uint32			fCaptureGapPhase;
+
 			// Staging for a feedback-paced playback stream. Each outgoing
 			// transfer is assembled here as the sub-packet remainder of the
 			// previous transfer followed by the media buffer, so packets can
@@ -397,7 +410,7 @@ private:
 								void* data, size_t actualLength);
 			void			_ProcessFeedback(const uint8* data, size_t length);
 			void			_PublishImplicitFeedback(size_t actualLength);
-			size_t			_RepackCapture(void* scratch);
+			size_t			_RepackCapture(void* scratch, size_t& completed);
 	static	void			_Pack24(const uint8* media, uint8* wire,
 								size_t subframes);
 	static	void			_Unpack24(const uint8* wire, uint8* media,
