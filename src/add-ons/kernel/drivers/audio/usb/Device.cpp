@@ -1201,6 +1201,58 @@ Device::_SharedClockId()
 }
 
 
+// Arm every stream of a fresh run before any of them starts (UAC2 only; see
+// Stream::_ArmClockAndActivate). All streaming interfaces go to alternate 0,
+// each clock is programmed once, then every interface gets its active
+// alternate, and only after that do the streams queue transfers. No interface
+// is switched while a stream of the device is running.
+void
+Device::_ArmStreams()
+{
+	if (fAudioControl.SpecReleaseNumber() < 0x200)
+		return;
+
+	const int count = fStreams.Count();
+	if (count == 0)
+		return;
+
+	bool arm[count];
+	for (int i = 0; i < count; i++) {
+		arm[i] = !(gSkipInputStreams && fStreams[i]->IsInput())
+			&& fStreams[i]->ReadyToStart();
+	}
+
+	for (int i = 0; i < count; i++) {
+		if (arm[i])
+			fStreams[i]->ParkAlternate();
+	}
+
+	uint8 programmed[count];
+	int programmedCount = 0;
+	for (int i = 0; i < count; i++) {
+		if (!arm[i])
+			continue;
+		uint8 clockId = fAudioControl.ClockSourceIdForTerminal(
+			fStreams[i]->TerminalLink());
+		bool done = false;
+		for (int j = 0; j < programmedCount; j++)
+			done = done || programmed[j] == clockId;
+		if (done)
+			continue;
+		// A stream without a clock (clockId 0) gets its own attempt, which
+		// logs why it fails, as it did when each stream armed itself.
+		if (clockId != 0)
+			programmed[programmedCount++] = clockId;
+		fStreams[i]->ProgramClock();
+	}
+
+	for (int i = 0; i < count; i++) {
+		if (arm[i] && fStreams[i]->ActivateAlternate() == B_OK)
+			fStreams[i]->SetArmed();
+	}
+}
+
+
 status_t
 Device::_MultiSetGlobalFormat(multi_format_info* Format)
 {
@@ -1396,6 +1448,8 @@ Device::_MultiBufferExchange(multi_buffer_info* multiInfo)
 			;
 		atomic_set(&fFeedbackRingHead, 0);
 		atomic_set(&fFeedbackRingTail, 0);
+
+		_ArmStreams();
 	}
 
 	for (int i = 0; i < fStreams.Count(); i++) {
