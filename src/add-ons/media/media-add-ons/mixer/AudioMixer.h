@@ -133,6 +133,12 @@ protected:
 private:
 			void				_AutoStart();
 			void				_AutoStop();
+			void				_ConnectOtherOutput(MixerOutput* output,
+									const media_destination& destination,
+									char* name);
+			MixerOutput*		_OtherOutput(int32 id);
+			int32				_BufferCount() const;
+			void				_GrowBufferGroups();
 
 			BMediaAddOn*		fAddOn;
 			MixerCore*			fCore;

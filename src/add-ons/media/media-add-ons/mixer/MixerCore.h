@@ -46,16 +46,25 @@ public:
 	// the audio mixer node using SetOutputAttenuation()
 			void				SetOutputAttenuation(float gain);
 			MixerInput*			AddInput(const media_input& input);
+
+	// The mix goes to every output. The first output connected sets the
+	// time source, frame rate and buffer length (Output()); the others
+	// only receive the mix while they match it. A new output is disabled
+	// until EnableOutput().
 			MixerOutput*		AddOutput(const media_output& output);
 
 			bool				RemoveInput(int32 inputID);
-			bool				RemoveOutput();
+			bool				RemoveOutput(const media_source& source);
 			int32				CreateInputID();
+			int32				CreateOutputID();
 			int32				CountInputs() { return fInputs->CountItems(); }
 
 	// index = 0 to count-1, NOT inputID
 			MixerInput*			Input(int index);
 			MixerOutput*		Output();
+			int32				CountOutputs();
+			MixerOutput*		OutputAt(int32 index);
+			MixerOutput*		FindOutput(const media_source& source);
 
 			bool				Lock();
 			bool				LockWithTimeout(bigtime_t timeout);
@@ -73,7 +82,8 @@ public:
 			void				SetTimingInfo(BTimeSource* timeSource,
 									bigtime_t downstreamLatency);
 			BTimeSource*		TimeSource() const { return fTimeSource; }
-			void				EnableOutput(bool enabled);
+			void				EnableOutput(MixerOutput* output,
+									bool enabled);
 
 			bool				Start();
 			bool				Stop();
@@ -85,6 +95,9 @@ private:
 			void				_StopMixThread();
 
 			void				_ApplyOutputFormat();
+			bool				_CanMixTo(MixerOutput* output);
+			float				_OutputChannelGain(MixerOutput* output,
+									int channel);
 			void				_MixOutput(MixerOutput* output,
 									RtList<chan_info>* inputChanInfos,
 									bool silent, bigtime_t eventTime,
@@ -96,8 +109,12 @@ private:
 private:
 			BLocker*			fLocker;
 			BList*				fInputs;
+			BList*				fOutputs;
 			MixerOutput*		fOutput;
+									// the first output, which the mix
+									// follows; also in fOutputs
 			int32				fNextInputID;
+			int32				fNextOutputID;
 			bool				fRunning;
 									// true = the mix thread is running
 
