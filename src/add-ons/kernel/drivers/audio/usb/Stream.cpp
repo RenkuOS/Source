@@ -681,7 +681,7 @@ Stream::_SetupBuffers()
 	// is a separate B_CONTIGUOUS kernel area (the same allocation policy hda
 	// uses for its DMA buffers). The USB finisher thread fills it at queue
 	// time from the ORIGINAL mixer area VA (fBuffers) - packing to 3-byte
-	// samples, or memcpy + channel mirror for native formats. It must not
+	// samples, or memcpy for native formats. It must not
 	// alias the mixer area, and no other context may be responsible for
 	// filling it: cross-context writes through clones of these areas are not
 	// reliably visible to the finisher on x86_64 hrev59811 (a wire capture
@@ -1447,16 +1447,6 @@ Stream::_StageWireChunk(size_t queuedBuffer, bool staleSlot)
 	}
 
 	memcpy(wireChunk, mediaChunk, wireChunkSize);
-
-	// The mixer only fills the first stereo pair; mirror it onto the second
-	// pair so 4-channel devices whose main output is wired to channels 3/4
-	// (DJ consoles: deck B / master pair) are audible too.
-	if (fStreamChannels == 4) {
-		size_t sub = fWireSampleSize / fStreamChannels;
-		uint8* s = wireChunk;
-		for (size_t f = 0; f < framesPerBuffer; f++, s += fWireSampleSize)
-			memcpy(s + 2 * sub, s, 2 * sub);
-	}
 }
 
 
@@ -2804,15 +2794,11 @@ Stream::GetBuffers(multi_buffer_list* List)
 	TypeIFormatDescriptor* format = static_cast<TypeIFormatDescriptor*>(
 		fAlternates[fActiveAlternate]->Format());
 
-	// The Haiku system mixer only binds to a stereo output, so present a stereo
-	// pair to the media node for playback (input/capture keeps all channels).
-	// This MUST match the output channel count _MultiGetDescription advertises,
-	// or the media node's _WriteZeros() walks past the buffer list and crashes
-	// media_addon_server. The USB wire still carries all fNumChannels; which
-	// physical pair this stereo lands on is chosen by the wire staging's
-	// channel mirror.
-	size_t numReport = (fIsInput || format->fNumChannels <= 2)
-		? (size_t)format->fNumChannels : 2;
+	// Every channel of the stream is handed out, as _MultiGetDescription
+	// advertises it for the terminal. The two must agree, or the media
+	// node's _WriteZeros() walks past the buffer list and crashes
+	// media_addon_server.
+	size_t channelCount = format->fNumChannels;
 
 	// [buffer][channel] init buffers
 	for (size_t buffer = 0; buffer < fBufferCount; buffer++) {
@@ -2824,7 +2810,7 @@ Stream::GetBuffers(multi_buffer_list* List)
 		uint8 mediaSubframe = fMediaSampleSize / format->fNumChannels;
 		struct buffer_desc descs[format->fNumChannels];
 		for (size_t channel = startChannel;
-				channel < startChannel + numReport; channel++) {
+				channel < startChannel + channelCount; channel++) {
 			// init stride to the same for all buffers
 			uint32 stride = fMediaSampleSize;
 			descs[channel].stride = stride;
@@ -2839,7 +2825,7 @@ Stream::GetBuffers(multi_buffer_list* List)
 		}
 		if (!IS_USER_ADDRESS(Buffers[buffer])
 				|| user_memcpy(Buffers[buffer], descs,
-					sizeof(buffer_desc) * numReport) < B_OK) {
+					sizeof(buffer_desc) * channelCount) < B_OK) {
 			return B_BAD_ADDRESS;
 		}
 	}
@@ -2849,7 +2835,7 @@ Stream::GetBuffers(multi_buffer_list* List)
 		TRACE(MIX, "return_record_channels:%#010x\n",
 			List->return_record_channels);
 	} else {
-		List->return_playback_channels += numReport;
+		List->return_playback_channels += channelCount;
 		TRACE(MIX, "return_playback_channels:%#010x\n",
 			List->return_playback_channels);
 	}
