@@ -2800,17 +2800,35 @@ Stream::GetBuffers(multi_buffer_list* List)
 	// media_addon_server.
 	size_t channelCount = format->fNumChannels;
 
+	// Fill only what the caller has room for: Buffers holds
+	// request_*_buffers rows of request_*_channels entries, and this stream's
+	// channels start at startChannel in each row. The counts returned below
+	// are still the device's own, so a caller that asked for too few rows can
+	// tell, and one that asked for fewer channels uses only those.
+	int32 requestBuffers = fIsInput
+		? List->request_record_buffers : List->request_playback_buffers;
+	int32 requestChannels = fIsInput
+		? List->request_record_channels : List->request_playback_channels;
+	uint32 rowCount = requestBuffers > 0
+		? min_c(fBufferCount, (uint32)requestBuffers) : 0;
+	size_t copyCount = 0;
+	if (startChannel >= 0 && requestChannels > startChannel) {
+		copyCount = min_c(channelCount,
+			(size_t)(requestChannels - startChannel));
+	}
+
 	// [buffer][channel] init buffers
-	for (size_t buffer = 0; buffer < fBufferCount; buffer++) {
+	for (uint32 buffer = 0; buffer < rowCount && copyCount > 0; buffer++) {
 		TRACE(DTA, "%s buffer #%d:\n", fIsInput ? "input" : "output", buffer + 1);
 
 		// The mixer writes media-sized samples (4 bytes each when we are
 		// packing to 3-byte 24-bit on the wire), so the buffer layout uses
 		// fMediaSampleSize / mediaSubframe, not the wire subframe size.
+		// fBuffers holds this stream's channels only, so descs and the
+		// offset into each frame count from the stream's first channel.
 		uint8 mediaSubframe = fMediaSampleSize / format->fNumChannels;
 		struct buffer_desc descs[format->fNumChannels];
-		for (size_t channel = startChannel;
-				channel < startChannel + channelCount; channel++) {
+		for (size_t channel = 0; channel < copyCount; channel++) {
 			// init stride to the same for all buffers
 			uint32 stride = fMediaSampleSize;
 			descs[channel].stride = stride;
@@ -2820,12 +2838,14 @@ Stream::GetBuffers(multi_buffer_list* List)
 			descs[channel].base += buffer * bufferSize;
 			descs[channel].base += channel * mediaSubframe;
 
-			TRACE(DTA, "%d:%d: base:%#010x; stride:%#010x\n", buffer, channel,
-				descs[channel].base, descs[channel].stride);
+			TRACE(DTA, "%d:%d: base:%#010x; stride:%#010x\n", buffer,
+				startChannel + channel, descs[channel].base,
+				descs[channel].stride);
 		}
-		if (!IS_USER_ADDRESS(Buffers[buffer])
-				|| user_memcpy(Buffers[buffer], descs,
-					sizeof(buffer_desc) * channelCount) < B_OK) {
+		buffer_desc* row = Buffers[buffer] + startChannel;
+		if (!IS_USER_ADDRESS(row)
+				|| user_memcpy(row, descs, sizeof(buffer_desc) * copyCount)
+					< B_OK) {
 			return B_BAD_ADDRESS;
 		}
 	}
