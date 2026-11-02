@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <Autolock.h>
 #include <MediaFile.h>
 #include <MediaTrack.h>
 
@@ -21,6 +22,20 @@ using namespace std;
 #else
 # define TRACE(x...)
 #endif
+
+
+// How far ahead of the last Read() the read-ahead thread decodes. Read()
+// never waits for the disk; this covers stalls far longer than the
+// producer's latency, such as a laptop disk loading its heads after it
+// parked them (~400 ms).
+static const bigtime_t kReadAheadDuration = 2000000;
+
+// Upper bound for the memory the cache may use.
+static const int64 kMaxCacheSize = 8 * 1024 * 1024;
+
+// The cache size before read-ahead, kept for what lies behind the playing
+// position.
+static const int32 kBehindBufferCount = 10;
 
 
 // #pragma mark - Buffer
@@ -65,14 +80,47 @@ MediaTrackAudioSupplier::MediaTrackAudioSupplier(BMediaTrack* mediaTrack,
 	fHasKeyFrames(false),
 	fCountFrames(0),
 	fReportSeekError(true),
-	fTrackIndex(trackIndex)
+	fTrackIndex(trackIndex),
+	fCacheLock("audio cache"),
+	fReadAheadThread(-1),
+	fReadAheadSem(-1),
+	fQuitReadAhead(false),
+	fPlayPosition(0),
+	fReadAheadData(NULL)
 {
 	_InitFromTrack();
+
+	if (InitCheck() != B_OK)
+		return;
+
+	fReadAheadData = new (nothrow) char[fFormat.u.raw_audio.buffer_size];
+	fReadAheadSem = create_sem(0, "audio read-ahead");
+	if (fReadAheadData == NULL || fReadAheadSem < 0)
+		return;
+
+	fReadAheadThread = spawn_thread(_ReadAheadEntry, "audio read-ahead",
+		B_NORMAL_PRIORITY, this);
+	if (fReadAheadThread >= 0) {
+		resume_thread(fReadAheadThread);
+		// Start filling the cache from the first frame now, so that the
+		// first Read() finds it there.
+		release_sem(fReadAheadSem);
+	}
 }
 
 
 MediaTrackAudioSupplier::~MediaTrackAudioSupplier()
 {
+	if (fReadAheadThread >= 0) {
+		fQuitReadAhead = true;
+		release_sem(fReadAheadSem);
+		status_t result;
+		wait_for_thread(fReadAheadThread, &result);
+	}
+	if (fReadAheadSem >= 0)
+		delete_sem(fReadAheadSem);
+	delete[] fReadAheadData;
+
 	_FreeBuffers();
 	delete[] fBuffer;
 }
@@ -203,16 +251,33 @@ printf("  reading %lu frames (full buffer)\n", framesPerBuffer);
 printf("  done\n\n");
 
 #else
-	// read the cached frames
 	bigtime_t time = system_time();
-	if (frames > 0)
-		_ReadCachedFrames(buffer, pos, frames, time);
+	if (fReadAheadThread < 0) {
+		// Without the read-ahead thread, read in the caller's thread.
+		if (frames > 0)
+			_ReadCachedFrames(buffer, pos, frames, time);
+		if (frames > 0)
+			_ReadUncachedFrames(buffer, pos, frames, time);
+		return B_OK;
+	}
+
+	// read the cached frames
+	{
+		BAutolock _(fCacheLock);
+		fPlayPosition = pos + frames;
+		if (frames > 0)
+			_ReadCachedFrames(buffer, pos, frames, time);
+	}
+	release_sem_etc(fReadAheadSem, 1, B_DO_NOT_RESCHEDULE);
 
 	TRACE("  after reading from cache: %p, %lld, %lld\n", buffer, pos, frames);
 
-	// read the remaining (uncached) frames
+	// The audio producer calls Read() in its real-time thread, which must
+	// never wait for the disk or for the read-ahead thread. Frames that are
+	// not cached yet, after a seek for example, are played as silence; the
+	// read-ahead thread continues after them.
 	if (frames > 0)
-		_ReadUncachedFrames(buffer, pos, frames, time);
+		ReadSilence(buffer, frames);
 
 #endif
 	TRACE("Read() done\n");
@@ -332,7 +397,7 @@ MediaTrackAudioSupplier::_CopyFrames(Buffer* buffer,
 void
 MediaTrackAudioSupplier::_AllocateBuffers()
 {
-	int32 count = 10;
+	int32 count = _BufferCount();
 	_FreeBuffers();
 	int32 bufferSize = fFormat.u.raw_audio.buffer_size;
 	char* data = new (nothrow) char[bufferSize * count];
@@ -610,6 +675,156 @@ MediaTrackAudioSupplier::_ReadUncachedFrames(void* buffer, int64 position,
 	if (error != B_OK && frames > 0)
 		ReadSilence(buffer, frames);
 	return error;
+}
+
+
+/*!	The number of cache buffers: kReadAheadDuration ahead of the playing
+	position, plus kBehindBufferCount, within kMaxCacheSize.
+*/
+int32
+MediaTrackAudioSupplier::_BufferCount() const
+{
+	int64 framesPerBuffer = _FramesPerBuffer();
+	int64 bufferSize = fFormat.u.raw_audio.buffer_size;
+	if (framesPerBuffer <= 0 || bufferSize <= 0)
+		return kBehindBufferCount;
+
+	int64 aheadFrames = int64(fFormat.u.raw_audio.frame_rate
+		* kReadAheadDuration / 1000000);
+	int64 count = kBehindBufferCount
+		+ (aheadFrames + framesPerBuffer - 1) / framesPerBuffer;
+	return (int32)max((int64)kBehindBufferCount,
+		min(count, kMaxCacheSize / bufferSize));
+}
+
+
+/*!	Returns the cache buffer the read-ahead thread may fill: an unused one,
+	else the least recently used of those outside the read-ahead window,
+	the kReadAheadDuration from \a playPosition on. Buffers before the
+	window have been played; buffers after it, such as those read ahead
+	before a seek backwards, are not needed before the window moves there.
+	Returns NULL if every buffer lies in the window. Caller must hold
+	fCacheLock.
+*/
+MediaTrackAudioSupplier::Buffer*
+MediaTrackAudioSupplier::_FindReadAheadBuffer(int64 playPosition) const
+{
+	Buffer* result = _FindUnusedBuffer();
+	if (result != NULL)
+		return result;
+
+	int64 windowEnd = playPosition + int64(fFormat.u.raw_audio.frame_rate
+		* kReadAheadDuration / 1000000);
+	for (int32 i = 0; Buffer* buffer = _BufferAt(i); i++) {
+		if (buffer->offset + buffer->size > playPosition
+			&& buffer->offset < windowEnd)
+			continue;
+		if (result == NULL || buffer->time_stamp < result->time_stamp)
+			result = buffer;
+	}
+	return result;
+}
+
+
+/*!	Returns the cache buffer that holds \a frame, or NULL if none does.
+	Caller must hold fCacheLock.
+*/
+MediaTrackAudioSupplier::Buffer*
+MediaTrackAudioSupplier::_FindBufferContaining(int64 frame) const
+{
+	for (int32 i = 0; Buffer* buffer = _BufferAt(i); i++) {
+		if (buffer->size > 0 && buffer->offset <= frame
+			&& frame < buffer->offset + buffer->size)
+			return buffer;
+	}
+	return NULL;
+}
+
+
+status_t
+MediaTrackAudioSupplier::_ReadAheadEntry(void* cookie)
+{
+	((MediaTrackAudioSupplier*)cookie)->_ReadAheadLoop();
+	return B_OK;
+}
+
+
+/*!	Woken by every Read(), decodes the frames from the last one read on to
+	kReadAheadDuration past the playing position into the cache. While this
+	thread runs, it is the only one that reads fMediaTrack. fCacheLock is
+	held only to look at or fill the cache, never while decoding, so that
+	Read() does not wait for the disk.
+*/
+void
+MediaTrackAudioSupplier::_ReadAheadLoop()
+{
+	const int64 aheadFrames = int64(fFormat.u.raw_audio.frame_rate
+		* kReadAheadDuration / 1000000);
+	const int64 sampleSize = fFormat.u.raw_audio.format
+		& media_raw_audio_format::B_AUDIO_SIZE_MASK;
+	const int64 frameSize = sampleSize * fFormat.u.raw_audio.channel_count;
+
+	// The run of frames this thread has cached, [aheadStart, aheadEnd).
+	int64 aheadStart = 0;
+	int64 aheadEnd = 0;
+
+	while (acquire_sem(fReadAheadSem) == B_OK && !fQuitReadAhead) {
+		while (!fQuitReadAhead) {
+			int64 position;
+			{
+				BAutolock _(fCacheLock);
+				int64 playPosition = fPlayPosition;
+				if (playPosition < aheadStart || playPosition > aheadEnd) {
+					// Started, or seeked: begin a new run.
+					aheadEnd = playPosition;
+				}
+				// The run only holds what has not been played yet, so that a
+				// seek backwards, by however little, begins a new one.
+				aheadStart = playPosition;
+				if (aheadEnd >= playPosition + aheadFrames
+					|| (fCountFrames > 0 && aheadEnd >= fCountFrames))
+					break;
+
+				// Skip what an earlier run has cached already. After a seek
+				// its buffers need not start where this run's do.
+				Buffer* cached = _FindBufferContaining(aheadEnd);
+				if (cached != NULL) {
+					aheadEnd = cached->offset + cached->size;
+					continue;
+				}
+				if (_FindReadAheadBuffer(playPosition) == NULL)
+					break;
+				position = aheadEnd;
+			}
+
+			int64 readPosition = position;
+			if (_SeekToKeyFrameBackward(readPosition) != B_OK)
+				break;
+			int64 frames = 0;
+			if (fMediaTrack->ReadFrames(fReadAheadData, &frames) != B_OK
+				|| frames <= 0) {
+				break;
+			}
+			frames = min(frames,
+				int64(fFormat.u.raw_audio.buffer_size / frameSize));
+
+			BAutolock _(fCacheLock);
+			Buffer* buffer = _FindBufferAtFrame(readPosition);
+			if (buffer == NULL || buffer->size == 0)
+				buffer = _FindReadAheadBuffer(fPlayPosition);
+			if (buffer == NULL)
+				break;
+			memcpy(buffer->data, fReadAheadData, frames * frameSize);
+			buffer->offset = readPosition;
+			buffer->size = frames;
+			buffer->time_stamp = system_time();
+			// After a seek the extractor may have started at an earlier key
+			// frame; ReadFrames() still moved the track on, so the next
+			// round continues from there.
+			if (readPosition + frames > aheadEnd)
+				aheadEnd = readPosition + frames;
+		}
+	}
 }
 
 

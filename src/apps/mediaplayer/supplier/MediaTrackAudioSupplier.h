@@ -8,6 +8,8 @@
 
 
 #include <List.h>
+#include <Locker.h>
+#include <OS.h>
 
 #include "AudioTrackSupplier.h"
 
@@ -74,6 +76,13 @@ private:
 									int64 position, int64 frames,
 									bigtime_t time);
 
+			int32				_BufferCount() const;
+			Buffer*				_FindReadAheadBuffer(int64 playPosition)
+									const;
+			Buffer*				_FindBufferContaining(int64 frame) const;
+	static	status_t			_ReadAheadEntry(void* cookie);
+			void				_ReadAheadLoop();
+
 			status_t			_FindKeyFrameForward(int64& position);
 			status_t			_FindKeyFrameBackward(int64& position);
 // NOTE: unused
@@ -90,6 +99,20 @@ private:
 			int64				fCountFrames;
 			bool				fReportSeekError;
 			int32				fTrackIndex;
+
+			// Read-ahead: a thread decodes the frames following the last
+			// Read() into the cache, so that Read(), which the audio
+			// producer calls in its real-time thread, never waits for the
+			// disk. While the thread runs, only it reads fMediaTrack.
+			// fCacheLock guards the cache buffers and fPlayPosition.
+			BLocker				fCacheLock;
+			thread_id			fReadAheadThread;
+			sem_id				fReadAheadSem;
+			volatile bool		fQuitReadAhead;
+			int64				fPlayPosition;
+				// first frame after the last Read()
+			char*				fReadAheadData;
+				// decoded by the read-ahead thread, before it is cached
 };
 
 #endif	// MEDIA_TRACK_AUDIO_SUPPLIER_H
