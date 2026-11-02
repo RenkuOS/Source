@@ -10,7 +10,11 @@
 
 
 #define MAX_CONTROLS	128
-#define MAX_CHANNELS	32
+// Output plus input channels of one device. Every channel array, buffer list
+// row and the enable bitmap is sized by it; a device with more is refused.
+// This leaves room for 64 outputs and 64 inputs, the per-stream channel limit
+// of FreeBSD's uaudio(4) (UAUDIO_CHANNELS_MAX).
+#define MAX_CHANNELS	128
 #define MAX_BUFFERS		32
 
 

@@ -148,6 +148,21 @@ MultiAudioDevice::_InitDriver()
 		return status;
 	}
 
+	// fChannelInfo is indexed by output and input channel, and the buffer
+	// list rows and the enable bitmap hold MAX_CHANNELS channels. Refuse a
+	// device that does not fit instead of running past them.
+	if (fDescription.output_channel_count < 0
+		|| fDescription.input_channel_count < 0
+		|| fDescription.output_channel_count > MAX_CHANNELS
+		|| fDescription.input_channel_count
+			> MAX_CHANNELS - fDescription.output_channel_count) {
+		fprintf(stderr, "%s: %" B_PRId32 " outputs and %" B_PRId32 " inputs "
+			"are more than the %d channels supported\n", fPath,
+			fDescription.output_channel_count,
+			fDescription.input_channel_count, MAX_CHANNELS);
+		return B_NOT_SUPPORTED;
+	}
+
 	PRINT(("Friendly name:\t%s\nVendor:\t\t%s\n",
 		fDescription.friendly_name, fDescription.vendor_info));
 	PRINT(("%" B_PRId32 " outputs\t%" B_PRId32 " inputs\n%" B_PRId32
@@ -187,9 +202,9 @@ MultiAudioDevice::_InitDriver()
 	// Get and set enabled channels
 
 	multi_channel_enable enable;
-	uint32 enableBits;
+	uchar enableBits[(MAX_CHANNELS + 7) / 8] = {};
 	enable.info_size = sizeof(enable);
-	enable.enable_bits = (uchar*)&enableBits;
+	enable.enable_bits = enableBits;
 
 	status = get_enabled_channels(fDevice, &enable);
 	if (status != B_OK) {
@@ -198,7 +213,9 @@ MultiAudioDevice::_InitDriver()
 		return status;
 	}
 
-	enableBits = (1 << num_channels) - 1;
+	memset(enableBits, 0, sizeof(enableBits));
+	for (int i = 0; i < num_channels; i++)
+		B_SET_CHANNEL(enableBits, i, true);
 	enable.lock_source = B_MULTI_LOCK_INTERNAL;
 
 	status = set_enabled_channels(fDevice, &enable);
@@ -276,6 +293,22 @@ MultiAudioDevice::_GetBuffers()
 		fprintf(stderr, "Failed on B_MULTI_GET_BUFFERS: %s\n",
 			strerror(status));
 		return status;
+	}
+
+	// Some drivers return their own buffer count rather than the one asked
+	// for. The node indexes these rows by buffer and channel, so refuse a
+	// list larger than the rows it was given.
+	if (fBufferList.return_playback_buffers < 0
+		|| fBufferList.return_playback_buffers > MAX_BUFFERS
+		|| fBufferList.return_playback_channels < 0
+		|| fBufferList.return_playback_channels > MAX_CHANNELS
+		|| fBufferList.return_record_buffers < 0
+		|| fBufferList.return_record_buffers > MAX_BUFFERS
+		|| fBufferList.return_record_channels < 0
+		|| fBufferList.return_record_channels > MAX_CHANNELS) {
+		fprintf(stderr, "B_MULTI_GET_BUFFERS returned more buffers or "
+			"channels than were asked for\n");
+		return B_BAD_VALUE;
 	}
 
 	for (int32 i = 0; i < fBufferList.return_playback_buffers; i++) {
