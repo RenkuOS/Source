@@ -50,6 +50,9 @@ private:
 			bool				_DoubleScrollBarArrows();
 			void				_SetDoubleScrollBarArrows(bool doubleArrows);
 
+			bool				_ZSnake();
+			void				_SetZSnake(bool zsnake);
+
 private:
 			DecorInfoUtility	fDecorUtility;
 
@@ -64,6 +67,8 @@ private:
 			FakeScrollBar*		fArrowStyleSingle;
 			FakeScrollBar*		fArrowStyleDouble;
 
+			BCheckBox*			fZSnakeCheckBox;
+
 			BString				fSavedDecor;
 			BString				fCurrentDecor;
 
@@ -71,6 +76,7 @@ private:
 			BString				fCurrentControlLook;
 
 			bool				fSavedDoubleArrowsValue : 1;
+			bool				fSavedZSnake : 1;
 };
 
 
