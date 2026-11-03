@@ -21,6 +21,8 @@ class BBufferGroup;
 class MixerInput;
 class MixerOutput;
 class Resampler;
+struct chan_info;
+template<class value> class RtList;
 
 
 // The number of "enum media_multi_channels" types from MediaDefs.h
@@ -68,7 +70,6 @@ public:
 			void				OutputFormatChanged(
 									const media_multi_audio_format& format);
 
-			void				SetOutputBufferGroup(BBufferGroup* group);
 			void				SetTimingInfo(BTimeSource* timeSource,
 									bigtime_t downstreamLatency);
 			BTimeSource*		TimeSource() const { return fTimeSource; }
@@ -83,9 +84,12 @@ private:
 			void				_StartMixThread();
 			void				_StopMixThread();
 
-			void				_UpdateResamplers(
-									const media_multi_audio_format& format);
 			void				_ApplyOutputFormat();
+			void				_MixOutput(MixerOutput* output,
+									RtList<chan_info>* inputChanInfos,
+									bool silent, bigtime_t eventTime,
+									bigtime_t bufferRequestTimeout,
+									uint64 bufferIndex);
 	static	int32				_MixThreadEntry(void* arg);
 			void				_MixThread();
 
@@ -101,21 +105,12 @@ private:
 									// true = mix thread should be
 									// started of it is not running
 
-			bool				fOutputEnabled;
-									// true = mix thread should be
-									// started of it is not running
-
-			Resampler**			fResampler; // array
-			float*				fMixBuffer;
 			int32				fMixBufferFrameRate;
 			int32				fMixBufferFrameCount;
-			int32				fMixBufferChannelCount;
-			int32*				fMixBufferChannelTypes; //array
 			bool				fDoubleRateMixing;
 			bigtime_t			fDownstreamLatency;
 			MixerSettings*		fSettings;
 			AudioMixer*			fNode;
-			BBufferGroup*		fBufferGroup;
 			BTimeSource*		fTimeSource;
 			thread_id			fMixThread;
 			sem_id				fMixThreadWaitSem;

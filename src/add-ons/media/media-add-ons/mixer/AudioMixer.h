@@ -37,7 +37,8 @@ public:
 			void				HandleInputBuffer(BBuffer* buffer,
 									bigtime_t lateness);
 
-			status_t			CreateBufferGroup(BBufferGroup** buffer) const;
+			status_t			CreateBufferGroup(MixerOutput* output,
+									BBufferGroup** buffer) const;
 
 			status_t			SendBuffer(BBuffer* buffer,
 									MixerOutput* output);
@@ -136,7 +137,6 @@ private:
 			BMediaAddOn*		fAddOn;
 			MixerCore*			fCore;
 			BParameterWeb*		fWeb;
-			BBufferGroup*		fBufferGroup;
 			bigtime_t			fDownstreamLatency;
 			bigtime_t			fInternalLatency;
 			bool				fAutoStop;

@@ -10,10 +10,13 @@
 #include "MixerOutput.h"
 
 #include <MediaNode.h>
+#include <RealtimeAlloc.h>
 
+#include "Interpolate.h"
 #include "MixerCore.h"
 #include "MixerDebug.h"
 #include "MixerUtils.h"
+#include "Resampler.h"
 
 
 MixerOutput::MixerOutput(MixerCore *core, const media_output &output)
@@ -23,7 +26,12 @@ MixerOutput::MixerOutput(MixerCore *core, const media_output &output)
 	fOutputChannelCount(0),
 	fOutputChannelInfo(0),
 	fOutputByteSwap(0),
-	fMuted(false)
+	fMuted(false),
+	fMixBuffer(NULL),
+	fResampler(NULL),
+	fResamplerCount(0),
+	fBufferGroup(NULL),
+	fEnabled(false)
 {
 	fix_multiaudio_format(&fOutput.format.u.raw_audio);
 	PRINT_OUTPUT("MixerOutput::MixerOutput", fOutput);
@@ -38,6 +46,9 @@ MixerOutput::~MixerOutput()
 {
 	delete fOutputChannelInfo;
 	delete fOutputByteSwap;
+	DeleteResamplers();
+	if (fMixBuffer != NULL)
+		rtm_free(fMixBuffer);
 }
 
 
@@ -422,4 +433,63 @@ void
 MixerOutput::SetMuted(bool yesno)
 {
 	fMuted = yesno;
+}
+
+
+void
+MixerOutput::SetMixBufferFrameCount(int32 frameCount)
+{
+	if (fMixBuffer != NULL)
+		rtm_free(fMixBuffer);
+
+	fMixBuffer = (float*)rtm_alloc(NULL,
+		sizeof(float) * frameCount * fOutputChannelCount);
+	ASSERT(fMixBuffer != NULL);
+}
+
+
+void
+MixerOutput::UpdateResamplers()
+{
+	DeleteResamplers();
+
+	uint32 format = fOutput.format.u.raw_audio.format;
+	fResampler = new Resampler*[fOutputChannelCount];
+	for (int i = 0; i < fOutputChannelCount; i++) {
+		switch (fCore->Settings()->ResamplingAlgorithm()) {
+			case 2:
+				fResampler[i] = new Interpolate(
+					media_raw_audio_format::B_AUDIO_FLOAT, format);
+				break;
+			default:
+				fResampler[i] = new Resampler(
+					media_raw_audio_format::B_AUDIO_FLOAT, format);
+		}
+	}
+	fResamplerCount = fOutputChannelCount;
+}
+
+
+void
+MixerOutput::DeleteResamplers()
+{
+	for (int i = 0; i < fResamplerCount; i++)
+		delete fResampler[i];
+	delete[] fResampler;
+	fResampler = NULL;
+	fResamplerCount = 0;
+}
+
+
+void
+MixerOutput::SetBufferGroup(BBufferGroup *group)
+{
+	fBufferGroup = group;
+}
+
+
+void
+MixerOutput::SetEnabled(bool enabled)
+{
+	fEnabled = enabled;
 }
