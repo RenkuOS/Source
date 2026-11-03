@@ -296,7 +296,18 @@ status_t
 MMCBus::_ReadDirect(uint16_t rca, uint8_t function, uint32_t address,
 	uint8_t* _value)
 {
-	return DirectIO(rca, false, function, address, 0, _value);
+	// Used while the card is brought up: retry a few times, and say why a
+	// read failed.
+	status_t status = B_ERROR;
+	for (int attempt = 0; attempt < 3; attempt++) {
+		status = DirectIO(rca, false, function, address, 0, _value);
+		if (status == B_OK)
+			return B_OK;
+		ERROR("SDIO CMD52 read of %u:%05" B_PRIx32 " failed (attempt %d): "
+			"%s\n", function, address, attempt + 1, strerror(status));
+		snooze(10000);
+	}
+	return status;
 }
 
 
@@ -325,8 +336,8 @@ MMCBus::DirectIO(uint16_t rca, bool isWrite, uint8_t function,
 	// R5: response flags in bits 15:8 (5.2). COM_CRC_ERROR, ILLEGAL_COMMAND,
 	// ERROR, FUNCTION_NUMBER and OUT_OF_RANGE mean the access failed.
 	if ((response & 0xCB00) != 0) {
-		TRACE("CMD52 %s of %u:%05" B_PRIx32 " failed, flags %02" B_PRIx32
-			"\n", isWrite ? "write" : "read", function, address,
+		ERROR("CMD52 %s of %u:%05" B_PRIx32 ": R5 flags %02" B_PRIx32 "\n",
+			isWrite ? "write" : "read", function, address,
 			(response >> 8) & 0xFF);
 		return B_IO_ERROR;
 	}
@@ -438,9 +449,18 @@ MMCBus::_ReadCISManufacturer(uint16_t rca, uint32_t cisPointer,
 bool
 MMCBus::_ProbeSDIO()
 {
-	uint32_t ocr;
-	if (ExecuteCommand(0, SDIO_IO_SEND_OP_COND, 0, &ocr) != B_OK)
+	uint32_t ocr = 0;
+	status_t status = ExecuteCommand(0, SDIO_IO_SEND_OP_COND, 0, &ocr);
+	if (status == B_BUSY) {
+		// the command line is still busy after the CMD8 timeout
+		snooze(10000);
+		status = ExecuteCommand(0, SDIO_IO_SEND_OP_COND, 0, &ocr);
+	}
+	if (status != B_OK) {
+		TRACE_ALWAYS("no answer to CMD5 (%s), not an SDIO card\n",
+			strerror(status));
 		return false;
+	}
 
 	uint8_t functions = (ocr >> 28) & 7;
 	bool memoryPresent = (ocr & (1 << 27)) != 0;
@@ -476,6 +496,7 @@ MMCBus::_ProbeSDIO()
 		return true;
 	}
 	uint16_t rca = response >> 16;
+	TRACE_ALWAYS("SDIO card: CMD3 answered %08" B_PRIx32 "\n", response);
 
 	// CCCR (6.9): revisions, capabilities and the common CIS pointer
 	uint8_t revision = 0;
