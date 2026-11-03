@@ -199,8 +199,17 @@ private:
 			void				_WriteZeros(node_input& input,
 									uint32 bufferCycle);
 			void				_FillWithZeros(node_input& input);
-			void				_FillNextBuffer(node_input& channel,
-									BBuffer* buffer);
+			int64				_PlaybackSlotFrame(
+									const multi_buffer_info& info);
+			void				_AllocateRing(node_input& input);
+			void				_ClearRing(node_input& input);
+			void				_WriteToRing(node_input& input,
+									BBuffer* buffer, int64 slotFrame);
+			void				_PlayFromRing(node_input& input,
+									int64 slotFrame);
+			bigtime_t			_RecordStartTime(
+									const multi_buffer_info& info,
+									node_output& output);
 
 	static	int32				_OutputThreadEntry(void* data);
 			int32				_OutputThread();
@@ -263,6 +272,9 @@ private:
 				// this is computed from the real (negotiated) chunk size and bit rate,
 				// not the defaults that are in the parameters
 			bigtime_t			fBufferPeriod;
+			int64				fPlayFrame;
+				// performance-time frame at which the playback slot filled
+				// last starts playing; -1 until the next exchange places one
 
 			int32				fQuitThread;
 			thread_id			fThread;

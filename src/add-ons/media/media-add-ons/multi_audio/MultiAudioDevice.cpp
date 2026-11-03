@@ -336,6 +336,14 @@ MultiAudioDevice::_GetBuffers()
 		return B_BAD_VALUE;
 	}
 
+	// A driver may derive its output and input latency from the buffer
+	// geometry just set (usb_audio does), so read them again.
+	multi_format_info formatInfo = fFormatInfo;
+	if (get_global_format(fDevice, &formatInfo) == B_OK) {
+		fFormatInfo.output_latency = formatInfo.output_latency;
+		fFormatInfo.input_latency = formatInfo.input_latency;
+	}
+
 	for (int32 i = 0; i < fBufferList.return_playback_buffers; i++) {
 		for (int32 j = 0; j < fBufferList.return_playback_channels; j++) {
 			PRINT(("fBufferList.playback_buffers[%" B_PRId32 "][%" B_PRId32
