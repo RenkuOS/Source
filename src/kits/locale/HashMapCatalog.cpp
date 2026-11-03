@@ -92,8 +92,11 @@ CatKey::GetStringParts(BString* str, BString* ctx, BString* cmt) const
 uint32
 CatKey::HashFun(const char* s, int startValue) {
 	unsigned long h = startValue;
+	// Hash each byte as signed char, as on x86. The fingerprints stored in
+	// catalog files depend on this value, so it must not change with the
+	// signedness of plain char, which is unsigned on arm and riscv.
 	for ( ; *s; ++s)
-		h = 5 * h + *s;
+		h = 5 * h + (signed char)*s;
 
 	// Add 1 to differenciate ("ab","cd","ef") from ("abcd","e","f")
 	h = 5 * h + 1;
