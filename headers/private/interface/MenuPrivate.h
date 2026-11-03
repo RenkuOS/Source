@@ -38,6 +38,10 @@ public:
 			menu_layout			Layout() const;
 			void				SetLayout(menu_layout layout);
 
+			// ZSnake on, selected items take its highlight
+			bool				SnakeStyle() const;
+			void				DrawSnakeBorder(BView* frameView);
+
 			void				ItemMarked(BMenuItem* item);
 			void				CacheFontInfo();
 

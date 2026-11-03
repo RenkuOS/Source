@@ -209,6 +209,9 @@ BMenuFrame::DetachedFromWindow()
 void
 BMenuFrame::Draw(BRect updateRect)
 {
+	if (fMenu != NULL)
+		MenuPrivate(fMenu).DrawSnakeBorder(this);
+
 	if (fMenu != NULL && fMenu->CountItems() == 0) {
 		BRect rect(Bounds());
 		be_control_look->DrawMenuBackground(this, rect, updateRect,

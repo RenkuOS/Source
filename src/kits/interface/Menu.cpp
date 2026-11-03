@@ -47,6 +47,7 @@
 #include <MenuPrivate.h>
 #include <MenuWindow.h>
 #include <ServerProtocol.h>
+#include <WindowPrivate.h>
 
 #include "utf8_functions.h"
 
@@ -86,6 +87,19 @@ private:
 };
 
 
+// ZSnake, the menu effect BeOS Dano hid in its Menu preferences: a submenu's
+// selection joined to the item it hangs from by one outlined path. Where a
+// submenu's join lies, in the submenu's coordinates.
+struct SnakeJoin {
+	BRect				superitem;
+	BRect				bounds;
+	BRect				selected;
+	bool				superitemStyled;
+		// the superitem has ZSnake's highlight already: the join need not
+		// fill it in (and cover its submenu arrow)
+};
+
+
 class ExtraMenuData {
 public:
 	menu_tracking_hook	trackingHook;
@@ -96,11 +110,32 @@ public:
 	// allows us to draw submenus in the same direction as their parents.
 	bool				frameShiftedLeft;
 
+	// ZSnake. snakeStyle: selected items take its highlight; snakeBorder:
+	// the menu's window has no decorator border, its frame view draws it,
+	// so the join can open through it; snake: this menu hangs beside its
+	// superitem, which was at snakeSuperitem on screen when it opened. A supermenu draws the part of its open submenu's join
+	// that lies over its own edge: childJoin, with the submenu's origin on
+	// screen.
+	bool				snakeStyle;
+	bool				snakeBorder;
+	bool				snake;
+	BRect				snakeSuperitem;
+	bool				hasChildJoin;
+	SnakeJoin			childJoin;
+	BPoint				childOrigin;
+	// the band where it runs past the supermenu, over what's beside it
+	BWindow*			snakeWindow;
+
 	ExtraMenuData()
 	{
 		trackingHook = NULL;
 		trackingState = NULL;
 		frameShiftedLeft = false;
+		snakeStyle = false;
+		snakeBorder = false;
+		snake = false;
+		hasChildJoin = false;
+		snakeWindow = NULL;
 	}
 };
 
@@ -128,6 +163,11 @@ private:
 
 
 menu_info BMenu::sMenuInfo;
+
+// ZSnake: how far a submenu's join reaches over its supermenu's edge, and the
+// rows above and below the submenu it may use (for the superitem's outline)
+static const int32 kSnakeReach = 8;
+static const int32 kSnakeMargin = 2;
 
 uint32 BMenu::sShiftKey;
 uint32 BMenu::sControlKey;
@@ -347,6 +387,7 @@ BMenu::BMenu(BMessage* archive)
 BMenu::~BMenu()
 {
 	_DeleteMenuWindow();
+	_InvalidateSnake(true);
 
 	RemoveItems(0, CountItems(), true);
 
@@ -469,6 +510,7 @@ BMenu::Draw(BRect updateRect)
 
 	DrawBackground(updateRect);
 	DrawItems(updateRect);
+	_DrawSnake();
 }
 
 
@@ -1618,9 +1660,16 @@ BMenu::_Show(bool selectFirstItem, bool keyDown)
 	// and use that one if possible.
 	BMenuWindow* window = NULL;
 	bool ourWindow = false;
+	fExtraMenuData->snakeStyle = fLayout == B_ITEMS_IN_COLUMN
+		&& sMenuInfo.zsnake;
+	fExtraMenuData->snake = false;
 	if (fSuper != NULL) {
 		fSuperbounds = fSuper->ConvertToScreen(fSuper->Bounds());
 		window = fSuper->_MenuWindow();
+		if (fSuperitem != NULL) {
+			fExtraMenuData->snakeSuperitem
+				= fSuper->ConvertToScreen(fSuperitem->Frame());
+		}
 	}
 
 	// Otherwise, create a new one
@@ -1692,6 +1741,7 @@ BMenu::_Hide()
 
 	if (fSelected != NULL)
 		_SelectItem(NULL);
+	_InvalidateSnake(true);
 
 	window->Hide();
 	window->DetachMenu();
@@ -3092,6 +3142,9 @@ BMenu::_SelectItem(BMenuItem* item, bool showSubmenu, bool selectFirstItem, bool
 		fSelected = item;
 		if (fSelected != NULL)
 			fSelected->Select(true);
+
+		// the snake runs from the superitem to the selection
+		_InvalidateSnake();
 	}
 
 	if (fSelected != NULL && showSubmenu) {
@@ -3104,6 +3157,451 @@ BMenu::_SelectItem(BMenuItem* item, bool showSubmenu, bool selectFirstItem, bool
 			}
 		}
 	}
+}
+
+
+//	#pragma mark - ZSnake
+
+
+/*!	ZSnake's join between a submenu's superitem highlight and its selected
+	item's, pixel for pixel as BeOS Dano drew it. Columns are counted from
+	the submenu's edge facing the supermenu, its border: 1 and up lie over
+	the supermenu's edge and are drawn by the supermenu; 0 is the border,
+	drawn by the submenu's frame view; -1 and down are the submenu's own.
+	This draws columns \a firstColumn to \a lastColumn, and rows down to
+	\a margin beyond the submenu, into \a target; \a offset takes the
+	submenu's coordinates to the target's.
+
+	The path: the superitem's highlight carries on over the supermenu's edge;
+	a band (outline, 3 columns of the selection colour, then the submenu's
+	border as its other outline) runs up or down to the selected item, whose
+	highlight opens toward it. Every corner turns on a 3-pixel diagonal.
+*/
+namespace {
+
+/*!	Paints rows of a join, its columns counted from the submenu's edge as
+	draw_snake_join() describes.
+*/
+class SnakePainter {
+public:
+	enum { kFill, kLine, kBackground, kShine };
+
+	SnakePainter(BView* target, BPoint offset, int32 firstColumn,
+		int32 lastColumn, float margin, const BRect& bounds, int32 edge,
+		int32 side)
+		:
+		fTarget(target),
+		fOffset(offset),
+		fFirstColumn(firstColumn),
+		fLastColumn(lastColumn),
+		fMargin(margin),
+		fBounds(bounds),
+		fEdge(edge),
+		fSide(side)
+	{
+		const rgb_color background = ui_color(B_MENU_BACKGROUND_COLOR);
+		fColors[kFill] = ui_color(B_MENU_SELECTED_BACKGROUND_COLOR);
+		fColors[kLine] = ui_color(B_MENU_SELECTED_BORDER_COLOR);
+		fColors[kBackground] = background;
+		fColors[kShine] = mix_color(background, ui_color(B_SHINE_COLOR), 0xba);
+	}
+
+	//!	Columns from..to of one row.
+	void Run(int32 row, int32 from, int32 to, int kind)
+	{
+		if (from > to)
+			std::swap(from, to);
+		from = std::max(from, fFirstColumn);
+		to = std::min(to, fLastColumn);
+		if (from > to || row < fBounds.top - fMargin
+			|| row > fBounds.bottom + fMargin) {
+			return;
+		}
+		const float x1 = fEdge - fSide * from;
+		const float x2 = fEdge - fSide * to;
+		fTarget->SetHighColor(fColors[kind]);
+		fTarget->FillRect(BRect(std::min(x1, x2), row, std::max(x1, x2), row)
+			.OffsetByCopy(fOffset));
+	}
+
+	//!	The band: its outline and three columns of the selection colour.
+	void Band(int32 row)
+	{
+		Run(row, 4, 4, kLine);
+		Run(row, 1, 3, kFill);
+	}
+
+private:
+	BView*		fTarget;
+	BPoint		fOffset;
+	int32		fFirstColumn;
+	int32		fLastColumn;
+	float		fMargin;
+	BRect		fBounds;
+	int32		fEdge;
+	int32		fSide;
+	rgb_color	fColors[4];
+};
+
+}	// namespace
+
+
+static void
+draw_snake_join(BView* target, BPoint offset, int32 firstColumn,
+	int32 lastColumn, float margin, const BPrivate::SnakeJoin& join)
+{
+	const BRect bounds = join.bounds;
+	const BRect superFrame = join.superitem;
+	const BRect item = join.selected;
+	const bool superOnLeft = superFrame.left + superFrame.right
+		< bounds.left + bounds.right;
+	// beside the superitem; a menu may overlap it by a pixel (the Deskbar's)
+	if (superOnLeft ? superFrame.right > bounds.left + 1
+			: superFrame.left < bounds.right - 1) {
+		return;
+	}
+
+	const int32 side = superOnLeft ? 1 : -1;
+	const int32 edge = (int32)(superOnLeft ? bounds.left - 1 : bounds.right + 1);
+	// outline rows of both highlights; the row under each is its light line
+	const int32 st = (int32)superFrame.top;
+	const int32 sb = (int32)superFrame.bottom - 1;
+	const int32 ct = (int32)item.top;
+	const int32 cb = (int32)item.bottom - 1;
+	const int32 reach = kSnakeReach;
+	const int32 inside = join.superitemStyled ? 2 : reach;
+
+	target->PushState();
+	target->SetDrawingMode(B_OP_COPY);
+	SnakePainter p(target, offset, firstColumn, lastColumn, margin, bounds,
+		edge, side);
+	enum {
+		kFill = SnakePainter::kFill,
+		kLine = SnakePainter::kLine,
+		kBackground = SnakePainter::kBackground,
+		kShine = SnakePainter::kShine
+	};
+
+	// down or up by where the two highlights start; the pieces may overlap
+	if (ct > st) {
+		// the selected item lower: down from the superitem
+		p.Run(st, 2, reach, kLine);
+		p.Run(st, 1, 1, kBackground);
+		p.Run(st + 1, 2, reach, kFill);
+		p.Run(st + 1, 1, 1, kLine);
+		for (int32 row = st + 2; row < sb; row++)
+			p.Run(row, 1, inside, kFill);
+		p.Run(sb, 6, reach, kLine);
+		p.Run(sb, 1, 5, kFill);
+		p.Run(sb + 1, 6, reach, kShine);
+		p.Run(sb + 1, 5, 5, kLine);
+		p.Run(sb + 1, 1, 4, kFill);
+		for (int32 row = sb + 2; row <= ct - 2; row++)
+			p.Band(row);
+
+		p.Band(ct - 1);
+		p.Run(ct - 1, 0, 0, kFill);
+		p.Run(ct - 1, -1, -1, kLine);
+		p.Band(ct);
+		p.Run(ct, 0, -1, kFill);
+		for (int32 row = ct + 1; row <= cb - 2; row++) {
+			p.Band(row);
+			p.Run(row, 0, -1, kFill);
+		}
+		if (!superOnLeft)
+			p.Run(cb - 2, 3, 3, kLine);
+		p.Run(cb - 1, 3, 3, kLine);
+		p.Run(cb - 1, -1, 2, kFill);
+		p.Run(cb, -1, 2, kLine);
+		p.Run(cb + 1, -1, 0, kShine);
+	} else if (ct < st) {
+		// the selected item higher: up from the superitem
+		p.Run(ct, -1, 2, kLine);
+		p.Run(ct + 1, 3, 3, kLine);
+		p.Run(ct + 1, -1, 2, kFill);
+		for (int32 row = ct + 2; row < cb; row++) {
+			p.Band(row);
+			p.Run(row, 0, -1, kFill);
+		}
+		p.Band(cb);
+		p.Run(cb, 0, -1, kFill);
+		p.Band(cb + 1);
+		p.Run(cb + 1, 0, 0, kFill);
+		p.Run(cb + 1, -1, -1, kLine);
+		p.Run(cb + 1, -2, -4, kBackground);
+		for (int32 row = cb + 2; row <= st - 2; row++)
+			p.Band(row);
+
+		p.Run(st - 1, 5, 5, kLine);
+		p.Run(st - 1, 1, 4, kFill);
+		p.Run(st, 6, reach, kLine);
+		p.Run(st, 1, 5, kFill);
+		for (int32 row = st + 1; row <= sb - 3; row++)
+			p.Run(row, 1, inside, kFill);
+		for (int32 row = std::max(st + 1, sb - 2); row < sb; row++) {
+			p.Run(row, 2, inside, kFill);
+			p.Run(row, 1, 1, kLine);
+		}
+		p.Run(sb, 2, reach, kLine);
+		p.Run(sb, 1, 1, kBackground);
+		p.Run(sb + 1, 2, reach, kShine);
+		p.Run(sb + 1, 1, 1, kBackground);
+	} else {
+		// level with it: straight across
+		const int32 top = st;
+		const int32 bottom = std::min(sb, cb);
+		p.Run(top, 0, reach, kLine);
+		for (int32 row = top + 1; row < bottom; row++)
+			p.Run(row, 0, inside, kFill);
+		p.Run(bottom, 0, reach, kLine);
+		p.Run(bottom + 1, 0, reach, kShine);
+	}
+
+	target->PopState();
+}
+
+
+namespace {
+
+/*!	ZSnake's band where it runs past the end of the supermenu: Dano drew it
+	over whatever was beside the submenu, so it gets a window of its own,
+	the band's four columns wide. Windows are rectangles, the band's corners
+	are not: behind the band goes a copy of what was on screen there.
+*/
+class SnakeBandView : public BView {
+public:
+	SnakeBandView(BRect frame, BBitmap* background, BPoint backgroundOrigin)
+		:
+		BView(frame, "zsnake band", B_FOLLOW_ALL, B_WILL_DRAW),
+		fBackground(background),
+		fBackgroundOrigin(backgroundOrigin),
+		fHasJoin(false)
+	{
+		SetViewColor(B_TRANSPARENT_COLOR);
+	}
+
+	virtual ~SnakeBandView()
+	{
+		delete fBackground;
+	}
+
+	void SetJoin(const BPrivate::SnakeJoin& join, BPoint offset)
+	{
+		fJoin = join;
+		fOffset = offset;
+		fHasJoin = true;
+		Invalidate();
+	}
+
+	virtual void Draw(BRect updateRect)
+	{
+		if (fBackground != NULL) {
+			DrawBitmap(fBackground,
+				fBackgroundOrigin - Window()->Frame().LeftTop());
+		} else {
+			SetHighUIColor(B_MENU_BACKGROUND_COLOR);
+			FillRect(updateRect);
+		}
+		if (fHasJoin)
+			draw_snake_join(this, fOffset, 1, 4, 100000, fJoin);
+	}
+
+private:
+	BBitmap*			fBackground;
+	BPoint				fBackgroundOrigin;
+	BPrivate::SnakeJoin	fJoin;
+	BPoint				fOffset;
+	bool				fHasJoin;
+};
+
+
+class SnakeBandWindow : public BWindow {
+public:
+	SnakeBandWindow(BBitmap* background, BPoint backgroundOrigin)
+		:
+		BWindow(BRect(0, 0, 3, 3), "zsnake band", B_NO_BORDER_WINDOW_LOOK,
+			kMenuWindowFeel, B_NOT_MOVABLE | B_NOT_ZOOMABLE | B_NOT_RESIZABLE
+				| B_NOT_MINIMIZABLE | B_AVOID_FOCUS)
+	{
+		fView = new SnakeBandView(Bounds(), background, backgroundOrigin);
+		AddChild(fView);
+	}
+
+	SnakeBandView* View() const { return fView; }
+
+private:
+	SnakeBandView*		fView;
+};
+
+}	// namespace
+
+
+//!	This menu's part of its own join, and its open submenu's over its edge.
+void
+BMenu::_DrawSnake()
+{
+	if (fExtraMenuData->snake && fSelected != NULL
+		&& fLayout == B_ITEMS_IN_COLUMN) {
+		BPrivate::SnakeJoin join;
+		join.superitem = ConvertFromScreen(fExtraMenuData->snakeSuperitem);
+		join.bounds = Bounds();
+		join.selected = fSelected->Frame();
+		join.superitemStyled = false;
+		draw_snake_join(this, B_ORIGIN, -kSnakeReach, -1, 0, join);
+	}
+
+	if (fExtraMenuData->hasChildJoin) {
+		draw_snake_join(this,
+			fExtraMenuData->childOrigin - ConvertToScreen(B_ORIGIN), 1,
+			kSnakeReach, kSnakeMargin, fExtraMenuData->childJoin);
+	}
+}
+
+
+/*!	The selection changed: redraw the join, this menu's part and the part
+	over the supermenu's edge, which the supermenu draws from what it is
+	given here.
+*/
+void
+BMenu::_InvalidateSnake(bool closing)
+{
+	SnakeBandWindow* band
+		= static_cast<SnakeBandWindow*>(fExtraMenuData->snakeWindow);
+	if (closing) {
+		if (band != NULL && band->Lock())
+			band->Quit();
+		fExtraMenuData->snakeWindow = NULL;
+		return;
+	}
+
+	if (!fExtraMenuData->snake || Window() == NULL || fSuper == NULL)
+		return;
+
+	const BRect bounds = Bounds();
+	Invalidate(BRect(bounds.left, bounds.top, bounds.left + 5, bounds.bottom));
+	Invalidate(BRect(bounds.right - 5, bounds.top, bounds.right,
+		bounds.bottom));
+	if (Parent() != NULL) {
+		// the border, which the frame view draws
+		const BRect frame = Frame();
+		Parent()->Invalidate(BRect(frame.left - 1, frame.top - 1,
+			frame.left - 1, frame.bottom + 1));
+		Parent()->Invalidate(BRect(frame.right + 1, frame.top - 1,
+			frame.right + 1, frame.bottom + 1));
+	}
+
+	if (fSuper->LockLooperWithTimeout(100000) != B_OK)
+		return;
+
+	BPrivate::ExtraMenuData* super = fSuper->fExtraMenuData;
+	super->hasChildJoin = fSelected != NULL;
+	if (fSelected != NULL) {
+		super->childJoin.superitem
+			= ConvertFromScreen(fExtraMenuData->snakeSuperitem);
+		super->childJoin.bounds = bounds;
+		super->childJoin.selected = fSelected->Frame();
+		super->childJoin.superitemStyled = super->snakeStyle;
+		super->childOrigin = ConvertToScreen(B_ORIGIN);
+	}
+	const BPrivate::SnakeJoin join = super->childJoin;
+	const BPoint origin = super->childOrigin;
+
+	// the strips beside this menu, in the supermenu
+	const BRect frame = fSuper->ConvertFromScreen(ConvertToScreen(bounds));
+	fSuper->Invalidate(BRect(frame.left - kSnakeReach - 1,
+		frame.top - kSnakeMargin, frame.left - 1, frame.bottom + kSnakeMargin));
+	fSuper->Invalidate(BRect(frame.right + 1, frame.top - kSnakeMargin,
+		frame.right + kSnakeReach + 1, frame.bottom + kSnakeMargin));
+	const BRect superScreen = fSuper->ConvertToScreen(fSuper->Bounds());
+	fSuper->UnlockLooper();
+
+	// The band where it runs past the supermenu's end (from its border
+	// row on, which the band crosses), on screen.
+	BRect run;
+	if (fSelected != NULL) {
+		const BRect superitem = fExtraMenuData->snakeSuperitem;
+		const BRect selected = ConvertToScreen(fSelected->Frame());
+		const bool superOnLeft = superitem.left + superitem.right
+			< selected.left + selected.right;
+		const float edge = superOnLeft ? origin.x + bounds.left - 1
+			: origin.x + bounds.right + 1;
+		run.left = superOnLeft ? edge - 4 : edge + 1;
+		run.right = run.left + 3;
+		if (selected.bottom > superScreen.bottom) {
+			run.top = superScreen.bottom + 1;
+			run.bottom = selected.bottom;
+		} else if (selected.top < superScreen.top) {
+			run.top = selected.top;
+			run.bottom = superScreen.top - 1;
+		}
+	}
+
+	if (!run.IsValid()) {
+		if (band != NULL && band->Lock()) {
+			if (!band->IsHidden())
+				band->Hide();
+			band->Unlock();
+		}
+		return;
+	}
+
+	if (band == NULL) {
+		// What's beside this menu, where the band may go: nothing of ours
+		// is there yet. A new window is locked until it's first shown.
+		BRect strip(run.left, origin.y + bounds.top - kSnakeMargin, run.right,
+			origin.y + bounds.bottom + kSnakeMargin);
+		BBitmap* background = NULL;
+		if (BScreen(Window()).GetBitmap(&background, false, &strip) != B_OK)
+			background = NULL;
+		band = new(std::nothrow) SnakeBandWindow(background, strip.LeftTop());
+		if (band == NULL)
+			return;
+		fExtraMenuData->snakeWindow = band;
+	} else if (!band->Lock())
+		return;
+
+	band->MoveTo(run.LeftTop());
+	band->ResizeTo(run.Width(), run.Height());
+	band->View()->SetJoin(join, origin - run.LeftTop());
+	if (band->IsHidden())
+		band->Show();
+	if (band->IsLocked())
+		band->Unlock();
+}
+
+
+/*!	With ZSnake on, the menu's window has no decorator border: its frame
+	view draws one round the menu, and the join's pixels in it.
+*/
+void
+BPrivate::MenuPrivate::DrawSnakeBorder(BView* frameView)
+{
+	ExtraMenuData* data = fMenu->fExtraMenuData;
+	if (data == NULL || !data->snakeBorder)
+		return;
+
+	frameView->PushState();
+	frameView->SetHighColor(tint_color(ui_color(B_MENU_BACKGROUND_COLOR),
+		B_DARKEN_MAX_TINT));
+	frameView->StrokeRect(frameView->Bounds());
+	frameView->PopState();
+
+	if (data->snake && fMenu->fSelected != NULL) {
+		SnakeJoin join;
+		join.superitem = fMenu->ConvertFromScreen(data->snakeSuperitem);
+		join.bounds = fMenu->Bounds();
+		join.selected = fMenu->fSelected->Frame();
+		join.superitemStyled = false;
+		draw_snake_join(frameView, fMenu->Frame().LeftTop(), 0, 0, 1, join);
+	}
+}
+
+
+bool
+BPrivate::MenuPrivate::SnakeStyle() const
+{
+	return fMenu->fExtraMenuData != NULL
+		&& fMenu->fExtraMenuData->snakeStyle;
 }
 
 
@@ -3338,17 +3836,35 @@ BMenu::_UpdateWindowViewSize(const bool &move)
 		return;
 
 	bool scroll = false;
+	const float oldBorder = fExtraMenuData->snakeBorder ? 1 : 0;
 	const BPoint screenLocation = move ? ScreenLocation()
-		: window->Frame().LeftTop();
+		: window->Frame().LeftTop() + BPoint(oldBorder, oldBorder);
 	BRect frame = _CalcFrame(screenLocation, &scroll);
 	ResizeTo(frame.Width(), frame.Height());
+
+	// With ZSnake on, the menu draws its own border, so that the join can
+	// open through it (not with scrollers). The join is for a menu beside
+	// its superitem, not one under a menu bar's title.
+	fExtraMenuData->snakeBorder = fExtraMenuData->snakeStyle && !scroll
+		&& fItems.CountItems() > 0;
+	fExtraMenuData->snake = false;
+	if (fExtraMenuData->snakeBorder && fSuper != NULL && fSuperitem != NULL) {
+		const BRect superitem = fExtraMenuData->snakeSuperitem;
+		fExtraMenuData->snake = frame.left > superitem.right - 2
+			|| frame.right < superitem.left + 2;
+	}
+	const float border = fExtraMenuData->snakeBorder ? 1 : 0;
+	window->SetLook(border > 0 ? B_NO_BORDER_WINDOW_LOOK
+		: B_BORDERED_WINDOW_LOOK);
+	MoveTo(border, border);
 
 	if (fItems.CountItems() > 0) {
 		if (!scroll) {
 			if (fLayout == B_ITEMS_IN_COLUMN)
 				window->DetachScrollers();
 
-			window->ResizeTo(Bounds().Width(), Bounds().Height());
+			window->ResizeTo(Bounds().Width() + 2 * border,
+				Bounds().Height() + 2 * border);
 		} else {
 
 			// Resize the window to fit the screen without overflowing the
@@ -3384,7 +3900,7 @@ BMenu::_UpdateWindowViewSize(const bool &move)
 	}
 
 	if (move)
-		window->MoveTo(frame.LeftTop());
+		window->MoveTo(frame.LeftTop() - BPoint(border, border));
 }
 
 

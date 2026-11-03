@@ -442,6 +442,38 @@ BMenuItem::DrawContent()
 }
 
 
+/*!	The selected item with ZSnake on, as BeOS Dano drew it: the selection
+	colour in an outline of the selected border colour, its corner pixels
+	left out, and a light line under it. ZSnake's joins continue these
+	outlines.
+*/
+void
+BMenuItem::_DrawSnakeHighlight(BRect frame)
+{
+	const float l = frame.left, t = frame.top;
+	const float r = frame.right, b = frame.bottom - 1;
+	const rgb_color background = ui_color(B_MENU_BACKGROUND_COLOR);
+
+	fSuper->PushState();
+	fSuper->SetDrawingMode(B_OP_COPY);
+	fSuper->SetHighColor(ui_color(B_MENU_SELECTED_BACKGROUND_COLOR));
+	fSuper->FillRect(BRect(l, t, r, b));
+	fSuper->SetHighColor(ui_color(B_MENU_SELECTED_BORDER_COLOR));
+	fSuper->FillRect(BRect(l + 1, t, r - 1, t));
+	fSuper->FillRect(BRect(l + 1, b, r - 1, b));
+	fSuper->FillRect(BRect(l, t + 1, l, b - 1));
+	fSuper->FillRect(BRect(r, t + 1, r, b - 1));
+	fSuper->SetHighColor(background);
+	fSuper->FillRect(BRect(l, t, l, t));
+	fSuper->FillRect(BRect(r, t, r, t));
+	fSuper->FillRect(BRect(l, b, l, b));
+	fSuper->FillRect(BRect(r, b, r, b));
+	fSuper->SetHighColor(mix_color(background, ui_color(B_SHINE_COLOR), 0xba));
+	fSuper->FillRect(BRect(l + 1, b + 1, r - 1, b + 1));
+	fSuper->PopState();
+}
+
+
 void
 BMenuItem::Draw()
 {
@@ -451,11 +483,16 @@ BMenuItem::Draw()
 	fSuper->SetLowColor(_LowColor());
 	fSuper->SetHighColor(_HighColor());
 
+	MenuPrivate privateAccessor(fSuper);
 	if (_IsActivated()) {
 		// fill in the background
 		BRect frame(Frame());
-		be_control_look->DrawMenuItemBackground(fSuper, frame, frame,
-			fSuper->LowColor(), BControlLook::B_ACTIVATED);
+		if (privateAccessor.SnakeStyle())
+			_DrawSnakeHighlight(frame);
+		else {
+			be_control_look->DrawMenuItemBackground(fSuper, frame, frame,
+				fSuper->LowColor(), BControlLook::B_ACTIVATED);
+		}
 	}
 
 	// draw content
@@ -463,7 +500,6 @@ BMenuItem::Draw()
 	DrawContent();
 
 	// draw extra symbols
-	MenuPrivate privateAccessor(fSuper);
 	const menu_layout layout = privateAccessor.Layout();
 	if (layout != B_ITEMS_IN_ROW) {
 		if (IsMarked())
