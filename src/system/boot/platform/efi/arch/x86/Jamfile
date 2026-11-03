@@ -21,11 +21,13 @@ for platform in [ MultiBootSubDirSetup efi ] {
 			entry.S
 			entry_long.S
 			smp_trampoline.S
+			smp_trampoline_long.S
 			relocation_func.cpp
 			arch_long_mmu.cpp
 			arch_mmu.cpp
 			arch_smp.cpp
 			arch_smp_32.cpp
+			arch_smp_long.cpp
 			arch_start.cpp
 			arch_timer.cpp
 			;
