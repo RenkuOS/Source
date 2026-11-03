@@ -112,7 +112,12 @@ TBarMenuTitle::Draw()
 
 	// fill in background
 	if (IsSelected()) {
-		be_control_look->DrawMenuItemBackground(menu, frame, frame, base,
+		// with ZSnake on, the open menu's snake starts here, so the button
+		// takes the selection colour, as BeOS Dano's did
+		menu_info info;
+		rgb_color selected = get_menu_info(&info) == B_OK && info.zsnake
+			? ui_color(B_MENU_SELECTED_BACKGROUND_COLOR) : base;
+		be_control_look->DrawMenuItemBackground(menu, frame, frame, selected,
 			BControlLook::B_ACTIVATED);
 	} else
 		be_control_look->DrawButtonBackground(menu, frame, frame, base);
