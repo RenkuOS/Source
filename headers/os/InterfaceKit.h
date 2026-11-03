@@ -3,6 +3,7 @@
  *
  * <UnicodeBlockObjects.h> is not included on purpose.
  */
+#include <AboutWindow.h>
 #include <AbstractLayoutItem.h>
 #include <Alert.h>
 #include <Bitmap.h>
