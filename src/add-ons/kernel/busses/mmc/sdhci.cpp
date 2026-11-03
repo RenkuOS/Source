@@ -282,6 +282,17 @@ SdhciBus::ExecuteCommand(uint8_t command, uint32_t argument, uint32_t* response)
 	// Note that this should normally never happen: the command line is busy
 	// only during command execution, and we don't leave this function with a
 	// command running.
+	// After a command timed out, the controller can keep the inhibit bit set
+	// for a short moment after the reset of the command line. Give it 50ms
+	// before reporting busy: the SDIO probe (CMD5) comes right after CMD8,
+	// which times out on SDIO cards, and was lost that way.
+	if (fRegisters->present_state.CommandInhibit()) {
+		bigtime_t deadline = system_time() + 50000;
+		while (fRegisters->present_state.CommandInhibit()
+			&& system_time() < deadline) {
+			snooze(1000);
+		}
+	}
 	if (fRegisters->present_state.CommandInhibit()) {
 		TRACE_ALWAYS("Command execution impossible, command inhibit\n");
 		return B_BUSY;
