@@ -82,6 +82,7 @@ void __haiku_init_hardware(void);
 status_t _fbsd_init_hardware();
 status_t _fbsd_init_hardware_pci(driver_t* drivers[]);
 status_t _fbsd_init_hardware_uhub(driver_t* drivers[]);
+status_t _fbsd_init_hardware_sdio(driver_t* drivers[]);
 status_t _fbsd_init_drivers();
 status_t _fbsd_uninit_drivers();
 
