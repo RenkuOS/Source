@@ -344,8 +344,11 @@ ToolTipWindow::MessageReceived(BMessage* message)
 			reply.AddPointer("current", tip);
 			reply.AddPointer("owner", fOwner);
 
-			if (message->SendReply(&reply) == B_OK)
-				tip->AcquireReference();
+			// The requester releases this reference as soon as it has the
+			// reply, so it has to be taken before the reply is sent.
+			tip->AcquireReference();
+			if (message->SendReply(&reply) != B_OK)
+				tip->ReleaseReference();
 			break;
 		}
 

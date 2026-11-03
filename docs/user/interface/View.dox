@@ -4867,6 +4867,10 @@ SetViewColor(Parent()->ViewColor());
 	\fn void BView::SetToolTip(BToolTip* tip)
 	\brief Set the tool tip of the view to the \a tip object.
 
+	The view acquires its own reference to \a tip and releases it when the
+	tool tip is replaced or the view is deleted. The caller keeps the
+	reference it holds and must release it.
+
 	\param tip The tool tip object to set the view to or \c NULL to unset.
 
 	\since Haiku R1

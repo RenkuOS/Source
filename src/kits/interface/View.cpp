@@ -5982,8 +5982,12 @@ BView::SetToolTip(const char* text)
 
 	if (BTextToolTip* tip = dynamic_cast<BTextToolTip*>(fToolTip))
 		tip->SetText(text);
-	else
-		SetToolTip(new BTextToolTip(text));
+	else {
+		BTextToolTip* textTip = new BTextToolTip(text);
+		SetToolTip(textTip);
+		textTip->ReleaseReference();
+			// SetToolTip() acquired the view's own reference
+	}
 }
 
 
