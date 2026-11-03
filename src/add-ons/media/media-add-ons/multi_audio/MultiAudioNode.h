@@ -230,9 +230,15 @@ private:
 									BParameterGroup* parentGroup,
 									const char* name, int32 parameterID,
 									uint32 rateMask);
+			void				_CreateBufferFramesParameter(
+									BParameterGroup* parentGroup);
+			void				_ChangeBufferFrames(uint32 frames);
+			void				_RequestInputFormats(void* userData,
+									const media_source& except);
 
 			status_t			_SetNodeInputFrameRate(float frameRate);
 			status_t			_SetNodeOutputFrameRate(float frameRate);
+			status_t			_SetNodeBufferFrames(uint32 frames);
 			void				_UpdateInternalLatency(
 									const media_format& format);
 

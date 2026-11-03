@@ -19,6 +19,8 @@ using namespace MultiAudio;
 
 
 MultiAudioDevice::MultiAudioDevice(const char* name, const char* path)
+	:
+	fBufferFrames(0)
 {
 	CALLED();
 
@@ -111,6 +113,30 @@ MultiAudioDevice::SetOutputFrameRate(uint32 multiAudioRate)
 	}
 
 	return _GetBuffers();
+}
+
+
+/*!	Asks the driver for buffers of \a frames frames, or its default for 0.
+	The driver may round the request to what its hardware can do; the result
+	is in BufferList(). On failure the previous request is restored.
+*/
+status_t
+MultiAudioDevice::SetBufferFrames(uint32 frames)
+{
+	if (frames == fBufferFrames)
+		return B_OK;
+
+	uint32 oldFrames = fBufferFrames;
+	fBufferFrames = frames;
+
+	status_t status = _GetBuffers();
+	if (status != B_OK) {
+		fprintf(stderr, "Failed to set %" B_PRIu32 " frames per buffer: %s\n",
+			frames, strerror(status));
+		fBufferFrames = oldFrames;
+		_GetBuffers();
+	}
+	return status;
 }
 
 
@@ -277,13 +303,12 @@ MultiAudioDevice::_GetBuffers()
 		fRecordBuffers[i] = &fRecordBufferList[i * MAX_CHANNELS];
 	}
 	fBufferList.info_size = sizeof(multi_buffer_list);
-	fBufferList.request_playback_buffer_size = 0;
-		// use the default...
+	fBufferList.request_playback_buffer_size = fBufferFrames;
+		// 0 asks for the driver's default
 	fBufferList.request_playback_buffers = MAX_BUFFERS;
 	fBufferList.request_playback_channels = fDescription.output_channel_count;
 	fBufferList.playback_buffers = (buffer_desc **) fPlayBuffers;
-	fBufferList.request_record_buffer_size = 0;
-		// use the default...
+	fBufferList.request_record_buffer_size = fBufferFrames;
 	fBufferList.request_record_buffers = MAX_BUFFERS;
 	fBufferList.request_record_channels = fDescription.input_channel_count;
 	fBufferList.record_buffers = /*(buffer_desc **)*/ fRecordBuffers;

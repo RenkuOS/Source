@@ -33,6 +33,34 @@
 
 #define PARAMETER_ID_INPUT_FREQUENCY	1
 #define PARAMETER_ID_OUTPUT_FREQUENCY	2
+#define PARAMETER_ID_BUFFER_FRAMES		3
+
+// The buffer lengths offered besides the driver's default, in frames. Shorter
+// buffers mean less latency and more wake-ups; the driver rounds a request to
+// what its hardware can do. Nothing below 128.
+static const uint32 kBufferFrameChoices[] = {128, 256, 512, 1024, 2048};
+
+// Only these drivers get the choice: they round a request to a length their
+// hardware runs. hda passes any length straight to the controller. On an
+// Intel HDA controller with an ALC663 codec at 192 kHz, 128 frames (0.67 ms)
+// stopped its interrupts, so the node waited for the next buffer forever, and
+// 256 frames (1.33 ms) played distorted with 2 or 4 buffers, while 512
+// frames at 192 kHz and every length from 128 frames at 48 kHz (2.7 ms)
+// played cleanly, changed live too. Every other driver keeps its own default,
+// as before.
+static const char* const kBufferFramesDrivers[] = {"/dev/audio/hmulti/usb/"};
+
+
+static bool
+offers_buffer_frames(const char* path)
+{
+	for (size_t i = 0; i < B_COUNT_OF(kBufferFramesDrivers); i++) {
+		size_t length = strlen(kBufferFramesDrivers[i]);
+		if (strncmp(path, kBufferFramesDrivers[i], length) == 0)
+			return true;
+	}
+	return false;
+}
 
 // Depth of the per-input buffer queue (see node_input). Sized to absorb the
 // burstiest arrival cadence observed (~3 buffers at once) with one to spare.
@@ -105,6 +133,7 @@ public:
 struct FrameRateChangeCookie : public BReferenceable {
 	float	oldFrameRate;
 	uint32	id;
+	uint32	oldBufferFrames;	// for PARAMETER_ID_BUFFER_FRAMES
 };
 
 
@@ -580,6 +609,19 @@ MultiAudioNode::RequestCompleted(const media_request_info& info)
 				_SetNodeOutputFrameRate(cookie->oldFrameRate);
 		} else if (cookie->id == PARAMETER_ID_OUTPUT_FREQUENCY)
 			_SetNodeOutputFrameRate(cookie->oldFrameRate);
+		else if (cookie->id == PARAMETER_ID_BUFFER_FRAMES
+			&& fDevice->BufferFrames() != cookie->oldBufferFrames) {
+			// A producer refused the new length and keeps sending the old
+			// one. Go back to it, and ask the producers that did switch to
+			// switch back. Only once per change: the device is back on the
+			// old length when a second refusal arrives.
+			fprintf(stderr, "multi_audio: a producer refused the new buffer "
+				"length, keeping %" B_PRIu32 " frames\n",
+				cookie->oldBufferFrames);
+			if (_SetNodeBufferFrames(cookie->oldBufferFrames) == B_OK)
+				_RequestInputFormats(NULL, info.source);
+			return B_OK;
+		}
 
 		// TODO: If we have multiple connections, we should request to change
 		// the format back!
@@ -1392,6 +1434,16 @@ MultiAudioNode::GetParameterValue(int32 id, bigtime_t* lastChange, void* value,
 		return B_ERROR;
 	}
 
+	if (id == PARAMETER_ID_BUFFER_FRAMES) {
+		uint32 frames = fDevice->BufferFrames();
+		if (!offers_buffer_frames(fDevice->Path()) || *size < sizeof(frames))
+			return B_ERROR;
+
+		memcpy(value, &frames, sizeof(frames));
+		*size = sizeof(frames);
+		return B_OK;
+	}
+
 	if (id == PARAMETER_ID_INPUT_FREQUENCY
 		|| id == PARAMETER_ID_OUTPUT_FREQUENCY) {
 		const multi_format_info& info = fDevice->FormatInfo();
@@ -1487,6 +1539,15 @@ MultiAudioNode::SetParameterValue(int32 id, bigtime_t performanceTime,
 
 	if (parameter == NULL)
 		return;
+
+	if (id == PARAMETER_ID_BUFFER_FRAMES) {
+		uint32 frames;
+		if (size < sizeof(frames))
+			return;
+		memcpy(&frames, value, sizeof(frames));
+		_ChangeBufferFrames(frames);
+		return;
+	}
 
 	if (id == PARAMETER_ID_OUTPUT_FREQUENCY
 		|| (id == PARAMETER_ID_INPUT_FREQUENCY
@@ -1664,6 +1725,11 @@ MultiAudioNode::MakeParameterWeb()
 			PARAMETER_ID_OUTPUT_FREQUENCY, description.output_rates);
 	}
 
+	// Without the parameter, a saved buffer length is not applied either
+	// (_ChangeBufferFrames()).
+	if (offers_buffer_frames(fDevice->Path()))
+		_CreateBufferFramesParameter(generalGroup);
+
 	multi_mix_control* controls = fDevice->MixControlInfo().controls;
 
 	for (int i = 0; i < fDevice->MixControlInfo().control_count; i++) {
@@ -1801,6 +1867,88 @@ MultiAudioNode::_CreateFrequencyParameterGroup(BParameterGroup* parentGroup,
 			frequencyParam->AddItem(info.multiAudioRate,
 				BString(info.name) << " Hz");
 		}
+	}
+}
+
+
+void
+MultiAudioNode::_CreateBufferFramesParameter(BParameterGroup* parentGroup)
+{
+	BParameterGroup* group = parentGroup->MakeGroup(B_TRANSLATE("Buffer"));
+	BDiscreteParameter* parameter = group->MakeDiscreteParameter(
+		PARAMETER_ID_BUFFER_FRAMES, B_MEDIA_NO_TYPE,
+		B_TRANSLATE("Buffer size:"), B_GENERIC);
+
+	parameter->AddItem(0, B_TRANSLATE("Driver default"));
+	for (size_t i = 0; i < B_COUNT_OF(kBufferFrameChoices); i++) {
+		BString name;
+		name.SetToFormat(B_TRANSLATE("%" B_PRIu32 " frames"),
+			kBufferFrameChoices[i]);
+		parameter->AddItem(kBufferFrameChoices[i], name);
+	}
+}
+
+
+/*!	Applies a new buffer length from the parameter. At startup the saved
+	value arrives before anything is connected, so only the device changes.
+	Later, every producer feeding an input is asked to send buffers of the new
+	length (the system mixer re-creates its buffers for it), and every
+	consumer of a capture output is told about the new format. If a producer
+	refuses, RequestCompleted() goes back to the old length.
+*/
+void
+MultiAudioNode::_ChangeBufferFrames(uint32 frames)
+{
+	// The value can come from the settings file: take only the offered ones,
+	// on a device that offers them. (The parameter lookup in
+	// SetParameterValue() does not reject an id the web lacks.)
+	if (!offers_buffer_frames(fDevice->Path()))
+		return;
+	bool offered = frames == 0;
+	for (size_t i = 0; i < B_COUNT_OF(kBufferFrameChoices); i++)
+		offered |= frames == kBufferFrameChoices[i];
+	if (!offered || frames == fDevice->BufferFrames())
+		return;
+
+	FrameRateChangeCookie* cookie = new(std::nothrow) FrameRateChangeCookie;
+	if (cookie == NULL)
+		return;
+	cookie->oldFrameRate = 0;
+	cookie->id = PARAMETER_ID_BUFFER_FRAMES;
+	cookie->oldBufferFrames = fDevice->BufferFrames();
+	BReference<FrameRateChangeCookie> cookieReference(cookie, true);
+
+	if (_SetNodeBufferFrames(frames) != B_OK)
+		return;
+
+	_RequestInputFormats(cookie, media_source::null);
+}
+
+
+/*!	Asks every producer connected to an input to send the input's current
+	format, which carries the device's buffer length. \a userData comes back
+	in RequestCompleted(); it holds one reference per request made.
+*/
+void
+MultiAudioNode::_RequestInputFormats(void* userData,
+	const media_source& except)
+{
+	FrameRateChangeCookie* cookie = (FrameRateChangeCookie*)userData;
+
+	for (int32 i = 0; i < fInputs.CountItems(); i++) {
+		node_input* channel = (node_input*)fInputs.ItemAt(i);
+		if (channel->fInput.source == media_source::null
+			|| channel->fInput.source == except)
+			continue;
+
+		int32 changeTag = 0;
+		if (cookie != NULL)
+			cookie->AcquireReference();
+		status_t error = RequestFormatChange(channel->fInput.source,
+			channel->fInput.destination, channel->fInput.format, cookie,
+			&changeTag);
+		if (error != B_OK && cookie != NULL)
+			cookie->ReleaseReference();
 	}
 }
 
@@ -2632,6 +2780,102 @@ MultiAudioNode::_SetNodeOutputFrameRate(float frameRate)
 
 	// update internal latency
 	_UpdateInternalLatency(fInputPreferredFormat);
+
+	return B_OK;
+}
+
+
+/*!	Changes the device's buffer length and every format that carries it. A
+	running stream restarts with its frame count at zero, which the time
+	computer is told about the way a replug is handled (_LeaveDeviceGone()),
+	so the performance time carries on. Consumers of capture outputs are told
+	with ChangeFormat(); the buffer lock keeps the output thread from sending
+	meanwhile, as that call requires.
+*/
+status_t
+MultiAudioNode::_SetNodeBufferFrames(uint32 frames)
+{
+	BAutolock locker(fBufferLock);
+
+	if (fDevice->BufferFrames() == frames)
+		return B_OK;
+
+	status_t error = fDevice->SetBufferFrames(frames);
+	if (error != B_OK)
+		return error;
+
+	const multi_buffer_list& list = fDevice->BufferList();
+	PRINT(("buffer frames: requested %" B_PRIu32 ", playback %" B_PRId32
+		", record %" B_PRId32 "\n", frames, list.return_playback_buffer_size,
+		list.return_record_buffer_size));
+
+	if (fOutputPreferredFormat.u.raw_audio.format != 0) {
+		fOutputPreferredFormat.u.raw_audio.buffer_size
+			= list.return_playback_buffer_size
+				* (fOutputPreferredFormat.u.raw_audio.format
+					& media_raw_audio_format::B_AUDIO_SIZE_MASK)
+				* fOutputPreferredFormat.u.raw_audio.channel_count;
+
+		for (int32 i = 0; node_input* channel = (node_input*)fInputs.ItemAt(i);
+				i++) {
+			size_t size = fOutputPreferredFormat.u.raw_audio.buffer_size;
+			channel->fPreferredFormat.u.raw_audio.buffer_size = size;
+			channel->fFormat.u.raw_audio.buffer_size = size;
+			channel->fInput.format.u.raw_audio.buffer_size = size;
+			channel->fOldBufferCycle = -1;
+		}
+		_UpdateInternalLatency(fOutputPreferredFormat);
+	}
+
+	if (fInputPreferredFormat.u.raw_audio.format != 0) {
+		fInputPreferredFormat.u.raw_audio.buffer_size
+			= list.return_record_buffer_size
+				* (fInputPreferredFormat.u.raw_audio.format
+					& media_raw_audio_format::B_AUDIO_SIZE_MASK)
+				* fInputPreferredFormat.u.raw_audio.channel_count;
+
+		for (int32 i = 0;
+				node_output* channel = (node_output*)fOutputs.ItemAt(i); i++) {
+			size_t oldSize = channel->fOutput.format.u.raw_audio.buffer_size;
+			channel->fPreferredFormat.u.raw_audio.buffer_size
+				= record_buffer_bytes(list.return_record_buffer_size,
+					channel->fPreferredFormat);
+			channel->fOutput.format.u.raw_audio.buffer_size
+				= channel->fPreferredFormat.u.raw_audio.buffer_size;
+			channel->fOldBufferCycle = -1;
+
+			if (channel->fOutput.destination == media_destination::null)
+				continue;
+
+			// The group's buffers have the old length, and its size follows
+			// the buffer duration, as in Connect().
+			if (channel->fOutput.format.u.raw_audio.buffer_size != oldSize) {
+				const media_raw_audio_format& raw
+					= channel->fOutput.format.u.raw_audio;
+				SetBufferDuration(bigtime_t(raw.buffer_size * 10000
+					/ ((raw.format & media_raw_audio_format::B_AUDIO_SIZE_MASK)
+						* raw.channel_count)
+					/ ((int32)(raw.frame_rate / 100))));
+				delete channel->fBufferGroup;
+				channel->fBufferGroup = NULL;
+				_AllocateBuffers(*channel);
+			}
+
+			media_format format = channel->fOutput.format;
+			error = ChangeFormat(channel->fOutput.source,
+				channel->fOutput.destination, &format);
+			if (error != B_OK) {
+				fprintf(stderr, "multi_audio: the consumer of %s did not "
+					"accept the new buffer length: %s\n",
+					channel->fOutput.name, strerror(error));
+			}
+		}
+	}
+
+	// The driver restarted its stream, and with it the frame count. Before
+	// the output thread runs there is no timeline yet; it starts one.
+	if (fThread >= 0)
+		fTimeComputer.Resync(system_time());
 
 	return B_OK;
 }

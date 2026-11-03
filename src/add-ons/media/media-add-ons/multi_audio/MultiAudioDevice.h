@@ -39,6 +39,10 @@ public:
 	status_t			SetInputFrameRate(uint32 multiAudioRate);
 	status_t			SetOutputFrameRate(uint32 multiAudioRate);
 
+	// Frames per buffer to ask the driver for, 0 for its default.
+	uint32				BufferFrames() const { return fBufferFrames; }
+	status_t			SetBufferFrames(uint32 frames);
+
 	status_t			ForceStop();
 
 private:
@@ -48,6 +52,7 @@ private:
 private:
 	status_t 			fInitStatus;
 	int					fDevice;
+	uint32				fBufferFrames;
 	char				fPath[B_PATH_NAME_LENGTH];
 
 	multi_description	fDescription;
