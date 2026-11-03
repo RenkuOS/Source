@@ -511,7 +511,11 @@ extern "C" void
 usbd_xfer_set_frame_data(struct usb_xfer* xfer,
 	usb_frcount_t frindex, void* ptr, usb_frlength_t len)
 {
-	KASSERT(frindex < uint32_t(xfer->nframes), ("frame index overflow"));
+	// against the frames there are, as FreeBSD does: a driver may set the
+	// data of a frame before the count, as run(4) does when it comes back
+	// from idling with no frames
+	KASSERT(frindex < uint32_t(xfer->max_frame_count),
+		("frame index overflow"));
 
 	xfer->frames[frindex].iov_base = ptr;
 	xfer->frames[frindex].iov_len = len;
