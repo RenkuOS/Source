@@ -632,6 +632,18 @@ Desktop::BroadcastToAllApps(int32 code)
 }
 
 
+/*!	\brief Send a message to the client side of all applications.
+*/
+void
+Desktop::SendMessageToAllClients(BMessage* message)
+{
+	BAutolock locker(fApplicationsLock);
+
+	for (int32 i = fApplications.CountItems(); i-- > 0;)
+		fApplications.ItemAt(i)->SendMessageToClient(message);
+}
+
+
 /*!	\brief Send a quick (no attachments) message to all windows.
 */
 void
