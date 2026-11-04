@@ -291,8 +291,15 @@ read_battery_status(axp288_device* device, acpi_battery_info* info)
 	read_12bit(device, charging ? AXP288_CHARGE_CURRENT
 		: AXP288_DISCHARGE_CURRENT, &current);
 
-	info->state = charging ? BATTERY_CHARGING
-		: external ? BATTERY_NOT_CHARGING : BATTERY_DISCHARGING;
+	// VBUS can be present without a charger: in OTG host mode the 5 V
+	// boost or a self-powered hub drives it. A discharge current says what
+	// really happens.
+	if (charging)
+		info->state = BATTERY_CHARGING;
+	else if (current > 0 || !external)
+		info->state = BATTERY_DISCHARGING;
+	else
+		info->state = BATTERY_NOT_CHARGING;
 	if (!charging && percent <= CRITICAL_CAPACITY)
 		info->state |= BATTERY_CRITICAL_STATE;
 	info->current_rate = current;
