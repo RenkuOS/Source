@@ -755,8 +755,12 @@ intel_map(intel_info &info)
 	}
 
 	AreaKeeper mmioMapper;
+	uint32 registerSpec = B_ANY_KERNEL_ADDRESS;
+	if (info.type->InGroup(INTEL_GROUP_ALD))
+		registerSpec |= B_UNCACHED_MEMORY;
 	info.registers_area = mmioMapper.Map("intel GMCH mmio", addr, barSize,
-		B_ANY_KERNEL_ADDRESS, B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, (void**)&info.registers);
+		registerSpec, B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA,
+		(void**)&info.registers);
 
 	if (mmioMapper.InitCheck() < B_OK) {
 		ERROR("could not map memory I/O!\n");
@@ -819,7 +823,7 @@ intel_map(intel_info &info)
 
 	AreaKeeper gttMapper;
 	info.gtt_area = gttMapper.Map("intel GMCH gtt",
-		info.gtt_physical_base, gttSize, B_ANY_KERNEL_ADDRESS,
+		info.gtt_physical_base, gttSize, registerSpec,
 		B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, (void**)&info.gtt_base);
 	if (gttMapper.InitCheck() < B_OK) {
 		ERROR("could not map GTT!\n");
@@ -905,13 +909,18 @@ intel_create_aperture(uint8 bus, uint8 device, uint8 function, size_t size,
 	if (intel_map(sInfo) < B_OK)
 		return B_ERROR;
 
-	uint16 gmchControl = get_pci_config(sInfo.bridge,
-		INTEL_GRAPHICS_MEMORY_CONTROL, 2) | MEMORY_CONTROL_ENABLED;
-	set_pci_config(sInfo.bridge, INTEL_GRAPHICS_MEMORY_CONTROL, 2, gmchControl);
+	if (!sInfo.type->InGroup(INTEL_GROUP_ALD)) {
+		uint16 gmchControl = get_pci_config(sInfo.bridge,
+			INTEL_GRAPHICS_MEMORY_CONTROL, 2) | MEMORY_CONTROL_ENABLED;
+		set_pci_config(sInfo.bridge, INTEL_GRAPHICS_MEMORY_CONTROL, 2,
+			gmchControl);
 
-	write32(sInfo.registers + INTEL_PAGE_TABLE_CONTROL,
-		sInfo.gtt_physical_base | PAGE_TABLE_ENABLED);
-	read32(sInfo.registers + INTEL_PAGE_TABLE_CONTROL);
+		write32(sInfo.registers + INTEL_PAGE_TABLE_CONTROL,
+			sInfo.gtt_physical_base | PAGE_TABLE_ENABLED);
+		read32(sInfo.registers + INTEL_PAGE_TABLE_CONTROL);
+	}
+	// Alder Lake has a fixed GGTT window in GTTMMADR. Preserve firmware's
+	// setup instead of programming the legacy i830 GGC/PGTBL_CTL registers.
 
 	if (sInfo.scratch_page != 0) {
 		// Preserve GGTT mappings outside the CPU-visible aperture.
