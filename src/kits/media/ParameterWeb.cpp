@@ -18,7 +18,6 @@
 
 #include <new>
 #include <string.h>
-#include <type_traits>
 
 #include <MediaNode.h>
 #include <MediaRoster.h>
@@ -173,8 +172,8 @@ template<class Type> Type
 read_from_buffer(const void **_buffer)
 {
 	// the flattened data does not have to be aligned
-	typename std::remove_const<Type>::type value;
-	memcpy((void*)&value, *_buffer, sizeof(Type));
+	Type value;
+	memcpy(&value, *_buffer, sizeof(Type));
 	*_buffer = static_cast<const uint8 *>(*_buffer) + sizeof(Type);
 
 	return value;
@@ -1692,7 +1691,7 @@ BParameter::Unflatten(type_code code, const void* buffer, ssize_t size)
 
 	fInputs->MakeEmpty();
 	for (ssize_t i = 0; i < count; i++) {
-		fInputs->AddItem(read_pointer_from_buffer_swap<BParameter * const>(
+		fInputs->AddItem(read_pointer_from_buffer_swap<BParameter*>(
 			&buffer, fSwapDetected));
 	}
 
@@ -1702,7 +1701,7 @@ BParameter::Unflatten(type_code code, const void* buffer, ssize_t size)
 
 	fOutputs->MakeEmpty();
 	for (ssize_t i = 0; i < count; i++) {
-		fOutputs->AddItem(read_pointer_from_buffer_swap<BParameter * const>(
+		fOutputs->AddItem(read_pointer_from_buffer_swap<BParameter*>(
 			&buffer, fSwapDetected));
 	}
 
