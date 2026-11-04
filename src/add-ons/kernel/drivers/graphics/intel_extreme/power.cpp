@@ -26,6 +26,11 @@ status_t
 intel_en_gating(intel_info &info)
 {
 	CALLED();
+	// The fallback below programs i965 registers, not Alder Lake clock gating.
+	// Preserve firmware state until generation-specific support is available.
+	if (info.device_type.InGroup(INTEL_GROUP_ALD))
+		return B_NOT_SUPPORTED;
+
 	// Fix some problems on certain chips (taken from X driver)
 	// TODO: clean this up
 	if (info.pci->device_id == 0x2a02 || info.pci->device_id == 0x2a12) {
