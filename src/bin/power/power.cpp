@@ -77,10 +77,13 @@ usage()
 		"Reports battery, AC adapter, thermal and CPU idle state.\n"
 		"\n"
 		"Options:\n"
-		"  -c          write samples as CSV (implies -i)\n"
-		"  -i SECONDS  sample interval in seconds (default 2)\n"
-		"  -n COUNT    number of samples (default: until interrupted)\n"
-		"  -h          show this help\n");
+		"  -c, --csv               write samples as CSV (implies -i)\n"
+		"  -i, --interval SECONDS  sample interval in seconds (default 2)\n"
+		"  -n, --count COUNT       number of samples (default: until "
+			"interrupted)\n"
+		"  -h, --help              show this help\n"
+		"\n"
+		"Without options, power prints the current state once.\n");
 }
 
 
@@ -641,7 +644,16 @@ main(int argc, char** argv)
 	bool monitor = false;
 
 	int option;
-	while ((option = getopt(argc, argv, "chi:n:")) != -1) {
+	static const struct option kLongOptions[] = {
+		{ "csv", no_argument, NULL, 'c' },
+		{ "interval", required_argument, NULL, 'i' },
+		{ "count", required_argument, NULL, 'n' },
+		{ "help", no_argument, NULL, 'h' },
+		{ NULL, 0, NULL, 0 }
+	};
+
+	while ((option = getopt_long(argc, argv, "chi:n:", kLongOptions, NULL))
+			!= -1) {
 		switch (option) {
 			case 'c':
 				csv = true;
