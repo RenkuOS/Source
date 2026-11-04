@@ -11,3 +11,8 @@ SimpleTest ControlLookSwitchTest :
 	ControlLookSwitch.cpp
 	: be [ TargetLibsupc++ ]
 	;
+
+SimpleTest SystemFontSwitchTest :
+	SystemFontSwitch.cpp
+	: be [ TargetLibsupc++ ]
+	;
