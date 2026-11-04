@@ -23,6 +23,8 @@
 
 #include <new>
 
+#include "intel_gtt.h"
+
 
 #define TRACE_INTEL
 #ifdef TRACE_INTEL
@@ -762,8 +764,18 @@ intel_map(intel_info &info)
 	if (get_memory_map(scratchAddress, B_PAGE_SIZE, &entry, 1) != B_OK)
 		return B_ERROR;
 
-	// TODO: Review these
-	if (info.type->InFamily(INTEL_FAMILY_8xx)) {
+	size_t gttSize = determine_gtt_size(info);
+	size_t stolenSize = determine_gtt_stolen(info);
+
+	// TODO: Review the pre-Gen8 layouts.
+	if (info.type->Generation() >= 8) {
+		uint64_t gttBase;
+		if (!intel_gen8_gtt_base(addr, barSize, gttSize, &gttBase)) {
+			ERROR("invalid Gen8+ GTT range in MMIO BAR\n");
+			return B_BAD_VALUE;
+		}
+		info.gtt_physical_base = gttBase;
+	} else if (info.type->InFamily(INTEL_FAMILY_8xx)) {
 		info.gtt_physical_base = read32(info.registers
 			+ INTEL_PAGE_TABLE_CONTROL) & ~PAGE_TABLE_ENABLED;
 		if (info.gtt_physical_base == 0) {
@@ -779,9 +791,6 @@ intel_map(intel_info &info)
 		// 945+?
 		info.gtt_physical_base = addr + (2UL << 20);
 	}
-
-	size_t gttSize = determine_gtt_size(info);
-	size_t stolenSize = determine_gtt_stolen(info);
 
 	info.gtt_entries = gttSize / 4096;
 	info.gtt_stolen_entries = stolenSize / 4096;
