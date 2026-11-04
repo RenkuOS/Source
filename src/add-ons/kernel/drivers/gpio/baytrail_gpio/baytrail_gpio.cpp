@@ -17,8 +17,15 @@
 	This driver gives the ACPI interpreter access to the pins: it installs the
 	handler of the GeneralPurposeIo operation region of each controller, so
 	that AML code which reads or writes GPIO fields (for example the reset line
-	of a touch screen in its _PS0 method) works. Interrupts are not handled
-	yet.
+	of a touch screen in its _PS0 method) works.
+
+	Once all controllers are up, the edge triggered ACPI GPIO events (_AEI) are
+	run once, so that the AML can bring the board into the state that matches
+	the pins, as other operating systems do at boot. On Intel reference boards
+	the event of the USB ID pin switches the OTG port to the host controller.
+	After that the pins of all _AEI events trigger the interrupt of their
+	controller, and the event methods run in a thread when a pin changes
+	(for example when a USB OTG cable is plugged in or out).
 */
 
 
@@ -33,6 +40,7 @@
 #include <string.h>
 
 #include <lock.h>
+#include <arch/int.h>
 
 extern "C" {
 #	include "acpi.h"
@@ -65,6 +73,18 @@ extern "C" {
 
 // CONF0 register
 #define PAD_CONF0_MUX_MASK		0x7
+#define PAD_CONF0_LEVEL			(1U << 24)	// level instead of edge
+#define PAD_CONF0_TPE			(1U << 25)	// rising edge or active high
+#define PAD_CONF0_TNE			(1U << 26)	// falling edge or active low
+#define PAD_CONF0_DIRECT_IRQ	(1U << 27)
+#define PAD_CONF0_TRIGGER_MASK	(PAD_CONF0_LEVEL | PAD_CONF0_TPE \
+	| PAD_CONF0_TNE | PAD_CONF0_DIRECT_IRQ)
+
+// Interrupt status, one bit per GPIO number, write 1 to clear
+#define GPIO_INT_STATUS			0x800
+#define GPIO_INT_STATUS_WORDS	4
+
+#define MAX_EVENTS				16
 
 
 /*	GPIO number to pad index, per community. Taken from the pad description
@@ -130,10 +150,35 @@ struct gpio_controller {
 	area_id						area;
 	addr_t						registers;
 	bool						regionHandlerInstalled;
+
+	// interrupt of the controller, from _CRS
+	bool						irqLevel;
+	bool						irqActiveLow;
+
+	// ACPI GPIO events (_AEI) driven by the interrupt
+	struct {
+		uint16					pin;
+		bool					level;
+		uint32					trigger;	// PAD_CONF0 trigger bits
+		char					method[5];
+	}							events[MAX_EVENTS];
+	uint32						eventCount;
+	uint32						eventMask[GPIO_INT_STATUS_WORDS];
+	int32						pending[GPIO_INT_STATUS_WORDS];
+	sem_id						eventSem;
+	thread_id					eventThread;
+	volatile bool				stopEvents;
+	bool						irqInstalled;
 };
 
 
 static device_manager_info* sDeviceManager;
+
+// The controllers whose region handler is installed, for running the ACPI
+// GPIO events at boot.
+static gpio_controller* sControllers[B_COUNT_OF(kCommunities)];
+static int32 sControllerCount;
+static int32 sBootEventsStarted;
 
 // The SoC cannot handle concurrent accesses to the GPIO registers, not even
 // to different communities: reads may return 0xffffffff and writes may be
@@ -330,6 +375,360 @@ gpio_region_setup(acpi_handle region, uint32 function, void* handlerContext,
 }
 
 
+//	#pragma mark - interrupts
+
+
+static inline volatile uint32*
+status_register(gpio_controller* controller, uint32 word)
+{
+	return (volatile uint32*)(controller->registers + GPIO_INT_STATUS
+		+ word * 4);
+}
+
+
+/*!	Sets the trigger bits of a pin (0 masks its interrupt) and clears a
+	status bit that may be left over. Called with sRegisterLock held.
+*/
+static void
+set_trigger_locked(gpio_controller* controller, uint32 pin, uint32 trigger)
+{
+	volatile uint32* conf0 = pad_register(controller, pin, PAD_CONF0);
+	*conf0 = (*conf0 & ~PAD_CONF0_TRIGGER_MASK) | trigger;
+	*status_register(controller, pin / 32) = 1U << (pin % 32);
+}
+
+
+static int32
+gpio_interrupt(void* data)
+{
+	gpio_controller* controller = (gpio_controller*)data;
+	bool handled = false;
+
+	acquire_spinlock(&sRegisterLock);
+	for (uint32 word = 0; word < GPIO_INT_STATUS_WORDS; word++) {
+		uint32 bits = *status_register(controller, word)
+			& controller->eventMask[word];
+		if (bits == 0)
+			continue;
+
+		// Mask the pins until their event ran: a level event would fire
+		// again at once, and an edge event should not queue up.
+		for (uint32 i = 0; i < controller->eventCount; i++) {
+			uint32 pin = controller->events[i].pin;
+			if (pin / 32 == word && (bits & (1U << (pin % 32))) != 0) {
+				volatile uint32* conf0 = pad_register(controller, pin,
+					PAD_CONF0);
+				*conf0 &= ~PAD_CONF0_TRIGGER_MASK;
+			}
+		}
+		*status_register(controller, word) = bits;
+		atomic_or(&controller->pending[word], (int32)bits);
+		handled = true;
+	}
+	release_spinlock(&sRegisterLock);
+
+	if (!handled)
+		return B_UNHANDLED_INTERRUPT;
+
+	release_sem_etc(controller->eventSem, 1, B_DO_NOT_RESCHEDULE);
+	return B_INVOKE_SCHEDULER;
+}
+
+
+static status_t
+gpio_event_thread(void* data)
+{
+	gpio_controller* controller = (gpio_controller*)data;
+
+	while (acquire_sem(controller->eventSem) == B_OK
+		&& !controller->stopEvents) {
+		for (uint32 word = 0; word < GPIO_INT_STATUS_WORDS; word++) {
+			uint32 bits = (uint32)atomic_and(&controller->pending[word], 0);
+			if (bits == 0)
+				continue;
+
+			for (uint32 i = 0; i < controller->eventCount; i++) {
+				uint32 pin = controller->events[i].pin;
+				if (pin / 32 != word || (bits & (1U << (pin % 32))) == 0)
+					continue;
+
+				status_t status = controller->acpi->evaluate_method(
+					controller->acpiCookie, controller->events[i].method,
+					NULL, NULL);
+				dprintf("baytrail_gpio: %s pin %" B_PRIu32 ": %s %s\n",
+					controller->community->name, pin,
+					controller->events[i].method,
+					status == B_OK ? "done" : "failed");
+
+				cpu_status state = disable_interrupts();
+				acquire_spinlock(&sRegisterLock);
+				set_trigger_locked(controller, pin,
+					controller->events[i].trigger);
+				release_spinlock(&sRegisterLock);
+				restore_interrupts(state);
+			}
+		}
+	}
+
+	return B_OK;
+}
+
+
+static acpi_status
+collect_events(ACPI_RESOURCE* resource, void* context)
+{
+	gpio_controller* controller = (gpio_controller*)context;
+	if (resource->Type != ACPI_RESOURCE_TYPE_GPIO)
+		return AE_OK;
+
+	const ACPI_RESOURCE_GPIO& gpio = resource->Data.Gpio;
+	if (gpio.ConnectionType != ACPI_RESOURCE_GPIO_TYPE_INT)
+		return AE_OK;
+
+	bool level = gpio.Triggering != ACPI_EDGE_SENSITIVE;
+	uint32 trigger = level ? PAD_CONF0_LEVEL : 0;
+	if (gpio.Polarity == ACPI_ACTIVE_HIGH || gpio.Polarity == ACPI_ACTIVE_BOTH)
+		trigger |= PAD_CONF0_TPE;
+	if (gpio.Polarity == ACPI_ACTIVE_LOW || gpio.Polarity == ACPI_ACTIVE_BOTH)
+		trigger |= PAD_CONF0_TNE;
+
+	for (uint32 i = 0; i < gpio.PinTableLength; i++) {
+		uint16 pin = gpio.PinTable[i];
+		if (pin > 0xff || !pad_in_range(controller, pin)
+			|| pin / 32 >= GPIO_INT_STATUS_WORDS
+			|| controller->eventCount >= MAX_EVENTS) {
+			// Pins above 255 use _EVT, which is not supported yet.
+			continue;
+		}
+
+		uint32 index = controller->eventCount++;
+		controller->events[index].pin = pin;
+		controller->events[index].level = level;
+		controller->events[index].trigger = trigger;
+		snprintf(controller->events[index].method,
+			sizeof(controller->events[index].method), "_%c%02X",
+			level ? 'L' : 'E', pin);
+	}
+
+	return AE_OK;
+}
+
+
+/*!	Lets the pins of the _AEI events of a controller trigger its interrupt.
+*/
+static void
+enable_event_interrupts(gpio_controller* controller)
+{
+	controller->eventCount = 0;
+	controller->acpi->walk_resources(controller->acpiCookie, (char*)"_AEI",
+		collect_events, controller);
+	if (controller->eventCount == 0 || controller->irq == 0)
+		return;
+
+	controller->eventSem = create_sem(0, "baytrail_gpio events");
+	if (controller->eventSem < 0)
+		return;
+	controller->eventThread = spawn_kernel_thread(gpio_event_thread,
+		"baytrail_gpio events", B_NORMAL_PRIORITY, controller);
+	if (controller->eventThread < 0) {
+		delete_sem(controller->eventSem);
+		controller->eventSem = -1;
+		return;
+	}
+	resume_thread(controller->eventThread);
+
+	if (controller->irqLevel) {
+		arch_int_configure_io_interrupt(controller->irq, B_LEVEL_TRIGGERED,
+			controller->irqActiveLow
+				? B_LOW_ACTIVE_POLARITY : B_HIGH_ACTIVE_POLARITY);
+	}
+	if (install_io_interrupt_handler(controller->irq, gpio_interrupt,
+			controller, 0) != B_OK) {
+		ERROR("%s: installing the interrupt handler failed\n",
+			controller->community->name);
+		return;
+	}
+	controller->irqInstalled = true;
+
+	cpu_status state = disable_interrupts();
+	acquire_spinlock(&sRegisterLock);
+	for (uint32 i = 0; i < controller->eventCount; i++) {
+		uint32 pin = controller->events[i].pin;
+		controller->eventMask[pin / 32] |= 1U << (pin % 32);
+		set_trigger_locked(controller, pin, controller->events[i].trigger);
+	}
+	release_spinlock(&sRegisterLock);
+	restore_interrupts(state);
+
+	for (uint32 i = 0; i < controller->eventCount; i++) {
+		dprintf("baytrail_gpio: %s pin %u: event %s on interrupt %" B_PRIu32
+			"\n", controller->community->name, controller->events[i].pin,
+			controller->events[i].method, controller->irq);
+	}
+}
+
+
+static void
+disable_event_interrupts(gpio_controller* controller)
+{
+	if (controller->irqInstalled) {
+		cpu_status state = disable_interrupts();
+		acquire_spinlock(&sRegisterLock);
+		for (uint32 i = 0; i < controller->eventCount; i++)
+			set_trigger_locked(controller, controller->events[i].pin, 0);
+		release_spinlock(&sRegisterLock);
+		restore_interrupts(state);
+
+		remove_io_interrupt_handler(controller->irq, gpio_interrupt,
+			controller);
+		controller->irqInstalled = false;
+	}
+
+	if (controller->eventThread >= 0) {
+		controller->stopEvents = true;
+		release_sem(controller->eventSem);
+		status_t result;
+		wait_for_thread(controller->eventThread, &result);
+		controller->eventThread = -1;
+	}
+	if (controller->eventSem >= 0) {
+		delete_sem(controller->eventSem);
+		controller->eventSem = -1;
+	}
+}
+
+
+//	#pragma mark - ACPI GPIO events at boot
+
+
+#define MAX_BOOT_EVENTS			16
+#define BOOT_EVENT_ATTEMPTS		40
+#define BOOT_EVENT_RETRY_DELAY	250000
+
+struct boot_event {
+	gpio_controller*	controller;
+	uint16				pin;
+};
+
+struct boot_event_list {
+	gpio_controller*	controller;
+	boot_event			events[MAX_BOOT_EVENTS];
+	uint32				count;
+};
+
+
+static acpi_status
+collect_boot_events(ACPI_RESOURCE* resource, void* context)
+{
+	boot_event_list* list = (boot_event_list*)context;
+	if (resource->Type != ACPI_RESOURCE_TYPE_GPIO)
+		return AE_OK;
+
+	const ACPI_RESOURCE_GPIO& gpio = resource->Data.Gpio;
+	if (gpio.ConnectionType != ACPI_RESOURCE_GPIO_TYPE_INT
+		|| gpio.Triggering != ACPI_EDGE_SENSITIVE) {
+		// Like other systems, only edge events are run at boot.
+		return AE_OK;
+	}
+
+	for (uint32 i = 0; i < gpio.PinTableLength; i++) {
+		uint16 pin = gpio.PinTable[i];
+		gpio_controller* controller = list->controller;
+		if (pin > 0xff || !pad_in_range(controller, pin)) {
+			// Pins above 255 use _EVT, which is not supported yet.
+			continue;
+		}
+
+		// Run the event if the pin is in the state that it signals.
+		uint32 level = read_level(controller, pin);
+		if ((gpio.Polarity == ACPI_ACTIVE_HIGH && level == 0)
+			|| (gpio.Polarity == ACPI_ACTIVE_LOW && level != 0)) {
+			continue;
+		}
+
+		if (list->count < MAX_BOOT_EVENTS) {
+			list->events[list->count].controller = controller;
+			list->events[list->count].pin = pin;
+			list->count++;
+		}
+	}
+
+	return AE_OK;
+}
+
+
+static status_t
+boot_event_thread(void* /*data*/)
+{
+	// Events may use the pins of all communities (and check that their
+	// regions are available), so wait for all of them, but not forever.
+	for (int32 i = 0; i < 50
+			&& atomic_get(&sControllerCount) < (int32)B_COUNT_OF(kCommunities);
+			i++) {
+		snooze(100000);
+	}
+
+	for (uint32 c = 0; c < B_COUNT_OF(kCommunities); c++) {
+		gpio_controller* controller = sControllers[c];
+		if (controller == NULL)
+			continue;
+
+		boot_event_list list;
+		list.controller = controller;
+		list.count = 0;
+		if (controller->acpi->walk_resources(controller->acpiCookie,
+				(char*)"_AEI", collect_boot_events, &list) != B_OK) {
+			continue;
+		}
+
+		for (uint32 i = 0; i < list.count; i++) {
+			char method[5];
+			snprintf(method, sizeof(method), "_E%02X", list.events[i].pin);
+
+			// The event may need other operation regions (for example a PMIC
+			// on an I2C bus) whose drivers are not up yet: retry for a while.
+			status_t status = B_ERROR;
+			for (int32 attempt = 0; attempt < BOOT_EVENT_ATTEMPTS; attempt++) {
+				status = controller->acpi->evaluate_method(
+					controller->acpiCookie, method, NULL, NULL);
+				if (status == B_OK)
+					break;
+				snooze(BOOT_EVENT_RETRY_DELAY);
+			}
+
+			dprintf("baytrail_gpio: %s pin %" B_PRIu16 ": %s %s\n",
+				controller->community->name, list.events[i].pin, method,
+				status == B_OK ? "done" : "failed");
+		}
+	}
+
+	// From now on, changes of the event pins run their events.
+	for (uint32 c = 0; c < B_COUNT_OF(kCommunities); c++) {
+		if (sControllers[c] != NULL)
+			enable_event_interrupts(sControllers[c]);
+	}
+
+	return B_OK;
+}
+
+
+static void
+controller_ready(gpio_controller* controller)
+{
+	uint32 index = controller->community - kCommunities;
+	sControllers[index] = controller;
+	atomic_add(&sControllerCount, 1);
+
+	if (atomic_test_and_set(&sBootEventsStarted, 1, 0) != 0)
+		return;
+
+	thread_id thread = spawn_kernel_thread(boot_event_thread,
+		"baytrail_gpio boot events", B_NORMAL_PRIORITY, NULL);
+	if (thread >= 0)
+		resume_thread(thread);
+}
+
+
 //	#pragma mark - driver module API
 
 
@@ -349,9 +748,17 @@ parse_controller_resources(ACPI_RESOURCE* resource, void* context)
 			break;
 		case ACPI_RESOURCE_TYPE_IRQ:
 			controller->irq = resource->Data.Irq.Interrupts[0];
+			controller->irqLevel
+				= resource->Data.Irq.Triggering == ACPI_LEVEL_SENSITIVE;
+			controller->irqActiveLow
+				= resource->Data.Irq.Polarity == ACPI_ACTIVE_LOW;
 			break;
 		case ACPI_RESOURCE_TYPE_EXTENDED_IRQ:
 			controller->irq = resource->Data.ExtendedIrq.Interrupts[0];
+			controller->irqLevel = resource->Data.ExtendedIrq.Triggering
+				== ACPI_LEVEL_SENSITIVE;
+			controller->irqActiveLow = resource->Data.ExtendedIrq.Polarity
+				== ACPI_ACTIVE_LOW;
 			break;
 	}
 
@@ -410,6 +817,8 @@ baytrail_gpio_init_driver(device_node* node, void** _driverCookie)
 
 	controller->node = node;
 	controller->area = -1;
+	controller->eventSem = -1;
+	controller->eventThread = -1;
 
 	device_node* parent = sDeviceManager->get_parent_node(node);
 	sDeviceManager->get_driver(parent, (driver_module_info**)&controller->acpi,
@@ -465,9 +874,10 @@ baytrail_gpio_init_driver(device_node* node, void** _driverCookie)
 	status = controller->acpi->install_address_space_handler(
 		controller->acpiCookie, ACPI_ADR_SPACE_GPIO, gpio_region_handler,
 		gpio_region_setup, controller);
-	if (status == B_OK)
+	if (status == B_OK) {
 		controller->regionHandlerInstalled = true;
-	else {
+		controller_ready(controller);
+	} else {
 		ERROR("%s: installing the GPIO region handler failed\n",
 			controller->community->name);
 	}
@@ -481,6 +891,16 @@ static void
 baytrail_gpio_uninit_driver(void* driverCookie)
 {
 	gpio_controller* controller = (gpio_controller*)driverCookie;
+
+	// The driver stays loaded (B_KEEP_DRIVER_LOADED); this only runs when the
+	// device goes away.
+	uint32 index = controller->community - kCommunities;
+	if (sControllers[index] == controller) {
+		sControllers[index] = NULL;
+		atomic_add(&sControllerCount, -1);
+	}
+
+	disable_event_interrupts(controller);
 
 	if (controller->regionHandlerInstalled) {
 		controller->acpi->remove_address_space_handler(controller->acpiCookie,
