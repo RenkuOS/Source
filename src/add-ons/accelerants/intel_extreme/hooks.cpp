@@ -106,10 +106,19 @@ get_accelerant_hook(uint32 feature, void* data)
 
 		/* 2D acceleration */
 		case B_SCREEN_TO_SCREEN_BLIT:
-			return (void*)intel_screen_to_screen_blit;
 		case B_FILL_RECTANGLE:
-			return (void*)intel_fill_rectangle;
 		case B_INVERT_RECTANGLE:
+			// These families have no working legacy command submission or
+			// engine synchronization (see intel_wait_engine_idle()).
+			if (gInfo->shared_info->device_type.InFamily(INTEL_FAMILY_LAKE)
+				|| gInfo->shared_info->device_type.InFamily(INTEL_FAMILY_SOC0)) {
+				return NULL;
+			}
+
+			if (feature == B_SCREEN_TO_SCREEN_BLIT)
+				return (void*)intel_screen_to_screen_blit;
+			if (feature == B_FILL_RECTANGLE)
+				return (void*)intel_fill_rectangle;
 			return (void*)intel_invert_rectangle;
 		case B_FILL_SPAN:
 			return NULL;//(void*)intel_fill_span;
