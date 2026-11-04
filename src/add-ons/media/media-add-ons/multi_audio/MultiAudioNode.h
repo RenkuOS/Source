@@ -64,6 +64,8 @@ public:
 
 protected:
 	virtual	void				Preroll();
+	virtual	void				Stop(bigtime_t performanceTime,
+									bool immediate);
 	virtual	void				NodeRegistered();
 	virtual	status_t			RequestCompleted(
 									const media_request_info& info);
@@ -236,6 +238,9 @@ private:
 	static	int32				_OutputThreadEntry(void* data);
 			int32				_OutputThread();
 			status_t			_StartOutputThreadIfNeeded();
+			bool				_InUse() const;
+			void				_RunWhileInUse();
+			void				_StopWhenUnused();
 			status_t			_StopOutputThread();
 			void				_EnterDeviceGone();
 			void				_LeaveDeviceGone(bigtime_t goneSince);
