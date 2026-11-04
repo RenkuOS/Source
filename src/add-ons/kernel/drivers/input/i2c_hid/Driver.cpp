@@ -281,6 +281,15 @@ i2c_hid_support(device_node *parent)
 
 	const char *name;
 	if (sDeviceManager->get_attr_string(parent, ACPI_DEVICE_HID_ITEM, &name,
+			false) == B_OK && name != NULL
+		&& (strncmp(name, "GDIX", 4) == 0 || strcmp(name, "GODX0911") == 0)) {
+		// Goodix controllers claim PNP0C50, but only speak their own
+		// protocol; i2c_goodix handles them.
+		TRACE("i2c_hid_support found a Goodix device\n");
+		return 0.0;
+	}
+
+	if (sDeviceManager->get_attr_string(parent, ACPI_DEVICE_HID_ITEM, &name,
 		false) == B_OK && name != NULL && strcmp(name, ACPI_NAME_HID_DEVICE) == 0) {
 		TRACE("i2c_hid_support found an hid i2c device\n");
 		return 0.6;
