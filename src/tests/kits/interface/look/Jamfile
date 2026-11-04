@@ -6,3 +6,8 @@ SimpleTest LookTest :
 	Look.cpp
 	: be tracker libcolumnlistview.a [ TargetLibsupc++ ]
 	;	
+
+SimpleTest ControlLookSwitchTest :
+	ControlLookSwitch.cpp
+	: be [ TargetLibsupc++ ]
+	;
