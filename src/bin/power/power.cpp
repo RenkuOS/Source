@@ -451,14 +451,22 @@ print_status()
 	if (sACCount == 0)
 		printf("  AC adapter:     not found\n");
 
+	// ACPI often describes more battery slots than the machine has; only
+	// list the ones that hold a battery.
+	int batteriesShown = 0;
 	for (int index = 0; index < sBatteryCount; index++) {
 		BatteryState battery;
 		read_battery(sBatteryFDs[index], battery);
+		if (battery.status != B_OK || !battery_present(battery))
+			continue;
 		print_battery_line(index, battery);
+		batteriesShown++;
 	}
 
 	if (sBatteryCount == 0)
 		printf("  Battery:        not found\n");
+	else if (batteriesShown == 0)
+		printf("  Battery:        not present\n");
 
 	for (int index = 0; index < sThermalCount; index++) {
 		float current = 0.0;
