@@ -1716,6 +1716,10 @@ set_control_look(const BString& path)
 bool
 update_control_look()
 {
+	// Servers without a GUI context get the message, too.
+	if (be_control_look == NULL)
+		return false;
+
 	BString path;
 	if (!get_control_look(path))
 		return false;
