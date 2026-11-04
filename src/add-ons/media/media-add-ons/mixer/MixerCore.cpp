@@ -197,9 +197,8 @@ MixerCore::RemoveOutput(const media_source& source)
 
 	if (output == fOutput) {
 		// The other outputs follow this one's timing, so they stay silent
-		// until another first output connects. Switching one of them to
-		// first here would keep the old device's time source, and refuse
-		// the next default output if it is on another device.
+		// until another first output connects. While others are connected,
+		// the node detaches the first output instead (DetachFirstOutput()).
 		if (fRunning)
 			_StopMixThread();
 		fOutput = NULL;
@@ -208,6 +207,65 @@ MixerCore::RemoveOutput(const media_source& source)
 	fOutputs->RemoveItem(output);
 	delete output;
 	return true;
+}
+
+
+void
+MixerCore::DetachFirstOutput()
+{
+	ASSERT_LOCKED();
+	ASSERT(fOutput != NULL);
+
+	// With no buffer group, _CanMixTo() leaves it out of every cycle; the
+	// caller deletes the group.
+	fOutput->MediaOutput().destination = media_destination::null;
+	fOutput->SetBufferGroup(NULL);
+}
+
+
+bool
+MixerCore::FirstOutputDetached()
+{
+	ASSERT_LOCKED();
+	return fOutput != NULL
+		&& fOutput->MediaOutput().destination == media_destination::null;
+}
+
+
+void
+MixerCore::ReplaceFirstOutput(MixerOutput* output)
+{
+	ASSERT_LOCKED();
+	ASSERT(FirstOutputDetached());
+	ASSERT(output != fOutput);
+
+	if (fRunning)
+		_StopMixThread();
+
+	// The master gain and mute stay as they were, so the level the user set
+	// does not jump when the new first output has another channel count.
+	MixerOutput* old = fOutput;
+	int oldCount = old->GetOutputChannelCount();
+	int count = output->GetOutputChannelCount();
+	float mean = 0;
+	for (int i = 0; i < oldCount; i++)
+		mean += old->GetOutputChannelGain(i);
+	if (oldCount > 0)
+		mean /= oldCount;
+	for (int i = 0; i < count; i++) {
+		output->SetOutputChannelGain(i,
+			count == oldCount ? old->GetOutputChannelGain(i) : mean);
+	}
+	output->SetMuted(old->IsMuted());
+
+	fOutputs->RemoveItem(old);
+	delete old;
+	fOutputs->RemoveItem(output);
+	fOutputs->AddItem(output, 0);
+	fOutput = output;
+	_ApplyOutputFormat();
+
+	// the mix thread starts again with EnableOutput()
 }
 
 
