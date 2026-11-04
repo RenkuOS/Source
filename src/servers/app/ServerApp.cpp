@@ -1412,8 +1412,16 @@ ServerApp::_DispatchMessage(int32 code, BPrivate::LinkReceiver& link)
 		{
 			STRACE(("ServerApp %s: Set menu info\n", Signature()));
 			menu_info info;
+			bool fontChanged = false;
 			if (link.Read<menu_info>(&info) == B_OK) {
 				LockedDesktopSettings settings(fDesktop);
+
+				menu_info current;
+				settings.GetMenuInfo(current);
+				fontChanged = strcmp(current.f_family, info.f_family) != 0
+					|| strcmp(current.f_style, info.f_style) != 0
+					|| current.font_size != info.font_size;
+
 				settings.SetMenuInfo(info);
 					// TODO: SetMenuInfo() should do some validity check, so
 					//	that the answer we're giving can actually be useful
@@ -1421,6 +1429,11 @@ ServerApp::_DispatchMessage(int32 code, BPrivate::LinkReceiver& link)
 
 			fLink.StartMessage(B_OK);
 			fLink.Flush();
+
+			if (fontChanged) {
+				BMessage update(B_FONTS_UPDATED);
+				fDesktop->SendMessageToAllClients(&update);
+			}
 			break;
 		}
 
@@ -1801,15 +1814,32 @@ ServerApp::_DispatchMessage(int32 code, BPrivate::LinkReceiver& link)
 						// locking the desktop (through LockedDesktopSettings
 						// below)
 
-					LockedDesktopSettings settings(fDesktop);
+					bool changed = false;
+					{
+						LockedDesktopSettings settings(fDesktop);
 
-					// TODO: Should we also update our internal copies now?
-					if (strcmp(type, "plain") == 0)
-						settings.SetDefaultPlainFont(font);
-					else if (strcmp(type, "bold") == 0)
-						settings.SetDefaultBoldFont(font);
-					else if (strcmp(type, "fixed") == 0)
-						settings.SetDefaultFixedFont(font);
+						ServerFont current;
+						if (strcmp(type, "plain") == 0) {
+							settings.GetDefaultPlainFont(current);
+							changed = !(current == font);
+							settings.SetDefaultPlainFont(font);
+						} else if (strcmp(type, "bold") == 0) {
+							settings.GetDefaultBoldFont(current);
+							changed = !(current == font);
+							settings.SetDefaultBoldFont(font);
+						} else if (strcmp(type, "fixed") == 0) {
+							settings.GetDefaultFixedFont(current);
+							changed = !(current == font);
+							settings.SetDefaultFixedFont(font);
+						}
+					}
+
+					// Applications get the new font through
+					// AS_GET_SYSTEM_FONTS, which also updates our copies.
+					if (changed) {
+						BMessage update(B_FONTS_UPDATED);
+						fDesktop->SendMessageToAllClients(&update);
+					}
 				} else
 					gFontManager->Unlock();
 			}
