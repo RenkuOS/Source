@@ -214,8 +214,12 @@ read_thermal(int fd, float& current, float& critical)
 
 	buffer[bytesRead] = '\0';
 
-	return parse_temperature(buffer, "Current Temperature:", current)
-		&& parse_temperature(buffer, "Critical Temperature:", critical);
+	if (!parse_temperature(buffer, "Current Temperature:", current)
+		|| !parse_temperature(buffer, "Critical Temperature:", critical))
+		return false;
+
+	// A zone without a working _TMP reports a wrapped negative value.
+	return current > -50.0f && current < 200.0f;
 }
 
 
@@ -320,12 +324,25 @@ battery_rate_mw(const BatteryState& battery)
 }
 
 
+// ACPI reports an absent or unreadable battery with all values unknown.
+static bool
+battery_present(const BatteryState& battery)
+{
+	if (battery.status != B_OK)
+		return false;
+	return battery.info.capacity != UINT32_MAX
+		|| (battery.hasExtended
+			&& battery.extended.last_full_charge != UINT32_MAX);
+}
+
+
 static uint32
 battery_full_charge(const BatteryState& battery)
 {
 	if (!battery.hasExtended)
 		return 0;
-	if (battery.extended.last_full_charge > 0)
+	if (battery.extended.last_full_charge > 0
+		&& battery.extended.last_full_charge != UINT32_MAX)
 		return battery.extended.last_full_charge;
 
 	return battery.extended.design_capacity;
@@ -384,9 +401,8 @@ print_time_left(int minutes)
 static void
 print_battery_line(int index, const BatteryState& battery)
 {
-	if (battery.status != B_OK) {
-		printf("  Battery %d:      unavailable (%s)\n", index,
-			strerror(battery.status));
+	if (battery.status != B_OK || !battery_present(battery)) {
+		printf("  Battery %d:      not present\n", index);
 		return;
 	}
 
@@ -556,6 +572,8 @@ print_monitor(int interval, int count, bool csv)
 				for (int index = 0; index < sBatteryCount; index++) {
 					BatteryState battery;
 					read_battery(sBatteryFDs[index], battery);
+					if (!battery_present(battery))
+						continue;
 					printf("%.1f,%d,%d,%" B_PRIu32 ",", elapsed, online,
 						index, battery_percent(battery));
 					double rate = battery_rate_mw(battery);
@@ -576,6 +594,8 @@ print_monitor(int interval, int count, bool csv)
 			for (int index = 0; index < sBatteryCount; index++) {
 				BatteryState battery;
 				read_battery(sBatteryFDs[index], battery);
+				if (!battery_present(battery))
+					continue;
 				double rate = battery_rate_mw(battery);
 				printf("  bat%d=%" B_PRIu32 "%% ", index,
 					battery_percent(battery));
