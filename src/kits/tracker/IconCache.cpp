@@ -1265,19 +1265,33 @@ void
 IconCache::IconChanged(const char* mimeType, const char* appSignature)
 {
 	AutoLock<SimpleIconCache> sharedLock(&fSharedCache);
-	SharedCacheEntry* entry = fSharedCache.FindItem(mimeType, appSignature);
-	if (entry == NULL)
-		return;
+
+	BObjectList<SharedCacheEntry> entries;
+	if (appSignature != NULL && appSignature[0] != '\0') {
+		SharedCacheEntry* entry = fSharedCache.FindItem(mimeType, appSignature);
+		if (entry != NULL)
+			entries.AddItem(entry);
+	} else
+		fSharedCache.GetEntriesForType(mimeType, entries);
 
 	AutoLock<SimpleIconCache> nodeLock(&fNodeCache);
 
-	entry = (SharedCacheEntry*)fSharedCache.ResolveIfAlias(entry);
-	ASSERT(entry != NULL);
+	// Each is gone once it's dealt with, and several may lead to the same one.
+	BObjectList<SharedCacheEntry> resolved;
+	for (int32 i = 0; i < entries.CountItems(); i++) {
+		SharedCacheEntry* entry
+			= (SharedCacheEntry*)fSharedCache.ResolveIfAlias(entries.ItemAt(i));
+		ASSERT(entry != NULL);
+		if (entry != NULL && !resolved.HasItem(entry))
+			resolved.AddItem(entry);
+	}
 
-	fNodeCache.RemoveAliasesTo(entry);
-	fSharedCache.RemoveAliasesTo(entry);
-
-	fSharedCache.IconChanged(entry);
+	for (int32 i = 0; i < resolved.CountItems(); i++) {
+		SharedCacheEntry* entry = resolved.ItemAt(i);
+		fNodeCache.RemoveAliasesTo(entry);
+		fSharedCache.RemoveAliasesTo(entry);
+		fSharedCache.IconChanged(entry);
+	}
 }
 
 
@@ -1511,6 +1525,26 @@ SharedIconCache::IconChanged(SharedCacheEntry* entry)
 	ASSERT(entry->fAliasTo == NULL);
 	entry->RetireIcons(&fRetiredBitmaps);
 	fHashTable.Remove(entry);
+}
+
+
+void
+SharedIconCache::GetEntriesForType(const char* mimeType,
+	BObjectList<SharedCacheEntry>& entries) const
+{
+	const bool isSupertype = strchr(mimeType, '/') == NULL;
+	const size_t length = strlen(mimeType);
+
+	EntryHashTable::Iterator it = fHashTable.GetIterator();
+	while (it.HasNext()) {
+		SharedCacheEntry* entry = it.Next();
+		const char* type = entry->FileType();
+		if (strcasecmp(type, mimeType) == 0
+			|| (isSupertype && strncasecmp(type, mimeType, length) == 0
+				&& type[length] == '/')) {
+			entries.AddItem(entry);
+		}
+	}
 }
 
 
