@@ -33,6 +33,30 @@ intel_gen8_gtt_base(uint64_t mmioBase, uint64_t mmioSize, uint64_t tableSize,
 }
 
 
+// GMS encodings from the Alder Lake PCI graphics-control register definition.
+// Reserved encodings must not turn into an assumed one-MiB stolen region.
+static inline bool
+intel_alderlake_stolen_size(uint16_t memoryConfig, uint64_t* stolenSize)
+{
+	if (stolenSize == NULL)
+		return false;
+
+	uint8_t gms = memoryConfig >> 8;
+	uint64_t mib;
+	if (gms <= 0x10)
+		mib = (uint64_t)gms * 32;
+	else if (gms == 0x20 || gms == 0x30 || gms == 0x40)
+		mib = (uint64_t)gms * 32;
+	else if (gms >= 0xf0 && gms <= 0xfe)
+		mib = (uint64_t)(gms - 0xf0 + 1) * 4;
+	else
+		return false;
+
+	*stolenSize = mib << 20;
+	return true;
+}
+
+
 // This initial system-memory path uses the 39-bit DMA limit of ADL-P/N.
 // Other platforms must not silently truncate addresses to fit this limit.
 static inline bool

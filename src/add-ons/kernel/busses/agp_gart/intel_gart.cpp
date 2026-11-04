@@ -341,6 +341,16 @@ static size_t
 determine_gtt_stolen(intel_info &info)
 {
 	uint16 memoryConfig = gtt_memory_config(info);
+	if (info.type->InGroup(INTEL_GROUP_ALD)) {
+		uint64_t stolenSize;
+		if (!intel_alderlake_stolen_size(memoryConfig, &stolenSize)
+			|| stolenSize == 0) {
+			return SIZE_MAX;
+		}
+		// Preserve the entire firmware mapping, including its last page.
+		return stolenSize;
+	}
+
 	size_t memorySize = 1 << 20; // 1 MB
 
 	if (info.type->InGroup(INTEL_GROUP_83x)) {
@@ -788,6 +798,10 @@ intel_map(intel_info &info)
 
 	size_t gttSize = determine_gtt_size(info);
 	size_t stolenSize = determine_gtt_stolen(info);
+	if (info.type->InGroup(INTEL_GROUP_ALD) && stolenSize == SIZE_MAX) {
+		ERROR("unsupported Alder Lake stolen-memory configuration\n");
+		return B_BAD_VALUE;
+	}
 
 	// TODO: Review the pre-Gen8 layouts.
 	if (info.type->Generation() >= 8) {
