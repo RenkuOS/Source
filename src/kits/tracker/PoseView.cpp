@@ -231,6 +231,7 @@ BPoseView::BPoseView(Model* model, uint32 viewMode)
 	fCountView(NULL),
 	fListElemHeight(ceilf(be_plain_font->Size() * 1.65f)),
 	fListOffset(ceilf(be_control_look->DefaultLabelSpacing() * 3.3f)),
+	fPlainFontSize(be_plain_font->Size()),
 	fIconPoseHeight(0.0f),
 	fDropTarget(NULL),
 	fAlreadySelectedDropTarget(NULL),
@@ -1036,6 +1037,47 @@ BPoseView::IconSize() const
 		fCachedIconSize = be_control_look->ComposeIconSize(fCachedIconSizeFrom);
 	}
 	return fCachedIconSize;
+}
+
+
+/*!	Lays the poses out again for the system's plain font, which their sizes and
+	truncated text come from.
+*/
+void
+BPoseView::FontsChanged()
+{
+	// All windows share these, and each comes to the same values.
+	be_plain_font->GetHeight(&sFontInfo);
+	sFontHeight = ceilf(sFontInfo.ascent + sFontInfo.descent) + 1;
+
+	fListElemHeight = ceilf(be_plain_font->Size() * 1.65f);
+	fListOffset = ceilf(be_control_look->DefaultLabelSpacing() * 3.3f);
+	fCachedIconSizeFrom = 0;
+	SetIconPoseHeight();
+	GetLayoutInfo(ViewMode(), &fGrid, &fOffset);
+	ResetPosePlacementHint();
+
+	// Columns are saved at the scale of the font in use: as they were, they would
+	// come back smaller or larger. Rounded either way, so that they don't creep
+	// wider with each change.
+	const float scale = be_plain_font->Size() / fPlainFontSize;
+	fPlainFontSize = be_plain_font->Size();
+	for (int32 c = 0; BColumn* column = ColumnAt(c); c++) {
+		column->SetOffset(roundf(column->Offset() * scale));
+		column->SetWidth(roundf(column->Width() * scale));
+	}
+
+	for (int32 i = 0; i < fPoseList->CountItems(); i++) {
+		BPose* pose = fPoseList->ItemAt(i);
+		for (int32 c = 0; BColumn* column = ColumnAt(c); c++) {
+			BTextWidget* widget = pose->WidgetFor(column->AttrHash());
+			if (widget != NULL)
+				widget->FontChanged();
+		}
+	}
+
+	UpdateScrollRange();
+	Invalidate();
 }
 
 
@@ -2271,6 +2313,10 @@ BPoseView::MessageReceived(BMessage* message)
 
 		case kAddPosesCompleted:
 			AddPosesCompleted();
+			break;
+
+		case B_FONTS_UPDATED:
+			FontsChanged();
 			break;
 
 		case B_META_MIME_CHANGED:
