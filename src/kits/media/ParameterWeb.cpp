@@ -173,7 +173,7 @@ read_from_buffer(const void **_buffer)
 {
 	// the flattened data does not have to be aligned
 	Type value;
-	memcpy(&value, *_buffer, sizeof(Type));
+	memcpy((void*)&value, *_buffer, sizeof(Type));
 	*_buffer = static_cast<const uint8 *>(*_buffer) + sizeof(Type);
 
 	return value;
