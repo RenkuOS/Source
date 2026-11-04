@@ -680,13 +680,20 @@ ServerApp::_DispatchMessage(int32 code, BPrivate::LinkReceiver& link)
 
 			BString path;
 			status_t error = B_ERROR;
+			bool changed = false;
 			if (link.ReadString(path) == B_OK) {
 				LockedDesktopSettings settings(fDesktop);
+				changed = settings.ControlLook() != path;
 				error = settings.SetControlLook(path.String());
 			}
 
 			fLink.StartMessage(error);
 			fLink.Flush();
+
+			if (changed) {
+				BMessage update(B_CONTROL_LOOK_UPDATED);
+				fDesktop->SendMessageToAllClients(&update);
+			}
 			break;
 		}
 
