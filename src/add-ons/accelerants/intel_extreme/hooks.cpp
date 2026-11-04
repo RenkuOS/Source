@@ -14,6 +14,29 @@
 extern "C" void*
 get_accelerant_hook(uint32 feature, void* data)
 {
+	// These hooks reach the legacy ring or claim completion without a working
+	// Alder Lake submission backend. Keep initialization/display hooks usable.
+	if (gInfo != NULL && gInfo->shared_info != NULL
+		&& gInfo->shared_info->device_type.InGroup(INTEL_GROUP_ALD)) {
+		switch (feature) {
+			case B_ACQUIRE_ENGINE:
+			case B_RELEASE_ENGINE:
+			case B_WAIT_ENGINE_IDLE:
+			case B_GET_SYNC_TOKEN:
+			case B_SYNC_TO_TOKEN:
+			case B_OVERLAY_COUNT:
+			case B_OVERLAY_SUPPORTED_SPACES:
+			case B_OVERLAY_SUPPORTED_FEATURES:
+			case B_ALLOCATE_OVERLAY_BUFFER:
+			case B_RELEASE_OVERLAY_BUFFER:
+			case B_GET_OVERLAY_CONSTRAINTS:
+			case B_ALLOCATE_OVERLAY:
+			case B_RELEASE_OVERLAY:
+			case B_CONFIGURE_OVERLAY:
+				return NULL;
+		}
+	}
+
 	switch (feature) {
 		/* general */
 		case B_INIT_ACCELERANT:
