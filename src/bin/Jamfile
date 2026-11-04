@@ -269,6 +269,7 @@ SubInclude HAIKU_TOP src bin package_repo ;
 SubInclude HAIKU_TOP src bin pc ;
 SubInclude HAIKU_TOP src bin pcmcia-cs ;
 SubInclude HAIKU_TOP src bin pkgman ;
+SubInclude HAIKU_TOP src bin power ;
 SubInclude HAIKU_TOP src bin query ;
 SubInclude HAIKU_TOP src bin rc ;
 SubInclude HAIKU_TOP src bin screen_blanker ;
