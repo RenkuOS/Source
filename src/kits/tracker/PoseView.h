@@ -209,6 +209,7 @@ public:
 	float ListOffset() const;
 
 	void SetIconPoseHeight();
+	void FontsChanged();
 	float IconPoseHeight() const;
 	uint32 UnscaledIconSizeInt() const;
 	uint32 IconSizeInt() const;
@@ -742,6 +743,7 @@ private:
 	BCountView* fCountView;
 	float fListElemHeight;
 	float fListOffset;
+	float fPlainFontSize;
 	float fIconPoseHeight;
 	BPose* fDropTarget;
 	BPose* fAlreadySelectedDropTarget;

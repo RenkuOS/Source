@@ -64,6 +64,7 @@ public:
 	BTitleView(BPoseView*);
 	virtual ~BTitleView();
 
+	virtual	void MessageReceived(BMessage* message);
 	virtual	void MouseDown(BPoint where);
 	virtual	void MouseUp(BPoint where);
 	virtual	void Draw(BRect updateRect);
@@ -87,6 +88,7 @@ protected:
 	void MouseMoved(BPoint, uint32, const BMessage*);
 
 private:
+	void _UpdateFont();
 	BColumnTitle* FindColumnTitle(BPoint) const;
 	BColumnTitle* InColumnResizeArea(BPoint) const;
 	BColumnTitle* FindColumnTitle(const BColumn*) const;
