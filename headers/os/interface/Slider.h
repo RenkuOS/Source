@@ -177,6 +177,7 @@ private:
 			BSize				_ValidateMinSize();
 
 			void				_InitBarColor();
+			void				_UpdateLookBarColor();
 			void				_InitObject();
 
 private:
@@ -225,7 +226,9 @@ private:
 
 			float				fMaxUpdateTextWidth;
 
-			uint32				_reserved[4];
+			bool				fUsesLookBarColor;
+
+			uint32				_reserved[3];
 };
 
 
