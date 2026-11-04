@@ -9,5 +9,7 @@ enum {
 	R_ResizeIcon = 22,
 	R_WindowShownSwitchIcon = 23,
 	R_WindowHiddenSwitchIcon = 24,
-	R_WordmarkLogoBitmap = 25
+	R_WordmarkLogoBitmap = 25,
+	R_WordmarkLogoDarkBitmap = 26,
+	R_MarkLogoDarkBitmap = 27
 };

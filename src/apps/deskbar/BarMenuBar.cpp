@@ -142,6 +142,18 @@ TBarMenuBar::~TBarMenuBar()
 
 
 void
+TBarMenuBar::MessageReceived(BMessage* message)
+{
+	if (message->what == B_COLORS_UPDATED
+		&& _DeskbarMenuIconID() != fDeskbarMenuIconID) {
+		SmartResize();
+	}
+
+	BMenuBar::MessageReceived(message);
+}
+
+
+void
 TBarMenuBar::SmartResize(float width, float height)
 {
 	if (width == -1.0f && height == -1.0f) {
@@ -363,16 +375,32 @@ TBarMenuBar::FetchTeamIcon()
 }
 
 
+int32
+TBarMenuBar::_DeskbarMenuIconID() const
+{
+	// The wordmark needs the wide menu of the vertical, expanded layout.
+	// Every other layout is too narrow for it and shows the mark instead.
+	const bool wordmark = fBarView->Vertical() && !fBarView->MiniState();
+
+	// Light text on a darker menu: the menu's brightness alone isn't enough,
+	// as there are themes with mid-grey menus and black text.
+	if (ui_color(B_MENU_ITEM_TEXT_COLOR).Brightness()
+			> ui_color(B_MENU_BACKGROUND_COLOR).Brightness()) {
+		return wordmark ? R_WordmarkLogoDarkBitmap : R_MarkLogoDarkBitmap;
+	}
+	return wordmark ? R_WordmarkLogoBitmap : R_MarkLogoBitmap;
+}
+
+
 void
 TBarMenuBar::_UpdateDeskbarMenuIcon(float width, float height)
 {
 	if (fDeskbarMenuItem == NULL)
 		return;
 
-	// The wordmark needs the wide menu of the vertical, expanded layout.
-	// Every other layout is too narrow for it and shows the mark instead.
-	const bool wordmark = fBarView->Vertical() && !fBarView->MiniState();
-	const int32 id = wordmark ? R_WordmarkLogoBitmap : R_MarkLogoBitmap;
+	const int32 id = _DeskbarMenuIconID();
+	const bool wordmark = id == R_WordmarkLogoBitmap
+		|| id == R_WordmarkLogoDarkBitmap;
 
 	// Fit the logo inside the menu. GetVectorIcon() scales the icon canvas
 	// by the bitmap's width, so the bitmap takes the logo's own shape.

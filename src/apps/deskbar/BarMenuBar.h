@@ -64,6 +64,7 @@ public:
 	virtual	void			MouseMoved(BPoint where, uint32 code,
 								const BMessage* message);
 	virtual	void			Draw(BRect);
+	virtual	void			MessageReceived(BMessage* message);
 
 			void			DrawBackground(BRect);
 			void			SmartResize(float width = -1.0f,
@@ -82,6 +83,7 @@ public:
 	const	BBitmap*		FetchTeamIcon();
 
 private:
+			int32			_DeskbarMenuIconID() const;
 			void			_UpdateDeskbarMenuIcon(float width,
 								float height);
 
