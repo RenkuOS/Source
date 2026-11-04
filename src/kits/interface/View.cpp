@@ -5503,6 +5503,7 @@ BView::MessageReceived(BMessage* message)
 			// prevent message repeats
 			case B_COLORS_UPDATED:
 			case B_FONTS_UPDATED:
+			case B_CONTROL_LOOK_UPDATED:
 				break;
 
 			case B_SCREEN_CHANGED:
@@ -6748,6 +6749,26 @@ BView::_FontsUpdated(BMessage* message)
 			child = child->fNextSibling) {
 		child->_FontsUpdated(message);
 	}
+}
+
+
+void
+BView::_ControlLookUpdated(BMessage* message)
+{
+	// A look can change the size of controls as well as how they are drawn.
+	// Invalidate before telling the view, so that it can already ask for the
+	// new sizes. A view whose layout is already invalid doesn't pass this on
+	// to its children, which is why every view does this for itself.
+	InvalidateLayout(true);
+
+	MessageReceived(message);
+
+	for (BView* child = fFirstChild; child != NULL;
+			child = child->fNextSibling) {
+		child->_ControlLookUpdated(message);
+	}
+
+	Invalidate();
 }
 
 

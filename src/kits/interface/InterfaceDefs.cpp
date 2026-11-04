@@ -207,7 +207,17 @@ static const char* kColorNames[kColorWhichCount] = {
 	NULL
 };
 
-static image_id sControlLookAddon = -1;
+// Every control look this team has used. They stay loaded until it quits: other
+// threads call be_control_look without any lock, so one of them could still be
+// in a method of a look that has just been replaced.
+struct ControlLookEntry {
+	BString				path;
+	image_id			addon;
+	BControlLook*		look;
+	ControlLookEntry*	next;
+};
+
+static ControlLookEntry* sControlLooks = NULL;
 
 
 namespace BPrivate {
@@ -1473,6 +1483,53 @@ shift_color(rgb_color color, float shift)
 }
 
 
+/*!	Returns the entry of the control look with the given add-on path, loading
+	it if this team hasn't used it yet. An empty path is the default look.
+	Returns \c NULL when the look can't be loaded.
+*/
+static ControlLookEntry*
+get_control_look_entry(const BString& path)
+{
+	for (ControlLookEntry* entry = sControlLooks; entry != NULL;
+			entry = entry->next) {
+		if (entry->path == path)
+			return entry;
+	}
+
+	image_id addon = -1;
+	BControlLook* look = NULL;
+	if (path.Length() > 0) {
+		BControlLook* (*instantiate)(image_id);
+
+		addon = load_add_on(path.String());
+		if (addon < 0)
+			return NULL;
+		if (get_image_symbol(addon, "instantiate_control_look",
+				B_SYMBOL_TYPE_TEXT, (void**)&instantiate) == B_OK) {
+			look = instantiate(addon);
+		}
+	} else
+		look = new(std::nothrow) HaikuControlLook();
+
+	ControlLookEntry* entry = NULL;
+	if (look != NULL)
+		entry = new(std::nothrow) ControlLookEntry;
+	if (entry == NULL) {
+		delete look;
+		if (addon >= 0)
+			unload_add_on(addon);
+		return NULL;
+	}
+
+	entry->path = path;
+	entry->addon = addon;
+	entry->look = look;
+	entry->next = sControlLooks;
+	sControlLooks = entry;
+	return entry;
+}
+
+
 extern "C" status_t
 _init_interface_kit_()
 {
@@ -1485,23 +1542,14 @@ _init_interface_kit_()
 		be_clipboard = new BClipboard(NULL);
 
 	BString path;
-	if (get_control_look(path) && path.Length() > 0) {
-		BControlLook* (*instantiate)(image_id);
-
-		sControlLookAddon = load_add_on(path.String());
-		if (sControlLookAddon >= 0
-			&& get_image_symbol(sControlLookAddon,
-				"instantiate_control_look",
-				B_SYMBOL_TYPE_TEXT, (void **)&instantiate) == B_OK) {
-			be_control_look = instantiate(sControlLookAddon);
-			if (be_control_look == NULL) {
-				unload_add_on(sControlLookAddon);
-				sControlLookAddon = -1;
-			}
-		}
-	}
-	if (be_control_look == NULL)
-		be_control_look = new HaikuControlLook();
+	ControlLookEntry* controlLook = NULL;
+	if (get_control_look(path))
+		controlLook = get_control_look_entry(path);
+	if (controlLook == NULL)
+		controlLook = get_control_look_entry(BString());
+	if (controlLook == NULL)
+		return B_NO_MEMORY;
+	be_control_look = controlLook->look;
 
 	_init_global_fonts_();
 
@@ -1536,15 +1584,17 @@ _fini_interface_kit_()
 	delete BPrivate::gWidthBuffer;
 	BPrivate::gWidthBuffer = NULL;
 
-	delete be_control_look;
 	be_control_look = NULL;
 
-	// Note: if we ever want to support live switching, we cannot just unload
-	// the old one since some thread might still be in a method of the object.
-	// maybe locking/unlocking all loopers around would ensure proper exit.
-	if (sControlLookAddon >= 0)
-		unload_add_on(sControlLookAddon);
-	sControlLookAddon = -1;
+	while (sControlLooks != NULL) {
+		ControlLookEntry* entry = sControlLooks;
+		sControlLooks = entry->next;
+
+		delete entry->look;
+		if (entry->addon >= 0)
+			unload_add_on(entry->addon);
+		delete entry;
+	}
 
 	// TODO: Anything else?
 
@@ -1652,6 +1702,30 @@ set_control_look(const BString& path)
 		return B_ERROR;
 
 	return error;
+}
+
+
+/*!	\brief Private function which makes this team use the system's ControlLook.
+
+	Called by BApplication's thread, the only one that changes be_control_look
+	after the interface kit has been initialized. If the look can't be loaded,
+	the team keeps the one it has.
+
+	\return \c true if be_control_look has changed.
+*/
+bool
+update_control_look()
+{
+	BString path;
+	if (!get_control_look(path))
+		return false;
+
+	ControlLookEntry* entry = get_control_look_entry(path);
+	if (entry == NULL || entry->look == be_control_look)
+		return false;
+
+	be_control_look = entry->look;
+	return true;
 }
 
 

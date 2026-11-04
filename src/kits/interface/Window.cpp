@@ -1379,6 +1379,13 @@ FrameMoved(origin);
 			break;
 		}
 
+		case B_CONTROL_LOOK_UPDATED:
+		{
+			fTopView->_ControlLookUpdated(message);
+			target->MessageReceived(message);
+			break;
+		}
+
 		default:
 			BLooper::DispatchMessage(message, target);
 			break;
