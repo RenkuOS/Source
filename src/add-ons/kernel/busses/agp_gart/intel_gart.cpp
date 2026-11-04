@@ -682,10 +682,14 @@ determine_gtt_size(intel_info &info)
 }
 
 
-static void
+static status_t
 set_gtt_entry(intel_info &info, uint32 offset, phys_addr_t physicalAddress)
 {
-	if (info.type->Generation() >= 8) {
+	if (info.type->InGroup(INTEL_GROUP_ALD)) {
+		return intel_gen8_gtt_write((volatile uint64_t*)info.gtt_base,
+			info.gtt_entries, info.aperture_size, info.aperture_stolen_size,
+			offset, physicalAddress) ? B_OK : B_BAD_VALUE;
+	} else if (info.type->Generation() >= 8) {
 		// CHV + BXT
 		physicalAddress |= (physicalAddress >> 28) & 0x07f0;
 		// TODO: cache control?
@@ -703,6 +707,17 @@ set_gtt_entry(intel_info &info, uint32 offset, phys_addr_t physicalAddress)
 	// TODO: this is not 64-bit safe!
 	write32(info.gtt_base + (offset >> GTT_PAGE_SHIFT),
 		(uint32)physicalAddress | GTT_ENTRY_VALID);
+	return B_OK;
+}
+
+
+static void
+read_gtt_entry(intel_info &info, size_t index)
+{
+	if (info.type->InGroup(INTEL_GROUP_ALD))
+		(void)((volatile uint64_t*)info.gtt_base)[index];
+	else
+		(void)read32(info.gtt_base + index);
 }
 
 
@@ -720,6 +735,9 @@ intel_unmap(intel_info &info)
 static status_t
 intel_map(intel_info &info)
 {
+	if (info.type->InGroup(INTEL_GROUP_ALD) && sizeof(addr_t) != 8)
+		return B_NOT_SUPPORTED;
+
 	int fbIndex = 0;
 	int mmioIndex = 1;
 	if (info.type->Generation() >= 3) {
@@ -792,7 +810,8 @@ intel_map(intel_info &info)
 		info.gtt_physical_base = addr + (2UL << 20);
 	}
 
-	info.gtt_entries = gttSize / 4096;
+	info.gtt_entries = gttSize
+		/ (info.type->InGroup(INTEL_GROUP_ALD) ? sizeof(uint64_t) : 4096);
 	info.gtt_stolen_entries = stolenSize / 4096;
 
 	TRACE("GTT base %" B_PRIxPHYSADDR ", size %lu, entries %lu, stolen %lu\n",
@@ -817,6 +836,16 @@ intel_map(intel_info &info)
 		}
 	} else if (info.aperture_size == 0)
 		info.aperture_size = info.display.u.h0.base_register_sizes[fbIndex];
+
+	if (info.type->InGroup(INTEL_GROUP_ALD)) {
+		uint64_t scratchPte;
+		if (!intel_gen8_gtt_layout(info.gtt_entries, info.aperture_size,
+				info.aperture_stolen_size)
+			|| !intel_gen8_gtt_pte(entry.address, &scratchPte)) {
+			ERROR("invalid Alder Lake aperture layout or scratch address\n");
+			return B_BAD_VALUE;
+		}
+	}
 
 	ERROR("detected %ld MB of stolen memory, aperture size %ld MB, "
 		"GTT size %ld KB\n", (stolenSize + (1023 << 10)) >> 20,
@@ -885,10 +914,18 @@ intel_create_aperture(uint8 bus, uint8 device, uint8 function, size_t size,
 	read32(sInfo.registers + INTEL_PAGE_TABLE_CONTROL);
 
 	if (sInfo.scratch_page != 0) {
-		for (size_t i = sInfo.gtt_stolen_entries; i < sInfo.gtt_entries; i++) {
-			set_gtt_entry(sInfo, i << GTT_PAGE_SHIFT, sInfo.scratch_page);
+		// Preserve GGTT mappings outside the CPU-visible aperture.
+		size_t end = sInfo.type->InGroup(INTEL_GROUP_ALD)
+			? sInfo.aperture_size >> GTT_PAGE_SHIFT : sInfo.gtt_entries;
+		for (size_t i = sInfo.gtt_stolen_entries; i < end; i++) {
+			status_t status = set_gtt_entry(sInfo, i << GTT_PAGE_SHIFT,
+				sInfo.scratch_page);
+			if (status != B_OK) {
+				intel_unmap(sInfo);
+				return status;
+			}
 		}
-		read32(sInfo.gtt_base + sInfo.gtt_entries - 1);
+		read_gtt_entry(sInfo, end - 1);
 	}
 
 	asm("wbinvd;");
@@ -932,8 +969,7 @@ intel_bind_page(void* aperture, uint32 offset, phys_addr_t physicalAddress)
 {
 	//TRACE("bind_page(offset %lx, physical %lx)\n", offset, physicalAddress);
 
-	set_gtt_entry(sInfo, offset, physicalAddress);
-	return B_OK;
+	return set_gtt_entry(sInfo, offset, physicalAddress);
 }
 
 
@@ -943,7 +979,7 @@ intel_unbind_page(void* aperture, uint32 offset)
 	//TRACE("unbind_page(offset %lx)\n", offset);
 
 	if (sInfo.scratch_page != 0)
-		set_gtt_entry(sInfo, offset, sInfo.scratch_page);
+		return set_gtt_entry(sInfo, offset, sInfo.scratch_page);
 
 	return B_OK;
 }
@@ -952,7 +988,7 @@ intel_unbind_page(void* aperture, uint32 offset)
 void
 intel_flush_tlbs(void* aperture)
 {
-	read32(sInfo.gtt_base + sInfo.gtt_entries - 1);
+	read_gtt_entry(sInfo, sInfo.gtt_entries - 1);
 	asm("wbinvd;");
 }
 
