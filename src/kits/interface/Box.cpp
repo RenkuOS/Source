@@ -642,8 +642,6 @@ BBox::_InitObject(BMessage* archive)
 
 	int32 flags = 0;
 
-	BFont font(be_bold_font);
-
 	if (!archive || !archive->HasString("_fname"))
 		flags = B_FONT_FAMILY_AND_STYLE;
 
@@ -651,7 +649,7 @@ BBox::_InitObject(BMessage* archive)
 		flags |= B_FONT_SIZE;
 
 	if (flags != 0)
-		SetFont(&font, flags);
+		SetFont(be_bold_font, flags);
 
 	if (archive != NULL) {
 		const char* string;

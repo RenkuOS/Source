@@ -472,6 +472,7 @@ BTabView::BTabView(BMessage* archive)
 	else
 		fTabWidthSetting = B_WIDTH_AS_USUAL;
 
+	fFontTabHeight = false;
 	if (archive->FindFloat("_high", &fTabHeight) != B_OK) {
 		font_height fh;
 		GetFontHeight(&fh);
@@ -658,6 +659,15 @@ void
 BTabView::MessageReceived(BMessage* message)
 {
 	switch (message->what) {
+		case B_FONTS_UPDATED:
+		case B_CONTROL_LOOK_UPDATED:
+			if (fFontTabHeight) {
+				_UpdateFontTabHeight();
+				_LayoutContainerView(GetLayout() != NULL);
+			}
+			BView::MessageReceived(message);
+			break;
+
 		case B_GET_PROPERTY:
 		case B_SET_PROPERTY:
 		{
@@ -1299,6 +1309,8 @@ BTabView::TabWidth() const
 void
 BTabView::SetTabHeight(float height)
 {
+	fFontTabHeight = false;
+
 	if (fTabHeight == height)
 		return;
 
@@ -1408,13 +1420,24 @@ BTabView::_InitObject(bool layouted, button_width width)
 	SetViewUIColor(B_PANEL_BACKGROUND_COLOR);
 	SetLowUIColor(B_PANEL_BACKGROUND_COLOR);
 
-	font_height fh;
-	GetFontHeight(&fh);
-	fTabHeight = ceilf(fh.ascent + fh.descent + fh.leading +
-		(be_control_look->DefaultLabelSpacing() * 1.3f));
+	_UpdateFontTabHeight();
 
 	fContainerView = NULL;
 	_InitContainerView(layouted);
+}
+
+
+/*!	Sets the height the tabs have unless someone calls SetTabHeight(), which
+	follows the view's font from then on.
+*/
+void
+BTabView::_UpdateFontTabHeight()
+{
+	font_height fh;
+	GetFontHeight(&fh);
+	fTabHeight = ceilf(fh.ascent + fh.descent + fh.leading
+		+ (be_control_look->DefaultLabelSpacing() * 1.3f));
+	fFontTabHeight = true;
 }
 
 
