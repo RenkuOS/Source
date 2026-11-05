@@ -76,6 +76,7 @@ DesktopSettingsPrivate::_SetDefaults()
 		// look of the separator (R5: (0, 1, 2), default 0)
 	fMenuInfo.click_to_open = true; // always true
 	fMenuInfo.triggers_always_shown = false;
+	fMenuInfo.zsnake = false;
 
 	fWorkspacesColumns = 2;
 	fWorkspacesRows = 2;
