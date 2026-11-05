@@ -141,8 +141,11 @@ RemoteDevice::GetFriendlyName(bool alwaysAsk)
 
 	request.AddInt16("eventExpected",  HCI_EVENT_REMOTE_NAME_REQUEST_COMPLETE);
 
-
-	if (fMessenger->SendMessage(&request, &reply) == B_OK) {
+	// The answer waits for the controller, which may not give it when the
+	// link drops in the middle: the Bluetooth preferences, asking from their
+	// window, hung for good. A name request takes seconds at most.
+	if (fMessenger->SendMessage(&request, &reply, B_INFINITE_TIMEOUT,
+			20000000) == B_OK) {
 		BString name;
 		uint8 status;
 
