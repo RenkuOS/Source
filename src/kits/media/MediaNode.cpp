@@ -358,7 +358,9 @@ BMediaNode::WaitForMessage(bigtime_t waitUntil, uint32 flags,
 	// waitUntil or a message is received on the control port.
 	// The flags are currently unused and should be 0.
 	// Note: about 16 KByte stack used
-	char data[B_MEDIA_MESSAGE_SIZE];
+	// aligned: the requests are read in place, some CPUs (ARM) fault on
+	// unaligned multi-word accesses
+	char data[B_MEDIA_MESSAGE_SIZE] __attribute__((aligned(8)));
 	int32 message;
 	ssize_t size;
 

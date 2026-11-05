@@ -29,6 +29,8 @@
 
 #include "NotificationManager.h"
 
+#include <string.h>
+
 #include <Autolock.h>
 #include <Locker.h>
 #include <Message.h>
@@ -86,9 +88,13 @@ NotificationManager::RequestNotifications(BMessage *msg)
 	msg->FindMessenger(NOTIFICATION_PARAM_MESSENGER, &messenger);
 	msg->FindInt32(NOTIFICATION_PARAM_TEAM, &team);
 	msg->FindInt32(NOTIFICATION_PARAM_WHAT, &what);
-	msg->FindData("node", B_RAW_TYPE, reinterpret_cast<const void **>(&node),
-		&nodeSize);
+	const void* nodeData;
+	media_node nodeCopy;
+	msg->FindData("node", B_RAW_TYPE, &nodeData, &nodeSize);
 	ASSERT(nodeSize == sizeof(media_node));
+	// the data in the message is not aligned
+	memcpy((void*)&nodeCopy, nodeData, sizeof(nodeCopy));
+	node = &nodeCopy;
 
 	Notification n;
 	n.messenger = messenger;
@@ -122,9 +128,13 @@ NotificationManager::CancelNotifications(BMessage *msg)
 	msg->FindMessenger(NOTIFICATION_PARAM_MESSENGER, &messenger);
 	msg->FindInt32(NOTIFICATION_PARAM_TEAM, &team);
 	msg->FindInt32(NOTIFICATION_PARAM_WHAT, &what);
-	msg->FindData("node", B_RAW_TYPE, reinterpret_cast<const void **>(&node),
-		&nodeSize);
+	const void* nodeData;
+	media_node nodeCopy;
+	msg->FindData("node", B_RAW_TYPE, &nodeData, &nodeSize);
 	ASSERT(nodeSize == sizeof(media_node));
+	// the data in the message is not aligned
+	memcpy((void*)&nodeCopy, nodeData, sizeof(nodeCopy));
+	node = &nodeCopy;
 
 	TRACE("NotificationManager::CancelNotifications node %ld, team %ld, what "
 		"%#lx\n", node->node, team, what);
@@ -173,9 +183,6 @@ NotificationManager::CancelNotifications(BMessage *msg)
 void
 NotificationManager::SendNotifications(BMessage *msg)
 {
-	const media_source *source;
-	const media_destination *destination;
-	const media_node *node;
 	ssize_t size;
 	int32 what;
 
@@ -210,24 +217,39 @@ NotificationManager::SendNotifications(BMessage *msg)
 			case B_MEDIA_PARAMETER_CHANGED:
 			case B_MEDIA_NODE_STOPPED:
 			case B_MEDIA_WEB_CHANGED:
-				msg->FindData("node", B_RAW_TYPE,
-					reinterpret_cast<const void **>(&node), &size);
-				ASSERT(size == sizeof(media_node));
-				if (n->node != *node)
+			{
+				// the data in the message is not aligned
+				const void* data;
+				media_node nodeCopy;
+				if (msg->FindData("node", B_RAW_TYPE, &data, &size) != B_OK
+					|| size != sizeof(media_node))
 					continue;
+				memcpy((void*)&nodeCopy, data, sizeof(nodeCopy));
+				if (n->node != nodeCopy)
+					continue;
+			}
 				break;
 
 			case B_MEDIA_FORMAT_CHANGED:
-				msg->FindData("source", B_RAW_TYPE,
-					reinterpret_cast<const void **>(&source), &size);
-				ASSERT(size == sizeof(media_source));
-				msg->FindData("destination", B_RAW_TYPE,
-					reinterpret_cast<const void **>(&destination), &size);
-				ASSERT(size == sizeof(media_destination));
-
-				if (n->node.port != source->port
-					&& n->node.port != destination->port)
+			{
+				// the data in the message is not aligned
+				const void* data;
+				media_source sourceCopy;
+				media_destination destinationCopy;
+				if (msg->FindData("source", B_RAW_TYPE, &data, &size) != B_OK
+					|| size != sizeof(media_source))
 					continue;
+				memcpy((void*)&sourceCopy, data, sizeof(sourceCopy));
+				if (msg->FindData("destination", B_RAW_TYPE, &data, &size)
+						!= B_OK
+					|| size != sizeof(media_destination))
+					continue;
+				memcpy((void*)&destinationCopy, data, sizeof(destinationCopy));
+
+				if (n->node.port != sourceCopy.port
+					&& n->node.port != destinationCopy.port)
+					continue;
+			}
 				break;
 		}
 

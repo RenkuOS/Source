@@ -171,11 +171,10 @@ static const ssize_t kAdditionalDiscreteParameterSize = sizeof(ssize_t);
 template<class Type> Type
 read_from_buffer(const void **_buffer)
 {
-	const Type *typedBuffer = static_cast<const Type *>(*_buffer);
-	Type value = *typedBuffer;
-
-	typedBuffer++;
-	*_buffer = static_cast<const void *>(typedBuffer);
+	// the flattened data does not have to be aligned
+	Type value;
+	memcpy((void*)&value, *_buffer, sizeof(Type));
+	*_buffer = static_cast<const uint8 *>(*_buffer) + sizeof(Type);
 
 	return value;
 }
@@ -224,12 +223,8 @@ reserve_in_buffer(void **_buffer)
 template<class Type> void
 write_to_buffer(void **_buffer, Type value)
 {
-	Type *typedBuffer = static_cast<Type *>(*_buffer);
-
-	*typedBuffer = value;
-	typedBuffer++;
-
-	*_buffer = static_cast<void *>(typedBuffer);
+	memcpy(*_buffer, (const void*)&value, sizeof(Type));
+	*_buffer = static_cast<uint8 *>(*_buffer) + sizeof(Type);
 }
 
 
@@ -1696,7 +1691,7 @@ BParameter::Unflatten(type_code code, const void* buffer, ssize_t size)
 
 	fInputs->MakeEmpty();
 	for (ssize_t i = 0; i < count; i++) {
-		fInputs->AddItem(read_pointer_from_buffer_swap<BParameter * const>(
+		fInputs->AddItem(read_pointer_from_buffer_swap<BParameter*>(
 			&buffer, fSwapDetected));
 	}
 
@@ -1706,7 +1701,7 @@ BParameter::Unflatten(type_code code, const void* buffer, ssize_t size)
 
 	fOutputs->MakeEmpty();
 	for (ssize_t i = 0; i < count; i++) {
-		fOutputs->AddItem(read_pointer_from_buffer_swap<BParameter * const>(
+		fOutputs->AddItem(read_pointer_from_buffer_swap<BParameter*>(
 			&buffer, fSwapDetected));
 	}
 

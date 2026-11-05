@@ -26,10 +26,30 @@
 #include <TextControl.h>
 #include <Window.h>
 
+#include <string.h>
+
 #include "MediaDebug.h"
 
 
 using namespace BPrivate;
+
+
+/*!	Copies the node of a parameter notification out of \a message: the data
+	in a message is not aligned, using it in place can fault on some CPUs
+	(ARM).
+*/
+static bool
+find_node(BMessage* message, media_node& node)
+{
+	const void* data;
+	ssize_t size;
+	if (message->FindData("node", B_RAW_TYPE, &data, &size) != B_OK
+		|| size != sizeof(media_node)) {
+		return false;
+	}
+	memcpy((void*)&node, data, sizeof(media_node));
+	return true;
+}
 
 
 namespace BPrivate {
@@ -570,14 +590,12 @@ ContinuousMessageFilter::Filter(BMessage *message, BHandler **target)
 	}
 	if (message->what == B_MEDIA_NEW_PARAMETER_VALUE) {
 		// update view from parameter -- if the message concerns us
-		const media_node* node;
+		media_node node;
 		int32 parameterID;
-		ssize_t size;
 		if (message->FindInt32("parameter", &parameterID) != B_OK
 			|| fParameter.ID() != parameterID
-			|| message->FindData("node", B_RAW_TYPE, (const void**)&node,
-					&size) != B_OK
-			|| fParameter.Web()->Node() != *node)
+			|| !find_node(message, node)
+			|| fParameter.Web()->Node() != node)
 			return B_DISPATCH_MESSAGE;
 
 		_UpdateControl();
@@ -659,14 +677,12 @@ DiscreteMessageFilter::Filter(BMessage *message, BHandler **target)
 
 	if (message->what == B_MEDIA_NEW_PARAMETER_VALUE) {
 		TRACE("DiscreteMessageFilter::Filter: Got a new parameter value\n");
-		const media_node* node;
+		media_node node;
 		int32 parameterID;
-		ssize_t size;
 		if (message->FindInt32("parameter", &parameterID) != B_OK
 			|| fParameter.ID() != parameterID
-			|| message->FindData("node", B_RAW_TYPE, (const void**)&node,
-					&size) != B_OK
-			|| fParameter.Web()->Node() != *node)
+			|| !find_node(message, node)
+			|| fParameter.Web()->Node() != node)
 			return B_DISPATCH_MESSAGE;
 
 		int32 value = 0;
@@ -757,14 +773,12 @@ TextMessageFilter::Filter(BMessage *message, BHandler **target)
 
 	if (message->what == B_MEDIA_NEW_PARAMETER_VALUE) {
 		TRACE("TextMessageFilter::Filter: Got a new parameter value\n");
-		const media_node* node;
+		media_node node;
 		int32 parameterID;
-		ssize_t size;
 		if (message->FindInt32("parameter", &parameterID) != B_OK
 			|| fParameter.ID() != parameterID
-			|| message->FindData("node", B_RAW_TYPE, (const void**)&node,
-					&size) != B_OK
-			|| fParameter.Web()->Node() != *node)
+			|| !find_node(message, node)
+			|| fParameter.Web()->Node() != node)
 			return B_DISPATCH_MESSAGE;
 
 		if (BTextControl *textControl = dynamic_cast<BTextControl *>(control)) {
