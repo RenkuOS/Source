@@ -185,6 +185,182 @@ radeon_gpu_mc_resume(gpu_state* gpuState)
 }
 
 
+// Evergreen+ CRTC register offsets (DCE4+, up to 6 CRTCs)
+static const uint32 kEvergreenCrtcOffsets[6] = {
+	EVERGREEN_CRTC0_REGISTER_OFFSET,
+	EVERGREEN_CRTC1_REGISTER_OFFSET,
+	EVERGREEN_CRTC2_REGISTER_OFFSET,
+	EVERGREEN_CRTC3_REGISTER_OFFSET,
+	EVERGREEN_CRTC4_REGISTER_OFFSET,
+	EVERGREEN_CRTC5_REGISTER_OFFSET,
+};
+
+
+void
+evergreen_gpu_mc_halt(evergreen_gpu_state* gpuState)
+{
+	// Save VGA control state
+	gpuState->vgaRenderControl = Read32(OUT, AVIVO_VGA_RENDER_CONTROL);
+	gpuState->vgaHdpControl = Read32(OUT, AVIVO_VGA_HDP_CONTROL);
+
+	// Disable VGA render
+	Write32(OUT, AVIVO_VGA_RENDER_CONTROL, 0);
+
+	// Blank and disable each active CRTC using correct Evergreen registers
+	for (int32 i = 0; i < 6; i++) {
+		uint32 offset = kEvergreenCrtcOffsets[i];
+
+		uint32 crtcControl
+			= Read32(OUT, EVERGREEN_CRTC_CONTROL + offset);
+		if ((crtcControl & EVERGREEN_CRTC_MASTER_EN) != 0) {
+			gpuState->crtcEnabled[i] = true;
+
+			// Blank by disabling display read requests
+			if ((crtcControl
+				& EVERGREEN_CRTC_DISP_READ_REQUEST_DISABLE) == 0) {
+				Write32(OUT, EVERGREEN_CRTC_UPDATE_LOCK + offset, 1);
+				crtcControl |= EVERGREEN_CRTC_DISP_READ_REQUEST_DISABLE;
+				Write32(OUT, EVERGREEN_CRTC_CONTROL + offset,
+					crtcControl);
+				Write32(OUT, EVERGREEN_CRTC_UPDATE_LOCK + offset, 0);
+			}
+
+			// Wait a bit for blanking to take effect
+			snooze(100);
+
+			// Disable CRTC master enable
+			Write32(OUT, EVERGREEN_CRTC_UPDATE_LOCK + offset, 1);
+			crtcControl
+				= Read32(OUT, EVERGREEN_CRTC_CONTROL + offset);
+			crtcControl &= ~EVERGREEN_CRTC_MASTER_EN;
+			Write32(OUT, EVERGREEN_CRTC_CONTROL + offset, crtcControl);
+			Write32(OUT, EVERGREEN_CRTC_UPDATE_LOCK + offset, 0);
+		} else {
+			gpuState->crtcEnabled[i] = false;
+		}
+	}
+
+	// Lock double-buffered registers for enabled CRTCs
+	for (int32 i = 0; i < 6; i++) {
+		if (gpuState->crtcEnabled[i]) {
+			uint32 offset = kEvergreenCrtcOffsets[i];
+
+			uint32 grphUpdate
+				= Read32(OUT, EVERGREEN_GRPH_UPDATE + offset);
+			if ((grphUpdate & EVERGREEN_GRPH_UPDATE_LOCK) == 0) {
+				grphUpdate |= EVERGREEN_GRPH_UPDATE_LOCK;
+				Write32(OUT, EVERGREEN_GRPH_UPDATE + offset,
+					grphUpdate);
+			}
+
+			uint32 masterLock
+				= Read32(OUT, EVERGREEN_MASTER_UPDATE_LOCK + offset);
+			if ((masterLock & 1) == 0) {
+				masterLock |= 1;
+				Write32(OUT, EVERGREEN_MASTER_UPDATE_LOCK + offset,
+					masterLock);
+			}
+		}
+	}
+}
+
+
+void
+evergreen_gpu_mc_resume(evergreen_gpu_state* gpuState)
+{
+	// Update surface base addresses for all CRTCs (high first, then low)
+	for (int32 i = 0; i < 6; i++) {
+		uint32 offset = kEvergreenCrtcOffsets[i];
+
+		Write32(OUT,
+			EVERGREEN_GRPH_PRIMARY_SURFACE_ADDRESS_HIGH + offset,
+			(uint32)(gInfo->fb.vramStart >> 32));
+		Write32(OUT,
+			EVERGREEN_GRPH_SECONDARY_SURFACE_ADDRESS_HIGH + offset,
+			(uint32)(gInfo->fb.vramStart >> 32));
+		Write32(OUT,
+			EVERGREEN_GRPH_PRIMARY_SURFACE_ADDRESS + offset,
+			(uint32)(gInfo->fb.vramStart & 0xFFFFFFFF));
+		Write32(OUT,
+			EVERGREEN_GRPH_SECONDARY_SURFACE_ADDRESS + offset,
+			(uint32)(gInfo->fb.vramStart & 0xFFFFFFFF));
+	}
+
+	Write32(OUT, EVERGREEN_VGA_MEMORY_BASE_ADDRESS_HIGH,
+		(uint32)(gInfo->fb.vramStart >> 32));
+	Write32(OUT, EVERGREEN_VGA_MEMORY_BASE_ADDRESS,
+		(uint32)(gInfo->fb.vramStart & 0xFFFFFFFF));
+
+	// Unlock double-buffered registers and wait for update
+	for (int32 i = 0; i < 6; i++) {
+		if (gpuState->crtcEnabled[i]) {
+			uint32 offset = kEvergreenCrtcOffsets[i];
+
+			// Set immediate update mode
+			uint32 tmp
+				= Read32(OUT, EVERGREEN_MASTER_UPDATE_MODE + offset);
+			if ((tmp & 0x7) != 0) {
+				tmp &= ~0x7;
+				Write32(OUT,
+					EVERGREEN_MASTER_UPDATE_MODE + offset, tmp);
+			}
+
+			// Unlock graphics update
+			tmp = Read32(OUT, EVERGREEN_GRPH_UPDATE + offset);
+			if ((tmp & EVERGREEN_GRPH_UPDATE_LOCK) != 0) {
+				tmp &= ~EVERGREEN_GRPH_UPDATE_LOCK;
+				Write32(OUT, EVERGREEN_GRPH_UPDATE + offset, tmp);
+			}
+
+			// Unlock master update
+			tmp = Read32(OUT,
+				EVERGREEN_MASTER_UPDATE_LOCK + offset);
+			if ((tmp & 1) != 0) {
+				tmp &= ~1;
+				Write32(OUT,
+					EVERGREEN_MASTER_UPDATE_LOCK + offset, tmp);
+			}
+
+			// Wait for surface address update to complete
+			for (int32 j = 0; j < 100; j++) {
+				tmp = Read32(OUT,
+					EVERGREEN_GRPH_UPDATE + offset);
+				if ((tmp & EVERGREEN_GRPH_SURFACE_UPDATE_PENDING)
+					== 0) {
+					break;
+				}
+				snooze(10);
+			}
+		}
+	}
+
+	// Re-enable CRTCs that were previously active
+	for (int32 i = 0; i < 6; i++) {
+		if (gpuState->crtcEnabled[i]) {
+			uint32 offset = kEvergreenCrtcOffsets[i];
+
+			// Re-enable CRTC and clear read request disable
+			Write32(OUT, EVERGREEN_CRTC_UPDATE_LOCK + offset, 1);
+			uint32 crtcControl
+				= Read32(OUT, EVERGREEN_CRTC_CONTROL + offset);
+			crtcControl |= EVERGREEN_CRTC_MASTER_EN;
+			crtcControl &= ~EVERGREEN_CRTC_DISP_READ_REQUEST_DISABLE;
+			Write32(OUT, EVERGREEN_CRTC_CONTROL + offset,
+				crtcControl);
+			Write32(OUT, EVERGREEN_CRTC_UPDATE_LOCK + offset, 0);
+
+			// Brief delay for CRTC to stabilize
+			snooze(100);
+		}
+	}
+
+	// Restore VGA state
+	Write32(OUT, AVIVO_VGA_HDP_CONTROL, gpuState->vgaHdpControl);
+	snooze(1000);
+	Write32(OUT, AVIVO_VGA_RENDER_CONTROL, gpuState->vgaRenderControl);
+}
+
+
 status_t
 radeon_gpu_mc_idlewait()
 {
@@ -356,9 +532,9 @@ radeon_gpu_mc_setup_evergreen()
 	}
 	Write32(OUT, EVERGREEN_HDP_REG_COHERENCY_FLUSH_CNTL, 0);
 
-	// idle the memory controller
-	struct gpu_state gpuState;
-	radeon_gpu_mc_halt(&gpuState);
+	// idle the memory controller using correct Evergreen register addresses
+	struct evergreen_gpu_state gpuState;
+	evergreen_gpu_mc_halt(&gpuState);
 
 	if (radeon_gpu_mc_idlewait() != B_OK)
 		ERROR("%s: Modifying non-idle memory controller!\n", __func__);
@@ -403,7 +579,7 @@ radeon_gpu_mc_setup_evergreen()
 	if (radeon_gpu_mc_idlewait() != B_OK)
 		ERROR("%s: Modifying non-idle memory controller!\n", __func__);
 
-	radeon_gpu_mc_resume(&gpuState);
+	evergreen_gpu_mc_resume(&gpuState);
 
 	// disable render control
 	Write32(OUT, 0x000300, Read32(OUT, 0x000300) & 0xFFFCFFFF);
