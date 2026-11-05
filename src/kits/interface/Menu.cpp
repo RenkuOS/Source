@@ -3047,11 +3047,18 @@ BMenu::_MenuWindow()
 void
 BMenu::_DeleteMenuWindow()
 {
-	if (fCachedMenuWindow != NULL) {
-		fCachedMenuWindow->Lock();
-		fCachedMenuWindow->Quit();
-		fCachedMenuWindow = NULL;
-	}
+	// Esc closes a menu from its window's thread, through _QuitTracking(), and
+	// the tracking thread gets here too when it sees the menu closed: the window
+	// must be quit by only one of them.
+#ifdef B_HAIKU_64_BIT
+	BMenuWindow* window = (BMenuWindow*)atomic_get_and_set64(
+		(int64*)&fCachedMenuWindow, 0);
+#else
+	BMenuWindow* window = (BMenuWindow*)atomic_get_and_set(
+		(int32*)&fCachedMenuWindow, 0);
+#endif
+	if (window != NULL && window->Lock())
+		window->Quit();
 }
 
 
