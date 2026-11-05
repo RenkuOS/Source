@@ -92,138 +92,6 @@ radeon_gpu_probe()
 
 
 status_t
-radeon_gpu_reset()
-{
-	radeon_shared_info &info = *gInfo->shared_info;
-
-	// Read GRBM Command Processor status
-	if ((Read32(OUT, GRBM_STATUS) & GUI_ACTIVE) == 0)
-		return B_ERROR;
-
-	TRACE("%s: GPU software reset in progress...\n", __func__);
-
-	// Halt memory controller
-	struct gpu_state gpuState;
-	radeon_gpu_mc_halt(&gpuState);
-
-	if (radeon_gpu_mc_idlewait() != B_OK)
-		ERROR("%s: Couldn't idle memory controller!\n", __func__);
-
-	if (info.chipsetID < RADEON_CEDAR) {
-		Write32(OUT, CP_ME_CNTL, CP_ME_HALT);
-			// Disable Command Processor parsing / prefetching
-
-		// Register busy masks for early Radeon HD cards
-
-		// GRBM Command Processor Status
-		uint32 grbmBusyMask = VC_BUSY;
-			// Vertex Cache Busy
-		grbmBusyMask |= VGT_BUSY_NO_DMA | VGT_BUSY;
-			// Vertex Grouper Tessellator Busy
-		grbmBusyMask |= TA03_BUSY;
-			// unknown
-		grbmBusyMask |= TC_BUSY;
-			// Texture Cache Busy
-		grbmBusyMask |= SX_BUSY;
-			// Shader Export Busy
-		grbmBusyMask |= SH_BUSY;
-			// Sequencer Instruction Cache Busy
-		grbmBusyMask |= SPI_BUSY;
-			// Shader Processor Interpolator Busy
-		grbmBusyMask |= SMX_BUSY;
-			// Shader Memory Exchange
-		grbmBusyMask |= SC_BUSY;
-			// Scan Converter Busy
-		grbmBusyMask |= PA_BUSY;
-			// Primitive Assembler Busy
-		grbmBusyMask |= DB_BUSY;
-			// Depth Block Busy
-		grbmBusyMask |= CR_BUSY;
-			// unknown
-		grbmBusyMask |= CB_BUSY;
-			// Color Block Busy
-		grbmBusyMask |= GUI_ACTIVE;
-			// unknown (graphics pipeline active?)
-
-		// GRBM Command Processor Detailed Status
-		uint32 grbm2BusyMask = SPI0_BUSY | SPI1_BUSY | SPI2_BUSY | SPI3_BUSY;
-			// Shader Processor Interpolator 0 - 3 Busy
-		grbm2BusyMask |= TA0_BUSY | TA1_BUSY | TA2_BUSY | TA3_BUSY;
-			// unknown 0 - 3 Busy
-		grbm2BusyMask |= DB0_BUSY | DB1_BUSY | DB2_BUSY | DB3_BUSY;
-			// Depth Block 0 - 3 Busy
-		grbm2BusyMask |= CB0_BUSY | CB1_BUSY | CB2_BUSY | CB3_BUSY;
-			// Color Block 0 - 3 Busy
-
-		uint32 tmp;
-		/* Check if any of the rendering block is busy and reset it */
-		if ((Read32(OUT, GRBM_STATUS) & grbmBusyMask) != 0
-			|| (Read32(OUT, GRBM_STATUS2) & grbm2BusyMask) != 0) {
-			tmp = SOFT_RESET_CR
-				| SOFT_RESET_DB
-				| SOFT_RESET_CB
-				| SOFT_RESET_PA
-				| SOFT_RESET_SC
-				| SOFT_RESET_SMX
-				| SOFT_RESET_SPI
-				| SOFT_RESET_SX
-				| SOFT_RESET_SH
-				| SOFT_RESET_TC
-				| SOFT_RESET_TA
-				| SOFT_RESET_VC
-				| SOFT_RESET_VGT;
-			Write32(OUT, GRBM_SOFT_RESET, tmp);
-			Read32(OUT, GRBM_SOFT_RESET);
-			snooze(15000);
-			Write32(OUT, GRBM_SOFT_RESET, 0);
-		}
-
-		// Reset CP
-		tmp = SOFT_RESET_CP;
-		Write32(OUT, GRBM_SOFT_RESET, tmp);
-		Read32(OUT, GRBM_SOFT_RESET);
-		snooze(15000);
-		Write32(OUT, GRBM_SOFT_RESET, 0);
-
-		// Let things settle
-		snooze(1000);
-	} else {
-		// Evergreen and higher
-
-		Write32(OUT, CP_ME_CNTL, CP_ME_HALT | CP_PFP_HALT);
-			// Disable Command Processor parsing / prefetching
-
-		// reset the graphics pipeline components
-		uint32 grbmReset = (SOFT_RESET_CP
-			| SOFT_RESET_CB
-			| SOFT_RESET_DB
-			| SOFT_RESET_GDS
-			| SOFT_RESET_PA
-			| SOFT_RESET_SC
-			| SOFT_RESET_SPI
-			| SOFT_RESET_SH
-			| SOFT_RESET_SX
-			| SOFT_RESET_TC
-			| SOFT_RESET_TA
-			| SOFT_RESET_VGT
-			| SOFT_RESET_IA);
-
-		Write32(OUT, GRBM_SOFT_RESET, grbmReset);
-		Read32(OUT, GRBM_SOFT_RESET);
-
-		snooze(50);
-		Write32(OUT, GRBM_SOFT_RESET, 0);
-		Read32(OUT, GRBM_SOFT_RESET);
-		snooze(50);
-	}
-
-	// Resume memory controller
-	radeon_gpu_mc_resume(&gpuState);
-	return B_OK;
-}
-
-
-status_t
 radeon_gpu_quirks()
 {
 	radeon_shared_info &info = *gInfo->shared_info;
@@ -313,6 +181,182 @@ radeon_gpu_mc_resume(gpu_state* gpuState)
 	Write32(OUT, AVIVO_D2CRTC_CONTROL, gpuState->d2crtcControl);
 	Write32(OUT, AVIVO_D1CRTC_UPDATE_LOCK, 0);
 	Write32(OUT, AVIVO_D2CRTC_UPDATE_LOCK, 0);
+	Write32(OUT, AVIVO_VGA_RENDER_CONTROL, gpuState->vgaRenderControl);
+}
+
+
+// Evergreen+ CRTC register offsets (DCE4+, up to 6 CRTCs)
+static const uint32 kEvergreenCrtcOffsets[6] = {
+	EVERGREEN_CRTC0_REGISTER_OFFSET,
+	EVERGREEN_CRTC1_REGISTER_OFFSET,
+	EVERGREEN_CRTC2_REGISTER_OFFSET,
+	EVERGREEN_CRTC3_REGISTER_OFFSET,
+	EVERGREEN_CRTC4_REGISTER_OFFSET,
+	EVERGREEN_CRTC5_REGISTER_OFFSET,
+};
+
+
+void
+evergreen_gpu_mc_halt(evergreen_gpu_state* gpuState)
+{
+	// Save VGA control state
+	gpuState->vgaRenderControl = Read32(OUT, AVIVO_VGA_RENDER_CONTROL);
+	gpuState->vgaHdpControl = Read32(OUT, AVIVO_VGA_HDP_CONTROL);
+
+	// Disable VGA render
+	Write32(OUT, AVIVO_VGA_RENDER_CONTROL, 0);
+
+	// Blank and disable each active CRTC using correct Evergreen registers
+	for (int32 i = 0; i < 6; i++) {
+		uint32 offset = kEvergreenCrtcOffsets[i];
+
+		uint32 crtcControl
+			= Read32(OUT, EVERGREEN_CRTC_CONTROL + offset);
+		if ((crtcControl & EVERGREEN_CRTC_MASTER_EN) != 0) {
+			gpuState->crtcEnabled[i] = true;
+
+			// Blank by disabling display read requests
+			if ((crtcControl
+				& EVERGREEN_CRTC_DISP_READ_REQUEST_DISABLE) == 0) {
+				Write32(OUT, EVERGREEN_CRTC_UPDATE_LOCK + offset, 1);
+				crtcControl |= EVERGREEN_CRTC_DISP_READ_REQUEST_DISABLE;
+				Write32(OUT, EVERGREEN_CRTC_CONTROL + offset,
+					crtcControl);
+				Write32(OUT, EVERGREEN_CRTC_UPDATE_LOCK + offset, 0);
+			}
+
+			// Wait a bit for blanking to take effect
+			snooze(100);
+
+			// Disable CRTC master enable
+			Write32(OUT, EVERGREEN_CRTC_UPDATE_LOCK + offset, 1);
+			crtcControl
+				= Read32(OUT, EVERGREEN_CRTC_CONTROL + offset);
+			crtcControl &= ~EVERGREEN_CRTC_MASTER_EN;
+			Write32(OUT, EVERGREEN_CRTC_CONTROL + offset, crtcControl);
+			Write32(OUT, EVERGREEN_CRTC_UPDATE_LOCK + offset, 0);
+		} else {
+			gpuState->crtcEnabled[i] = false;
+		}
+	}
+
+	// Lock double-buffered registers for enabled CRTCs
+	for (int32 i = 0; i < 6; i++) {
+		if (gpuState->crtcEnabled[i]) {
+			uint32 offset = kEvergreenCrtcOffsets[i];
+
+			uint32 grphUpdate
+				= Read32(OUT, EVERGREEN_GRPH_UPDATE + offset);
+			if ((grphUpdate & EVERGREEN_GRPH_UPDATE_LOCK) == 0) {
+				grphUpdate |= EVERGREEN_GRPH_UPDATE_LOCK;
+				Write32(OUT, EVERGREEN_GRPH_UPDATE + offset,
+					grphUpdate);
+			}
+
+			uint32 masterLock
+				= Read32(OUT, EVERGREEN_MASTER_UPDATE_LOCK + offset);
+			if ((masterLock & 1) == 0) {
+				masterLock |= 1;
+				Write32(OUT, EVERGREEN_MASTER_UPDATE_LOCK + offset,
+					masterLock);
+			}
+		}
+	}
+}
+
+
+void
+evergreen_gpu_mc_resume(evergreen_gpu_state* gpuState)
+{
+	// Update surface base addresses for all CRTCs (high first, then low)
+	for (int32 i = 0; i < 6; i++) {
+		uint32 offset = kEvergreenCrtcOffsets[i];
+
+		Write32(OUT,
+			EVERGREEN_GRPH_PRIMARY_SURFACE_ADDRESS_HIGH + offset,
+			(uint32)(gInfo->fb.vramStart >> 32));
+		Write32(OUT,
+			EVERGREEN_GRPH_SECONDARY_SURFACE_ADDRESS_HIGH + offset,
+			(uint32)(gInfo->fb.vramStart >> 32));
+		Write32(OUT,
+			EVERGREEN_GRPH_PRIMARY_SURFACE_ADDRESS + offset,
+			(uint32)(gInfo->fb.vramStart & 0xFFFFFFFF));
+		Write32(OUT,
+			EVERGREEN_GRPH_SECONDARY_SURFACE_ADDRESS + offset,
+			(uint32)(gInfo->fb.vramStart & 0xFFFFFFFF));
+	}
+
+	Write32(OUT, EVERGREEN_VGA_MEMORY_BASE_ADDRESS_HIGH,
+		(uint32)(gInfo->fb.vramStart >> 32));
+	Write32(OUT, EVERGREEN_VGA_MEMORY_BASE_ADDRESS,
+		(uint32)(gInfo->fb.vramStart & 0xFFFFFFFF));
+
+	// Unlock double-buffered registers and wait for update
+	for (int32 i = 0; i < 6; i++) {
+		if (gpuState->crtcEnabled[i]) {
+			uint32 offset = kEvergreenCrtcOffsets[i];
+
+			// Set immediate update mode
+			uint32 tmp
+				= Read32(OUT, EVERGREEN_MASTER_UPDATE_MODE + offset);
+			if ((tmp & 0x7) != 0) {
+				tmp &= ~0x7;
+				Write32(OUT,
+					EVERGREEN_MASTER_UPDATE_MODE + offset, tmp);
+			}
+
+			// Unlock graphics update
+			tmp = Read32(OUT, EVERGREEN_GRPH_UPDATE + offset);
+			if ((tmp & EVERGREEN_GRPH_UPDATE_LOCK) != 0) {
+				tmp &= ~EVERGREEN_GRPH_UPDATE_LOCK;
+				Write32(OUT, EVERGREEN_GRPH_UPDATE + offset, tmp);
+			}
+
+			// Unlock master update
+			tmp = Read32(OUT,
+				EVERGREEN_MASTER_UPDATE_LOCK + offset);
+			if ((tmp & 1) != 0) {
+				tmp &= ~1;
+				Write32(OUT,
+					EVERGREEN_MASTER_UPDATE_LOCK + offset, tmp);
+			}
+
+			// Wait for surface address update to complete
+			for (int32 j = 0; j < 100; j++) {
+				tmp = Read32(OUT,
+					EVERGREEN_GRPH_UPDATE + offset);
+				if ((tmp & EVERGREEN_GRPH_SURFACE_UPDATE_PENDING)
+					== 0) {
+					break;
+				}
+				snooze(10);
+			}
+		}
+	}
+
+	// Re-enable CRTCs that were previously active
+	for (int32 i = 0; i < 6; i++) {
+		if (gpuState->crtcEnabled[i]) {
+			uint32 offset = kEvergreenCrtcOffsets[i];
+
+			// Re-enable CRTC and clear read request disable
+			Write32(OUT, EVERGREEN_CRTC_UPDATE_LOCK + offset, 1);
+			uint32 crtcControl
+				= Read32(OUT, EVERGREEN_CRTC_CONTROL + offset);
+			crtcControl |= EVERGREEN_CRTC_MASTER_EN;
+			crtcControl &= ~EVERGREEN_CRTC_DISP_READ_REQUEST_DISABLE;
+			Write32(OUT, EVERGREEN_CRTC_CONTROL + offset,
+				crtcControl);
+			Write32(OUT, EVERGREEN_CRTC_UPDATE_LOCK + offset, 0);
+
+			// Brief delay for CRTC to stabilize
+			snooze(100);
+		}
+	}
+
+	// Restore VGA state
+	Write32(OUT, AVIVO_VGA_HDP_CONTROL, gpuState->vgaHdpControl);
+	snooze(1000);
 	Write32(OUT, AVIVO_VGA_RENDER_CONTROL, gpuState->vgaRenderControl);
 }
 
@@ -488,9 +532,9 @@ radeon_gpu_mc_setup_evergreen()
 	}
 	Write32(OUT, EVERGREEN_HDP_REG_COHERENCY_FLUSH_CNTL, 0);
 
-	// idle the memory controller
-	struct gpu_state gpuState;
-	radeon_gpu_mc_halt(&gpuState);
+	// idle the memory controller using correct Evergreen register addresses
+	struct evergreen_gpu_state gpuState;
+	evergreen_gpu_mc_halt(&gpuState);
 
 	if (radeon_gpu_mc_idlewait() != B_OK)
 		ERROR("%s: Modifying non-idle memory controller!\n", __func__);
@@ -535,7 +579,7 @@ radeon_gpu_mc_setup_evergreen()
 	if (radeon_gpu_mc_idlewait() != B_OK)
 		ERROR("%s: Modifying non-idle memory controller!\n", __func__);
 
-	radeon_gpu_mc_resume(&gpuState);
+	evergreen_gpu_mc_resume(&gpuState);
 
 	// disable render control
 	Write32(OUT, 0x000300, Read32(OUT, 0x000300) & 0xFFFCFFFF);
