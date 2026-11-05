@@ -75,6 +75,7 @@ SYSTEM_BIN = [ FFilterByBuildFeatures
 	pc
 	ping
 	pkgman
+	power
 	prio
 	profile
 	ps
