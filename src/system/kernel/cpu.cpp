@@ -23,6 +23,7 @@
 
 #include <boot/kernel_args.h>
 #include <kscheduler.h>
+#include <smp.h>
 #include <thread_types.h>
 #include <util/AutoLock.h>
 #include <util/ThreadAutoLock.h>
@@ -38,6 +39,9 @@ static cpu_topology_node sCPUTopology;
 static cpufreq_module_info* sCPUPerformanceModule;
 static cpuidle_module_info* sCPUIdleModule;
 static int32 sDeepIdleBlocks;
+// Set by a CPU while it may be inside the cpuidle module, see
+// cpu_block_deep_idle().
+static int32 sInDeepIdle[SMP_MAX_CPUS];
 
 static spinlock sSetCpuLock;
 
@@ -347,10 +351,22 @@ cpu_idle(void)
 		panic("cpu_idle() called with interrupts disabled.");
 #endif
 
-	if (sCPUIdleModule != NULL && atomic_get(&sDeepIdleBlocks) == 0)
-		sCPUIdleModule->cpuidle_idle();
-	else
-		arch_cpu_idle();
+	if (sCPUIdleModule != NULL) {
+		// Announce the deep idle before checking for a block. Both are full
+		// barriers, as is the increment in cpu_block_deep_idle(): either
+		// this CPU sees the block, or the blocker sees the flag and waits
+		// until the CPU is out of the module again.
+		int32* inDeepIdle = &sInDeepIdle[smp_get_current_cpu()];
+		atomic_get_and_set(inDeepIdle, 1);
+		if (atomic_get(&sDeepIdleBlocks) == 0) {
+			sCPUIdleModule->cpuidle_idle();
+			atomic_set(inDeepIdle, 0);
+			return;
+		}
+		atomic_set(inDeepIdle, 0);
+	}
+
+	arch_cpu_idle();
 }
 
 
@@ -358,7 +374,7 @@ static void
 wake_up_cpu(void* /*cookie*/, int /*cpu*/)
 {
 	// Nothing to do: receiving the call is what takes the CPU out of its
-	// idle state. On its next pass through cpu_idle() it sees the block.
+	// idle state and so out of the cpuidle module.
 }
 
 
@@ -370,13 +386,33 @@ wake_up_cpu(void* /*cookie*/, int /*cpu*/)
 	over a shared I2C bus to enter C6 or C7. While a driver holds the P-Unit
 	semaphore of that bus, a CPU entering such a state hangs the SoC.
 
-	Returns when every CPU has left any state it was in.
+	Returns when no CPU is inside the cpuidle module any more. A CPU that
+	read the block count just before the increment may still take the
+	interrupt of call_all_cpus_sync() before it reaches MWAIT, and enter the
+	state afterwards; its flag in sInDeepIdle stays set until it has left
+	the module, so wake it again until it has.
 */
 void
 cpu_block_deep_idle(void)
 {
 	atomic_add(&sDeepIdleBlocks, 1);
-	call_all_cpus_sync(&wake_up_cpu, NULL);
+
+	const int32 cpuCount = smp_get_num_cpus();
+	for (;;) {
+		call_all_cpus_sync(&wake_up_cpu, NULL);
+
+		bool busy = false;
+		for (int32 i = 0; i < cpuCount; i++) {
+			if (atomic_get(&sInDeepIdle[i]) != 0) {
+				busy = true;
+				break;
+			}
+		}
+		if (!busy)
+			return;
+
+		cpu_pause();
+	}
 }
 
 
