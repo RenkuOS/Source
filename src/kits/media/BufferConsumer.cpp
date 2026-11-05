@@ -380,7 +380,7 @@ BBufferConsumer::HandleMessage(int32 message, const void* data, size_t size)
 				= static_cast<const consumer_buffer_received_command*>(data);
 
 			BBuffer* buffer = fBufferCache->GetBuffer(command->buffer,
-				command->header.source_port);
+				command->header);
 			if (buffer == NULL) {
 				ERROR("BBufferConsumer::CONSUMER_BUFFER_RECEIVED can't"
 					"find the buffer\n");
@@ -426,12 +426,32 @@ BBufferConsumer::HandleMessage(int32 message, const void* data, size_t size)
 		case CONSUMER_DISCONNECTED:
 		{
 			const consumer_disconnected_request *request = static_cast<const consumer_disconnected_request *>(data);
-			// We no longer need to cache the buffers requested by the other end
-			// of this port.
-			fBufferCache->FlushCacheForPort(request->source.port);
-
 			consumer_disconnected_reply reply;
 			Disconnected(request->source, request->destination);
+
+			// We no longer need to cache the buffers of this connection.
+			// A producer has one port for all of its outputs, so while
+			// another of our inputs is still connected to that port, only
+			// this connection's buffers go: flushing the port would remove
+			// the buffers of the other connections from their groups, so
+			// that the producer runs out of them.
+			bool stillConnected = false;
+			int32 cookie = 0;
+			media_input input;
+			while (GetNextInput(&cookie, &input) == B_OK) {
+				if (input.source.port == request->source.port) {
+					stillConnected = true;
+					break;
+				}
+			}
+			DisposeInputCookie(cookie);
+
+			if (stillConnected) {
+				fBufferCache->FlushCacheForConnection(request->source.port,
+					request->source.id, request->destination.id);
+			} else
+				fBufferCache->FlushCacheForPort(request->source.port);
+
 			request->SendReply(B_OK, &reply, sizeof(reply));
 			return B_OK;
 		}
