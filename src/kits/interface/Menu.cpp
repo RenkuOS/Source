@@ -113,9 +113,9 @@ public:
 	// ZSnake. snakeStyle: selected items take its highlight; snakeBorder:
 	// the menu's window has no decorator border, its frame view draws it,
 	// so the join can open through it; snake: this menu hangs beside its
-	// superitem, which was at snakeSuperitem on screen when it opened. A supermenu draws the part of its open submenu's join
-	// that lies over its own edge: childJoin, with the submenu's origin on
-	// screen.
+	// superitem, which was at snakeSuperitem on screen when it opened. A
+	// supermenu draws the part of its open submenu's join that lies over its
+	// own edge: childJoin, with the submenu's origin on screen.
 	bool				snakeStyle;
 	bool				snakeBorder;
 	bool				snake;
@@ -3262,7 +3262,8 @@ draw_snake_join(BView* target, BPoint offset, int32 firstColumn,
 	}
 
 	const int32 side = superOnLeft ? 1 : -1;
-	const int32 edge = (int32)(superOnLeft ? bounds.left - 1 : bounds.right + 1);
+	const int32 edge = (int32)(superOnLeft ? bounds.left - 1
+		: bounds.right + 1);
 	// outline rows of both highlights; the row under each is its light line
 	const int32 st = (int32)superFrame.top;
 	const int32 sb = (int32)superFrame.bottom - 1;
