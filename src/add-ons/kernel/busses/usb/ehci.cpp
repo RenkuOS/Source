@@ -2296,6 +2296,22 @@ EHCI::FinishTransfers()
 
 					transfer->transfer->TransferPipe()->SetDataToggle(
 						nextDataToggle);
+				} else if (transfer->data_descriptor != NULL) {
+					// The packets that went through before the error moved the
+					// toggle on the device too: the next transfer, with a queue
+					// head of its own, starts from the pipe's. Left behind, the
+					// device took its first packet for a repeated one and threw
+					// it away. A stall is different: clearing it resets both.
+					bool nextDataToggle = false;
+					size_t length = ReadActualLength(transfer->data_descriptor,
+						&nextDataToggle);
+					// what was sent; what came in was not copied out
+					if (!transfer->incoming)
+						actualLength = length;
+					if (callbackStatus != B_DEV_STALLED) {
+						transfer->transfer->TransferPipe()->SetDataToggle(
+							nextDataToggle);
+					}
 				}
 
 				if (callbackStatus == B_OK && transfer->transfer->IsFragmented()) {
