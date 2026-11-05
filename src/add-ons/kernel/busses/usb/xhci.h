@@ -86,6 +86,11 @@ struct xhci_endpoint {
 	phys_addr_t		lastFailedTrb;
 	uint32			failureCount;
 	uint32			validationCount;
+
+	// Recoveries of an interrupt endpoint after USB transaction errors, see
+	// XHCI::FinishTransfers()
+	bigtime_t		transactionRecoveryWindow;
+	uint32			transactionRecoveries;
 };
 
 
