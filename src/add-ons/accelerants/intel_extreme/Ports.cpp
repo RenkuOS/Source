@@ -1184,6 +1184,38 @@ LVDSPort::IsConnected()
 			return false;
 		}
 		// TODO: Skip if eDP support
+
+		// Try EDID via GMBUS first
+		if (HasEDID())
+			return true;
+
+		// Fallback: use VESA EDID from bootloader
+		if (gInfo->shared_info->has_vesa_edid_info) {
+			TRACE("LVDS: Using VESA edid info\n");
+			memcpy(&fEDIDInfo, &gInfo->shared_info->vesa_edid_info,
+				sizeof(edid1_info));
+			if (fEDIDState != B_OK) {
+				fEDIDState = B_OK;
+				edid_dump(&fEDIDInfo);
+			}
+			return true;
+		}
+
+		// Fallback: VBT has valid panel data
+		if (gInfo->shared_info->got_vbt) {
+			TRACE("LVDS: No EDID, but force enabled as we have a VBT\n");
+			return true;
+		}
+
+		// Last resort: BIOS already enabled the port
+		if (registerValue & LVDS_PORT_EN) {
+			TRACE("LVDS: No EDID/VBT but port enabled by BIOS, "
+				"force connected\n");
+			return true;
+		}
+
+		TRACE("LVDS: PCH detected but no EDID/VBT and port not enabled\n");
+		return false;
 	} else if (gInfo->shared_info->device_type.Generation() <= 4) {
 		// Older generations don't have LVDS detection. If not mobile skip.
 		if (!gInfo->shared_info->device_type.IsMobile()) {
