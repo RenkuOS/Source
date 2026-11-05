@@ -762,10 +762,21 @@ radeon_hd_init(radeon_info &info)
 	}
 
 	// *** Populate frame buffer information
+	//
+	// CONFIG_MEMSIZE (0x5428) holds the memory size the VBIOS found. It is in
+	// MB from Evergreen on, including the SI/CIK APUs, where it is the UMA
+	// carve-out. Only the Fusion APUs (Palm, Sumo, Sumo2) report bytes. This
+	// matches Linux evergreen_mc_init(), si_mc_init() and cik_mc_init().
 	if (info.chipsetID >= RADEON_TAHITI) {
-		// Tahiti+ has memory stored in MB
-		info.shared_info->graphics_memory_size
-			= read32(info.registers + CONFIG_MEMSIZE_TAHITI) * 1024;
+		// Some boards leave garbage in the upper 16 bits; keep the low half
+		// when it is usable (as si_mc_init() does), else fall back to the BAR.
+		uint32 memSize = read32(info.registers + CONFIG_MEMSIZE);
+		if ((memSize & 0xffff0000) != 0) {
+			ERROR("%s: card(%" B_PRId32 "): probable bad VRAM size 0x%08"
+				B_PRIx32 "\n", __func__, info.id, memSize);
+			memSize &= 0xffff;
+		}
+		info.shared_info->graphics_memory_size = memSize * 1024;
 	} else if (info.chipsetID >= RADEON_CEDAR) {
 		switch (info.chipsetID) {
 			default:
