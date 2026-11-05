@@ -37,6 +37,9 @@ struct menu_info {
 	int32		separator;
 	bool		click_to_open;
 	bool		triggers_always_shown;
+	bool		zsnake;
+		// BeOS Dano's ZSnake: a submenu's selection joined to the item it
+		// opens from; fits in the padding, the struct's size is unchanged
 };
 
 status_t get_menu_info(menu_info* info);
@@ -259,6 +262,8 @@ private:
 									bool selectFirstItem = false,
 									bool keyDown = false);
 			bool				_SelectNextItem(BMenuItem* item, bool forward);
+			void				_DrawSnake();
+			void				_InvalidateSnake(bool closing = false);
 			BMenuItem*			_NextItem(BMenuItem* item, bool forward) const;
 			void				_SetIgnoreHidden(bool ignoreHidden)
 									{ fIgnoreHidden = ignoreHidden; }
