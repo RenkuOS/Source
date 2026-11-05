@@ -303,6 +303,13 @@ acpi_cstate_idle()
 		if (acpi_cstate_bm_check())
 			ci = &pi->states[0];
 	}
+
+	// Also while a driver blocks deep idle. The interrupt that
+	// cpu_block_deep_idle() sends after its increment either came before
+	// this check, which then sees the block, or comes later and makes the
+	// post interrupt callback above back out of the state.
+	if (cpu_deep_idle_blocked())
+		ci = &pi->states[0];
 	if (ci->type != ACPI_STATE_C3) {
 		if (atomic_test_and_set(&idlingState.preparing, 0, 1) == 1)
 			acpi_cstate_enter(ci);
