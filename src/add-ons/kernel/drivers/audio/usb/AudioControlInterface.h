@@ -278,7 +278,14 @@ public:
 			enum {
 				kLeftChannel = 0,
 				kRightChannel = 1,
-				kChannels = 18
+				// Spatial locations Haiku has a designation for (the
+				// gDesignations table); also the size of the mixer unit
+				// control matrix.
+				kChannels = 18,
+				// Channels one stream may carry, as in FreeBSD's uaudio(4)
+				// (UAUDIO_CHANNELS_MAX). Channels past kChannels have no
+				// spatial location; GetTerminalChannels() pairs them up.
+				kMaxStreamChannels = 64
 			};
 
 							AudioControlInterface(Device* device);

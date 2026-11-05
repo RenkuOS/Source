@@ -197,8 +197,8 @@ Stream::_ChooseAlternate()
 		}
 
 		// Multichannel R1 devices exist too (DDJ-SR, Hercules RMX: 4-out/4-in
-		// UAC1), so bound both revisions only by the hmulti channel maximum.
-		uint8 maxChannels = AudioControlInterface::kChannels;
+		// UAC1), so both revisions share the one per-stream channel limit.
+		uint8 maxChannels = AudioControlInterface::kMaxStreamChannels;
 		if (format->fNumChannels > maxChannels) {
 			TRACE(ERR, "Ignore alternate %d - channel count %d "
 				"is not supported.\n", i, format->fNumChannels);
