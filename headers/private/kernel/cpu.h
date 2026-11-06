@@ -124,6 +124,7 @@ void cpu_wait(int32* variable, int32 test);
 
 void cpu_block_deep_idle(void);
 void cpu_unblock_deep_idle(void);
+bool cpu_deep_idle_blocked(void);
 
 
 static inline void
