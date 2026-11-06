@@ -180,10 +180,25 @@ void BluetoothServer::MessageReceived(BMessage* message)
 			BString path;
 			if (lDeviceImpl == NULL && message->FindString("name", &path) == B_OK)
 				lDeviceImpl = _LocalDeviceByPath(path.String());
-			if (lDeviceImpl != NULL)
+			if (lDeviceImpl != NULL) {
 				_RemoveLocalDevice(lDeviceImpl);
+
+				// A controller that failed often comes back by itself: the
+				// USB stack enumerates it again and its driver publishes it
+				// under a new name. The node monitor can tell of the new
+				// name before the old one is gone, while the controller is
+				// not ready yet, or not at all; a few looks over the next
+				// seconds take it up in any case.
+				BMessage rescan(kMsgRescanDevices);
+				BMessageRunner::StartSending(be_app_messenger, &rescan,
+					2000000, 5);
+			}
 		}
 		break;
+
+		case kMsgRescanDevices:
+			_RescanDevices();
+			break;
 
 		case kMsgSetConnectable:
 		case kMsgAllowRoleSwitch:
@@ -442,6 +457,37 @@ BluetoothServer::_RemoveLocalDevice(LocalDeviceImpl* device)
 
 	fLocalDevicesList.RemoveItem(device);
 	delete device;
+}
+
+
+/*!	Opens the controllers published under /dev/bluetooth that the server
+	does not know: those the node monitor missed.
+*/
+void
+BluetoothServer::_RescanDevices()
+{
+	const char* transports[] = { "h2", "h3", "h4", "h5" };
+	for (size_t i = 0; i < B_COUNT_OF(transports); i++) {
+		BPath transportPath("/dev/bluetooth");
+		transportPath.Append(transports[i]);
+		BDirectory transport(transportPath.Path());
+		BEntry driverEntry;
+		while (transport.GetNextEntry(&driverEntry) == B_OK) {
+			BDirectory driver(&driverEntry);
+			if (driver.InitCheck() != B_OK)
+				continue;
+			BEntry deviceEntry;
+			while (driver.GetNextEntry(&deviceEntry) == B_OK) {
+				BPath devicePath;
+				if (deviceEntry.GetPath(&devicePath) != B_OK
+					|| _LocalDeviceByPath(devicePath.Path()) != NULL)
+					continue;
+				syslog(LOG_NOTICE, "bluetooth_server: found %s again\n",
+					devicePath.Path());
+				_AddLocalDevice(devicePath.Path());
+			}
+		}
+	}
 }
 
 

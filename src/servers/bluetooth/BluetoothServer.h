@@ -38,6 +38,10 @@ typedef enum {
 
 #define BLACKBOARD_LD(X) (BLACKBOARD_END+X-HCI_DEVICE_INDEX_OFFSET)
 
+// a controller went away: the devices are looked for again, the controller
+// may come back on the bus under another name
+static const uint32 kMsgRescanDevices = 'btRS';
+
 typedef BObjectList<LocalDeviceImpl> LocalDevicesList;
 typedef BObjectList<BMessenger> WatchersList;
 typedef PortListener<struct hci_event_header, 
@@ -88,6 +92,7 @@ private:
 	void				_AddLocalDevice(const char* path);
 	void				_RemoveLocalDevice(LocalDeviceImpl* device);
 	LocalDeviceImpl*	_LocalDeviceByPath(const char* path);
+	void				_RescanDevices();
 
 	LocalDeviceImpl*	LocateDelegateFromMessage(BMessage* message);
 
