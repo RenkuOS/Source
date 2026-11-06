@@ -294,12 +294,16 @@ void BluetoothServer::MessageReceived(BMessage* message)
 			if (lDeviceImpl == NULL)
 				break;
 
-			const bdaddr_t* bdaddr;
-			ssize_t addr_size;
+			const bdaddr_t* bdaddr = NULL;
+			ssize_t addr_size = 0;
 			message->FindData("bdaddr", B_ANY_TYPE, (const void**)&bdaddr, &addr_size);
 
-			ServerRemoteDevice* rd = lDeviceImpl->RemoteDeviceByAddr(*bdaddr);
-			reply.AddUInt8("conn state", static_cast<uint8>(rd->conn_state));
+			// a device the server does not know is not connected
+			ServerRemoteDevice* rd = NULL;
+			if (bdaddr != NULL && addr_size == sizeof(bdaddr_t))
+				rd = lDeviceImpl->RemoteDeviceByAddr(*bdaddr);
+			reply.AddUInt8("conn state", static_cast<uint8>(rd != NULL
+				? rd->conn_state : RemoteDevice::DISCONNECTED));
 
 			message->SendReply(&reply);
 		}
