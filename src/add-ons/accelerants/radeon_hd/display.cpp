@@ -229,6 +229,16 @@ detect_crt_ranges(uint32 crtid)
 
 		if (monitor->monitor_desc_type == EDID1_MONITOR_RANGES) {
 			edid1_monitor_range range = monitor->data.monitor_range;
+			// Some monitors report zero, equal, or inverted bounds here
+			// (h = 160-160 kHz has been seen). Trusting such a descriptor
+			// rejects every mode, so ignore it and skip the range check.
+			if (range.min_h == 0 || range.min_v == 0
+				|| range.max_h <= range.min_h || range.max_v <= range.min_v) {
+				TRACE("%s: ignoring bogus EDID range descriptor "
+					"(h = %u-%u kHz, v = %u-%u Hz)\n", __func__,
+					range.min_h, range.max_h, range.min_v, range.max_v);
+				return B_ERROR;
+			}
 			gDisplay[crtid]->vfreqMin = range.min_v;   /* in Hz */
 			gDisplay[crtid]->vfreqMax = range.max_v;
 			gDisplay[crtid]->hfreqMin = range.min_h;   /* in kHz */
