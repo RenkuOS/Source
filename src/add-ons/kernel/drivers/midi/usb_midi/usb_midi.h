@@ -89,6 +89,11 @@ typedef struct usbmidi_device_info
 	int devnum;	/* unique device number */
 	char name[20];
 		/* = "/dev/midi/usb/n" --port number will be appended to this */
+	char product_name[64];
+		/* USB product string, "" if the device gave none we can show */
+	int instance;
+		/* 0 for the first device with this product name, 1 for the second... */
+	int port_count;	/* ports created for this device */
 
 	bool active;
 
@@ -159,6 +164,7 @@ extern void remove_port_info(usbmidi_port_info* port);
 extern usbmidi_port_info* search_port_info(const char* name);
 
 extern int find_free_device_number(void);
+extern int find_free_instance(const char* product_name);
 
 extern char** usbmidi_port_names;
 

@@ -103,6 +103,33 @@ find_free_device_number(void)
 }
 
 
+/* Lowest instance number not taken by another device with the same product
+   name, so two identical devices get distinct endpoint names (as usb_audio
+   numbers identical sound cards). */
+int
+find_free_instance(const char* product_name)
+{
+	usbmidi_port_info* port;
+	int instance = 0;
+
+	if (product_name[0] == '\0')
+		return 0;
+
+	acquire_sem(usbmidi_port_list_lock);
+	do {
+		for (port = usbmidi_port_list; port != NULL; port = port->next) {
+			if (port->device->instance == instance
+				&& strcmp(port->device->product_name, product_name) == 0) {
+				instance++;
+				break;	/* try next higher */
+			}
+		}
+	} while (port);
+	release_sem(usbmidi_port_list_lock);
+	return instance;
+}
+
+
 
 /*
 	device names

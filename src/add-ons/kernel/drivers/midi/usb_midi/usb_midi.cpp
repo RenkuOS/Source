@@ -53,6 +53,7 @@ create_usbmidi_port(usbmidi_device_info* devinfo,
 	port->rbuf = create_ring_buffer(1024);
 
 	devinfo->ports[cable] = port;
+	devinfo->port_count++;
 
 	DPRINTF_INFO((MY_ID "Created port %p cable %d: %s\n",
 		port, cable, port->name));
@@ -72,6 +73,91 @@ remove_port(usbmidi_port_info* port)
 	DPRINTF_INFO((MY_ID "remove_port %p done\n", port));
 
 	free(port);
+}
+
+
+/* Read string descriptor 'index' in language 'langId' into 'out' as ASCII
+   (the same decoding usb_audio uses for its device names). Returns false if
+   the device has no such string or it holds no printable character. */
+static bool
+fetch_string_ascii(const usb_device* dev, uint8 index, uint16 langId,
+	char* out, size_t outSize)
+{
+	out[0] = '\0';
+	if (index == 0 || outSize == 0)
+		return false;
+
+	uint8 raw[256];
+	size_t actual = 0;
+	status_t status = usb->get_descriptor(dev, USB_DESCRIPTOR_STRING, index,
+		langId, raw, sizeof(raw), &actual);
+	if (status != B_OK || actual < 2)
+		return false;
+
+	uint8 length = raw[0];
+	if (length > actual)
+		length = (uint8)actual;
+
+	/* UTF-16LE after the 2-byte header: keep the printable ASCII subset */
+	size_t out_i = 0;
+	bool sawReal = false;
+	for (size_t i = 2; i + 1 < length && out_i + 1 < outSize; i += 2) {
+		uint16 c = raw[i] | ((uint16)raw[i + 1] << 8);
+		if (c >= 0x20 && c < 0x7f) {
+			out[out_i++] = (char)c;
+			if (c != ' ')
+				sawReal = true;
+		} else
+			out[out_i++] = '?';
+	}
+	out[out_i] = '\0';
+
+	/* some devices pad the string with trailing spaces */
+	while (out_i > 0 && out[out_i - 1] == ' ')
+		out[--out_i] = '\0';
+
+	if (!sawReal)
+		out[0] = '\0';
+
+	return sawReal;
+}
+
+
+/* Fill midiDevice->product_name from the device's product string, which is
+   also the name usb_audio gives the same device's sound card. */
+static void
+read_product_name(usbmidi_device_info* midiDevice)
+{
+	midiDevice->product_name[0] = '\0';
+
+	const usb_device_descriptor* descriptor
+		= usb->get_device_descriptor(midiDevice->dev);
+	if (descriptor == NULL || descriptor->product == 0)
+		return;
+
+	/* English (US) first: nearly universal, and one transfer */
+	if (fetch_string_ascii(midiDevice->dev, descriptor->product, 0x0409,
+			midiDevice->product_name, sizeof(midiDevice->product_name)))
+		return;
+
+	/* otherwise the first language the device lists (string 0) that works */
+	uint8 raw[256];
+	size_t actual = 0;
+	if (usb->get_descriptor(midiDevice->dev, USB_DESCRIPTOR_STRING, 0, 0,
+			raw, sizeof(raw), &actual) != B_OK || actual < 2)
+		return;
+
+	uint8 length = raw[0];
+	if (length > actual)
+		length = (uint8)actual;
+	for (size_t i = 2; i + 1 < length; i += 2) {
+		uint16 langId = raw[i] | ((uint16)raw[i + 1] << 8);
+		if (langId == 0x0409)
+			continue;
+		if (fetch_string_ascii(midiDevice->dev, descriptor->product, langId,
+				midiDevice->product_name, sizeof(midiDevice->product_name)))
+			return;
+	}
 }
 
 
@@ -136,8 +222,16 @@ create_device(const usb_device* dev, uint16 ifno)
 	midiDevice->in_is_interrupt = false;
 	midiDevice->consecutive_errors = 0;
 	memset(midiDevice->ports, 0, sizeof(midiDevice->ports));
+	midiDevice->port_count = 0;
 	midiDevice->inMaxPkt = midiDevice->outMaxPkt = B_PAGE_SIZE / 2;
 		/* Initially -- will get reduced */
+
+	/* Only called once the device has proven to have a MIDI interface, so
+	   the string request goes to no other device. */
+	read_product_name(midiDevice);
+	midiDevice->instance = find_free_instance(midiDevice->product_name);
+	DPRINTF_INFO((MY_ID "product name \"%s\" instance %d\n",
+		midiDevice->product_name, midiDevice->instance));
 	DPRINTF_INFO((MY_ID "Created device %p\n", midiDevice));
 
 	return midiDevice;
@@ -970,8 +1064,42 @@ usb_midi_write(driver_cookie* cookie, off_t position,
 
 
 static status_t
-usb_midi_control(void* cookie, uint32 iop, void* data, size_t len)
+usb_midi_control(driver_cookie* cookie, uint32 iop, void* data, size_t len)
 {
+	assert(cookie != NULL);
+	usbmidi_port_info* port = cookie->port;
+	usbmidi_device_info* midiDevice = cookie->device;
+
+	if (midiDevice == NULL || !midiDevice->active || port == NULL)
+		return B_ERROR;		/* already unplugged */
+
+	switch (iop) {
+		case B_GET_DEVICE_NAME:
+		{
+			/* midi_server names the port's endpoints after this instead of
+			   the device path: "<product>", " #2" for a second identical
+			   device, " port A" etc. when the device has several ports. */
+			if (midiDevice->product_name[0] == '\0')
+				return B_ERROR;
+
+			char name[sizeof(midiDevice->product_name) + 32];
+			size_t used = snprintf(name, sizeof(name), "%s",
+				midiDevice->product_name);
+			if (midiDevice->instance > 0 && used < sizeof(name)) {
+				used += snprintf(name + used, sizeof(name) - used, " #%d",
+					midiDevice->instance + 1);
+			}
+			if (midiDevice->port_count > 1 && used < sizeof(name)) {
+				snprintf(name + used, sizeof(name) - used, " port %c",
+					'A' + port->cable);
+			}
+
+			if (user_strlcpy((char*)data, name, len) < 0)
+				return B_BAD_ADDRESS;
+			return B_OK;
+		}
+	}
+
 	return B_ERROR;
 }
 
