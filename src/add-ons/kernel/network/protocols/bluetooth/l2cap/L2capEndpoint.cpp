@@ -504,6 +504,12 @@ L2capEndpoint::Receivable()
 	CALLED();
 	MutexLocker locker(fLock);
 
+	// a listening socket is readable while connections wait for accept(),
+	// as with TCP: select() and poll() see one that came before they were
+	// called, not only one that comes while they wait
+	if (fState == LISTEN)
+		return gSocketModule->count_connected(socket);
+
 	MutexLocker fifoLocker(fReceiveQueue.lock);
 	return fReceiveQueue.current_bytes;
 }
