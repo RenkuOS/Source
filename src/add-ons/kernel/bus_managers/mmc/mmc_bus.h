@@ -229,6 +229,7 @@ private:
 				void			_RegisterCard(const card_info& card);
 				void			_InitialScanDone();
 				bool			_ProbeSDIO();
+				void			_SwitchSdioHighSpeed();
 				status_t		_ReadDirect(uint16_t rca, uint8_t function,
 									uint32_t address, uint8_t* _value);
 				status_t		_ReadCISManufacturer(uint16_t rca,
@@ -253,6 +254,8 @@ private:
 		bool					fInitialScanSignaled;
 		bool					fInitialScanWaited;
 		bool					fDeferRegistration;
+		uint16_t				fSdioRca;
+		bool					fSdioHighSpeedSupported;
 		mutex					fRegistrationLock;
 		card_info				fPendingCards[kMaxPendingCards];
 		int32					fPendingCount;
