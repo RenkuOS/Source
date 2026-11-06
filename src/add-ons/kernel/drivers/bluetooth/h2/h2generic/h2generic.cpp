@@ -534,6 +534,8 @@ device_open(const char* name, uint32 flags, void **cookie)
 		return B_ERROR;
 	}
 
+	atomic_set(&bdev->closing, 0);
+
 	// Set RUNNING
 	if (TEST_AND_SET(&bdev->state, RUNNING)) {
 		ERROR("%s: dev already running! - reOpened device!\n", __func__);
@@ -613,6 +615,14 @@ device_close(void* cookie)
 
 	if (bdev == NULL)
 		panic("bad cookie");
+
+	// the resend threads use the device: no new one, and the running ones
+	// end before the transfers are cancelled and the device may be freed
+	atomic_set(&bdev->closing, 1);
+	for (int32 wait = 0; wait < 500
+			&& atomic_get(&bdev->resendThreads) > 0; wait++) {
+		snooze(10000);
+	}
 
 	// Clean queues
 

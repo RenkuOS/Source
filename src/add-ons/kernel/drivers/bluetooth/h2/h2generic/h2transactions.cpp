@@ -350,6 +350,9 @@ clear_bulk_out_halt(void* cookie)
 	}
 
 	snooze(10000);
+	// nothing queued on a device that went away or is closing
+	if ((bdev->state & RUNNING) == 0 || atomic_get(&bdev->closing) != 0)
+		status = B_DEV_NOT_READY;
 	if (status == B_OK) {
 		status = usb->queue_bulk(bdev->bulk_out_ep->handle, transfer->data,
 			transfer->nbuf->size, acl_tx_complete, transfer);
@@ -359,6 +362,7 @@ clear_bulk_out_halt(void* cookie)
 			transfer->nbuf->size, strerror(status));
 		free_acl_tx_transfer(transfer);
 	}
+	atomic_add(&bdev->resendThreads, -1);
 	return B_OK;
 }
 
@@ -389,11 +393,16 @@ acl_tx_complete(void* cookie, status_t status, void* data, size_t actual_len)
 		// A halted endpoint refuses everything that follows: clear it and
 		// send the packet again, from a thread as this is the completion of
 		// the USB stack
-		if (status == B_DEV_STALLED && transfer->retries++ < 3) {
+		// The thread is counted, and waited for when the device closes: it
+		// used the device, and the code of this driver, after a hot unplug.
+		if (status == B_DEV_STALLED && transfer->retries++ < 3
+			&& atomic_get(&bdev->closing) == 0) {
+			atomic_add(&bdev->resendThreads, 1);
 			thread_id thread = spawn_kernel_thread(clear_bulk_out_halt,
 				"h2generic resend", B_NORMAL_PRIORITY, transfer);
 			if (thread >= 0 && resume_thread(thread) == B_OK)
 				return;
+			atomic_add(&bdev->resendThreads, -1);
 		}
 
 		ERROR("%s: ACL packet of %" B_PRIu32 " bytes lost: %s\n", __func__,
