@@ -2879,6 +2879,10 @@ EHCI::FillQueueWithData(Transfer *transfer, ehci_qh *queueHead,
 
 	if (result != B_OK)
 		return result;
+	if (firstDescriptor == NULL) {
+		// no data, so no descriptor: there is nothing to queue
+		return B_BAD_VALUE;
+	}
 
 	if (!directionIn) {
 		if (prepareKernelAccess) {
