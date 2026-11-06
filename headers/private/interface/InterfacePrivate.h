@@ -28,6 +28,7 @@ void		set_workspaces_layout(uint32 columns, uint32 rows);
 
 bool		get_control_look(BString& path);
 status_t	set_control_look(const BString& path);
+bool		update_control_look();
 
 }	// namespace BPrivate
 

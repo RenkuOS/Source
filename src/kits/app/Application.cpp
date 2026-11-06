@@ -40,6 +40,7 @@
 #include <AutoLocker.h>
 #include <BitmapPrivate.h>
 #include <DraggerPrivate.h>
+#include <InterfacePrivate.h>
 #include <LaunchDaemonDefs.h>
 #include <LaunchRoster.h>
 #include <LooperList.h>
@@ -1086,6 +1087,10 @@ BApplication::DispatchMessage(BMessage* message, BHandler* handler)
 			break;
 		}
 
+		case B_CONTROL_LOOK_UPDATED:
+			if (!BPrivate::update_control_look())
+				break;
+			// fall through
 		case B_COLORS_UPDATED:
 		{
 			AutoLocker<BLooperList> listLock(gLooperList);

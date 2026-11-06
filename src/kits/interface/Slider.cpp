@@ -217,9 +217,20 @@ BSlider::~BSlider()
 void
 BSlider::_InitBarColor()
 {
-	SetBarColor(be_control_look->SliderBarColor(
-		ui_color(B_PANEL_BACKGROUND_COLOR)));
+	_UpdateLookBarColor();
 	UseFillColor(false, NULL);
+}
+
+
+/*!	Sets the bar to the current control look's colour, which it follows from
+	then on, until someone calls SetBarColor().
+*/
+void
+BSlider::_UpdateLookBarColor()
+{
+	fBarColor = be_control_look->SliderBarColor(
+		ui_color(B_PANEL_BACKGROUND_COLOR));
+	fUsesLookBarColor = true;
 }
 
 
@@ -451,6 +462,16 @@ BSlider::DetachedFromWindow()
 void
 BSlider::MessageReceived(BMessage* message)
 {
+	switch (message->what) {
+		case B_COLORS_UPDATED:
+		case B_CONTROL_LOOK_UPDATED:
+			if (fUsesLookBarColor) {
+				_UpdateLookBarColor();
+				Invalidate(BarFrame());
+			}
+			break;
+	}
+
 	BControl::MessageReceived(message);
 }
 
@@ -1367,6 +1388,7 @@ void
 BSlider::SetBarColor(rgb_color barColor)
 {
 	fBarColor = barColor;
+	fUsesLookBarColor = false;
 	Invalidate(BarFrame());
 }
 
