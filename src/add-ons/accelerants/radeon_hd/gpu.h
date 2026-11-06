@@ -147,28 +147,10 @@
 #define		CMC0_BUSY				(1 << 28)
 #define		BIF_BUSY				(1 << 29)
 #define		IDCT_BUSY				(1 << 30)
-#define SRBM_SOFT_RESET				0x0E60
-#define		SOFT_RESET_CP			(1 << 0)
-#define		SOFT_RESET_CB			(1 << 1)
-#define		SOFT_RESET_CR			(1 << 2)
-#define		SOFT_RESET_DB			(1 << 3)
-#define		SOFT_RESET_GDS			(1 << 4)
-#define		SOFT_RESET_PA			(1 << 5)
-#define		SOFT_RESET_SC			(1 << 6)
-#define		SOFT_RESET_SMX			(1 << 7)
-#define		SOFT_RESET_SPI			(1 << 8)
-#define		SOFT_RESET_SH			(1 << 9)
-#define		SOFT_RESET_SX			(1 << 10)
-#define		SOFT_RESET_TC			(1 << 11)
-#define		SOFT_RESET_TA			(1 << 12)
-#define		SOFT_RESET_VC			(1 << 13)
-#define		SOFT_RESET_VGT			(1 << 14)
-#define		SOFT_RESET_IA			(1 << 15)
 
 #define TARGET_HW_I2C_CLOCK			50
 
 status_t radeon_gpu_probe();
-status_t radeon_gpu_reset();
 status_t radeon_gpu_quirks();
 
 status_t radeon_gpu_i2c_cmd(uint16 slaveAddr, uint16 lineNumber, uint8 offset,
