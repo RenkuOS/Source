@@ -151,12 +151,24 @@ public:
 			case SDP_DATA_STR16:
 			case SDP_DATA_STR32:
 			{
+				// the length comes from the remote device: on the heap, no
+				// more than what is left to read, nothing written on error
 				size_t length = ReadStringLength();
-				char value[length + 1];
+				if (fReadingStatus == B_OK && length > _BytesLeft())
+					fReadingStatus = B_BAD_DATA;
+				if (fReadingStatus != B_OK)
+					break;
+				char* value = (char*)malloc(length + 1);
+				if (value == NULL) {
+					fReadingStatus = B_NO_MEMORY;
+					break;
+				}
 				ReadString(value);
-				value[length] = '\0';
-				if (fReadingStatus == B_OK)
+				if (fReadingStatus == B_OK) {
+					value[length] = '\0';
 					message->AddString(label, value);
+				}
+				free(value);
 			}
 			break;
 
@@ -167,10 +179,22 @@ public:
 			case SDP_DATA_SEQ16:
 			case SDP_DATA_SEQ32:
 			{
-				ssize_t size = ReadSeq();
-				char buffer[size];
-				if (fReadingStatus == B_OK && fBuffer->ReadExactly(buffer, size) == B_OK)
+				size_t size = ReadSeq();
+				if (fReadingStatus == B_OK && size > _BytesLeft())
+					fReadingStatus = B_BAD_DATA;
+				if (fReadingStatus != B_OK)
+					break;
+				char* buffer = (char*)malloc(size > 0 ? size : 1);
+				if (buffer == NULL) {
+					fReadingStatus = B_NO_MEMORY;
+					break;
+				}
+				status_t status = fBuffer->ReadExactly(buffer, size);
+				if (status == B_OK)
 					message->AddData(label, B_RAW_TYPE, buffer, size);
+				else
+					fReadingStatus = status;
+				free(buffer);
 			}
 			break;
 		}
@@ -178,6 +202,27 @@ public:
 
 
 	template <typename T> T ReadNumber();
+
+
+	/*!	What is left to read, to bound a length the remote device gave:
+		known for a positioned buffer (the SDP client reads from a
+		BMallocIO), a limit otherwise.
+	*/
+	size_t
+	_BytesLeft()
+	{
+		static const size_t kMaxElement = 64 * 1024;
+		BPositionIO* io = dynamic_cast<BPositionIO*>(fBuffer);
+		if (io == NULL)
+			return kMaxElement;
+		off_t size;
+		if (io->GetSize(&size) != B_OK)
+			return 0;
+		off_t position = io->Position();
+		if (position < 0 || size <= position)
+			return 0;
+		return (size_t)min_c(size - position, (off_t)kMaxElement);
+	}
 
 
 	size_t
