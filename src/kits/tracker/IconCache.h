@@ -278,6 +278,10 @@ public:
 	SharedCacheEntry* AddItem(const char* fileType,
 		const char* appSignature = 0);
 	void IconChanged(SharedCacheEntry*);
+	// The entries \a mimeType's icon may be in: its own, whatever preferred
+	// application they're for, and for a supertype those of its subtypes.
+	void GetEntriesForType(const char* mimeType,
+		BObjectList<SharedCacheEntry>& entries) const;
 
 	void SetAliasFor(IconCacheEntry* entry,
 		const SharedCacheEntry* original) const;

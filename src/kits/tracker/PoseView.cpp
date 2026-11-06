@@ -5339,11 +5339,17 @@ OneMetaMimeChanged(BPose* pose, Model* model, int32 index, BPoseView* poseView, 
 {
 	ASSERT(model != NULL);
 
+	// A type with no icon of its own shows its supertype's, or the generic one.
+	const size_t length = strlen(type);
+	const bool isSupertypeOfModel = strchr(type, '/') == NULL
+		&& strncasecmp(model->MimeType(), type, length) == 0
+		&& model->MimeType()[length] == '/';
+
 	if (model->IconFrom() != kNode
 		&& model->IconFrom() != kUnknownSource
 		&& model->IconFrom() != kUnknownNotFromNode
-		// TODO: add supertype compare
-		&& strcasecmp(model->MimeType(), type) == 0) {
+		&& (strcasecmp(model->MimeType(), type) == 0 || isSupertypeOfModel
+			|| strcasecmp(type, B_FILE_MIMETYPE) == 0)) {
 		// metamime change very likely affected the documents icon
 		BPoint poseLoc(0, index * poseView->ListElemHeight());
 		pose->UpdateIcon(poseLoc, poseView);
