@@ -74,7 +74,9 @@ SdhciBus::SdhciBus(struct registers* registers, uint8_t irq, bool poll)
 	fReference(NULL),
 	fUseDataTransferMode(false),
 	fDataTransferMode(0),
-	fSelectedRca(0)
+	fSelectedRca(0),
+	fCardInterruptHandler(NULL),
+	fCardInterruptCookie(NULL)
 {
 	const bool haveIrq = irq != 0 && irq != 0xff;
 	if (!haveIrq) {
@@ -280,6 +282,17 @@ SdhciBus::ExecuteCommand(uint8_t command, uint32_t argument, uint32_t* response)
 	// Note that this should normally never happen: the command line is busy
 	// only during command execution, and we don't leave this function with a
 	// command running.
+	// After a command timed out, the controller can keep the inhibit bit set
+	// for a short moment after the reset of the command line. Give it 50ms
+	// before reporting busy: the SDIO probe (CMD5) comes right after CMD8,
+	// which times out on SDIO cards, and was lost that way.
+	if (fRegisters->present_state.CommandInhibit()) {
+		bigtime_t deadline = system_time() + 50000;
+		while (fRegisters->present_state.CommandInhibit()
+			&& system_time() < deadline) {
+			snooze(1000);
+		}
+	}
 	if (fRegisters->present_state.CommandInhibit()) {
 		TRACE_ALWAYS("Command execution impossible, command inhibit\n");
 		return B_BUSY;
@@ -295,6 +308,8 @@ SdhciBus::ExecuteCommand(uint8_t command, uint32_t argument, uint32_t* response)
 			replyType = Command::kNoReplyType;
 			break;
 		case SD_APP_CMD:
+		case SDIO_IO_RW_DIRECT:
+			// R5 has the size and checks of R1
 		case SD_ERASE_WR_BLK_START:
 		case SD_ERASE_WR_BLK_END:
 		case SEND_STATUS:
@@ -312,6 +327,9 @@ SdhciBus::ExecuteCommand(uint8_t command, uint32_t argument, uint32_t* response)
 			break;
 		case MMC_SEND_OP_COND:
 		case SD_SEND_OP_COND: // SD Application command
+		case SDIO_IO_SEND_OP_COND:
+			// R4, the reply to the SDIO command, has the same format as R3:
+			// 48 bits, no CRC and no command index
 			replyType = Command::kR3Type;
 			break;
 
@@ -351,6 +369,7 @@ SdhciBus::ExecuteCommand(uint8_t command, uint32_t argument, uint32_t* response)
 		case SD_WRITE_SINGLE_BLOCK:
 		case SD_WRITE_MULTIPLE_BLOCKS:
 		case MMC_SEND_TUNING_BLOCK:
+		case SDIO_IO_RW_EXTENDED:
 			if (!fUseDataTransferMode) {
 				ERROR("Data command %d sent outside of the data transfer code\n",
 					command);
@@ -776,7 +795,8 @@ SdhciBus::_TransferChunk(uint8 command, uint32 argument, uint32 blockCount,
 	phys_addr_t physical, uint8* buffer, bigtime_t timeout)
 {
 	const bool multi = command == SD_READ_MULTIPLE_BLOCKS
-		|| command == SD_WRITE_MULTIPLE_BLOCKS;
+		|| command == SD_WRITE_MULTIPLE_BLOCKS
+		|| (command == SDIO_IO_RW_EXTENDED && blockCount > 1);
 	const size_t length = (size_t)blockCount * blockSize;
 
 	if (blockSize == 0 || blockSize > kBlockSize || (blockSize % 4) != 0
@@ -873,7 +893,14 @@ SdhciBus::_TransferChunk(uint8 command, uint32 argument, uint32 blockCount,
 		return status;
 	}
 
-	if ((response & kCardStatusErrorBits) != 0)
+	if (command == SDIO_IO_RW_EXTENDED) {
+		// R5: COM_CRC_ERROR, ILLEGAL_COMMAND, ERROR, FUNCTION_NUMBER and
+		// OUT_OF_RANGE in bits 15:8
+		if ((response & 0xCB00) != 0) {
+			ERROR("CMD53 %08" B_PRIx32 " failed, R5 flags %02" B_PRIx32 "\n",
+				argument, (response >> 8) & 0xFF);
+		}
+	} else if ((response & kCardStatusErrorBits) != 0)
 		_LogCardStatus("in response to the data command", response);
 
 	uint32 intStatus = 0;
@@ -1540,6 +1567,53 @@ SdhciBus::ReadData(uint8_t command, uint32_t argument, void* buffer,
 }
 
 
+/*!	Executes an SDIO CMD53 with its data phase, through the bounce buffer
+	and PIO. PIO keeps this independent of the transfer mode self test,
+	which reads blocks of a memory card.
+*/
+status_t
+SdhciBus::TransferIO(uint32 argument, bool isWrite, void* buffer,
+	uint32 blockCount, uint32 blockSize)
+{
+	const size_t length = (size_t)blockCount * blockSize;
+	if (buffer == NULL || length == 0 || length > B_PAGE_SIZE)
+		return B_BAD_VALUE;
+
+	if (isWrite)
+		memcpy(fBounceBuffer, buffer, length);
+
+	status_t status = _TransferChunk(SDIO_IO_RW_EXTENDED, argument,
+		blockCount, blockSize, isWrite, kDataModePio, kStopModeSingle,
+		fBouncePhysical, fBounceBuffer, kTransferTimeout);
+	if (status != B_OK) {
+		TRACE("CMD53 %08" B_PRIx32 " (%" B_PRIu32 " x %" B_PRIu32 ") failed: "
+			"%s\n", argument, blockCount, blockSize, strerror(status));
+		return status;
+	}
+
+	if (!isWrite)
+		memcpy(buffer, fBounceBuffer, length);
+	return B_OK;
+}
+
+
+void
+SdhciBus::SetCardInterrupt(void (*handler)(void*), void* cookie)
+{
+	cpu_status state = disable_interrupts();
+	fCardInterruptHandler = handler;
+	fCardInterruptCookie = cookie;
+	restore_interrupts(state);
+
+	if (handler != NULL)
+		EnableInterrupts(SDHCI_INT_CARD_STATUS);
+	else {
+		fRegisters->interrupt_signal_enable &= ~SDHCI_INT_CARD_STATUS;
+		fRegisters->interrupt_status_enable &= ~SDHCI_INT_CARD_STATUS;
+	}
+}
+
+
 void
 SdhciBus::SetScanSemaphore(sem_id sem)
 {
@@ -1715,6 +1789,15 @@ SdhciBus::HandleInterrupt()
 
 		fRegisters->interrupt_status = SDHCI_INT_CARD_INS;
 		TRACE("Card presence interrupt handled\n");
+	}
+
+	// SDIO card interrupt. It is level triggered in the card: mask it until
+	// the function driver has cleared the source and enables it again.
+	if ((intmask & SDHCI_INT_CARD_STATUS) != 0) {
+		fRegisters->interrupt_signal_enable &= ~SDHCI_INT_CARD_STATUS;
+		fRegisters->interrupt_status_enable &= ~SDHCI_INT_CARD_STATUS;
+		if (fCardInterruptHandler != NULL)
+			fCardInterruptHandler(fCardInterruptCookie);
 	}
 
 	// handling command interrupt
@@ -1987,6 +2070,23 @@ set_timing(void* controller, int timing, uint32_t flags)
 {
 	SdhciBus* bus = (SdhciBus*)controller;
 	return bus->SetTiming(timing, flags);
+}
+
+
+status_t
+transfer_io(void* controller, uint32_t argument, bool isWrite, void* buffer,
+	uint32_t blockCount, uint32_t blockSize)
+{
+	SdhciBus* bus = (SdhciBus*)controller;
+	return bus->TransferIO(argument, isWrite, buffer, blockCount, blockSize);
+}
+
+
+void
+set_card_interrupt(void* controller, void (*handler)(void*), void* cookie)
+{
+	SdhciBus* bus = (SdhciBus*)controller;
+	bus->SetCardInterrupt(handler, cookie);
 }
 
 

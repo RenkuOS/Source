@@ -152,6 +152,47 @@ mmc_bus_read_data(device_node* node, void* cookie, uint16_t rca,
 
 
 static status_t
+mmc_bus_sdio_rw_direct(device_node* node, void* cookie, uint16_t rca,
+	bool isWrite, uint8_t function, uint32_t address, uint8_t value,
+	uint8_t* _result)
+{
+	MMCBus* bus = (MMCBus*)cookie;
+
+	bus->AcquireBus();
+	status_t result = bus->DirectIO(rca, isWrite, function, address, value,
+		_result);
+	bus->ReleaseBus();
+
+	return result;
+}
+
+
+static status_t
+mmc_bus_sdio_rw_extended(device_node* node, void* cookie, uint16_t rca,
+	bool isWrite, uint8_t function, uint32_t address, bool incrementAddress,
+	void* buffer, uint32_t blockCount, uint32_t blockSize)
+{
+	MMCBus* bus = (MMCBus*)cookie;
+
+	bus->AcquireBus();
+	status_t result = bus->ExtendedIO(rca, isWrite, function, address,
+		incrementAddress, buffer, blockCount, blockSize);
+	bus->ReleaseBus();
+
+	return result;
+}
+
+
+static status_t
+mmc_bus_sdio_set_interrupt_handler(device_node* node, void* cookie,
+	void (*handler)(void*), void* data)
+{
+	MMCBus* bus = (MMCBus*)cookie;
+	return bus->SetCardInterrupt(handler, data);
+}
+
+
+static status_t
 std_ops(int32 op, ...)
 {
 	switch (op) {
@@ -204,7 +245,10 @@ mmc_device_interface mmc_bus_controller_module = {
 	mmc_bus_do_io,
 	mmc_bus_set_width,
 	mmc_bus_read_data,
-	mmc_bus_set_timing
+	mmc_bus_set_timing,
+	mmc_bus_sdio_rw_direct,
+	mmc_bus_sdio_rw_extended,
+	mmc_bus_sdio_set_interrupt_handler
 };
 
 
