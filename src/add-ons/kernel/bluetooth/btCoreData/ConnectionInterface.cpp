@@ -304,9 +304,12 @@ lookup_command_ident(HciConnection* conn, uint8 ident)
 }
 
 
-void
+/*!	Returns whether \a ident was in use: an answer and a timer may both try
+	to free it, only one of them must release what came with it.
+*/
+bool
 free_command_ident(HciConnection* conn, uint8 ident)
 {
 	MutexLocker _(&conn->fLock);
-	conn->fInUseIdents.Remove(ident);
+	return conn->fInUseIdents.Remove(ident) > 0;
 }

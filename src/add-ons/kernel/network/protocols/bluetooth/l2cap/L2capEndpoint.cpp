@@ -711,19 +711,26 @@ L2capEndpoint::_SendChannelConfig()
 		flow = &fChannelConfig.outgoing_flow;
 	}
 
+	// The reference for the new request is taken before the one of the
+	// previous request goes: dropped first, it could be the last, from the
+	// timer, while the socket of a connection not yet accepted still has a
+	// parent. And the previous one is released only if its ident was still
+	// ours: its answer, coming at the same time, may have freed it.
+	uint8 ident = btCoreData->allocate_command_ident(fConnection, this);
+	if (ident != L2CAP_NULL_IDENT)
+		gSocketModule->acquire_socket(socket);
+
 	if (fConfigIdent != L2CAP_NULL_IDENT) {
 		// sent again: the previous request will not be answered anymore
-		btCoreData->free_command_ident(fConnection, fConfigIdent);
-		gSocketModule->release_socket(socket);
+		if (btCoreData->free_command_ident(fConnection, fConfigIdent))
+			gSocketModule->release_socket(socket);
 		fConfigIdent = L2CAP_NULL_IDENT;
 	}
 
-	uint8 ident = btCoreData->allocate_command_ident(fConnection, this);
 	if (ident == L2CAP_NULL_IDENT) {
 		// TODO: Retry later?
 		return;
 	}
-	gSocketModule->acquire_socket(socket);
 
 	status_t status = send_l2cap_configuration_req(fConnection, ident,
 		fDestinationChannelID, 0, flush_timeout, mtu, flow);

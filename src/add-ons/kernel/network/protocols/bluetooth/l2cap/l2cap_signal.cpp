@@ -528,11 +528,10 @@ l2cap_handle_signaling_command(HciConnection* connection, net_buffer* buffer)
 			ERROR("%s: invalid L2CAP signaling command packet, code=%#x, "
 				"ident=%d, length=%d, buffer size=%" B_PRIu32 "\n", __func__,
 				code, ident, length, buffer->size);
-			if (releaseIdent) {
-				btCoreData->free_command_ident(connection, ident);
-				if (endpoint != NULL)
-					gSocketModule->release_socket(endpoint->socket);
-			}
+			if (releaseIdent
+				&& btCoreData->free_command_ident(connection, ident)
+				&& endpoint != NULL)
+				gSocketModule->release_socket(endpoint->socket);
 			return EMSGSIZE;
 		}
 
@@ -593,12 +592,13 @@ l2cap_handle_signaling_command(HciConnection* connection, net_buffer* buffer)
 				break;
 		}
 
-		// Only release the ident if no more signals with it are expected.
-		if (releaseIdent) {
-			btCoreData->free_command_ident(connection, ident);
-			if (endpoint != NULL)
-				gSocketModule->release_socket(endpoint->socket);
-		}
+		// Only release the ident if no more signals with it are expected,
+		// and the socket reference only if the ident was still ours: the
+		// endpoint may have sent its request again from a timer, freeing it.
+		if (releaseIdent
+			&& btCoreData->free_command_ident(connection, ident)
+			&& endpoint != NULL)
+			gSocketModule->release_socket(endpoint->socket);
 
 		// Advance to the next command (if any.)
 		gBufferModule->remove_header(buffer, length);

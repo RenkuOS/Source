@@ -89,7 +89,9 @@ struct bluetooth_core_data_module_info {
 
 	uint8					(*allocate_command_ident)(struct HciConnection* conn, void* associated);
 	void*					(*lookup_command_ident)(struct HciConnection* conn, uint8 ident);
-	void					(*free_command_ident)(struct HciConnection* conn, uint8 ident);
+	bool					(*free_command_ident)(struct HciConnection* conn, uint8 ident);
+		// false when the ident was freed already: whoever frees it releases
+		// the reference its user took
 
 	// all the connections of a controller that goes away
 	void					(*RemoveConnections)(hci_id hid);
