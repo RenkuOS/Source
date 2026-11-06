@@ -97,10 +97,17 @@ cstates_idle(void)
 	ASSERT(subState >= 0 && subState < sCStates[state].fSubStatesCount);
 
 	InterruptsLocker locker;
+
+	// With interrupts disabled no call of cpu_block_deep_idle() can slip in
+	// between this check and the MWAIT: its interrupt breaks the MWAIT.
+	uint32 hint = sCStates[state].fCode | subState;
+	if (cpu_deep_idle_blocked())
+		hint = sCStates[0].fCode;
+
 	int dummy;
 	bigtime_t start = system_time();
 	x86_monitor(&dummy, 0, 0);
-	x86_mwait(sCStates[state].fCode | subState, MWAIT_INTERRUPTS_BREAK);
+	x86_mwait(hint, MWAIT_INTERRUPTS_BREAK);
 	bigtime_t delta = system_time() - start;
 	locker.Unlock();
 
