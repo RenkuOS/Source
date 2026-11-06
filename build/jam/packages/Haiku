@@ -209,6 +209,9 @@ AddDriversToPackage input :
 	usb_hid
 	wacom
 	;
+AddDriversToPackage power :
+	intel_energy@x86,x86_64
+	;
 AddDriversToPackage misc :
 	<driver>poke
 	<driver>mem
