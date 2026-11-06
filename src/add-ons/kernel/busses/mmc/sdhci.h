@@ -144,6 +144,8 @@ class SdhciBus {
 			// Transfer strategy, decided once on the first data access
 			bool				fTransferModeSelected;
 			int					fDataMode;
+			bool				fSdioAdmaFailed;
+			uint32				fLastAdmaError;
 			int					fStopMode;
 			uint8*				fReference;
 				// First two blocks of the device as read by the self test,

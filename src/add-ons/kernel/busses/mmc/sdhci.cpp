@@ -70,6 +70,8 @@ SdhciBus::SdhciBus(struct registers* registers, uint8_t irq, bool poll)
 	fBouncePhysical(0),
 	fTransferModeSelected(false),
 	fDataMode(kDataModePio),
+	fSdioAdmaFailed(false),
+	fLastAdmaError(0),
 	fStopMode(kStopModeSingle),
 	fReference(NULL),
 	fUseDataTransferMode(false),
@@ -754,7 +756,27 @@ SdhciBus::_AbortTransfer(const char* reason)
 	uint32 response = 0;
 	status_t status;
 	bool needStop = true;
-	if (fSelectedRca != 0) {
+	if (fCardType == CARD_TYPE_SDIO) {
+		// The card does not know about an error the host saw (a data CRC
+		// error, for example) and goes on sending the remaining blocks of a
+		// read. A command sent meanwhile is not seen correctly, and the card
+		// and host lose step. Wait until the card let go of DAT[3:0]
+		// (present state bits 23:20) first.
+		const uint32 kDataLevelsMask = 0xF << 20;
+		bigtime_t deadline = system_time() + 5000;
+		while ((fRegisters->present_state.Bits() & kDataLevelsMask)
+				!= kDataLevelsMask && system_time() < deadline) {
+			spin(10);
+		}
+		fRegisters->software_reset.ResetCommandAndDataLines();
+		fRegisters->interrupt_status = kClearableStatusBits;
+
+		// No command to the card: like Linux, only the host lines are
+		// reset. An I/O abort (CCCR 06h) stopped the RTL8723BS in the
+		// middle of a receive request, after which it received nothing
+		// any more.
+		needStop = false;
+	} else if (fSelectedRca != 0) {
 		status = ExecuteCommand(SEND_STATUS, (uint32)fSelectedRca << 16,
 			&response);
 		if (status == B_OK) {
@@ -916,8 +938,16 @@ SdhciBus::_TransferChunk(uint8 command, uint32 argument, uint32 blockCount,
 		// cannot be lost by a status acknowledge, so check both.
 		const uint32 bufferEnableBit = isWrite ? (1 << 10) : (1 << 11);
 
+		// A multi-block CMD53 by PIO (after an ADMA error) is read as fast as
+		// the blocks come: a reader that comes late lets the controller stop
+		// SDCLK between the blocks, which the RTL8723BS answered with data
+		// CRC and end bit errors. Spin up to 2ms per block.
+		const bool spinForBlocks = command == SDIO_IO_RW_EXTENDED
+			&& blockCount > 1;
+
 		for (uint32 block = 0; block < blockCount; block++) {
 			bigtime_t deadline = system_time() + timeout;
+			bigtime_t spinUntil = spinForBlocks ? system_time() + 2000 : 0;
 			bigtime_t delay = 5;
 			while (true) {
 				uint32 live = fRegisters->interrupt_status;
@@ -930,9 +960,14 @@ SdhciBus::_TransferChunk(uint8 command, uint32 argument, uint32 blockCount,
 				if ((live & readyBit) != 0
 					|| (fRegisters->present_state.Bits() & bufferEnableBit) != 0)
 					break;
-				if (system_time() >= deadline) {
+				bigtime_t now = system_time();
+				if (now >= deadline) {
 					status = B_TIMED_OUT;
 					break;
+				}
+				if (now < spinUntil) {
+					spin(1);
+					continue;
 				}
 				snooze(delay);
 				if (delay < 1000)
@@ -1026,6 +1061,10 @@ SdhciBus::_TransferChunk(uint8 command, uint32 argument, uint32 blockCount,
 			}
 		}
 	}
+
+	fLastAdmaError = 0;
+	if (status != B_OK && (intStatus & SDHCI_INT_ADMA_ERROR) != 0)
+		fLastAdmaError = fRegisters->adma_error_status | 0x100;
 
 	if (status != B_OK) {
 		ERROR("transfer failed: command %u, argument %" B_PRIx32 ", %" B_PRIu32
@@ -1567,9 +1606,9 @@ SdhciBus::ReadData(uint8_t command, uint32_t argument, void* buffer,
 }
 
 
-/*!	Executes an SDIO CMD53 with its data phase, through the bounce buffer
-	and PIO. PIO keeps this independent of the transfer mode self test,
-	which reads blocks of a memory card.
+/*!	Executes an SDIO CMD53 with its data phase, through the bounce buffer:
+	by ADMA2 for more than one block, by PIO otherwise. The transfer mode
+	self test, which reads blocks of a memory card, is not used for SDIO.
 */
 status_t
 SdhciBus::TransferIO(uint32 argument, bool isWrite, void* buffer,
@@ -1582,9 +1621,24 @@ SdhciBus::TransferIO(uint32 argument, bool isWrite, void* buffer,
 	if (isWrite)
 		memcpy(fBounceBuffer, buffer, length);
 
+	// Multi-block transfers use ADMA2 as on Linux, so that the controller
+	// never has to stop SDCLK between blocks for a late PIO reader. After
+	// an ADMA error, PIO is used for the rest of the session.
+	int dataMode = kDataModePio;
+	if (blockCount > 1 && !fSdioAdmaFailed
+		&& fRegisters->capabilities.AdvancedDMA())
+		dataMode = kDataModeAdma2;
+
 	status_t status = _TransferChunk(SDIO_IO_RW_EXTENDED, argument,
-		blockCount, blockSize, isWrite, kDataModePio, kStopModeSingle,
-		fBouncePhysical, fBounceBuffer, kTransferTimeout);
+		blockCount, blockSize, isWrite, dataMode, kStopModeSingle,
+		fBouncePhysical, dataMode == kDataModePio ? fBounceBuffer : NULL,
+		kTransferTimeout);
+	if (status != B_OK && dataMode == kDataModeAdma2
+		&& fLastAdmaError != 0) {
+		fSdioAdmaFailed = true;
+		ERROR("SDIO: ADMA error %02" B_PRIx32 ", using PIO from now on\n",
+			fLastAdmaError);
+	}
 	if (status != B_OK) {
 		TRACE("CMD53 %08" B_PRIx32 " (%" B_PRIu32 " x %" B_PRIu32 ") failed: "
 			"%s\n", argument, blockCount, blockSize, strerror(status));
