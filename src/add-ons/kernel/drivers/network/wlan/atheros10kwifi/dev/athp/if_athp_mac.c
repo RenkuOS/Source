@@ -8902,6 +8902,49 @@ ath10k_bss_update(struct ath10k *ar, struct ieee80211vap *vap,
 	}
 }
 
+#ifdef __HAIKU__
+/*
+ * Station mode: delete every BSS peer on this vdev before joining a new
+ * BSS.  net80211 can go RUN/ASSOC/AUTH -> AUTH directly (wpa_supplicant
+ * roaming, or the AP deauthenticating us), and by then iv_bss is already
+ * the new node.  The old peer (or a peer from an AUTH that never got to
+ * ASSOC, which arvif->bssid doesn't record) would otherwise stay in the
+ * firmware next to the new one, and the join times out.  The self peer
+ * (our own address) is the firmware's and stays.
+ */
+void
+ath10k_vif_delete_bss_peers(struct ath10k *ar, struct ieee80211vap *vap)
+{
+	struct ath10k_vif *arvif = ath10k_vif_to_arvif(vap);
+	struct ath10k_peer *peer;
+	u8 addrs[8][ETH_ALEN];
+	int i, n = 0;
+
+	ATHP_CONF_LOCK_ASSERT(ar);
+
+	if (arvif->is_stabss_setup == 1)
+		ath10k_bss_disassoc(ar, vap, 0);
+	arvif->is_stabss_setup = 0;
+
+	ATHP_DATA_LOCK(ar);
+	TAILQ_FOREACH(peer, &ar->peers, list) {
+		if (peer->vdev_id != arvif->vdev_id ||
+		    IEEE80211_ADDR_EQ(peer->addr, vap->iv_myaddr))
+			continue;
+		if (n < nitems(addrs))
+			ether_addr_copy(addrs[n++], peer->addr);
+	}
+	ATHP_DATA_UNLOCK(ar);
+
+	for (i = 0; i < n; i++) {
+		ath10k_dbg(ar, ATH10K_DBG_MAC,
+		    "mac vdev %d deleting stale peer %s before join\n",
+		    arvif->vdev_id, ether_sprintf(addrs[i]));
+		(void) ath10k_peer_delete(ar, arvif->vdev_id, addrs[i]);
+	}
+}
+#endif
+
 void
 ath10k_tx_free_pbuf(struct ath10k *ar, struct athp_buf *pbuf, int tx_ok)
 {

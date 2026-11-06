@@ -1274,6 +1274,13 @@ athp_vap_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg
 		if (vap->iv_opmode == IEEE80211_M_STA) {
 			ATHP_CONF_LOCK(ar);
 			/* XXX TODO: can we use bss_ni->ic_chan? */
+#ifdef __HAIKU__
+			/* Leave the previous BSS on direct ->AUTH joins. */
+			athp_tx_disable(ar, vap);
+			ath10k_tx_flush_locked(ar, vap, 0, 1);
+			ath10k_vif_delete_bss_peers(ar, vap);
+			athp_tx_enable(ar, vap);
+#endif
 			ath10k_vif_bring_down(vap);
 			ret = ath10k_vif_bring_up(vap, ic->ic_curchan);
 			if (ret != 0) {
