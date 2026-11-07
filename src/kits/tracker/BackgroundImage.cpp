@@ -328,6 +328,14 @@ BackgroundImage::ImageInfoForWorkspace(int32 workspace) const
 }
 
 
+bool
+BackgroundImage::HasBitmapForWorkspace(int32 workspace) const
+{
+	BackgroundImageInfo* info = ImageInfoForWorkspace(workspace);
+	return info != NULL && info->fBitmap != NULL;
+}
+
+
 void
 BackgroundImage::WorkspaceActivated(BView* view, int32 workspace, bool state)
 {

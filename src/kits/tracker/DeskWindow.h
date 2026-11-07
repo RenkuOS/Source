@@ -67,6 +67,8 @@ public:
 
 	void SaveDesktopPoseLocations();
 
+	bool HasBackgroundImage() const;
+
 	virtual bool ShouldHaveDraggableFolderIcon() { return false; };
 
 protected:
