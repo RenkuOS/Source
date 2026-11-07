@@ -118,8 +118,13 @@ enum SD_COMMANDS {
 	// Application specific commands, class 8
 	SD_APP_CMD = 55,
 
-	// I/O mode commands, class 9
+	// I/O mode commands, class 9 (SDIO Simplified Specification 3.00,
+	// section 5)
+	SDIO_IO_SEND_OP_COND = 5,
+	SDIO_IO_RW_DIRECT = 52,
 	SD_IO_ABORT = 52,
+		// old name of SDIO_IO_RW_DIRECT
+	SDIO_IO_RW_EXTENDED = 53,
 };
 
 
@@ -164,6 +169,21 @@ typedef struct mmc_bus_interface {
 		// error if the controller does not support the timing, or if tuning or
 		// data transfers fail with it (the timing is then left as requested,
 		// the caller decides what to do).
+	status_t (*transfer_io)(void* controller, uint32_t argument,
+		bool isWrite, void* buffer, uint32_t blockCount, uint32_t blockSize);
+		// Execute an SDIO CMD53 (IO_RW_EXTENDED) with the given argument and
+		// its data phase: blockCount blocks of blockSize bytes, at most one
+		// page in total. In byte mode, blockCount is 1. May be NULL.
+	void (*set_card_interrupt)(void* controller, void (*handler)(void*),
+		void* cookie);
+		// Enable the SDIO card interrupt and call handler(cookie) from the
+		// interrupt handler when it fires. The card interrupt is then masked
+		// until set_card_interrupt() is called again with the same handler,
+		// once the function driver has cleared the interrupt source in the
+		// card. A NULL handler disables it; once that call returned, the
+		// handler does not run and is not called again. The handler runs in
+		// interrupt context with a spinlock held: it must not block.
+		// May be NULL.
 } mmc_bus_interface;
 
 
@@ -189,6 +209,23 @@ typedef struct mmc_device_interface {
 	status_t (*set_timing)(device_node* controller, void* cookie, uint16_t rca,
 		int timing, uint32_t flags);
 		// See mmc_bus_interface::set_timing
+	status_t (*sdio_rw_direct)(device_node* controller, void* cookie,
+		uint16_t rca, bool isWrite, uint8_t function, uint32_t address,
+		uint8_t value, uint8_t* _result);
+		// CMD52 (IO_RW_DIRECT): read or write one byte of the register space
+		// of an SDIO function. _result gets the byte read (for a write, the
+		// value read back after the write) and may be NULL.
+	status_t (*sdio_rw_extended)(device_node* controller, void* cookie,
+		uint16_t rca, bool isWrite, uint8_t function, uint32_t address,
+		bool incrementAddress, void* buffer, uint32_t blockCount,
+		uint32_t blockSize);
+		// CMD53 (IO_RW_EXTENDED). blockCount 0 is byte mode: blockSize bytes
+		// (1 to 512). Otherwise block mode, with the block size that is set
+		// in the FBR of the function (blockSize must match it). At most one
+		// page per call.
+	status_t (*sdio_set_interrupt_handler)(device_node* controller,
+		void* cookie, void (*handler)(void*), void* data);
+		// See mmc_bus_interface::set_card_interrupt
 } mmc_device_interface;
 
 
@@ -202,6 +239,16 @@ is_mmc_card_type(card_type type)
 // Device attribute paths for the MMC device
 const char* const kMmcRcaAttribute = "mmc/rca";
 const char* const kMmcTypeAttribute = "mmc/type";
+
+// Device attributes of an SDIO function
+const char* const kSdioFunctionAttribute = "sdio/function";
+	// uint8, the function number, 1 to 7
+const char* const kSdioVendorAttribute = "sdio/vendor";
+	// uint16, the manufacturer code of the card (CISTPL_MANFID)
+const char* const kSdioDeviceAttribute = "sdio/device";
+	// uint16, the card id of the card (CISTPL_MANFID)
+const char* const kSdioClassAttribute = "sdio/class";
+	// uint8, the standard SDIO function interface code of the function
 
 
 #endif /* _MMC_H */
