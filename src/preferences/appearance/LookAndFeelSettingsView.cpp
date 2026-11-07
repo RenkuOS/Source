@@ -60,6 +60,8 @@ static const int32 kMsgDoubleScrollBarArrows = 'dsba';
 static const int32 kMsgArrowStyleSingle = 'mass';
 static const int32 kMsgArrowStyleDouble = 'masd';
 
+static const int32 kMsgZSnake = 'zsnk';
+
 static const bool kDefaultDoubleScrollBarArrowsSetting = false;
 
 
@@ -77,11 +79,13 @@ LookAndFeelSettingsView::LookAndFeelSettingsView(const char* name)
 	fControlLookMenu(NULL),
 	fArrowStyleSingle(NULL),
 	fArrowStyleDouble(NULL),
+	fZSnakeCheckBox(NULL),
 	fSavedDecor(NULL),
 	fCurrentDecor(NULL),
 	fSavedControlLook(NULL),
 	fCurrentControlLook(NULL),
-	fSavedDoubleArrowsValue(_DoubleScrollBarArrows())
+	fSavedDoubleArrowsValue(_DoubleScrollBarArrows()),
+	fSavedZSnake(_ZSnake())
 {
 	fCurrentDecor = fDecorUtility.CurrentDecorator()->ShortcutName();
 	fSavedDecor = fCurrentDecor;
@@ -138,6 +142,14 @@ LookAndFeelSettingsView::LookAndFeelSettingsView(const char* name)
 	scrollBarLabel->SetExplicitAlignment(
 		BAlignment(B_ALIGN_LEFT, B_ALIGN_TOP));
 
+	// BeOS Dano's ZSnake
+	fZSnakeCheckBox = new BCheckBox("zsnake",
+		B_TRANSLATE("Join submenus to the item they open from (ZSnake)"),
+		new BMessage(kMsgZSnake));
+	fZSnakeCheckBox->SetValue(fSavedZSnake ? B_CONTROL_ON : B_CONTROL_OFF);
+	fZSnakeCheckBox->SetToolTip(
+		B_TRANSLATE("Running applications' menus change when they restart"));
+
 	// control layout
 	BLayoutBuilder::Grid<>(this, B_USE_DEFAULT_SPACING, B_USE_DEFAULT_SPACING)
 		.Add(fDecorMenuField->CreateLabelLayoutItem(), 0, 0)
@@ -148,7 +160,8 @@ LookAndFeelSettingsView::LookAndFeelSettingsView(const char* name)
 		.Add(fControlLookInfoButton, 2, 1)
 		.Add(scrollBarLabel, 0, 2)
 		.Add(arrowStyleBox, 1, 2)
-		.AddGlue(0, 3)
+		.Add(fZSnakeCheckBox, 1, 3)
+		.AddGlue(0, 4)
 		.SetInsets(B_USE_WINDOW_SPACING);
 
 	// TODO : Decorator Preview Image?
@@ -174,6 +187,7 @@ LookAndFeelSettingsView::AttachedToWindow()
 	fControlLookInfoButton->SetTarget(this);
 	fArrowStyleSingle->SetTarget(this);
 	fArrowStyleDouble->SetTarget(this);
+	fZSnakeCheckBox->SetTarget(this);
 
 	if (fSavedDoubleArrowsValue)
 		fArrowStyleDouble->SetValue(B_CONTROL_ON);
@@ -268,6 +282,10 @@ LookAndFeelSettingsView::MessageReceived(BMessage* message)
 
 		case kMsgArrowStyleDouble:
 			_SetDoubleScrollBarArrows(true);
+			break;
+
+		case kMsgZSnake:
+			_SetZSnake(fZSnakeCheckBox->Value() == B_CONTROL_ON);
 			break;
 
 		default:
@@ -430,11 +448,38 @@ LookAndFeelSettingsView::_SetDoubleScrollBarArrows(bool doubleArrows)
 
 
 bool
+LookAndFeelSettingsView::_ZSnake()
+{
+	menu_info info;
+	get_menu_info(&info);
+
+	return info.zsnake;
+}
+
+
+void
+LookAndFeelSettingsView::_SetZSnake(bool zsnake)
+{
+	menu_info info;
+	get_menu_info(&info);
+
+	if (info.zsnake != zsnake) {
+		info.zsnake = zsnake;
+		set_menu_info(&info);
+	}
+	fZSnakeCheckBox->SetValue(zsnake ? B_CONTROL_ON : B_CONTROL_OFF);
+
+	Window()->PostMessage(kMsgUpdate);
+}
+
+
+bool
 LookAndFeelSettingsView::IsDefaultable()
 {
 	return fCurrentDecor != fDecorUtility.DefaultDecorator()->ShortcutName()
 		|| fCurrentControlLook.Length() != 0
-		|| _DoubleScrollBarArrows() != false;
+		|| _DoubleScrollBarArrows() != false
+		|| _ZSnake();
 }
 
 
@@ -444,6 +489,7 @@ LookAndFeelSettingsView::SetDefaults()
 	_SetDecor(fDecorUtility.DefaultDecorator());
 	_SetControlLook(BString(""));
 	_SetDoubleScrollBarArrows(false);
+	_SetZSnake(false);
 }
 
 
@@ -452,7 +498,8 @@ LookAndFeelSettingsView::IsRevertable()
 {
 	return fCurrentDecor != fSavedDecor
 		|| fCurrentControlLook != fSavedControlLook
-		|| _DoubleScrollBarArrows() != fSavedDoubleArrowsValue;
+		|| _DoubleScrollBarArrows() != fSavedDoubleArrowsValue
+		|| _ZSnake() != fSavedZSnake;
 }
 
 
@@ -463,5 +510,6 @@ LookAndFeelSettingsView::Revert()
 		_SetDecor(fSavedDecor);
 		_SetControlLook(fSavedControlLook);
 		_SetDoubleScrollBarArrows(fSavedDoubleArrowsValue);
+		_SetZSnake(fSavedZSnake);
 	}
 }
