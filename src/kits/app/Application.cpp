@@ -1091,6 +1091,12 @@ BApplication::DispatchMessage(BMessage* message, BHandler* handler)
 			if (!BPrivate::update_control_look())
 				break;
 			// fall through
+		case B_FONTS_UPDATED:
+			if (message->what == B_FONTS_UPDATED
+				&& !BPrivate::update_system_fonts()) {
+				break;
+			}
+			// fall through
 		case B_COLORS_UPDATED:
 		{
 			AutoLocker<BLooperList> listLock(gLooperList);

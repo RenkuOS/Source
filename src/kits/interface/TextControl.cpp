@@ -1092,8 +1092,6 @@ BTextControl::_InitData(const char* label, const BMessage* archive)
 
 	int32 flags = 0;
 
-	BFont font(be_plain_font);
-
 	if (!archive || !archive->HasString("_fname"))
 		flags |= B_FONT_FAMILY_AND_STYLE;
 
@@ -1101,7 +1099,7 @@ BTextControl::_InitData(const char* label, const BMessage* archive)
 		flags |= B_FONT_SIZE;
 
 	if (flags != 0)
-		SetFont(&font, flags);
+		SetFont(be_plain_font, flags);
 
 	if (label != NULL)
 		fDivider = floorf(bounds.Width() / 2.0f);

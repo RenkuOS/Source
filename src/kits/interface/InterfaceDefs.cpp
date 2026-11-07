@@ -219,6 +219,9 @@ struct ControlLookEntry {
 
 static ControlLookEntry* sControlLooks = NULL;
 
+// The menu font, as views can follow it the way they follow be_plain_font.
+static BFont sMenuFont;
+
 
 namespace BPrivate {
 
@@ -1564,6 +1567,10 @@ _init_interface_kit_()
 	if (status != B_OK)
 		return status;
 
+	sMenuFont.SetFamilyAndStyle(BMenu::sMenuInfo.f_family,
+		BMenu::sMenuInfo.f_style);
+	sMenuFont.SetSize(BMenu::sMenuInfo.font_size);
+
 	general_info.background_color = ui_color(B_PANEL_BACKGROUND_COLOR);
 	general_info.mark_color = ui_color(B_CONTROL_MARK_COLOR);
 	general_info.highlight_color = ui_color(B_CONTROL_HIGHLIGHT_COLOR);
@@ -1730,6 +1737,56 @@ update_control_look()
 
 	be_control_look = entry->look;
 	return true;
+}
+
+
+const BFont*
+menu_font()
+{
+	return &sMenuFont;
+}
+
+
+static bool
+same_font(const BFont& first, const BFont& second)
+{
+	return first.FamilyAndStyle() == second.FamilyAndStyle()
+		&& first.Size() == second.Size();
+}
+
+
+/*!	\brief Private function which brings this team's system fonts up to date.
+
+	Called by BApplication's thread. Other threads may be reading the fonts
+	while they change, and would at worst use a mix of the two for one call.
+
+	\return \c true if any of them has changed.
+*/
+bool
+update_system_fonts()
+{
+	// Servers without a GUI context get the message, too.
+	if (_menu_info_ptr_ == NULL)
+		return false;
+
+	const BFont plain(*be_plain_font);
+	const BFont bold(*be_bold_font);
+	const BFont fixed(*be_fixed_font);
+	const BFont menu(sMenuFont);
+
+	_init_global_fonts_();
+
+	menu_info info;
+	if (get_menu_info(&info) == B_OK) {
+		*_menu_info_ptr_ = info;
+		sMenuFont.SetFamilyAndStyle(info.f_family, info.f_style);
+		sMenuFont.SetSize(info.font_size);
+	}
+
+	return !same_font(plain, *be_plain_font)
+		|| !same_font(bold, *be_bold_font)
+		|| !same_font(fixed, *be_fixed_font)
+		|| !same_font(menu, sMenuFont);
 }
 
 

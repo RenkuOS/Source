@@ -90,6 +90,15 @@ namespace BPrivate {
 class PortLink;
 
 
+enum system_font_source {
+	kNoSystemFont = 0,
+	kPlainSystemFont,
+	kBoldSystemFont,
+	kFixedSystemFont,
+	kMenuSystemFont
+};
+
+
 class ViewState {
 	public:
 		ViewState();
@@ -152,6 +161,10 @@ class ViewState {
 		// fonts
 		BFont				font;
 		uint16				font_flags;
+		uint8				font_family_source;
+		uint8				font_size_source;
+			// which system font these follow, one of system_font_source
+		bool				font_own_face;
 		bool				font_aliasing;
 			// font aliasing. Used for printing only!
 

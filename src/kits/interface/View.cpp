@@ -53,6 +53,7 @@
 #include <AppServerLink.h>
 #include <binary_compatibility/Interface.h>
 #include <binary_compatibility/Support.h>
+#include <InterfacePrivate.h>
 #include <MessagePrivate.h>
 #include <MessageUtils.h>
 #include <PortLink.h>
@@ -104,6 +105,39 @@ static property_info sViewPropInfo[] = {
 
 
 //	#pragma mark -
+
+
+static uint8
+system_font_source_of(const BFont* font)
+{
+	if (font == be_plain_font)
+		return BPrivate::kPlainSystemFont;
+	if (font == be_bold_font)
+		return BPrivate::kBoldSystemFont;
+	if (font == be_fixed_font)
+		return BPrivate::kFixedSystemFont;
+	if (font == BPrivate::menu_font())
+		return BPrivate::kMenuSystemFont;
+	return BPrivate::kNoSystemFont;
+}
+
+
+static const BFont*
+system_font_from(uint8 source)
+{
+	switch (source) {
+		case BPrivate::kPlainSystemFont:
+			return be_plain_font;
+		case BPrivate::kBoldSystemFont:
+			return be_bold_font;
+		case BPrivate::kFixedSystemFont:
+			return be_fixed_font;
+		case BPrivate::kMenuSystemFont:
+			return BPrivate::menu_font();
+		default:
+			return NULL;
+	}
+}
 
 
 static inline uint32
@@ -168,6 +202,9 @@ ViewState::ViewState()
 
 	font = *be_plain_font;
 	font_flags = font.Flags();
+	font_family_source = kPlainSystemFont;
+	font_size_source = kPlainSystemFont;
+	font_own_face = false;
 	font_aliasing = false;
 
 	parent_composite_transform.Reset();
@@ -2851,6 +2888,16 @@ BView::SetFont(const BFont* font, uint32 mask)
 {
 	if (!font || mask == 0)
 		return;
+
+	// Only a system font passed as such is followed from now on. A copy of one
+	// could be a font the application chose, and only an application can know.
+	const uint8 source = system_font_source_of(font);
+	if ((mask & B_FONT_FAMILY_AND_STYLE) != 0)
+		fState->font_family_source = source;
+	if ((mask & B_FONT_SIZE) != 0)
+		fState->font_size_source = source;
+	if ((mask & B_FONT_FACE) != 0)
+		fState->font_own_face = source == BPrivate::kNoSystemFont;
 
 	if (mask == B_FONT_ALL) {
 		fState->font = *font;
@@ -6577,6 +6624,9 @@ BView::_Attach()
 		if (fState->which_low_color != B_NO_COLOR)
 			SetLowUIColor(fState->which_low_color,
 				fState->which_low_color_tint);
+
+		// The system fonts may have changed since this view was last attached.
+		_UpdateSystemFont();
 	}
 
 	AttachedToWindow();
@@ -6743,12 +6793,59 @@ BView::_DrawAfterChildren(BRect updateRect)
 void
 BView::_FontsUpdated(BMessage* message)
 {
+	_UpdateSystemFont();
+
+	// As in _ControlLookUpdated(): every view invalidates for itself, and does
+	// so before it's told.
+	InvalidateLayout(true);
+
 	MessageReceived(message);
 
 	for (BView* child = fFirstChild; child != NULL;
 			child = child->fNextSibling) {
 		child->_FontsUpdated(message);
 	}
+
+	Invalidate();
+}
+
+
+/*!	Brings the parts of the view's font that follow a system font up to date.
+	Goes through SetFont(), so that subclasses overriding it notice.
+*/
+void
+BView::_UpdateSystemFont()
+{
+	const BFont* familySource = system_font_from(fState->font_family_source);
+	const BFont* sizeSource = system_font_from(fState->font_size_source);
+	if (familySource == NULL && sizeSource == NULL)
+		return;
+
+	BFont current;
+	GetFont(&current);
+
+	if (familySource != NULL) {
+		// With a face of its own, the view's style isn't the system font's.
+		uint32 family = current.FamilyAndStyle();
+		uint32 systemFamily = familySource->FamilyAndStyle();
+		if (fState->font_own_face) {
+			family >>= 16;
+			systemFamily >>= 16;
+		}
+		if (family != systemFamily) {
+			const uint16 face = current.Face();
+			const bool ownFace = fState->font_own_face;
+			SetFont(familySource, B_FONT_FAMILY_AND_STYLE);
+			if (ownFace) {
+				BFont faceFont;
+				faceFont.SetFace(face);
+				SetFont(&faceFont, B_FONT_FACE);
+			}
+		}
+	}
+
+	if (sizeSource != NULL && current.Size() != sizeSource->Size())
+		SetFont(sizeSource, B_FONT_SIZE);
 }
 
 
