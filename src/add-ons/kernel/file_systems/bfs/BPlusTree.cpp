@@ -25,8 +25,6 @@
 // BFS::Stream from the bootloader has the same API as Inode.
 #	define Inode BFS::Stream
 
-#	define strerror(x)		"error message unavailable"
-
 namespace BFS {
 #endif
 
@@ -475,12 +473,17 @@ CachedNode::InternalSetTo(Transaction* transaction, off_t offset)
 			if (fBlock == NULL)
 				RETURN_ERROR(B_NO_MEMORY);
 		}
+		fNode = NULL;
 
-		if (read_pos(volume->Device(), newBlockNumber << volume->BlockShift(),
-				fBlock, volume->BlockSize()) == (ssize_t)volume->BlockSize()) {
-			block = fBlock;
-		}
+		ssize_t result = read_pos(volume->Device(),
+			newBlockNumber << volume->BlockShift(),
+			fBlock, volume->BlockSize());
+		if (result < 0)
+			RETURN_ERROR(result);
+		if (result != (ssize_t)volume->BlockSize())
+			RETURN_ERROR(B_IO_ERROR);
 
+		block = fBlock;
 		fWritable = false;
 #endif // _BOOT_MODE
 	}
@@ -740,7 +743,7 @@ BPlusTree::SetTo(Inode* stream)
 		//fHeader.maximum_size = HOST_ENDIAN_TO_BFS_INT64(stream->Size());
 	}
 	if (!fHeader.IsValid()) {
-#ifdef DEBUG
+#if defined(DEBUG) && !defined(_BOOT_MODE)
 		dump_bplustree_header(&fHeader);
 		dump_block((const char*)&fHeader, 128);
 #endif
@@ -761,9 +764,11 @@ BPlusTree::SetTo(Inode* stream)
 		|| ((stream->Mode() & S_INDEX_DIR) != 0
 			&& kToMode[fHeader.DataType()] != mode)
 		|| !stream->IsContainer()) {
+#ifndef _BOOT_MODE
 		D(	dump_bplustree_header(&fHeader);
 			dump_inode(&stream->Node());
 		);
+#endif
 		RETURN_ERROR(fStatus = B_BAD_TYPE);
 	}
 

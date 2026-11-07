@@ -2922,18 +2922,17 @@ get_new_fd(struct fd_ops* ops, struct fs_mount* mount, struct vnode* vnode,
 	}
 
 	io_context* context = get_current_io_context(kernel);
+	WriteLocker contextLocker(context->lock);
 	fd = new_fd(context, descriptor);
 	if (fd < 0) {
+		contextLocker.Unlock();
 		descriptor->ops = NULL;
 		put_fd(descriptor);
 		return B_NO_MORE_FDS;
 	}
 
-	rw_lock_write_lock(&context->lock);
 	fd_set_close_on_exec(context, fd, (openMode & O_CLOEXEC) != 0);
 	fd_set_close_on_fork(context, fd, (openMode & O_CLOFORK) != 0);
-	rw_lock_write_unlock(&context->lock);
-
 	return fd;
 }
 
@@ -5047,6 +5046,7 @@ vfs_new_io_context(const io_context* parentContext, bool purgeCloseOnExec)
 		tableSize = DEFAULT_FD_TABLE_SIZE;
 
 	if (vfs_resize_fd_table(context, tableSize) != B_OK) {
+		contextLocker.Unlock();
 		free(context);
 		return NULL;
 	}
@@ -6451,14 +6451,13 @@ common_fcntl(int fd, int op, size_t argument, bool kernel)
 		case F_DUPFD_CLOEXEC:
 		case F_DUPFD_CLOFORK:
 		{
+			WriteLocker contextLocker(context->lock);
 			status = new_fd_etc(context, descriptor.Get(), (int)argument);
 			if (status >= 0) {
-				rw_lock_write_lock(&context->lock);
 				if (op == F_DUPFD_CLOEXEC)
 					fd_set_close_on_exec(context, status, true);
 				else if (op == F_DUPFD_CLOFORK)
 					fd_set_close_on_fork(context, status, true);
-				rw_lock_write_unlock(&context->lock);
 
 				atomic_add(&descriptor->ref_count, 1);
 			}
