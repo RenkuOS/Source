@@ -1073,10 +1073,10 @@ display_crtc_ss(pll_info* pll, int command)
 				args.v2.ucSpreadSpectrumType |= ATOM_PPLL_SS_TYPE_V2_P1PLL;
 				break;
 			case ATOM_PPLL2:
-				args.v2.ucSpreadSpectrumType |= ATOM_PPLL_SS_TYPE_V3_P2PLL;
+				args.v2.ucSpreadSpectrumType |= ATOM_PPLL_SS_TYPE_V2_P2PLL;
 				break;
 			case ATOM_DCPLL:
-				args.v2.ucSpreadSpectrumType |= ATOM_PPLL_SS_TYPE_V3_DCPLL;
+				args.v2.ucSpreadSpectrumType |= ATOM_PPLL_SS_TYPE_V2_DCPLL;
 				break;
 			case ATOM_PPLL_INVALID:
 				return;
