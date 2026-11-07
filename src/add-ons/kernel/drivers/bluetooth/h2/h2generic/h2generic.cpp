@@ -16,6 +16,7 @@
 #include <ByteOrder.h>
 #include <Drivers.h>
 #include <StackOrHeapArray.h>
+#include <util/AutoLock.h>
 
 #include <btModules.h>
 
@@ -24,6 +25,7 @@
 #include "h2debug.h"
 #include "h2intel.h"
 #include "h2transactions.h"
+#include "h2upper.h"
 #include "h2util.h"
 #include "snet_buffer.h"
 
@@ -37,7 +39,7 @@ static const char* btDevices_name = BT_HCI_MODULE_NAME;
 
 
 usb_module_info* usb = NULL;
-bt_hci_module_info* hci = NULL; // TODO remove / clean
+bt_hci_module_info* hci = NULL;
 struct bt_hci_module_info* btDevices = NULL;
 struct net_buffer_module_info* nb = NULL;
 struct bluetooth_core_data_module_info* btCoreData = NULL;
@@ -55,6 +57,9 @@ usb_support_descriptor supported_devices[] = {
 	// Generic Bluetooth USB device
 	// Class, SubClass, and Protocol codes that describe a Bluetooth device
 	{ UDCLASS_WIRELESS, UDSUBCLASS_RF, UDPROTO_BLUETOOTH, 0, 0 },
+	// Intel Bluetooth functions which require secure-boot firmware.
+	{ 0, 0, 0, 0x8087, 0x0a2b },
+	{ 0, 0, 0, 0x8087, 0x0032 }, // AX210
 
 	// Broadcom BCM2035
 	{ 0, 0, 0, 0x0a5c, 0x200a },
@@ -122,6 +127,7 @@ spawn_device(usb_device usb_dev)
 		goto exit;
 	}
 	memset(new_bt_dev, 0, sizeof(bt_usb_dev));
+	mutex_init(&new_bt_dev->aclTxLock, "bluetooth ACL transmit");
 
 	// We will need this sem for some flow control
 	new_bt_dev->cmd_complete = create_sem(1,
@@ -173,6 +179,7 @@ bail2:
 bail1:
 	delete_sem(new_bt_dev->cmd_complete);
 bail0:
+	mutex_destroy(&new_bt_dev->aclTxLock);
 	free(new_bt_dev);
 	new_bt_dev = NULL;
 exit:
@@ -189,6 +196,7 @@ kill_device(bt_usb_dev* bdev)
 
 		delete_sem(bdev->lock);
 		delete_sem(bdev->cmd_complete);
+		mutex_destroy(&bdev->aclTxLock);
 
 		// mark it free
 		bt_usb_devices[bdev->num] = NULL;
@@ -421,6 +429,10 @@ device_removed(void* cookie)
 		ERROR("%s: Device not present in driver.\n", __func__);
 		return B_ERROR;
 	}
+	{
+		MutexLocker locker(&bdev->aclTxLock);
+		bdev->aclTxClosing = true;
+	}
 
 	if (!TEST_AND_CLEAR(&bdev->state, RUNNING))
 		ERROR("%s: wasnt running?\n", __func__);
@@ -445,7 +457,7 @@ device_removed(void* cookie)
 
 static bt_hci_transport_hooks bluetooth_hooks = {
 	&submit_nbuffer, 
-	&submit_nbuffer, 
+	&queue_acl_packet,
 	&submit_nbuffer, 
 	NULL, 
 	NULL, 
@@ -468,9 +480,6 @@ submit_nbuffer(hci_id hid, net_buffer* nbuf)
 	bt_usb_dev* bdev = NULL;
 
 	bdev = fetch_device(NULL, hid);
-
-	TRACE("%s: index=%" B_PRId32 " nbuf=%p bdev=%p\n", __func__, hid,
-		nbuf, bdev);
 
 	if (bdev != NULL) {
 		switch (nbuf->protocol) {
@@ -564,6 +573,9 @@ device_open(const char* name, uint32 flags, void **cookie)
 		list_init(&bdev->nbuffersTx[i]);
 		bdev->nbuffersPendingTx[i] = 0;
 	}
+	bdev->aclTxPending = false;
+	bdev->aclTxClosing = false;
+	bdev->aclTxQueued = 0;
 
 	// RX structures
 	bdev->eventRx = NULL;
@@ -589,10 +601,10 @@ device_open(const char* name, uint32 flags, void **cookie)
 			bdev->ndev = ndev;  // Get the net_device
 
 		} else {
-			hdev = bdev->num; // XXX: Lets try to go on
+			hdev = bdev->num;
 		}
 	} else {
-		hdev = bdev->num; // XXX: Lets try to go on
+		hdev = bdev->num;
 	}
 
 	bdev->hdev = hdev;
@@ -619,6 +631,10 @@ device_close(void* cookie)
 
 	if (bdev == NULL)
 		panic("bad cookie");
+	{
+		MutexLocker locker(&bdev->aclTxLock);
+		bdev->aclTxClosing = true;
+	}
 
 	// Clean queues
 
@@ -641,11 +657,17 @@ device_close(void* cookie)
 			usb->cancel_queued_transfers(bdev->iso_out_ep->handle);
 	}
 
-	// TX
+	// TX. USB cancellation completes the active ACL buffer; queued buffers
+	// remain owned by this list and are released here.
 	for (i = 0; i < BT_DRIVER_TXCOVERAGE; i++) {
 		if (i == BT_COMMAND) {
 			while ((item = list_remove_head_item(&bdev->nbuffersTx[i])) != NULL)
 				snb_free((snet_buffer*)item);
+		} else if (i == BT_ACL) {
+			MutexLocker locker(&bdev->aclTxLock);
+			while ((item = list_remove_head_item(&bdev->nbuffersTx[i])) != NULL)
+				nb_destroy((net_buffer*)item);
+			bdev->aclTxQueued = 0;
 		} else {
 			while ((item = list_remove_head_item(&bdev->nbuffersTx[i])) != NULL)
 				nb_destroy((net_buffer*)item);
@@ -906,7 +928,8 @@ init_driver(void)
 	}
 
 	// Note: After here device_added and publish devices hooks are called
-	usb->register_driver(BLUETOOTH_DEVICE_DEVFS_NAME, supported_devices, 1, NULL);
+	usb->register_driver(BLUETOOTH_DEVICE_DEVFS_NAME, supported_devices,
+		B_COUNT_OF(supported_devices), NULL);
 	usb->install_notify(BLUETOOTH_DEVICE_DEVFS_NAME, &notify_hooks);
 
 	add_debugger_command("bth2generic", &dump_driver,
@@ -945,9 +968,6 @@ uninit_driver(void)
 			free(publish_names[j]);
 
 		if (bt_usb_devices[j] != NULL) {
-			//	if (connected_dev != NULL) {
-			//		debugf("Device %p still exists.\n",	connected_dev);
-			//	}
 			ERROR("%s: %s still present?\n", __func__, bt_usb_devices[j]->name);
 			kill_device(bt_usb_devices[j]);
 		}
@@ -996,17 +1016,6 @@ publish_devices(void)
 
 	publish_names[i] = NULL;
 	TRACE("%s: published %" B_PRId32 " devices\n", __func__, i);
-
-	// TODO: this method might make better memory use
-	// dev_names = (char**)malloc(sizeof(char*) * (dev_count + 1));
-	// if (dev_names) {
-	// for (i = 0; i < MAX_NUM_DEVS; i++) {
-	//	if ((dev != NULL) // dev + \n
-	//	&& (dev_names[i] = (char*)malloc(strlen(DEVICE_PATH) + 2))) {
-	//	sprintf(dev_names[i], "%s%ld", DEVICE_PATH, dev->num);
-	//	debugf("publishing \"%s\"\n", dev_names[i]);
-	//	}
-	// }
 
 	return (const char**)publish_names;
 }

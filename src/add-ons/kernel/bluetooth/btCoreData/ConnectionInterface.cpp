@@ -27,7 +27,18 @@ HciConnection::HciConnection(hci_id hid)
 {
 	mutex_init(&fLock, "HciConnection");
 	Hid = hid;
-	fNextIdent = L2CAP_FIRST_CID;
+	ndevice = NULL;
+	destination = BDADDR_NULL;
+	fNextIdent = L2CAP_NULL_IDENT;
+	destination_type = 0;
+	low_energy = false;
+	handle = 0;
+	type = 0;
+	mtu = L2CAP_MTU_MINIMUM;
+	status = HCI_CONN_CLOSED;
+	currentRxPacket = NULL;
+	currentRxExpectedLength = 0;
+	disconnect_hook = NULL;
 
 	// TODO: This doesn't really belong here...
 	interface_address = {};
@@ -50,18 +61,13 @@ AddConnection(uint16 handle, int type, const bdaddr_t& dst, hci_id hid)
 	// Create connection descriptor
 
 	HciConnection* conn = ConnectionByHandle(handle, hid);
-	if (conn != NULL)
-		goto update;
+	bool newConnection = conn == NULL;
+	if (newConnection) {
+		conn = new (std::nothrow) HciConnection(hid);
+		if (conn == NULL)
+			return NULL;
+	}
 
-	conn = new (std::nothrow) HciConnection(hid);
-	if (conn == NULL)
-		goto bail;
-
-	// memset(conn, 0, sizeof(HciConnection));
-
-	conn->currentRxPacket = NULL;
-	conn->currentRxExpectedLength = 0;
-update:
 	// fill values
 	bdaddrUtils::Copy(conn->destination, dst);
 	{
@@ -75,12 +81,11 @@ update:
 	conn->status = HCI_CONN_OPEN;
 	conn->mtu = L2CAP_MTU_MINIMUM; // TODO: give the mtu to the connection
 
-	{
-	MutexLocker _(&sConnectionListLock);
-	sConnectionList.Add(conn);
+	if (newConnection) {
+		MutexLocker _(&sConnectionListLock);
+		sConnectionList.Add(conn);
 	}
 
-bail:
 	return conn;
 }
 
@@ -98,6 +103,8 @@ RemoveConnection(const bdaddr_t& destination, hci_id hid)
 		|| conn->GetDoublyLinkedListLink()->previous != NULL
 		|| conn == sConnectionList.Head()) {
 		DisconnectL2capEndpoints(conn);
+		if (conn->disconnect_hook != NULL)
+			conn->disconnect_hook(conn);
 
 		MutexLocker locker(&sConnectionListLock);
 		sConnectionList.Remove(conn);
@@ -123,6 +130,8 @@ RemoveConnection(uint16 handle, hci_id hid)
 		|| conn->GetDoublyLinkedListLink()->previous != NULL
 		|| conn == sConnectionList.Head()) {
 		DisconnectL2capEndpoints(conn);
+		if (conn->disconnect_hook != NULL)
+			conn->disconnect_hook(conn);
 
 		MutexLocker locker(&sConnectionListLock);
 		sConnectionList.Remove(conn);
@@ -133,6 +142,40 @@ RemoveConnection(uint16 handle, hci_id hid)
 	}
 
 	return B_ERROR;
+}
+
+
+void
+RemoveConnections(hci_id hid)
+{
+	for (;;) {
+		HciConnection* connection = NULL;
+		{
+			MutexLocker locker(&sConnectionListLock);
+			auto iterator = sConnectionList.GetIterator();
+			while (iterator.HasNext()) {
+				HciConnection* candidate = iterator.Next();
+				if (candidate->Hid == hid) {
+					connection = candidate;
+					break;
+				}
+			}
+		}
+
+		if (connection == NULL)
+			return;
+
+		// Endpoints must stop using the connection before its HCI device can
+		// disappear.  In particular, the L2CAP send timer may still be active.
+		DisconnectL2capEndpoints(connection);
+		if (connection->disconnect_hook != NULL)
+			connection->disconnect_hook(connection);
+		{
+			MutexLocker locker(&sConnectionListLock);
+			sConnectionList.Remove(connection);
+		}
+		delete connection;
+	}
 }
 
 
@@ -237,6 +280,7 @@ allocate_command_ident(HciConnection* conn, void* pointer)
 
 	while (ident != conn->fNextIdent) {
 		if (conn->fInUseIdents.Find(ident) == conn->fInUseIdents.End()) {
+			conn->fNextIdent = ident;
 			conn->fInUseIdents.Insert(ident, pointer);
 			return ident;
 		}

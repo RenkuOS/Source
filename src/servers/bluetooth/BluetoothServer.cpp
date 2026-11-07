@@ -122,7 +122,7 @@ void BluetoothServer::ReadyToRun(void)
 
 void BluetoothServer::AppActivated(bool act)
 {
-	printf("Activated %d\n",act);
+	TRACE_BT("Activated %d\n",act);
 }
 
 
@@ -191,7 +191,7 @@ void BluetoothServer::MessageReceived(BMessage* message)
 			const char* signature;
 
 			if (message->FindString("be:signature", &signature) == B_OK) {
-				printf("input_server : %s\n", signature);
+				TRACE_BT("input_server : %s\n", signature);
 				if (strcmp(signature, "application/x-vnd.Be-TSKB") == 0) {
 
 				}
@@ -280,6 +280,8 @@ void BluetoothServer::MessageReceived(BMessage* message)
 					sizeof(rd->classOfDevice));
 				device.AddUInt16("clock_offset", rd->clock_offset);
 				device.AddUInt8("pscan_rep_mode", rd->pscan_rep_mode);
+				device.AddBool("low_energy", rd->low_energy);
+				device.AddUInt8("bdaddr_type", rd->bdaddr_type);
 
 				reply.AddMessage("remote", &device);
 			}
@@ -315,8 +317,6 @@ void BluetoothServer::MessageReceived(BMessage* message)
 	if (status != B_WOULD_BLOCK) {
 		reply.AddInt32("status", status);
 		message->SendReply(&reply);
-//		printf("Sending reply message for->\n");
-//		message->PrintToStream();
 	}
 }
 
@@ -341,7 +341,13 @@ BluetoothServer::DiscoverServices(ServerRemoteDevice* rd)
 {
 	TRACE_BT("BluetoothServer: Discovering Services for %s\n", rd->friendly_name.String());
 	SDPClient sdpClient(rd);
-	sdpClient.Start();
+	rd->services.MakeEmpty();
+	status_t status = sdpClient.Start();
+	if (status != B_OK) {
+		fprintf(stderr, "Bluetooth service discovery: connect failed: %s\n",
+			strerror(status));
+		return;
+	}
 	if (sdpClient.RequestServiceRecords() == B_OK)
 		TRACE_BT("SDP: Service records loaded successfully\n");
 	else
@@ -447,7 +453,7 @@ BluetoothServer::HandleAcquireLocalDevice(BMessage* message, BMessage* reply)
 			index < fLocalDevicesList.CountItems();	index++) {
 			lDeviceImpl= fLocalDevicesList.ItemAt(index);
 			if (lDeviceImpl != NULL && lDeviceImpl->Available()) {
-				printf("Requested local device %" B_PRId32 "\n",
+				TRACE_BT("Requested local device %" B_PRId32 "\n",
 					lDeviceImpl->GetID());
 				TRACE_BT("BluetoothServer: Device available: %" B_PRId32 "\n", lDeviceImpl->GetID());
 				lastIndex = index;
@@ -460,7 +466,7 @@ BluetoothServer::HandleAcquireLocalDevice(BMessage* message, BMessage* reply)
 			for (int index = 0; index <= lastIndex ; index ++) {
 				lDeviceImpl = fLocalDevicesList.ItemAt(index);
 				if (lDeviceImpl != NULL && lDeviceImpl->Available()) {
-					printf("Requested local device %" B_PRId32 "\n",
+					TRACE_BT("Requested local device %" B_PRId32 "\n",
 						lDeviceImpl->GetID());
 					TRACE_BT("BluetoothServer: Device available: %" B_PRId32 "\n", lDeviceImpl->GetID());
 					lastIndex = index;
@@ -508,10 +514,11 @@ BluetoothServer::HandleSimpleRequest(BMessage* message, BMessage* reply)
 	// we are gonna need issue the command ...
 	if (lDeviceImpl->ProcessSimpleRequest(DetachCurrentMessage()) == B_OK)
 		return B_WOULD_BLOCK;
-	else {
-		lDeviceImpl->Unregister();
-		return B_ERROR;
-	}
+
+	// A rejected or unsupported controller command must not close the
+	// transport.  Other clients, including active L2CAP audio streams, may be
+	// using the same controller.
+	return B_ERROR;
 
 }
 
@@ -639,4 +646,3 @@ main(int /*argc*/, char** /*argv*/)
 
 	return 0;
 }
-

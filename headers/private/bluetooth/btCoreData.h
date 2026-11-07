@@ -41,6 +41,9 @@ struct HciConnection : DoublyLinkedListLinkImpl<HciConnection> {
 	hci_id				Hid;
 	bluetooth_device*	ndevice;
 	bdaddr_t			destination;
+	// LE_PUBLIC_ADDRESS or LE_RANDOM_ADDRESS, only meaningful on an LE link.
+	uint8				destination_type;
+	bool				low_energy;
 	uint16				handle;
 	int					type;
 	uint16				mtu;
@@ -80,6 +83,7 @@ struct bluetooth_core_data_module_info {
 
 	// status_t				(*RemoveConnection)(bdaddr_t destination, hci_id hid);
 	status_t				(*RemoveConnection)(uint16 handle, hci_id hid);
+	void					(*RemoveConnections)(hci_id hid);
 
 	hci_id					(*RouteConnection)(const bdaddr_t& destination);
 
@@ -90,6 +94,11 @@ struct bluetooth_core_data_module_info {
 	uint8					(*allocate_command_ident)(struct HciConnection* conn, void* associated);
 	void*					(*lookup_command_ident)(struct HciConnection* conn, uint8 ident);
 	void					(*free_command_ident)(struct HciConnection* conn, uint8 ident);
+
+	// Installed by L2CAP while its module is loaded. LE fixed channels exist
+	// as soon as the controller reports the connection, so their setup must
+	// not depend on the peer sending the first L2CAP packet.
+	void					(*le_connection_established)(struct HciConnection* conn);
 };
 
 

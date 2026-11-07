@@ -1,9 +1,14 @@
 #include <stdio.h>
+#include <errno.h>
+#include <poll.h>
 #include <sys/socket.h>
 
 #include <String.h>
 
 #include <bluetooth/l2cap.h>
+#include <BluetoothHID.h>
+#include <BluetoothAudio.h>
+#include <OS.h>
 #include <sys/time.h>
 
 #include "Debug.h"
@@ -38,23 +43,57 @@ SDPClient::Start()
 	status_t status;
 
 	fClientSocket = socket(PF_BLUETOOTH, SOCK_SEQPACKET, BLUETOOTH_PROTO_L2CAP);
+	if (fClientSocket < 0)
+		return errno;
+	timeval connectTimeout = {5, 0};
+	setsockopt(fClientSocket, SOL_SOCKET, SO_SNDTIMEO, &connectTimeout,
+		sizeof(connectTimeout));
 
-	status = connect(fClientSocket, (sockaddr*)&fSockAddrL2cap, sizeof(sockaddr_l2cap));
-	if (status < 0) {
-		TRACE_BT("SDP: Could not connect client socket (%s)...\n", strerror(status));
+	status = connect(fClientSocket, (sockaddr*)&fSockAddrL2cap,
+		sizeof(sockaddr_l2cap));
+	if (status < 0 && errno != EINPROGRESS && errno != EWOULDBLOCK) {
+		status = errno;
+		TRACE_BT("SDP: Could not connect client socket (%s)...\n",
+			strerror(status));
 		Stop();
 		return status;
+	}
+
+	// L2CAP connect is asynchronous. In particular, a reconnect commonly
+	// reports EWOULDBLOCK even on a socket without O_NONBLOCK; wait for the
+	// endpoint instead of treating that normal intermediate state as failure.
+	if (status < 0) {
+		pollfd descriptor = {fClientSocket, POLLOUT, 0};
+		do {
+			status = poll(&descriptor, 1, 5000);
+		} while (status < 0 && errno == EINTR);
+
+		if (status == 0) {
+			Stop();
+			return B_TIMED_OUT;
+		}
+		if (status < 0) {
+			status = errno;
+			Stop();
+			return status;
+		}
 	}
 
 	int sockError = 0;
 	socklen_t errorLength = sizeof(sockError);
 	status = getsockopt(fClientSocket, SOL_SOCKET, SO_ERROR, &sockError, &errorLength);
-	if (status < 0)
-		TRACE_BT("SDP: Error occured\n");
-	else if (sockError == 0)
+	if (status < 0) {
+		status = errno;
+		Stop();
+		return status;
+	} else if (sockError == 0)
 		TRACE_BT("SDP: Socket connected.\n");
-	else
-		TRACE_BT("SDP: Socket Not connected.\n");
+	else {
+		TRACE_BT("SDP: Socket not connected (%s).\n",
+			strerror(sockError));
+		Stop();
+		return sockError;
+	}
 
 	// set receive timeout
 	timeval timeout;
@@ -75,7 +114,7 @@ SDPClient::Start()
 void
 SDPClient::Stop()
 {
-	if (fClientSocket > 0) {
+	if (fClientSocket >= 0) {
 		close(fClientSocket);
 		fClientSocket = -1;
 	}
@@ -118,6 +157,7 @@ SDPClient::RequestServiceRecords()
 		request.WriteExactly(&contStateNumBytes, 1);
 		request.WriteExactly(contStateData, contStateNumBytes);
 
+#ifdef TRACE_BLUETOOTH_SERVER
 		request.Seek(0, SEEK_SET);
 		printf("SDP: Request=\n");
 		for (size_t i = 0; i < request.BufferLength(); i++) {
@@ -126,6 +166,8 @@ SDPClient::RequestServiceRecords()
 			printf("%02X ", byte);
 		}
 		printf("\n");
+		request.Seek(0, SEEK_SET);
+#endif
 
 		BMallocIO reply;
 		if (_IssueRequest(request.Buffer(), request.BufferLength(), &reply) != B_OK) {
@@ -162,6 +204,7 @@ SDPClient::RequestServiceRecords()
 status_t
 SDPClient::NotifyProfiles()
 {
+	status_t result = B_NOT_SUPPORTED;
 	BMessage attrListMsg;
 	for (int i = 0; fRemoteDevice->services.FindMessage("service", i, &attrListMsg) == B_OK; i++) {
 		void* data;
@@ -192,13 +235,20 @@ SDPClient::NotifyProfiles()
 
 			switch (service_uuid) {
 				case SDP_SERVICE_CLASS_HUMAN_INTERFACE_DEVICE:
-					return _NotifyHIDProfile(&attrListMsg);
+					if (_NotifyHIDProfile(&attrListMsg) == B_OK)
+						result = B_OK;
+					break;
+
+				case SDP_SERVICE_CLASS_AUDIO_SINK:
+					if (_NotifyAudioProfile() == B_OK)
+						result = B_OK;
+					break;
 
 				// more services shall be added here
 			}
 		}
 	}
-	return B_ERROR;
+	return result;
 }
 
 
@@ -268,5 +318,28 @@ status_t
 SDPClient::_NotifyHIDProfile(BMessage* attrList)
 {
 	TRACE_BT("Notifying HID Profile...\n");
-	return B_NOT_SUPPORTED;
+
+	port_id port = find_port(BLUETOOTH_HID_PORT_NAME);
+	if (port < B_OK) {
+		TRACE_BT("Bluetooth HID input device is not running\n");
+		return port;
+	}
+
+	bluetooth_hid_connect_request request;
+	request.address = fRemoteDevice->bdaddr;
+	return write_port(port, BLUETOOTH_HID_CONNECT, &request, sizeof(request));
+}
+
+
+status_t
+SDPClient::_NotifyAudioProfile()
+{
+	port_id port = find_port(BLUETOOTH_AUDIO_PORT);
+	if (port < B_OK) {
+		fprintf(stderr, "Bluetooth audio: media output add-on is not running\n");
+		return port;
+	}
+	bluetooth_audio_connect request = {fRemoteDevice->bdaddr};
+	return write_port_etc(port, BLUETOOTH_AUDIO_CONNECT, &request,
+		sizeof(request), B_RELATIVE_TIMEOUT, 100000);
 }

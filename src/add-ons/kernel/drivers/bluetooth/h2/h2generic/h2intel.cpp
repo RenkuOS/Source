@@ -36,6 +36,7 @@
 #define INTEL_OP_READ_VERSION		0xfc05
 #define INTEL_OP_SECURE_SEND		0xfc09
 #define INTEL_OP_READ_BOOT_PARAMS	0xfc0d
+#define INTEL_OP_WRITE_BOOT_PARAMS	0xfc0e
 #define INTEL_OP_WRITE_DDC			0xfc8b
 
 #define INTEL_EVENT_VENDOR			0xff
@@ -59,6 +60,9 @@
 #define SFI_SIGNATURE_OFFSET		388
 #define SFI_SIGNATURE_LENGTH		256
 #define SFI_HEADER_LENGTH			644
+#define SFI_ECDSA_HEADER_LENGTH		320
+#define SFI_ECDSA_HEADER_OFFSET		SFI_HEADER_LENGTH
+#define SFI_TLV_PAYLOAD_OFFSET		(SFI_HEADER_LENGTH + SFI_ECDSA_HEADER_LENGTH)
 
 #define MAX_FIRMWARE_SIZE			(2 * 1024 * 1024)
 #define MAX_SECURE_SEND_FRAGMENT	252
@@ -82,6 +86,26 @@ struct intel_version {
 	uint8	fw_build_yy;
 	uint8	fw_patch_num;
 } _PACKED;
+
+struct intel_tlv_version {
+	uint32	cnviTop;
+	uint32	cnvrTop;
+	uint32	cnviBluetooth;
+	uint16	deviceRevision;
+	uint8	imageType;
+	uint8	limitedCommandCompleteEvents;
+	uint8	secureBootEngineType;
+};
+
+enum {
+	INTEL_TLV_CNVI_TOP = 0x10,
+	INTEL_TLV_CNVR_TOP,
+	INTEL_TLV_CNVI_BT,
+	INTEL_TLV_DEVICE_REVISION = 0x16,
+	INTEL_TLV_IMAGE_TYPE = 0x1c,
+	INTEL_TLV_LIMITED_COMMAND_COMPLETE = 0x2e,
+	INTEL_TLV_SECURE_BOOT_ENGINE = 0x2f
+};
 
 struct intel_boot_params {
 	uint8	status;
@@ -149,6 +173,7 @@ struct intel_loader {
 
 static const uint16 kIntelDevices[] = {
 	0x0a2b,		// Wireless 8260 and 8265
+	0x0032,		// AX210
 };
 
 
@@ -414,6 +439,106 @@ read_version(intel_loader* loader, intel_version* version)
 	return B_OK;
 }
 
+static uint16
+read_le16(const uint8* data)
+{
+	uint16 value;
+	memcpy(&value, data, sizeof(value));
+	return B_LENDIAN_TO_HOST_INT16(value);
+}
+
+
+static uint32
+read_le32(const uint8* data)
+{
+	uint32 value;
+	memcpy(&value, data, sizeof(value));
+	return B_LENDIAN_TO_HOST_INT32(value);
+}
+
+
+static status_t
+read_tlv_version(intel_loader* loader, intel_tlv_version* version)
+{
+	uint8 response[255];
+	uint8 parameter = 0xff;
+	size_t length;
+	status_t status = intel_command(loader, INTEL_OP_READ_VERSION, &parameter,
+		sizeof(parameter), false, response, sizeof(response), &length);
+	if (status != B_OK)
+		return status;
+	if (length < 1 || response[0] != 0)
+		return B_BAD_DATA;
+
+	memset(version, 0, sizeof(*version));
+	bool haveCnviTop = false;
+	bool haveCnvrTop = false;
+	bool haveCnviBluetooth = false;
+	bool haveImageType = false;
+	for (size_t offset = 1; offset < length;) {
+		if (length - offset < 2)
+			return B_BAD_DATA;
+		uint8 type = response[offset++];
+		uint8 valueLength = response[offset++];
+		if (valueLength > length - offset)
+			return B_BAD_DATA;
+
+		const uint8* value = response + offset;
+		switch (type) {
+			case INTEL_TLV_CNVI_TOP:
+				if (valueLength != sizeof(uint32))
+					return B_BAD_DATA;
+				version->cnviTop = read_le32(value);
+				haveCnviTop = true;
+				break;
+			case INTEL_TLV_CNVR_TOP:
+				if (valueLength != sizeof(uint32))
+					return B_BAD_DATA;
+				version->cnvrTop = read_le32(value);
+				haveCnvrTop = true;
+				break;
+			case INTEL_TLV_CNVI_BT:
+				if (valueLength != sizeof(uint32))
+					return B_BAD_DATA;
+				version->cnviBluetooth = read_le32(value);
+				haveCnviBluetooth = true;
+				break;
+			case INTEL_TLV_DEVICE_REVISION:
+				if (valueLength != sizeof(uint16))
+					return B_BAD_DATA;
+				version->deviceRevision = read_le16(value);
+				break;
+			case INTEL_TLV_IMAGE_TYPE:
+				if (valueLength != sizeof(uint8))
+					return B_BAD_DATA;
+				version->imageType = value[0];
+				haveImageType = true;
+				break;
+			case INTEL_TLV_LIMITED_COMMAND_COMPLETE:
+				if (valueLength != sizeof(uint8))
+					return B_BAD_DATA;
+				version->limitedCommandCompleteEvents = value[0];
+				break;
+			case INTEL_TLV_SECURE_BOOT_ENGINE:
+				if (valueLength != sizeof(uint8))
+					return B_BAD_DATA;
+				version->secureBootEngineType = value[0];
+				break;
+		}
+		offset += valueLength;
+	}
+
+	if (!haveCnviTop || !haveCnvrTop || !haveCnviBluetooth || !haveImageType)
+		return B_BAD_DATA;
+	if (((version->cnviBluetooth & 0x0000ff00) >> 8) != INTEL_HW_PLATFORM)
+		return B_NOT_SUPPORTED;
+	if (version->limitedCommandCompleteEvents != 0
+		|| version->secureBootEngineType > 1) {
+		return B_NOT_SUPPORTED;
+	}
+	return B_OK;
+}
+
 
 static status_t
 secure_send(intel_loader* loader, uint8 type, const uint8* data,
@@ -491,6 +616,37 @@ read_firmware_file(const char* name, uint8** _data, size_t* _size)
 
 
 static status_t
+download_firmware_data(intel_loader* loader, const uint8* data, size_t size,
+	size_t offset)
+{
+	if (offset > size)
+		return B_BAD_DATA;
+
+	size_t fragment = 0;
+	while (offset + fragment < size) {
+		if (offset + fragment + 3 > size)
+			return B_BAD_DATA;
+
+		fragment += 3 + data[offset + fragment + 2];
+		if (offset + fragment > size)
+			return B_BAD_DATA;
+
+		if (fragment % 4 == 0) {
+			status_t status = secure_send(loader, INTEL_FRAGMENT_DATA,
+				data + offset, fragment);
+			if (status != B_OK)
+				return status;
+
+			offset += fragment;
+			fragment = 0;
+		}
+	}
+
+	return fragment == 0 ? B_OK : B_BAD_DATA;
+}
+
+
+static status_t
 download_firmware(intel_loader* loader, const uint8* data, size_t size)
 {
 	status_t status = secure_send(loader, INTEL_FRAGMENT_INIT, data,
@@ -508,30 +664,8 @@ download_firmware(intel_loader* loader, const uint8* data, size_t size)
 		return status;
 	}
 
-	// The data fragments must be a multiple of 4 bytes long. The file has
-	// NOP commands that align the command groups.
-	size_t offset = SFI_HEADER_LENGTH;
-	size_t fragment = 0;
-	while (offset + fragment < size) {
-		if (offset + fragment + 3 > size)
-			return B_BAD_DATA;
-
-		fragment += 3 + data[offset + fragment + 2];
-		if (offset + fragment > size)
-			return B_BAD_DATA;
-
-		if (fragment % 4 == 0) {
-			status = secure_send(loader, INTEL_FRAGMENT_DATA, data + offset,
-				fragment);
-			if (status != B_OK)
-				return status;
-
-			offset += fragment;
-			fragment = 0;
-		}
-	}
-
-	return fragment == 0 ? B_OK : B_BAD_DATA;
+	// NOP commands align command groups to four-byte boundaries.
+	return download_firmware_data(loader, data, size, SFI_HEADER_LENGTH);
 }
 
 
@@ -549,6 +683,137 @@ wait_for_vendor_event(intel_loader* loader, bool booting,
 			return status;
 	}
 
+	return B_OK;
+}
+
+
+static uint16
+pack_top_name_component(uint32 top)
+{
+	uint16 component = ((top & 0x00000fff) << 4) | ((top >> 24) & 0x0f);
+	return B_SWAP_INT16(component);
+}
+
+
+static status_t
+find_boot_address(const uint8* firmware, size_t size, uint32* bootAddress)
+{
+	size_t offset = SFI_TLV_PAYLOAD_OFFSET;
+	while (offset + 3 <= size) {
+		uint16 opcode = firmware[offset] | ((uint16)firmware[offset + 1] << 8);
+		uint8 length = firmware[offset + 2];
+		if (offset + 3 + length > size)
+			return B_BAD_DATA;
+
+		if (opcode == INTEL_OP_WRITE_BOOT_PARAMS && length >= sizeof(uint32)) {
+			*bootAddress = read_le32(firmware + offset + 3);
+			return B_OK;
+		}
+		offset += 3 + length;
+	}
+
+	return B_BAD_DATA;
+}
+
+
+static status_t
+download_tlv_firmware(intel_loader* loader, const uint8* firmware,
+	size_t size, bool useEcdsaHeader)
+{
+	if (size < SFI_TLV_PAYLOAD_OFFSET)
+		return B_BAD_DATA;
+
+	const uint8* header = firmware;
+	size_t keyLength = SFI_PUBLIC_KEY_LENGTH;
+	size_t signatureLength = SFI_SIGNATURE_LENGTH;
+	if (useEcdsaHeader) {
+		if (size < SFI_ECDSA_HEADER_OFFSET + SFI_ECDSA_HEADER_LENGTH)
+			return B_BAD_DATA;
+		header += SFI_ECDSA_HEADER_OFFSET;
+		keyLength = 96;
+		signatureLength = 96;
+	}
+
+	status_t status = secure_send(loader, INTEL_FRAGMENT_INIT, header,
+		SFI_CSS_HEADER_LENGTH);
+	if (status == B_OK) {
+		status = secure_send(loader, INTEL_FRAGMENT_PUBLIC_KEY,
+			header + SFI_PUBLIC_KEY_OFFSET, keyLength);
+	}
+	if (status == B_OK) {
+		status = secure_send(loader, INTEL_FRAGMENT_SIGNATURE,
+			header + SFI_PUBLIC_KEY_OFFSET + keyLength, signatureLength);
+	}
+	if (status != B_OK) {
+		ERROR("intel: AX210 firmware header rejected\n");
+		return status;
+	}
+
+	return download_firmware_data(loader, firmware, size,
+		SFI_TLV_PAYLOAD_OFFSET);
+}
+
+
+static status_t
+setup_tlv_controller(intel_loader* loader)
+{
+	intel_tlv_version version;
+	status_t status = read_tlv_version(loader, &version);
+	if (status != B_OK) {
+		ERROR("intel: cannot read TLV version: %s\n", strerror(status));
+		return status;
+	}
+
+	uint8 hardwareVariant = (version.cnviBluetooth & 0x003f0000) >> 16;
+	if (version.imageType == 0x03) {
+		ERROR("intel: operational AX210 firmware is running\n");
+		return B_OK;
+	}
+	if (version.imageType != 0x01 || hardwareVariant < 0x17)
+		return B_NOT_SUPPORTED;
+
+	char name[32];
+	snprintf(name, sizeof(name), "ibt-%04x-%04x.sfi",
+		pack_top_name_component(version.cnviTop),
+		pack_top_name_component(version.cnvrTop));
+
+	uint8* firmware;
+	size_t size;
+	status = read_firmware_file(name, &firmware, &size);
+	if (status != B_OK)
+		return status;
+
+	uint32 bootAddress = 0;
+	status = find_boot_address(firmware, size, &bootAddress);
+	if (status == B_OK) {
+		loader->downloadResult = -1;
+		status = download_tlv_firmware(loader, firmware, size,
+			version.secureBootEngineType == 1);
+	}
+	free(firmware);
+	if (status != B_OK) {
+		ERROR("intel: AX210 firmware upload failed: %s\n", strerror(status));
+		return status;
+	}
+
+	status = wait_for_vendor_event(loader, false, kDownloadTimeout);
+	if (status != B_OK || loader->downloadResult != 0) {
+		ERROR("intel: AX210 firmware rejected (%s, result %" B_PRId32 ")\n",
+			strerror(status), loader->downloadResult);
+		return status != B_OK ? status : B_IO_ERROR;
+	}
+
+	intel_reset reset = { 0x00, 0x01, 0x00, 0x01, bootAddress };
+	loader->booted = false;
+	status = send_command(loader, INTEL_OP_RESET, &reset, sizeof(reset), false);
+	if (status == B_OK)
+		status = wait_for_vendor_event(loader, true, kBootTimeout);
+	if (status != B_OK) {
+		ERROR("intel: AX210 firmware did not boot: %s\n", strerror(status));
+		return status;
+	}
+
+	ERROR("intel: loaded AX210 firmware %s\n", name);
 	return B_OK;
 }
 
@@ -590,8 +855,17 @@ setup_controller(intel_loader* loader)
 {
 	intel_version version;
 	status_t status = read_version(loader, &version);
-	if (status != B_OK)
-		return status;
+	if (status != B_OK || version.status != 0
+		|| version.hw_platform != INTEL_HW_PLATFORM
+		|| (version.hw_variant != 0x0b && version.hw_variant != 0x0c)) {
+		status_t tlvStatus = setup_tlv_controller(loader);
+		if (tlvStatus == B_OK)
+			return B_OK;
+		if (status != B_OK)
+			return tlvStatus;
+		if (version.status != 0)
+			return tlvStatus;
+	}
 
 	if (version.hw_platform != INTEL_HW_PLATFORM
 		|| (version.hw_variant != 0x0b && version.hw_variant != 0x0c)) {
@@ -708,6 +982,22 @@ intel_needs_firmware(const usb_device_descriptor* descriptor)
 }
 
 
+static void
+intel_clear_halted_pipe(const usb_endpoint_info* endpoint)
+{
+	if (endpoint == NULL)
+		return;
+
+	usb->cancel_queued_transfers(endpoint->handle);
+	status_t status = usb->clear_feature(endpoint->handle,
+		USB_FEATURE_ENDPOINT_HALT);
+	if (status != B_OK) {
+		ERROR("clearing halt on Intel Bluetooth pipe failed: %s\n",
+			strerror(status));
+	}
+}
+
+
 status_t
 intel_load_firmware(bt_usb_dev* bdev)
 {
@@ -731,6 +1021,13 @@ intel_load_firmware(bt_usb_dev* bdev)
 		status = setup_controller(loader);
 
 	stop_rx(loader);
+	if (status == B_OK && loader->booted) {
+		// Rebooting into firmware can halt the bulk pipes that were receiving
+		// events. Clear them only after an actual boot; clearing an operational
+		// controller's pipes can desynchronize its USB data toggles.
+		intel_clear_halted_pipe(bdev->bulk_in_ep);
+		intel_clear_halted_pipe(bdev->bulk_out_ep);
+	}
 
 	// A receive callback can still use the loader, so keep it.
 	if (atomic_get(&loader->pendingRx) > 0)
