@@ -1866,10 +1866,14 @@ SdhciBus::HandleInterrupt()
 	if ((intmask & SDHCI_INT_CARD_STATUS) != 0) {
 		fRegisters->interrupt_signal_enable &= ~SDHCI_INT_CARD_STATUS;
 		fRegisters->interrupt_status_enable &= ~SDHCI_INT_CARD_STATUS;
+		// HandleInterrupt() also runs in the poller thread of a controller
+		// without a usable IRQ, with interrupts enabled.
+		cpu_status state = disable_interrupts();
 		acquire_spinlock(&fCardInterruptLock);
 		if (fCardInterruptHandler != NULL)
 			fCardInterruptHandler(fCardInterruptCookie);
 		release_spinlock(&fCardInterruptLock);
+		restore_interrupts(state);
 	}
 
 	// handling command interrupt
