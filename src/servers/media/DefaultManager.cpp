@@ -413,6 +413,22 @@ DefaultManager::_RescanThread()
 		if (fPhysicalAudioOut == -1)
 			_FindPhysical(&fPhysicalAudioOut, kMsgTypeAudioOut, false,
 				B_MEDIA_RAW_AUDIO);
+		else if (fUsingFallback[_TypeIndex(kMsgTypeAudioOut)]) {
+			// The saved output was not there at the first look, the output
+			// is a stand-in: a node that comes later, as a USB sound card
+			// or Bluetooth speakers, may be it. Then the mixer goes over
+			// to it, as when the output is chosen while running.
+			media_node_id saved = -1;
+			_FindPhysical(&saved, kMsgTypeAudioOut, false,
+				B_MEDIA_RAW_AUDIO);
+			if (!fUsingFallback[_TypeIndex(kMsgTypeAudioOut)]
+				&& saved != -1 && saved != fPhysicalAudioOut) {
+				syslog(LOG_NOTICE, "media_server: the default audio output "
+					"is there now, the mixer goes over to it\n");
+				fPhysicalAudioOut = saved;
+				fMixerConnected = false;
+			}
+		}
 		if (fPhysicalAudioIn == -1)
 			_FindPhysical(&fPhysicalAudioIn, kMsgTypeAudioIn, true,
 				B_MEDIA_RAW_AUDIO);
@@ -582,17 +598,17 @@ DefaultManager::_FindPhysical(volatile media_node_id *id, uint32 default_type,
 
 		dormant_node_info dninfo;
 		if (fRoster->GetDormantNodeFor(info[i].node, &dninfo) != B_OK) {
-			ERROR("Couldn't GetDormantNodeFor\n");
+			syslog(LOG_DEBUG, "media_server: no dormant node for \"%s\"\n",
+				info[i].name);
 			continue;
 		}
-		if (strcmp(dninfo.name, msgDninfo.name) != 0) {
-			ERROR("Doesn't match name\n");
+		if (strcmp(dninfo.name, msgDninfo.name) != 0)
 			continue;
-		}
 		BPath path;
 		if (gDormantNodeManager->FindAddOnPath(&path, dninfo.addon) != B_OK
 			|| path != msgPath) {
-			ERROR("Doesn't match : path\n");
+			syslog(LOG_DEBUG, "media_server: \"%s\" is from %s, not %s\n",
+				info[i].name, path.Path(), msgPath.Path());
 			continue;
 		}
 		if (dninfo.flavor_id == msgDninfo.flavor_id) {
