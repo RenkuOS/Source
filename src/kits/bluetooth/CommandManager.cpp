@@ -147,6 +147,7 @@ buildRemoteNameRequest(bdaddr_t bdaddr, uint8 pscan_rep_mode,
 	if (command != NULL) {
 		param->bdaddr = bdaddr;
 		param->pscan_rep_mode = pscan_rep_mode;
+		param->reserved = 0;
 		param->clock_offset = clock_offset;
 	}
 
