@@ -3,3 +3,5 @@ Update this file to specify if you want to appear as a Contributor in the about 
 |GitHub User|Display Name|
 |----|----|
 |KevinAdams05|Kevin Adams|
+|shaka444|Jimmy Shaka|
+
