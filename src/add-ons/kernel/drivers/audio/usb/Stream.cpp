@@ -40,6 +40,9 @@ Stream::Stream(Device* device, size_t interface, usb_interface_list* List)
 	fAreaSize(0),
 	fRecordScratchArea(-1),
 	fRecordScratch(NULL),
+	fCaptureSlot(0),
+	fCaptureFill(0),
+	fCaptureGapPhase(0),
 	fPlaybackScratchArea(-1),
 	fPlaybackScratch(NULL),
 	fPlaybackScratchStride(0),
@@ -1223,6 +1226,14 @@ Stream::_Start()
 		// previous run.
 		fPlaybackCarryLength = 0;
 		fFeedbackPhase = 0;
+		// The first record buffer this run fills is the one the next exchange
+		// reports (ExchangeBuffer advances fLastReportedCycle before it
+		// reports). We run on that exchange's thread, before it waits, and no
+		// completion is pending, so the two cannot disagree.
+		fCaptureSlot = fBufferCount > 0
+			? (size_t)(fLastReportedCycle + 1) % fBufferCount : 0;
+		fCaptureFill = 0;
+		fCaptureGapPhase = 0;
 		// Per-RUN, so every run yields fresh feedback evidence instead of the
 		// budget being consumed once for the life of the driver image.
 		fFeedbackLogCount = 0;
@@ -2014,14 +2025,24 @@ Stream::_PublishImplicitFeedback(size_t actualLength)
 
 
 size_t
-Stream::_RepackCapture(void* scratch)
+Stream::_RepackCapture(void* scratch, size_t& completed)
 {
 	// The isochronous IN packets were received at wMaxPacketSize stride into the
-	// scratch buffer; copy the frames the device actually delivered into the
-	// contiguous media record buffer. The record buffer is a fixed size, so a
-	// device delivering more than nominal is truncated here (its surplus is
-	// still counted for the rate estimate) and one delivering less is
-	// zero-padded.
+	// scratch buffer; append the frames the device actually delivered to the
+	// record buffer being filled (fCaptureSlot). A record buffer is complete,
+	// and converted to the media format, once it holds a whole buffer of
+	// frames; the remainder starts the next one. `completed` says how many
+	// this transfer finished: usually one, now and then none or two.
+	//
+	// Until 2026-11-02 each transfer made exactly one record buffer, truncated
+	// to the nominal frame count or zero-padded up to it. A transfer spans a
+	// fixed number of service intervals of the HOST's clock, so capture ran at
+	// the host's rate while playback, paced by feedback, ran at the device's:
+	// a Behringer UMC204HD at 192 kHz delivers ~36 ppm more per host interval
+	// than nominal, so about 7 captured samples a second were thrown away, and
+	// a client timing capture against the playback clock (multi_audio's time
+	// source) ran out of input one buffer every ~27 s.
+	//
 	// Returns the true delivered byte count (the sum of the per-packet
 	// actual_length values, each clamped to wMaxPacketSize). The caller uses
 	// this for the implicit-feedback rate estimate: it must come from the
@@ -2030,36 +2051,37 @@ Stream::_RepackCapture(void* scratch)
 	// sum of the requested (maximum) packet sizes rather than the bytes truly
 	// received (xHCI fills in request_length for packets it did not
 	// individually complete), which would double-count a lightly loaded stream.
-	// TODO: carry the surplus/deficit across buffers for sample-accurate
-	// capture; a fixed-size record buffer cannot express a drifting rate.
+	completed = 0;
+
 	TypeIFormatDescriptor* format = static_cast<TypeIFormatDescriptor*>(
 		fAlternates[fActiveAlternate]->Format());
 	uint32 stride = format->fNumChannels * format->fSubframeSize;
 
-	if (fRecordScratch == NULL)
-		return 0;
-
-	if (stride == 0 || fMaxPacketSize == 0)
+	if (fRecordScratch == NULL || stride == 0 || fMaxPacketSize == 0
+		|| fPacketsPerBuffer == 0)
 		return 0;
 
 	size_t framesPerBuffer = fSamplesCount / fBufferCount;
 	size_t bufferSize = framesPerBuffer * stride;
 	size_t scratchStride = fPacketsPerBuffer * fMaxPacketSize;
 	size_t index = ((uint8*)scratch - fRecordScratch) / scratchStride;
-	if (index >= fBufferCount)
+	if (index >= fBufferCount || bufferSize == 0)
 		return 0;
+	if (fCaptureSlot >= fBufferCount || fCaptureFill >= bufferSize) {
+		fCaptureSlot = 0;
+		fCaptureFill = 0;
+	}
+
+	// The nominal frames per packet, 16.16, for the silence that stands in
+	// for a missed service interval.
+	uint32 nominal = (uint32)(((uint64)framesPerBuffer << 16)
+		/ fPacketsPerBuffer);
 
 	usb_iso_packet_descriptor* descriptors
 		= fDescriptors + index * fPacketsPerBuffer;
-	uint8* source = fRecordScratch + index * scratchStride;
-	// Repack contiguous wire-format frames into the wire chunk first; the
-	// media conversion below writes the record buffer through the ORIGINAL
-	// area VA (fBuffers) in this (completion) thread, the one view proven
-	// coherent with the client's mapping (see _StageWireChunk).
-	uint8* wireTarget = fWireBuffers + index * bufferSize;
+	const uint8* source = fRecordScratch + index * scratchStride;
 
 	size_t delivered = 0;
-	size_t filled = 0;
 	for (size_t i = 0; i < fPacketsPerBuffer; i++) {
 		size_t length = descriptors[i].actual_length;
 		if (length > fMaxPacketSize)
@@ -2077,24 +2099,53 @@ Stream::_RepackCapture(void* scratch)
 				? (uint16)(length / stride) : 0);
 		}
 
-		if (filled >= bufferSize)
-			continue;
-		if (filled + length > bufferSize)
-			length = bufferSize - filled;
-		if (length > 0)
-			memcpy(wireTarget + filled, source + i * fMaxPacketSize, length);
-		filled += length;
+		// An empty packet is an interval the host missed (a running stream
+		// never sends one); the device's audio for it is gone. Stand in a
+		// packet of silence, so what follows stays in time -- and a device
+		// that sends nothing at all still yields timed silence, as before.
+		const uint8* data = source + i * fMaxPacketSize;
+		if (length == 0) {
+			fCaptureGapPhase += nominal;
+			length = (size_t)(fCaptureGapPhase >> 16) * stride;
+			fCaptureGapPhase &= 0xffff;
+			data = NULL;
+		}
+		// Whole frames only; a device does not send partial ones.
+		length -= length % stride;
+
+		while (length > 0) {
+			uint8* slot = fWireBuffers + fCaptureSlot * bufferSize;
+			size_t chunk = bufferSize - fCaptureFill;
+			if (chunk > length)
+				chunk = length;
+			if (data != NULL) {
+				memcpy(slot + fCaptureFill, data, chunk);
+				data += chunk;
+			} else
+				memset(slot + fCaptureFill, 0, chunk);
+			fCaptureFill += chunk;
+			length -= chunk;
+
+			if (fCaptureFill < bufferSize)
+				continue;
+
+			// Complete: convert into the media record buffer through the
+			// ORIGINAL area VA (fBuffers), in this (completion) thread -- the
+			// one view proven coherent with the client's mapping (see
+			// _StageWireChunk).
+			uint8* mediaChunk = fBuffers
+				+ fCaptureSlot * framesPerBuffer * fMediaSampleSize;
+			if (fNeedsPacking) {
+				_Unpack24(slot, mediaChunk,
+					framesPerBuffer * fStreamChannels);
+			} else
+				memcpy(mediaChunk, slot, bufferSize);
+
+			fCaptureSlot = (fCaptureSlot + 1) % fBufferCount;
+			fCaptureFill = 0;
+			completed++;
+		}
 	}
-
-	if (filled < bufferSize)
-		memset(wireTarget + filled, 0, bufferSize - filled);
-
-	uint8* mediaChunk = fBuffers + index * framesPerBuffer * fMediaSampleSize;
-	if (fNeedsPacking) {
-		_Unpack24(wireTarget, mediaChunk,
-			framesPerBuffer * fStreamChannels);
-	} else
-		memcpy(mediaChunk, wireTarget, bufferSize);
 
 	return delivered;
 }
@@ -2202,13 +2253,14 @@ Stream::_TransferCallback(void* cookie, status_t status, void* data,
 	// per-packet iso descriptors); the transfer's aggregate actualLength is not
 	// a reliable byte count for a capture stream (see _RepackCapture).
 	size_t delivered = actualLength;
+	size_t completed = 1;
 	if (stream->fIsInput) {
 		// Every capture stream now receives into the scratch buffer at
 		// wMaxPacketSize and repacks here, at every speed. The full-speed branch
 		// this replaces converted the wire chunk in place, which only worked
 		// because the packets had been sized to our own cadence -- the sizing
 		// that truncates whatever the device actually sends (see _SetupBuffers).
-		delivered = stream->_RepackCapture(data);
+		delivered = stream->_RepackCapture(data, completed);
 	}
 
 	// A capture stream tagged as the implicit-feedback source paces the
@@ -2216,7 +2268,10 @@ Stream::_TransferCallback(void* cookie, status_t status, void* data,
 	if (stream->fIsFeedbackSource)
 		stream->_PublishImplicitFeedback(delivered);
 
-	int32 pending = atomic_add(&stream->fProcessedBuffers, 1) + 1;
+	// A capture transfer completes as many record buffers as the device
+	// filled (see _RepackCapture); playback always completes one.
+	int32 pending = atomic_add(&stream->fProcessedBuffers, (int32)completed)
+		+ (int32)completed;
 	if (pending > (int32)stream->fBufferCount)
 		TRACE(ERR, "Processed buffers overflow:%d\n", pending);
 	// With EVERY buffer still unfetched, the buffer about to be requeued has not
@@ -2249,11 +2304,25 @@ Stream::_TransferCallback(void* cookie, status_t status, void* data,
 	// Update the (frames, real_time) pair together - see fFramesPlayed in
 	// Stream.h. Frames first: ExchangeBuffer re-reads fRealTime to detect a
 	// torn pair.
-	stream->fFramesPlayed
-		+= (bigtime_t)(stream->fSamplesCount / stream->fBufferCount);
-	stream->fRealTime = system_time();
+	if (completed > 0) {
+		stream->fFramesPlayed += (bigtime_t)(completed
+			* (stream->fSamplesCount / stream->fBufferCount));
+		bigtime_t now = system_time();
+		// The frames already carried into the next record buffer arrived
+		// after the last completed one ended.
+		if (stream->fIsInput && stream->fCaptureFill > 0) {
+			uint32 rate = stream->fAlternates[stream->fActiveAlternate]
+				->GetSamplingRate();
+			if (rate > 0 && stream->fWireSampleSize > 0) {
+				now -= (bigtime_t)(stream->fCaptureFill
+					/ stream->fWireSampleSize) * 1000000 / rate;
+			}
+		}
+		stream->fRealTime = now;
 
-	release_sem_etc(stream->fDevice->fBuffersReadySem, 1, B_DO_NOT_RESCHEDULE);
+		release_sem_etc(stream->fDevice->fBuffersReadySem, (int32)completed,
+			B_DO_NOT_RESCHEDULE);
+	}
 
 	stream->fCurrentBuffer = (stream->fCurrentBuffer + 1)
 		% stream->fBufferCount;
