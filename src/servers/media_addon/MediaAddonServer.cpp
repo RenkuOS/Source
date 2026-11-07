@@ -343,8 +343,11 @@ MediaAddonServer::QuitRequested()
 		fSystemTimeSource = NULL;
 	}
 
-	for (iterator = fInfoMap.begin(); iterator != fInfoMap.end(); iterator++)
-		_PutAddonIfPossible(iterator->second);
+	// The add-ons are not unloaded: the server goes away anyway, and the
+	// nodes released above are deleted a little later, in the thread of the
+	// media roster. A node whose add-on was unloaded first (the mixer, when
+	// its time source had just gone) crashed the server as it quit, in
+	// BMediaNode::Release(), and held up a shutdown.
 
 	return true;
 }
