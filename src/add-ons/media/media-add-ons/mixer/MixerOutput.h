@@ -81,9 +81,12 @@ class MixerOutput
 		void							SetBufferGroup(BBufferGroup *group);
 		BBufferGroup*					BufferGroup();
 
-		// An output only sends while it is enabled
+		// An output only sends while it is enabled; an output other
+		// than the first must also run on the first one's time source.
 		void							SetEnabled(bool enabled);
 		bool							IsEnabled();
+		void							SetSharesClock(bool shares);
+		bool							SharesClock();
 
 	private:
 		void							UpdateByteOrderSwap();
@@ -120,6 +123,7 @@ class MixerOutput
 		int								fResamplerCount;
 		BBufferGroup					*fBufferGroup;
 		bool							fEnabled;
+		bool							fSharesClock;
 };
 
 
@@ -195,6 +199,12 @@ inline bool
 MixerOutput::IsEnabled()
 {
 	return fEnabled;
+}
+
+inline bool
+MixerOutput::SharesClock()
+{
+	return fSharesClock;
 }
 
 #endif

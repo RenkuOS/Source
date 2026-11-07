@@ -64,8 +64,10 @@ MixerCore::MixerCore(AudioMixer *node)
 	:
 	fLocker(new BLocker("mixer core lock")),
 	fInputs(new BList),
+	fOutputs(new BList),
 	fOutput(0),
 	fNextInputID(1),
+	fNextOutputID(1),
 	fRunning(false),
 	fStarted(false),
 	fMixBufferFrameRate(0),
@@ -89,11 +91,12 @@ MixerCore::~MixerCore()
 	delete fLocker;
 	delete fInputs;
 
+	for (int32 i = fOutputs->CountItems() - 1; i >= 0; i--)
+		delete (MixerOutput*)fOutputs->ItemAtFast(i);
+	delete fOutputs;
+
 	ASSERT(fMixThreadWaitSem == -1);
 	ASSERT(fMixThread == -1);
-
-	// the output owns the mix buffer and the resamplers
-	delete fOutput;
 
 	if (fTimeSource)
 		fTimeSource->Release();
@@ -112,7 +115,8 @@ MixerCore::UpdateResamplingAlgorithm()
 {
 	ASSERT_LOCKED();
 
-	fOutput->UpdateResamplers();
+	for (int32 i = fOutputs->CountItems() - 1; i >= 0; i--)
+		((MixerOutput*)fOutputs->ItemAtFast(i))->UpdateResamplers();
 
 	for (int32 i = fInputs->CountItems() - 1; i >= 0; i--) {
 		MixerInput* input
@@ -145,18 +149,25 @@ MixerOutput*
 MixerCore::AddOutput(const media_output& output)
 {
 	ASSERT_LOCKED();
+	MixerOutput* out = new MixerOutput(this, output);
+
 	if (fOutput != NULL) {
-		ERROR("MixerCore::AddOutput: already connected\n");
-		return fOutput;
+		fOutputs->AddItem(out);
+		out->UpdateResamplers();
+		out->SetMixBufferFrameCount(fMixBufferFrameCount);
+		return out;
 	}
 
-	fOutput = new MixerOutput(this, output);
+	// The first output comes first in the list, so that it is the first
+	// connected output the node reports.
+	fOutputs->AddItem(out, 0);
+	fOutput = out;
 	// the output format might have been adjusted inside MixerOutput
 	_ApplyOutputFormat();
 
 	// it is disabled until connected, so the mix thread does not start yet
 	ASSERT(!fRunning);
-	return fOutput;
+	return out;
 }
 
 
@@ -177,17 +188,25 @@ MixerCore::RemoveInput(int32 inputID)
 
 
 bool
-MixerCore::RemoveOutput()
+MixerCore::RemoveOutput(const media_source& source)
 {
 	ASSERT_LOCKED();
-	if (fOutput == NULL)
+	MixerOutput* output = FindOutput(source);
+	if (output == NULL)
 		return false;
 
-	if (fRunning)
-		_StopMixThread();
+	if (output == fOutput) {
+		// The other outputs follow this one's timing, so they stay silent
+		// until another first output connects. Switching one of them to
+		// first here would keep the old device's time source, and refuse
+		// the next default output if it is on another device.
+		if (fRunning)
+			_StopMixThread();
+		fOutput = NULL;
+	}
 
-	delete fOutput;
-	fOutput = NULL;
+	fOutputs->RemoveItem(output);
+	delete output;
 	return true;
 }
 
@@ -197,6 +216,14 @@ MixerCore::CreateInputID()
 {
 	ASSERT_LOCKED();
 	return fNextInputID++;
+}
+
+
+int32
+MixerCore::CreateOutputID()
+{
+	ASSERT_LOCKED();
+	return fNextOutputID++;
 }
 
 
@@ -213,6 +240,34 @@ MixerCore::Output()
 {
 	ASSERT_LOCKED();
 	return fOutput;
+}
+
+
+int32
+MixerCore::CountOutputs()
+{
+	ASSERT_LOCKED();
+	return fOutputs->CountItems();
+}
+
+
+MixerOutput*
+MixerCore::OutputAt(int32 index)
+{
+	ASSERT_LOCKED();
+	return (MixerOutput*)fOutputs->ItemAt(index);
+}
+
+
+MixerOutput*
+MixerCore::FindOutput(const media_source& source)
+{
+	ASSERT_LOCKED();
+	for (int32 i = 0; MixerOutput* output = OutputAt(i); i++) {
+		if (output->MediaOutput().source == source)
+			return output;
+	}
+	return NULL;
 }
 
 
@@ -283,14 +338,15 @@ MixerCore::SetTimingInfo(BTimeSource *ts, bigtime_t downstream_latency)
 
 
 void
-MixerCore::EnableOutput(bool enabled)
+MixerCore::EnableOutput(MixerOutput* output, bool enabled)
 {
 	ASSERT_LOCKED();
 	TRACE("MixerCore::EnableOutput %d\n", enabled);
-	if (fOutput == NULL)
-		return;
+	output->SetEnabled(enabled);
 
-	fOutput->SetEnabled(enabled);
+	// only the first output starts and stops the mix thread
+	if (output != fOutput)
+		return;
 
 	if (fRunning && !enabled)
 		_StopMixThread();
@@ -393,8 +449,11 @@ MixerCore::_ApplyOutputFormat()
 		fMixBufferFrameCount *= 2;
 	}
 
-	fOutput->UpdateResamplers();
-	fOutput->SetMixBufferFrameCount(fMixBufferFrameCount);
+	// Every output mixes at the first output's rate and buffer length
+	for (int32 i = 0; MixerOutput* output = OutputAt(i); i++) {
+		output->UpdateResamplers();
+		output->SetMixBufferFrameCount(fMixBufferFrameCount);
+	}
 
 	TRACE("MixerCore::OutputFormatChanged:\n");
 	TRACE("  fMixBufferFrameRate %ld\n", fMixBufferFrameRate);
@@ -403,6 +462,50 @@ MixerCore::_ApplyOutputFormat()
 	MixerInput *input;
 	for (int i = 0; (input = Input(i)); i++)
 		input->SetMixBufferFormat(fMixBufferFrameRate, fMixBufferFrameCount);
+}
+
+
+/*!	An output other than the first only receives the mix while it is enabled,
+	runs on the first output's time source, and has its frame rate and buffer
+	length, since all outputs are mixed and sent in the same cycle.
+*/
+bool
+MixerCore::_CanMixTo(MixerOutput* output)
+{
+	if (output->BufferGroup() == NULL)
+		return false;
+	if (output == fOutput)
+		return true;
+
+	const media_multi_audio_format& first
+		= fOutput->MediaOutput().format.u.raw_audio;
+	const media_multi_audio_format& format
+		= output->MediaOutput().format.u.raw_audio;
+	return output->IsEnabled() && output->SharesClock()
+		&& format.frame_rate == first.frame_rate
+		&& frames_per_buffer(format) == frames_per_buffer(first);
+}
+
+
+/*!	The master gain of the first output applies to every output, on top of
+	each other output's own gain: channel by channel when both have as many
+	channels, otherwise as the mean of the master channels.
+*/
+float
+MixerCore::_OutputChannelGain(MixerOutput* output, int channel)
+{
+	float gain = output->GetOutputChannelGain(channel);
+	if (output == fOutput)
+		return gain;
+
+	int masterCount = fOutput->GetOutputChannelCount();
+	if (masterCount == output->GetOutputChannelCount())
+		return gain * fOutput->GetOutputChannelGain(channel);
+
+	float master = 0;
+	for (int i = 0; i < masterCount; i++)
+		master += fOutput->GetOutputChannelGain(i);
+	return masterCount > 0 ? gain * master / masterCount : gain;
 }
 
 
@@ -415,6 +518,16 @@ MixerCore::_MixOutput(MixerOutput* output, RtList<chan_info>* inputChanInfos,
 		= output->MediaOutput().format.u.raw_audio;
 	int channelCount = output->GetOutputChannelCount();
 	float* mixBuffer = output->MixBuffer();
+
+	// Request the buffer first, so that no time goes into mixing for an
+	// output that has none free.
+	BBuffer* buffer = output->BufferGroup()->RequestBuffer(format.buffer_size,
+		bufferRequestTimeout);
+	if (buffer == NULL) {
+		ERROR("MixerCore: RequestBuffer failed for buffer %lld\n",
+			bufferIndex);
+		return;
+	}
 
 	if (!silent) {
 		// mix all data from all inputs into the mix buffer
@@ -454,15 +567,6 @@ MixerCore::_MixOutput(MixerOutput* output, RtList<chan_info>* inputChanInfos,
 		}
 	}
 
-	// request a buffer
-	BBuffer* buffer = output->BufferGroup()->RequestBuffer(format.buffer_size,
-		bufferRequestTimeout);
-	if (buffer == NULL) {
-		ERROR("MixerCore: RequestBuffer failed for buffer %lld\n",
-			bufferIndex);
-		return;
-	}
-
 	if (silent) {
 		int middle = 0;
 		if (format.format == media_raw_audio_format::B_AUDIO_UCHAR)
@@ -477,7 +581,7 @@ MixerCore::_MixOutput(MixerOutput* output, RtList<chan_info>* inputChanInfos,
 				reinterpret_cast<char*>(buffer->Data())
 					+ (i * bytes_per_sample(format)),
 				bytes_per_frame(format), frames_per_buffer(format),
-				fOutputGain * output->GetOutputChannelGain(i));
+				fOutputGain * _OutputChannelGain(output, i));
 		}
 		PRINT(4, "send buffer, inframes %ld, outframes %ld\n",
 			fMixBufferFrameCount, frames_per_buffer(format));
@@ -587,8 +691,8 @@ MixerCore::_MixThread()
 			continue;
 		}
 
-		// With no inputs, or the output muted, there is nothing to mix;
-		// the output just gets an empty buffer.
+		// With no inputs, or the master output muted, there is nothing to
+		// mix; every output just gets an empty buffer.
 		bool silent = fInputs->IsEmpty() || fOutput->IsMuted();
 
 		int64 currentFramePos;
@@ -622,8 +726,17 @@ MixerCore::_MixThread()
 			}
 		}
 
-		_MixOutput(fOutput, inputChanInfos, silent, eventTime,
-			bufferRequestTimeout, bufferIndex);
+		// Only the first output may wait for a buffer. Waiting for the
+		// others would hold up the next cycle while the core is locked, so
+		// an output whose consumer still holds all of its buffers misses
+		// this one instead of making every output late.
+		for (int32 i = 0; MixerOutput* output = OutputAt(i); i++) {
+			if (!_CanMixTo(output))
+				continue;
+			_MixOutput(output, inputChanInfos, silent || output->IsMuted(),
+				eventTime, output == fOutput ? bufferRequestTimeout : 0,
+				bufferIndex);
+		}
 
 		// make all lists empty
 		for (int i = 0; i < MAX_CHANNEL_TYPES; i++)

@@ -80,6 +80,14 @@
 #define PARAM_IS_GAIN(id)					(((id) & 0xf) == 0x8)
 #define PARAM_IS_BALANCE(id)				(((id) & 0xf) == 0x9)
 
+// The outputs other than the first one have their own parameter types, as
+// their ids would collide with the input ids.
+#define PARAM_OUT_MUTE(id)					(((id) << 16) | 0xb)
+#define PARAM_OUT_GAIN(id)					(((id) << 16) | 0xc)
+#define PARAM_OUT_STR(id, n)				(((id) << 16) | ((n) << 10) | 0xd)
+#define PARAM_IS_OUT_MUTE(id)				(((id) & 0xf) == 0xb)
+#define PARAM_IS_OUT_GAIN(id)				(((id) & 0xf) == 0xc)
+
 #define FORMAT_USER_DATA_TYPE 		0x7294a8f3
 #define FORMAT_USER_DATA_MAGIC_1	0xc84173bd
 #define FORMAT_USER_DATA_MAGIC_2	0x4af62b7d
@@ -145,8 +153,8 @@ AudioMixer::~AudioMixer()
 	// stop the mixer
 	fCore->Lock();
 	fCore->Stop();
-	if (fCore->Output() != NULL)
-		delete fCore->Output()->BufferGroup();
+	for (int32 i = 0; MixerOutput* output = fCore->OutputAt(i); i++)
+		delete output->BufferGroup();
 	fCore->Unlock();
 
 	// disconnect all nodes from the mixer
@@ -452,6 +460,67 @@ AudioMixer::_AutoStop()
 }
 
 
+/*!	Connects an output other than the first one. It gets the mix of the same
+	cycle as the first output, so the latency we publish has to cover its
+	consumer as well.
+*/
+void
+AudioMixer::_ConnectOtherOutput(MixerOutput* output,
+	const media_destination& destination, char* name)
+{
+	if (strlen(name) == 0)
+		strcpy(name, output->MediaOutput().name);
+
+	bigtime_t latency = 0;
+	media_node_id timeSource = -1;
+	FindLatencyFor(destination, &latency, &timeSource);
+
+	fCore->Lock();
+
+	// The destination can have changed since PrepareToConnect()
+	output->MediaOutput().destination = destination;
+	output->SetSharesClock(fCore->TimeSource() != NULL
+		&& timeSource == fCore->TimeSource()->ID());
+
+	bool latencyChanged = latency > fDownstreamLatency;
+	if (latencyChanged) {
+		fDownstreamLatency = latency;
+		SetEventLatency(fDownstreamLatency + fInternalLatency);
+		fCore->SetTimingInfo(fCore->TimeSource(), fDownstreamLatency);
+		_GrowBufferGroups();
+	}
+
+	if (output->BufferGroup() == NULL) {
+		BBufferGroup* group = NULL;
+		if (CreateBufferGroup(output, &group) != B_OK) {
+			fCore->Unlock();
+			return;
+		}
+		output->SetBufferGroup(group);
+	}
+
+	fCore->EnableOutput(output, true);
+	fCore->Unlock();
+
+	if (latencyChanged)
+		PublishEventLatencyChange();
+
+	UpdateParameterWeb();
+}
+
+
+MixerOutput*
+AudioMixer::_OtherOutput(int32 id)
+{
+	for (int32 i = 0; MixerOutput* output = fCore->OutputAt(i); i++) {
+		if (output != fCore->Output()
+			&& output->MediaOutput().source.id == id)
+			return output;
+	}
+	return NULL;
+}
+
+
 status_t
 AudioMixer::Connected(const media_source &producer,
 	const media_destination &where, const media_format &with_format,
@@ -650,6 +719,13 @@ AudioMixer::FormatChangeRequested(const media_source &source,
 		ERROR("AudioMixer::FormatChangeRequested: no output\n");
 		goto err;
 	}
+	if (fCore->FindOutput(source) != NULL
+		&& source != output->MediaOutput().source) {
+		// the other outputs follow the first one's format
+		ERROR("AudioMixer::FormatChangeRequested: not the first output\n");
+		status = B_NOT_ALLOWED;
+		goto err;
+	}
 	if (source != output->MediaOutput().source) {
 		ERROR("AudioMixer::FormatChangeRequested: wrong output source\n");
 		goto err;
@@ -722,21 +798,27 @@ AudioMixer::GetNextOutput(int32 *cookie, media_output *out_output)
 {
 	TRACE("AudioMixer::GetNextOutput\n");
 
-	if (*cookie != 0)
-		return B_BAD_INDEX;
-
 	fCore->Lock();
-	MixerOutput *output = fCore->Output();
-	if (output) {
-		*out_output = output->MediaOutput();
-	} else {
+
+	// our 0th output is always a free one; every connection made to it
+	// becomes another output with its own id
+	if (*cookie == 0) {
 		out_output->node = Node();
 		out_output->source.port = ControlPort();
 		out_output->source.id = 0;
 		out_output->destination = media_destination::null;
 		out_output->format.Clear();
 		out_output->format.type = B_MEDIA_RAW_AUDIO;
-		strcpy(out_output->name, "Mixer Output");
+		strcpy(out_output->name,
+			fCore->Output() != NULL ? "Free Output" : "Mixer Output");
+	} else {
+		// the other outputs are the currently connected ones
+		MixerOutput *output = fCore->OutputAt(*cookie - 1);
+		if (output == NULL) {
+			fCore->Unlock();
+			return B_BAD_INDEX;
+		}
+		*out_output = output->MediaOutput();
 	}
 	fCore->Unlock();
 
@@ -759,12 +841,12 @@ AudioMixer::SetBufferGroup(const media_source &for_source,
 {
 	TRACE("AudioMixer::SetBufferGroup\n");
 	// the downstream consumer (soundcard) node asks us to use another
-	// BBufferGroup (might be NULL). We only have one output (id 0)
-	if (for_source.port != ControlPort() || for_source.id != 0)
+	// BBufferGroup (might be NULL) for one of our outputs
+	if (for_source.port != ControlPort())
 		return B_MEDIA_BAD_SOURCE;
 
 	fCore->Lock();
-	MixerOutput* output = fCore->Output();
+	MixerOutput* output = fCore->FindOutput(for_source);
 	if (output == NULL) {
 		fCore->Unlock();
 		return B_MEDIA_BAD_SOURCE;
@@ -807,11 +889,21 @@ void
 AudioMixer::LatencyChanged(const media_source& source,
 	const media_destination& destination, bigtime_t new_latency, uint32 flags)
 {
-	if (source.port != ControlPort() || source.id != 0) {
+	fCore->Lock();
+	MixerOutput* output = fCore->FindOutput(source);
+	bool isFirst = output != NULL && output == fCore->Output();
+	fCore->Unlock();
+
+	if (source.port != ControlPort() || output == NULL) {
 		ERROR("AudioMixer::LatencyChanged: received but has wrong source "
 			"%ld/%ld\n", source.port, source.id);
 		return;
 	}
+
+	// All outputs are sent at the same time, so the latency has to cover
+	// the slowest; only the first output may lower it.
+	if (!isFirst && new_latency <= fDownstreamLatency)
+		return;
 
 	TRACE("AudioMixer::LatencyChanged: downstream latency from %ld/%ld to "
 		"%ld/%ld changed from %lld to %lld\n", source.port, source.id,
@@ -829,11 +921,9 @@ AudioMixer::LatencyChanged(const media_source& source,
 	fDownstreamLatency = new_latency;
 	SetEventLatency(fDownstreamLatency + fInternalLatency);
 
-	// XXX we might need to create more buffers, to span a larger downstream
-	// latency
-
 	fCore->Lock();
 	fCore->SetTimingInfo(TimeSource(), fDownstreamLatency);
+	_GrowBufferGroups();
 	PublishEventLatencyChange();
 	fCore->Unlock();
 }
@@ -869,13 +959,26 @@ AudioMixer::PrepareToConnect(const media_source &what,
 		return B_MEDIA_BAD_FORMAT;
 	}
 
+	// Ask before locking the core, so the mix thread is not held up
+	bigtime_t latency;
+	media_node_id timeSource;
+	status_t latencyStatus = FindLatencyFor(where, &latency, &timeSource);
+
 	fCore->Lock();
 
-	// are we already connected?
-	if (fCore->Output() != 0) {
-		fCore->Unlock();
-		ERROR("AudioMixer::PrepareToConnect: already connected\n");
-		return B_MEDIA_ALREADY_CONNECTED;
+	MixerOutput* first = fCore->Output();
+	if (first != NULL) {
+		// Another output gets the same mix at the same time, so it must run
+		// on the same clock: another channel of the same device, or a node
+		// that follows the default time source such as BMediaRecorder. A
+		// second sound card has its own clock and would drift.
+		if (latencyStatus != B_OK || fCore->TimeSource() == NULL
+			|| timeSource != fCore->TimeSource()->ID()) {
+			fCore->Unlock();
+			ERROR("AudioMixer::PrepareToConnect: destination is not on our "
+				"time source\n");
+			return B_MEDIA_BAD_DESTINATION;
+		}
 	}
 
 	// It is possible that another mixer is connecting.
@@ -884,7 +987,7 @@ AudioMixer::PrepareToConnect(const media_source &what,
 	// b) the output format of the system audio mixer
 	// c) the input format of the system DAC device
 	// d) if everything failes, keep the wildcard
-	if (format->u.raw_audio.channel_count == 0
+	if (first == NULL && format->u.raw_audio.channel_count == 0
 		&& format->u.raw_audio.frame_rate < 1
 		&& format->user_data_type == FORMAT_USER_DATA_TYPE
 		&& *(uint32 *)&format->user_data[0] == FORMAT_USER_DATA_MAGIC_1
@@ -926,12 +1029,55 @@ AudioMixer::PrepareToConnect(const media_source &what,
 
 	/* set source and suggest a name */
 	*out_source = what;
-	strcpy(out_name, "Mixer Output");
+	out_source->id = fCore->CreateOutputID();
+	if (first == NULL)
+		strcpy(out_name, "Mixer Output");
+	else {
+		// The ids also count failed format attempts, so the label takes the
+		// smallest number not in use: the second output is "Mixer Output 2".
+		for (int32 number = 2; ; number++) {
+			snprintf(out_name, B_MEDIA_NAME_LENGTH, "Mixer Output %" B_PRId32,
+				number);
+			int32 i = 0;
+			while (MixerOutput* other = fCore->OutputAt(i)) {
+				if (strcmp(other->MediaOutput().name, out_name) == 0)
+					break;
+				i++;
+			}
+			if (fCore->OutputAt(i) == NULL)
+				break;
+		}
+	}
 
 	/* remove wildcards */
+	if (first != NULL) {
+		const media_multi_audio_format& mix
+			= first->MediaOutput().format.u.raw_audio;
+		if (format->u.raw_audio.buffer_size
+				== media_raw_audio_format::wildcard.buffer_size) {
+			media_format frames = *format;
+			frames.SpecializeTo(&fDefaultFormat);
+			format->u.raw_audio.buffer_size = frames_per_buffer(mix)
+				* bytes_per_frame(frames.u.raw_audio);
+		}
+	}
 	format->SpecializeTo(&fDefaultFormat);
 
 	PRINT_FORMAT("AudioMixer::PrepareToConnect: final format", *format);
+
+	if (first != NULL) {
+		// it is mixed in the same cycle as the first output
+		const media_multi_audio_format& mix
+			= first->MediaOutput().format.u.raw_audio;
+		if (format->u.raw_audio.frame_rate != mix.frame_rate
+			|| frames_per_buffer(format->u.raw_audio)
+				!= frames_per_buffer(mix)) {
+			fCore->Unlock();
+			ERROR("AudioMixer::PrepareToConnect: frame rate or buffer length "
+				"differs from the first output\n");
+			return B_MEDIA_BAD_FORMAT;
+		}
+	}
 
 	/* add output to core */
 	media_output output;
@@ -957,11 +1103,13 @@ AudioMixer::Connect(status_t error, const media_source &source,
 
 	fCore->Lock();
 	// are we still connected?
-	if (fCore->Output() == 0) {
+	MixerOutput* output = fCore->FindOutput(source);
+	if (output == NULL) {
 		fCore->Unlock();
 		ERROR("AudioMixer::Connect: no longer connected\n");
 		return;
 	}
+	bool isFirst = output == fCore->Output();
 	fCore->Unlock();
 
 	if (error != B_OK) {
@@ -969,10 +1117,14 @@ AudioMixer::Connect(status_t error, const media_source &source,
 		ERROR("AudioMixer::Connect failed with error 0x%08lX, removing "
 			"connection\n", error);
 		fCore->Lock();
-		if (fCore->Output() != NULL)
-			delete fCore->Output()->BufferGroup();
-		fCore->RemoveOutput();
+		delete output->BufferGroup();
+		fCore->RemoveOutput(source);
 		fCore->Unlock();
+		return;
+	}
+
+	if (!isFirst) {
+		_ConnectOtherOutput(output, dest, io_name);
 		return;
 	}
 
@@ -1022,12 +1174,24 @@ AudioMixer::Connect(status_t error, const media_source &source,
 
 	fCore->Lock();
 
+	// The other outputs that are left from an earlier first output only
+	// get the mix again if they run on the new time source. The mix thread
+	// does not run until this output is enabled below, so asking their
+	// consumers under the lock holds nothing up.
+	for (int32 i = 0; MixerOutput* other = fCore->OutputAt(i); i++) {
+		if (other == output)
+			continue;
+		bigtime_t latency;
+		media_node_id timeSource;
+		other->SetSharesClock(FindLatencyFor(other->MediaOutput().destination,
+				&latency, &timeSource) == B_OK
+			&& timeSource == timesourceID);
+	}
+
 	// Set up the buffer group for our connection, as long as nobody handed
 	// us a buffer group (via SetBufferGroup()) prior to this.  That can
 	// happen, for example, if the consumer calls SetOutputBuffersFor() on
 	// us from within its Connected() method.
-	MixerOutput* output = fCore->Output();
-	ASSERT(output != NULL);
 	if (output->BufferGroup() == NULL) {
 		BBufferGroup *group = NULL;
 		if (CreateBufferGroup(output, &group) != B_OK) {
@@ -1037,21 +1201,21 @@ AudioMixer::Connect(status_t error, const media_source &source,
 		output->SetBufferGroup(group);
 	}
 
+	ASSERT(fCore->Output() == output);
+
 	// our source should still be valid, too
-	ASSERT(fCore->Output()->MediaOutput().source.id == 0);
-	ASSERT(fCore->Output()->MediaOutput().source.port == ControlPort());
+	ASSERT(output->MediaOutput().source.port == ControlPort());
 
 	// BBufferConsumer::Connected() may return a different input for the
 	// newly created connection. The destination can have changed since
 	// AudioMixer::PrepareToConnect() and we need to update it.
-	fCore->Output()->MediaOutput().destination = dest;
+	output->MediaOutput().destination = dest;
 
-	// the mix thread may start as soon as the output is enabled
 	fCore->SetTimingInfo(newTimeSource != NULL ? newTimeSource : TimeSource(),
 		fDownstreamLatency);
-	fCore->EnableOutput(true);
+	fCore->EnableOutput(output, true);
 
-	fCore->Settings()->LoadConnectionSettings(fCore->Output());
+	fCore->Settings()->LoadConnectionSettings(output);
 	if (fAutoStop && fCore->CountInputs() > 0)
 		_AutoStart();
 
@@ -1077,13 +1241,22 @@ AudioMixer::Disconnect(const media_source& what, const media_destination& where)
 	fCore->Lock();
 
 	// Make sure that our connection is the one being disconnected
-	MixerOutput* output = fCore->Output();
+	MixerOutput* output = fCore->FindOutput(what);
 	if (!output
 		|| output->MediaOutput().node != Node()
-		|| output->MediaOutput().source != what
 		|| output->MediaOutput().destination != where) {
 		ERROR("AudioMixer::Disconnect can't disconnect (wrong connection)\n");
 		fCore->Unlock();
+		return;
+	}
+
+	BBufferGroup* group = output->BufferGroup();
+	if (output != fCore->Output()) {
+		// one of the other outputs: the mix goes on as before
+		fCore->RemoveOutput(what);
+		delete group;
+		fCore->Unlock();
+		UpdateParameterWeb();
 		return;
 	}
 
@@ -1095,9 +1268,7 @@ AudioMixer::Disconnect(const media_source& what, const media_destination& where)
 	if (fAutoStop)
 		_AutoStop();
 
-	// the output owns the buffer group, so take it first
-	BBufferGroup* group = output->BufferGroup();
-	fCore->RemoveOutput();
+	fCore->RemoveOutput(what);
 	fCore->SetTimingInfo(NULL, 0);
 
 	// destroy buffer group
@@ -1120,8 +1291,11 @@ AudioMixer::LateNoticeReceived(const media_source& what, bigtime_t howMuch,
 	ERROR("AudioMixer::LateNoticeReceived, %lld too late at %lld\n", howMuch,
 		performanceTime);
 
-	if (what == fCore->Output()->MediaOutput().source
-		&& RunMode() == B_INCREASE_LATENCY) {
+	fCore->Lock();
+	bool isOurs = fCore->FindOutput(what) != NULL;
+	fCore->Unlock();
+
+	if (isOurs && RunMode() == B_INCREASE_LATENCY) {
 		// We need to ignore subsequent notices whose arrival time here
 		// lies within the last lateness, because queued-up buffers will all be 'late'
 		if (performanceTime < fLastLateNotification)
@@ -1149,12 +1323,13 @@ void
 AudioMixer::EnableOutput(const media_source& what, bool enabled,
 	int32 */*deprecated*/)
 {
-	// we only have one output
-	if (what.id != 0 || what.port != ControlPort())
+	if (what.port != ControlPort())
 		return;
 
 	fCore->Lock();
-	fCore->EnableOutput(enabled);
+	MixerOutput* output = fCore->FindOutput(what);
+	if (output != NULL)
+		fCore->EnableOutput(output, enabled);
 	fCore->Unlock();
 }
 
@@ -1281,19 +1456,73 @@ AudioMixer::PublishEventLatencyChange()
 }
 
 
-status_t
-AudioMixer::CreateBufferGroup(MixerOutput* output, BBufferGroup** buffer) const
+int32
+AudioMixer::_BufferCount() const
 {
 	// allocate enough buffers to span our downstream latency
 	// (plus one for rounding up), plus one extra
 	int32 count = int32(fDownstreamLatency / BufferDuration()) + 2;
 
-	TRACE("AudioMixer::CreateBufferGroup: fDownstreamLatency %lld, "
+	TRACE("AudioMixer::_BufferCount: fDownstreamLatency %lld, "
 		"BufferDuration %lld, buffer count = %ld\n", fDownstreamLatency,
 		BufferDuration(), count);
 
 	if (count < 3)
 		count = 3;
+	return count;
+}
+
+
+/*!	Adds buffers to the groups of the connected outputs until each has as
+	many as _BufferCount() asks for now. Called with the core locked, after
+	the downstream latency went up: all outputs are sent that much earlier,
+	so more of their buffers are out at once. The groups stay, as their
+	buffers may be queued at the consumers.
+*/
+void
+AudioMixer::_GrowBufferGroups()
+{
+	int32 count = _BufferCount();
+	for (int32 i = 0; MixerOutput* output = fCore->OutputAt(i); i++) {
+		BBufferGroup* group = output->BufferGroup();
+		int32 have = 0;
+		if (group == NULL || group->CountBuffers(&have) != B_OK
+			|| have >= count) {
+			continue;
+		}
+
+		// as BBufferGroup(size, count) does: one area, which every
+		// buffer clones
+		size_t size = output->MediaOutput().format.u.raw_audio.buffer_size;
+		size_t allocSize = (size + 63) & ~63;
+		size_t areaSize = (allocSize * (count - have) + B_PAGE_SIZE - 1)
+			& ~(B_PAGE_SIZE - 1);
+		void* address;
+		area_id area = create_area("mixer buffers area", &address,
+			B_ANY_ADDRESS, areaSize, B_NO_LOCK,
+			B_READ_AREA | B_WRITE_AREA | B_CLONEABLE_AREA);
+		if (area < 0) {
+			ERROR("AudioMixer::_GrowBufferGroups: no area\n");
+			continue;
+		}
+
+		buffer_clone_info info;
+		info.area = area;
+		info.size = size;
+		for (int32 j = 0; j < count - have; j++) {
+			info.offset = j * allocSize;
+			if (group->AddBuffer(info) != B_OK)
+				break;
+		}
+		delete_area(area);
+	}
+}
+
+
+status_t
+AudioMixer::CreateBufferGroup(MixerOutput* output, BBufferGroup** buffer) const
+{
+	int32 count = _BufferCount();
 
 	fCore->Lock();
 	uint32 size = output->MediaOutput().format.u.raw_audio.buffer_size;
@@ -1411,6 +1640,26 @@ AudioMixer::GetParameterValue(int32 id, bigtime_t *last_change, void *value,
 			default:
 				ERROR("unhandled ETC 0x%08lx\n", id);
 				break;
+		}
+	} else if (PARAM_IS_OUT_MUTE(id) || PARAM_IS_OUT_GAIN(id)) {
+		// one of the other outputs
+		MixerOutput *output = _OtherOutput(param);
+		if (output == NULL)
+			goto err;
+		if (PARAM_IS_OUT_MUTE(id)) {
+			if (*ioSize < sizeof(int32))
+				goto err;
+			*ioSize = sizeof(int32);
+			static_cast<int32 *>(value)[0] = output->IsMuted();
+		} else {
+			int count = output->GetOutputChannelCount();
+			if (*ioSize < count * sizeof(float))
+				goto err;
+			*ioSize = count * sizeof(float);
+			for (int channel = 0; channel < count; channel++) {
+				static_cast<float *>(value)[channel]
+					= GAIN_TO_DB(output->GetOutputChannelGain(channel));
+			}
 		}
 	} else if (param == 0) {
 		MixerOutput *output = fCore->Output();
@@ -1633,6 +1882,25 @@ AudioMixer::SetParameterValue(int32 id, bigtime_t when, const void *value,
 			default:
 				ERROR("unhandled ETC 0x%08lx\n", id);
 				break;
+		}
+	} else if (PARAM_IS_OUT_MUTE(id) || PARAM_IS_OUT_GAIN(id)) {
+		// One of the other outputs. These are not saved, as their
+		// connections are not either.
+		MixerOutput *output = _OtherOutput(param);
+		if (output == NULL)
+			goto err;
+		if (PARAM_IS_OUT_MUTE(id)) {
+			if (size != sizeof(int32))
+				goto err;
+			output->SetMuted(static_cast<const int32 *>(value)[0]);
+		} else {
+			int count = output->GetOutputChannelCount();
+			if (size < count * sizeof(float))
+				goto err;
+			for (int channel = 0; channel < count; channel++) {
+				output->SetOutputChannelGain(channel,
+					DB_TO_GAIN(static_cast<const float *>(value)[channel]));
+			}
 		}
 	} else if (param == 0) {
 		MixerOutput *output = fCore->Output();
@@ -1870,6 +2138,27 @@ AudioMixer::UpdateParameterWeb()
 				   ->SetChannelCount(out->GetOutputChannelCount());
 		}
 		group->MakeNullParameter(PARAM_STR3(0), B_MEDIA_RAW_AUDIO,
+			B_TRANSLATE("To output"), B_WEB_BUFFER_OUTPUT);
+	}
+
+	// The other outputs follow the master output's gain and mute, and have
+	// their own on top. They come after it, as the master gain must be the
+	// first one in the web (Deskbar and setvolume use that).
+	for (int32 i = 0; MixerOutput* other = fCore->OutputAt(i); i++) {
+		if (other == out)
+			continue;
+		int32 id = other->MediaOutput().source.id;
+		group = top->MakeGroup("");
+		group->MakeNullParameter(PARAM_OUT_STR(id, 1), B_MEDIA_RAW_AUDIO,
+			other->MediaOutput().name, B_WEB_BUFFER_INPUT);
+		group->MakeNullParameter(PARAM_OUT_STR(id, 2), B_MEDIA_RAW_AUDIO,
+			StringForFormat(buf, other), B_GENERIC);
+		group->MakeDiscreteParameter(PARAM_OUT_MUTE(id), B_MEDIA_RAW_AUDIO,
+			B_TRANSLATE("Mute"), B_MUTE);
+		group->MakeContinuousParameter(PARAM_OUT_GAIN(id), B_MEDIA_RAW_AUDIO,
+			B_TRANSLATE("Gain"), B_GAIN, B_TRANSLATE("dB"), DB_MIN, DB_MAX,
+			0.1)->SetChannelCount(other->GetOutputChannelCount());
+		group->MakeNullParameter(PARAM_OUT_STR(id, 3), B_MEDIA_RAW_AUDIO,
 			B_TRANSLATE("To output"), B_WEB_BUFFER_OUTPUT);
 	}
 

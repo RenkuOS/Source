@@ -37,13 +37,16 @@ BufferCache::~BufferCache()
 
 
 BBuffer*
-BufferCache::GetBuffer(media_buffer_id id, port_id port)
+BufferCache::GetBuffer(media_buffer_id id, const media_header& header)
 {
 	if (id <= 0)
 		return NULL;
 
 	buffer_cache_entry* existing;
 	if (fMap.Get(id, existing)) {
+		existing->port = header.source_port;
+		existing->source = header.source;
+		existing->destination = header.destination;
 		existing->buffer->fFlags |= BUFFER_TO_RECLAIM;
 		return existing->buffer;
 	}
@@ -62,7 +65,9 @@ BufferCache::GetBuffer(media_buffer_id id, port_id port)
 
 	buffer_cache_entry entry;
 	entry.buffer = buffer;
-	entry.port = port;
+	entry.port = header.source_port;
+	entry.source = header.source;
+	entry.destination = header.destination;
 	status_t error = fMap.Put(id, entry);
 	if (error != B_OK) {
 		delete buffer;
@@ -77,10 +82,32 @@ BufferCache::GetBuffer(media_buffer_id id, port_id port)
 void
 BufferCache::FlushCacheForPort(port_id port)
 {
+	_Flush(port, false, 0, 0);
+}
+
+
+/*!	Flushes only the buffers that last came in on the connection from
+	\a source of the producer at \a port to our input \a destination, for
+	when the producer has other connections to us that still use theirs.
+*/
+void
+BufferCache::FlushCacheForConnection(port_id port, int32 source,
+	int32 destination)
+{
+	_Flush(port, true, source, destination);
+}
+
+
+void
+BufferCache::_Flush(port_id port, bool connectionOnly, int32 source,
+	int32 destination)
+{
 	BufferMap::Iterator iterator = fMap.GetIterator();
 	while (iterator.HasNext()) {
 		BufferMap::Entry entry = iterator.Next();
-		if (entry.value.port == port) {
+		if (entry.value.port == port
+			&& (!connectionOnly || (entry.value.source == source
+				&& entry.value.destination == destination))) {
 			BBuffer* buffer = entry.value.buffer;
 			bool isReclaimed = (buffer->fFlags & BUFFER_TO_RECLAIM) == 0;
 			if (isReclaimed && buffer->fBufferList != NULL)
