@@ -49,9 +49,20 @@ AddConnection(uint16 handle, int type, const bdaddr_t& dst, hci_id hid)
 {
 	// Create connection descriptor
 
+	bool listed = false;
 	HciConnection* conn = ConnectionByHandle(handle, hid);
-	if (conn != NULL)
-		goto update;
+	if (conn != NULL) {
+		if (bdaddrUtils::Compare(conn->destination, bdaddrUtils::NullAddress())) {
+			// made by ACL data that came before the connection complete event
+			listed = true;
+			goto update;
+		}
+
+		// The controller reuses a handle only once its link is gone: this
+		// one was left behind by a session whose disconnection never got
+		// here, as when the device was closed while connected.
+		RemoveConnection(handle, hid);
+	}
 
 	conn = new (std::nothrow) HciConnection(hid);
 	if (conn == NULL)
@@ -75,9 +86,9 @@ update:
 	conn->status = HCI_CONN_OPEN;
 	conn->mtu = L2CAP_MTU_MINIMUM; // TODO: give the mtu to the connection
 
-	{
-	MutexLocker _(&sConnectionListLock);
-	sConnectionList.Add(conn);
+	if (!listed) {
+		MutexLocker _(&sConnectionListLock);
+		sConnectionList.Add(conn);
 	}
 
 bail:
@@ -85,54 +96,80 @@ bail:
 }
 
 
+/*!	Takes \a conn out of the list, tells L2CAP that its channels are gone and
+	deletes it. The caller found \a conn in the list and must not hold the
+	list lock: L2CAP looks up connections itself.
+*/
+static status_t
+DeleteConnection(HciConnection* conn)
+{
+	{
+		MutexLocker _(&sConnectionListLock);
+		// someone else may have taken it out meanwhile
+		if (conn->GetDoublyLinkedListLink()->next == NULL
+			&& conn->GetDoublyLinkedListLink()->previous == NULL
+			&& conn != sConnectionList.Head())
+			return B_ERROR;
+	}
+
+	DisconnectL2capEndpoints(conn);
+
+	MutexLocker locker(&sConnectionListLock);
+	sConnectionList.Remove(conn);
+	locker.Unlock();
+
+	delete conn;
+	return B_OK;
+}
+
+
 status_t
 RemoveConnection(const bdaddr_t& destination, hci_id hid)
 {
-	HciConnection*	conn = ConnectionByDestination(destination, hid);
-
+	HciConnection* conn = ConnectionByDestination(destination, hid);
 	if (conn == NULL)
 		return B_ERROR;
 
-	// if the device is still part of the list, remove it
-	if (conn->GetDoublyLinkedListLink()->next != NULL
-		|| conn->GetDoublyLinkedListLink()->previous != NULL
-		|| conn == sConnectionList.Head()) {
-		DisconnectL2capEndpoints(conn);
-
-		MutexLocker locker(&sConnectionListLock);
-		sConnectionList.Remove(conn);
-		locker.Unlock();
-
-		delete conn;
-		return B_OK;
-	}
-	return B_ERROR;
+	return DeleteConnection(conn);
 }
 
 
 status_t
 RemoveConnection(uint16 handle, hci_id hid)
 {
-	HciConnection*	conn = ConnectionByHandle(handle, hid);
-
+	HciConnection* conn = ConnectionByHandle(handle, hid);
 	if (conn == NULL)
 		return B_ERROR;
 
-	// if the device is still part of the list, remove it
-	if (conn->GetDoublyLinkedListLink()->next != NULL
-		|| conn->GetDoublyLinkedListLink()->previous != NULL
-		|| conn == sConnectionList.Head()) {
-		DisconnectL2capEndpoints(conn);
+	return DeleteConnection(conn);
+}
 
-		MutexLocker locker(&sConnectionListLock);
-		sConnectionList.Remove(conn);
-		locker.Unlock();
 
-		delete conn;
-		return B_OK;
+/*!	The controller \a hid is gone, and its links with it: no disconnection
+	event will come for them.
+*/
+void
+RemoveConnections(hci_id hid)
+{
+	while (true) {
+		HciConnection* conn = NULL;
+		{
+			MutexLocker _(&sConnectionListLock);
+			DoublyLinkedList<HciConnection>::Iterator iterator
+				= sConnectionList.GetIterator();
+			while (iterator.HasNext()) {
+				HciConnection* candidate = iterator.Next();
+				if (candidate->Hid == hid) {
+					conn = candidate;
+					break;
+				}
+			}
+		}
+		if (conn == NULL)
+			break;
+
+		DeleteConnection(conn);
 	}
-
-	return B_ERROR;
 }
 
 
@@ -238,6 +275,10 @@ allocate_command_ident(HciConnection* conn, void* pointer)
 	while (ident != conn->fNextIdent) {
 		if (conn->fInUseIdents.Find(ident) == conn->fInUseIdents.End()) {
 			conn->fInUseIdents.Insert(ident, pointer);
+			// the next command must not reuse this ident: the remote side
+			// takes a request with the ident of the previous one for a
+			// retransmission
+			conn->fNextIdent = ident;
 			return ident;
 		}
 
@@ -263,9 +304,12 @@ lookup_command_ident(HciConnection* conn, uint8 ident)
 }
 
 
-void
+/*!	Returns whether \a ident was in use: an answer and a timer may both try
+	to free it, only one of them must release what came with it.
+*/
+bool
 free_command_ident(HciConnection* conn, uint8 ident)
 {
 	MutexLocker _(&conn->fLock);
-	conn->fInUseIdents.Remove(ident);
+	return conn->fInUseIdents.Remove(ident) > 0;
 }

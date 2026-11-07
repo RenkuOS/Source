@@ -83,6 +83,10 @@ struct bt_usb_dev {
 			uint16				max_packet_size_bulk_in;
 	const	usb_endpoint_info*	bulk_out_ep;
 			uint16				max_packet_size_bulk_out;
+			int32				bulk_out_clearing;
+			int32				resendThreads;
+				// running clear_bulk_out_halt(): waited for at close
+			int32				closing;
 	const	usb_endpoint_info*	intr_in_ep;
 			uint16				max_packet_size_intr_in;
 

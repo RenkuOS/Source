@@ -58,6 +58,7 @@ private:
 			uint32					fOpenCount;
 			mutex					fUpdateLock;
 			thread_id				fUpdateThread;
+			thread_id				fLastUpdateThread;
 };
 
 #endif // USB_JOYSTICK_PROTOCOL_HANDLER_H

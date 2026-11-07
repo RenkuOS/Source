@@ -24,12 +24,13 @@ HciConnection* AddConnection(uint16 handle, int type, const bdaddr_t& dst,
 	hci_id hid);
 status_t RemoveConnection(const bdaddr_t& destination, hci_id hid);
 status_t RemoveConnection(uint16 handle, hci_id hid);
+void RemoveConnections(hci_id hid);
 status_t DisconnectL2capEndpoints(HciConnection* conn);
 
 hci_id RouteConnection(const bdaddr_t& destination);
 
 uint8 allocate_command_ident(HciConnection* conn, void* pointer);
 void* lookup_command_ident(HciConnection* conn, uint8 ident);
-void free_command_ident(HciConnection* conn, uint8 ident);
+bool free_command_ident(HciConnection* conn, uint8 ident);
 
 #endif // _CONNECTION_INTERFACE_H

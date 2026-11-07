@@ -66,16 +66,22 @@ L2capEndpoint::L2capEndpoint(net_socket* socket)
 	fChannelConfig.link_timeout  = L2CAP_LINK_TIMEOUT_DEFAULT;
 
 	fConfigState = {};
+	fConfigIdent = L2CAP_NULL_IDENT;
+	fConfigRetries = 0;
 
 	gStackModule->init_fifo(&fReceiveQueue, "l2cap recv", L2CAP_MTU_MAXIMUM);
 	gStackModule->init_fifo(&fSendQueue, "l2cap send", L2CAP_MTU_MAXIMUM);
 	gStackModule->init_timer(&fSendTimer, L2capEndpoint::_SendTimer, this);
+	gStackModule->init_timer(&fConfigTimer, L2capEndpoint::_ConfigTimer, this);
 }
 
 
 L2capEndpoint::~L2capEndpoint()
 {
 	CALLED();
+
+	gStackModule->cancel_timer(&fConfigTimer);
+	gStackModule->wait_for_timer(&fConfigTimer);
 
 	mutex_lock(&fLock);
 	mutex_destroy(&fLock);
@@ -132,12 +138,24 @@ L2capEndpoint::Shutdown()
 		return Unbind();
 	}
 
+	if (fState == WAIT_FOR_CONNECTION_RSP || fDestinationChannelID == 0) {
+		// The remote side never gave us a channel: there is nothing to
+		// disconnect. A late response finds the endpoint closed.
+		_MarkClosed();
+		fCommandWait.NotifyAll();
+		return B_OK;
+	}
+
 	status_t status;
 	bigtime_t timeout;
 	if (gStackModule->is_restarted_syscall())
 		timeout = gStackModule->restore_syscall_restart_timeout();
 	else
 		timeout = gStackModule->set_syscall_restart_timeout(socket->receive.timeout);
+
+	// A device that does not answer must not keep the socket from closing
+	if (timeout == B_INFINITE_TIMEOUT)
+		timeout = system_time() + 5000000;
 
 	// FIXME: If we are currently waiting for a connection or configuration,
 	// we need to wait for that command to return (and free its ident on timeout.)
@@ -167,8 +185,11 @@ L2capEndpoint::Shutdown()
 
 	while (fState != CLOSED) {
 		status = _WaitForStateChange(timeout);
-		if (status != B_OK)
+		if (status != B_OK) {
+			// no answer: the channel is gone for us anyway
+			_MarkClosed();
 			return status;
+		}
 	}
 
 	return B_OK;
@@ -316,6 +337,8 @@ L2capEndpoint::Connect(const struct sockaddr* _address)
 		return status;
 
 	fConfigState = {};
+	fConfigIdent = L2CAP_NULL_IDENT;
+	fConfigRetries = 0;
 
 	uint8 ident = btCoreData->allocate_command_ident(fConnection, this);
 	if (ident == L2CAP_NULL_IDENT)
@@ -397,6 +420,12 @@ L2capEndpoint::ReadData(size_t numBytes, uint32 flags, net_buffer** _buffer)
 	ssize_t bytes = gStackModule->fifo_dequeue_buffer(&fReceiveQueue, flags, timeout, _buffer);
 	if (bytes == B_WOULD_BLOCK && fState == CLOSED)
 		return ENOTCONN;
+	if (bytes == B_OK && (*_buffer)->size == 0 && fState == CLOSED) {
+		// the mark _WakeReaders() left: leave it for the other readers
+		gStackModule->fifo_enqueue_buffer(&fReceiveQueue, *_buffer);
+		*_buffer = NULL;
+		return ENOTCONN;
+	}
 	return bytes;
 }
 
@@ -438,6 +467,26 @@ L2capEndpoint::ReceiveData(net_buffer* buffer)
 		gSocketModule->notify(socket, B_SELECT_READ, Receivable());
 
 	return status;
+}
+
+
+/*static*/ void
+L2capEndpoint::_ConfigTimer(net_timer* timer, void* _endpoint)
+{
+	L2capEndpoint* endpoint = (L2capEndpoint*)_endpoint;
+
+	MutexLocker locker(endpoint->fLock);
+	if (!locker.IsLocked())
+		return;
+
+	if (endpoint->fState != CONFIGURATION)
+		return;
+
+	if (endpoint->fConfigState.out < ConfigState::SENT)
+		endpoint->_SendChannelConfig();
+	else if (endpoint->fConfigState.out == ConfigState::SENT
+		&& endpoint->fConfigRetries++ < 3)
+		endpoint->_SendChannelConfig();
 }
 
 
@@ -572,11 +621,28 @@ L2capEndpoint::_HandleConnectionReq(HciConnection* connection,
 
 	endpoint->fConnection = connection;
 	endpoint->fState = CONFIGURATION;
+	endpoint->fConfigState = {};
+	endpoint->fConfigIdent = L2CAP_NULL_IDENT;
+	endpoint->fConfigRetries = 0;
+
+	// accept() reports the device that opened the channel
+	sockaddr_l2cap* peer = (sockaddr_l2cap*)&newSocket->peer;
+	memset(peer, 0, sizeof(sockaddr_l2cap));
+	peer->l2cap_len = sizeof(sockaddr_l2cap);
+	peer->l2cap_family = AF_BLUETOOTH;
+	peer->l2cap_psm = psm;
+	peer->l2cap_bdaddr = connection->destination;
 
 	endpoint->fDestinationChannelID = scid;
 
 	send_l2cap_connection_rsp(connection, ident, endpoint->fChannelID, scid,
 		l2cap_connection_rsp::RESULT_SUCCESS, 0);
+
+	// Both sides configure the channel. The device usually sends its
+	// request first, and some (an Xbox controller) ignore ours when it comes
+	// right after the response; others wait for ours: send it if theirs
+	// does not come soon.
+	gStackModule->set_timer(&endpoint->fConfigTimer, 200000);
 }
 
 
@@ -586,6 +652,7 @@ L2capEndpoint::_HandleConnectionRsp(uint8 ident, const l2cap_connection_rsp& res
 	CALLED();
 	MutexLocker locker(fLock);
 	fCommandWait.NotifyAll();
+
 
 	if (fState != WAIT_FOR_CONNECTION_RSP) {
 		ERROR("l2cap: unexpected connection response, scid=%d, state=%d\n",
@@ -616,6 +683,7 @@ L2capEndpoint::_HandleConnectionRsp(uint8 ident, const l2cap_connection_rsp& res
 
 		fState = CLOSED;
 		fCommandWait.NotifyAll();
+		return;
 	}
 
 	// Success: channel is now open for configuration.
@@ -643,12 +711,26 @@ L2capEndpoint::_SendChannelConfig()
 		flow = &fChannelConfig.outgoing_flow;
 	}
 
+	// The reference for the new request is taken before the one of the
+	// previous request goes: dropped first, it could be the last, from the
+	// timer, while the socket of a connection not yet accepted still has a
+	// parent. And the previous one is released only if its ident was still
+	// ours: its answer, coming at the same time, may have freed it.
 	uint8 ident = btCoreData->allocate_command_ident(fConnection, this);
+	if (ident != L2CAP_NULL_IDENT)
+		gSocketModule->acquire_socket(socket);
+
+	if (fConfigIdent != L2CAP_NULL_IDENT) {
+		// sent again: the previous request will not be answered anymore
+		if (btCoreData->free_command_ident(fConnection, fConfigIdent))
+			gSocketModule->release_socket(socket);
+		fConfigIdent = L2CAP_NULL_IDENT;
+	}
+
 	if (ident == L2CAP_NULL_IDENT) {
 		// TODO: Retry later?
 		return;
 	}
-	gSocketModule->acquire_socket(socket);
 
 	status_t status = send_l2cap_configuration_req(fConnection, ident,
 		fDestinationChannelID, 0, flush_timeout, mtu, flow);
@@ -659,7 +741,12 @@ L2capEndpoint::_SendChannelConfig()
 		return;
 	}
 
+	fConfigIdent = ident;
 	fConfigState.out = ConfigState::SENT;
+
+	// A request sent while the link starts its encryption can get lost:
+	// send it again if no answer comes (the RTX timer of the specification)
+	gStackModule->set_timer(&fConfigTimer, 1000000);
 }
 
 
@@ -705,9 +792,10 @@ L2capEndpoint::_HandleConfigurationReq(uint8 ident, uint16 flags,
 	// We now have all options.
 	fConfigState.in = ConfigState::DONE;
 
-	if (fConfigState.out < ConfigState::SENT)
-		_SendChannelConfig();
-	else if (fConfigState.out == ConfigState::DONE)
+	if (fConfigState.out < ConfigState::SENT) {
+		// not right after our response: some devices miss it
+		gStackModule->set_timer(&fConfigTimer, 100000);
+	} else if (fConfigState.out == ConfigState::DONE)
 		_MarkEstablished();
 }
 
@@ -734,6 +822,11 @@ L2capEndpoint::_HandleConfigurationRsp(uint8 ident, uint16 scid, uint16 flags,
 			l2cap_command_reject::REJECTED_INVALID_CID, 0, scid, fChannelID);
 		return;
 	}
+
+	// the answer to our request: its ident is freed by the caller
+	if (ident == fConfigIdent && result != l2cap_configuration_rsp::RESULT_PENDING
+		&& (flags & L2CAP_CFG_FLAG_CONTINUATION) == 0)
+		fConfigIdent = L2CAP_NULL_IDENT;
 
 	// TODO: Validate parameters!
 	if (result == l2cap_configuration_rsp::RESULT_PENDING) {
@@ -862,6 +955,40 @@ L2capEndpoint::_MarkClosed()
 
 	socket->error = ENOTCONN;
 	gSocketModule->notify(socket, B_SELECT_ERROR, ENOTCONN);
+	_WakeReaders();
 
-	gL2capEndpointManager.UnbindFromChannel(this);
+	if (fChannelID != 0)
+		gL2capEndpointManager.UnbindFromChannel(this);
+}
+
+
+/*!	A reader waiting for data would wait forever on a closed channel: an empty
+	buffer behind the data still queued tells it the channel is gone.
+*/
+void
+L2capEndpoint::_WakeReaders()
+{
+	net_buffer* mark = gBufferModule->create(0);
+	if (mark == NULL)
+		return;
+	if (gStackModule->fifo_enqueue_buffer(&fReceiveQueue, mark) != B_OK)
+		gBufferModule->free(mark);
+}
+
+
+/*!	The link under the channel is gone, without any disconnection on the
+	channel itself: the device went out of range or off, or the controller
+	went away.
+*/
+void
+L2capEndpoint::LinkLost()
+{
+	MutexLocker locker(fLock);
+
+	fConnection = NULL;
+	if (fState == CLOSED)
+		return;
+
+	_MarkClosed();
+	fCommandWait.NotifyAll();
 }

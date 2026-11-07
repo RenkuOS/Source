@@ -276,18 +276,12 @@ device_added(usb_device dev, void** cookie)
 		goto bail;
 	}
 
-	// TODO: Do this only when sco is needed
-	if (config->interface_count > 1 && config->interface[1].alt_count > 5) {
-		interface = &config->interface[1].alt[5];
-		err = usb->set_alt_interface(new_bt_dev->dev, interface);
-
-		if (err != B_OK) {
-			ERROR("%s: set_alt_interface() error on interface 1, alt 2.\n", __func__);
-			new_bt_dev->driver_info |= BT_SCO_NOT_WORKING;
-		}
-	} else {
-		new_bt_dev->driver_info |= BT_SCO_NOT_WORKING;
-	}
+	// SCO needs an alternate setting of interface 1 with bandwidth and a
+	// never ending stream of isochronous transfers. Nothing in the stack sets
+	// up SCO links yet, and requeuing that stream when the device is opened
+	// again stalled the whole EHCI controller, so interface 1 stays at its
+	// zero bandwidth setting.
+	new_bt_dev->driver_info |= BT_SCO_NOT_WORKING;
 
 	// call set_configuration() only after calling set_alt_interface()
 	err = usb->set_configuration(dev, config);
@@ -540,6 +534,8 @@ device_open(const char* name, uint32 flags, void **cookie)
 		return B_ERROR;
 	}
 
+	atomic_set(&bdev->closing, 0);
+
 	// Set RUNNING
 	if (TEST_AND_SET(&bdev->state, RUNNING)) {
 		ERROR("%s: dev already running! - reOpened device!\n", __func__);
@@ -620,6 +616,14 @@ device_close(void* cookie)
 	if (bdev == NULL)
 		panic("bad cookie");
 
+	// the resend threads use the device: no new one, and the running ones
+	// end before the transfers are cancelled and the device may be freed
+	atomic_set(&bdev->closing, 1);
+	for (int32 wait = 0; wait < 500
+			&& atomic_get(&bdev->resendThreads) > 0; wait++) {
+		snooze(10000);
+	}
+
 	// Clean queues
 
 	if (bdev->connected == true) {
@@ -666,7 +670,7 @@ device_close(void* cookie)
 		btDevices->UnregisterDriver(bdev->hdev);
 
 	// unSet RUNNING
-	if (TEST_AND_CLEAR(&bdev->state, RUNNING)) {
+	if (!TEST_AND_CLEAR(&bdev->state, RUNNING)) {
 		ERROR("%s: %s not running?\n", __func__, bdev->name);
 		return B_ERROR;
 	}

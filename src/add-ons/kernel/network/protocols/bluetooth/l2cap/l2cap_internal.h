@@ -17,6 +17,7 @@ extern bt_hci_module_info* btDevices;
 extern net_buffer_module_info *gBufferModule;
 extern net_stack_module_info *gStackModule;
 extern net_socket_module_info *gSocketModule;
+extern bool gL2capTrace;
 
 
 #endif	// L2CAP_INTERNAL_H

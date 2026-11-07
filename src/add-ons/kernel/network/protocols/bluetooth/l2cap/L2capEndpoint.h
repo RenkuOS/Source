@@ -47,6 +47,8 @@ public:
 			ssize_t		Sendable();
 			ssize_t		Receivable();
 
+			void		LinkLost();
+
 public:
 			void		_HandleCommandRejected(uint8 ident, uint16 reason,
 							const l2cap_command_reject_data& data);
@@ -70,11 +72,13 @@ private:
 			status_t	_WaitForStateChange(bigtime_t absoluteTimeout);
 
 	static	void		_SendTimer(net_timer* timer, void* _endpoint);
+	static	void		_ConfigTimer(net_timer* timer, void* _endpoint);
 			void		_SendQueued();
 
 			void		_SendChannelConfig();
 			status_t	_MarkEstablished();
 			void		_MarkClosed();
+			void		_WakeReaders();
 
 private:
 	friend class L2capEndpointManager;
@@ -102,6 +106,10 @@ private:
 
 	net_fifo		fReceiveQueue, fSendQueue;
 	net_timer		fSendTimer;
+	net_timer		fConfigTimer;
+		// sends our configuration request late, and again when unanswered
+	uint8			fConfigIdent;
+	uint8			fConfigRetries;
 
 	struct ConfigState {
 		enum : uint8 {

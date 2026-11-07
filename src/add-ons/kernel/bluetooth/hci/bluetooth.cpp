@@ -116,7 +116,7 @@ Assemble(bluetooth_device* bluetoothDevice, bt_packet_t type, void* data,
 
 						if (count >= bluetoothDevice->fExpectedPacketSize[type]) {
 							// the whole packet is here so it can be already posted.
-							ERROR("%s: EVENT posted in HCI!!!\n", __func__);
+							TRACE("%s: EVENT posted in HCI!!!\n", __func__);
 							btCoreData->PostEvent(bluetoothDevice, data,
 								bluetoothDevice->fExpectedPacketSize[type]);
 
@@ -283,6 +283,11 @@ UnregisterDriver(hci_id id)
 
 	if (device == NULL)
 		return B_ERROR;
+
+	// The links of the controller go with it. Their connections point to the
+	// device, and the channels on them would wait for data forever.
+	if (btCoreData != NULL)
+		btCoreData->RemoveConnections(id);
 
 	if (device->GetDoublyLinkedListLink()->next != NULL
 		|| device->GetDoublyLinkedListLink()->previous != NULL
