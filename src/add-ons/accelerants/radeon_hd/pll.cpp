@@ -973,8 +973,8 @@ pll_set(display_mode* mode, uint8 crtcID)
 			args.v7.ucPpll = pll->id;
 			break;
 		default:
-			TRACE("%s: ERROR: table version %" B_PRIu8 ".%" B_PRIu8 " TODO\n",
-				__func__, tableMajor, tableMinor);
+			ERROR("%s: unsupported SetPixelClock table version %" B_PRIu8
+				".%" B_PRIu8 "\n", __func__, tableMajor, tableMinor);
 			return B_ERROR;
 	}
 
@@ -1129,7 +1129,11 @@ pll_external_init()
 {
 	radeon_shared_info &info = *gInfo->shared_info;
 
-	if (info.dceMajor >= 12) {
+	uint32 dceVersion = (info.dceMajor * 100) + info.dceMinor;
+
+	// DCE 11.2 (Polaris) and later set the display clocks with SetDCEClock,
+	// as amdgpu's DCE 11.2 clock manager does
+	if (dceVersion >= 1102) {
 		pll_set_dce(gInfo->displayClockFrequency,
 			DCE_CLOCK_TYPE_DISPCLK, ATOM_GCK_DFS);
 		pll_set_dce(gInfo->displayClockFrequency,
@@ -1257,8 +1261,9 @@ pll_pick(uint32 connectorIndex)
 	pll->id = ATOM_PPLL_INVALID;
 
 	// DCE 6.1 APU, UNIPHYA requires PLL2
-	if (gConnector[connectorIndex]->encoder.objectID
-		== ENCODER_OBJECT_ID_INTERNAL_UNIPHY && !linkB) {
+	if (dceVersion == 601
+		&& gConnector[connectorIndex]->encoder.objectID
+			== ENCODER_OBJECT_ID_INTERNAL_UNIPHY && !linkB) {
 		pll->id = ATOM_PPLL2;
 		return B_OK;
 	}
