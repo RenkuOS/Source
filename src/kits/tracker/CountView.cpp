@@ -77,11 +77,30 @@ BCountView::BCountView(BPoseView* view)
 {
 	GetTrackerResources()->GetBitmapResource(B_MESSAGE_TYPE, R_BarberPoleBitmap, &fBarberPoleMap);
 
-	SetFont(be_plain_font);
-	SetFontSize(std::max(kMinFontSize, ceilf(be_plain_font->Size() * 0.75f)));
+	_UpdateFont();
 
 	SetViewUIColor(B_PANEL_BACKGROUND_COLOR);
 	SetLowUIColor(ViewUIColor());
+}
+
+
+void
+BCountView::_UpdateFont()
+{
+	SetFont(be_plain_font);
+	SetFontSize(std::max(kMinFontSize, ceilf(be_plain_font->Size() * 0.75f)));
+}
+
+
+void
+BCountView::MessageReceived(BMessage* message)
+{
+	if (message->what == B_FONTS_UPDATED) {
+		_UpdateFont();
+		Invalidate();
+	}
+
+	BView::MessageReceived(message);
 }
 
 

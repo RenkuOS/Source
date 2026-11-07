@@ -109,6 +109,13 @@ BTextWidget::Text(const BPoseView* view) const
 }
 
 
+void
+BTextWidget::FontChanged()
+{
+	fText->SetDirty(true);
+}
+
+
 float
 BTextWidget::TextWidth(const BPoseView* pose) const
 {
