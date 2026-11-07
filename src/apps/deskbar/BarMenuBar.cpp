@@ -64,10 +64,10 @@ const float kTeamIconBitmapHeight = 19.f;
 // fills, leaving a margin around it.
 const float kLogoFill = 0.85f;
 
-// Width over height of each logo, from its source SVG's viewBox. These must
-// match the artwork in icons.rdef.
-const float kWordmarkLogoAspect = 22.658f / 4.782f;
-const float kMarkLogoAspect = 14.164f / 7.7374f;
+// Width over height of each logo: 64 over its drawn height in the 64 unit
+// icon canvas. These must match the artwork in icons.rdef.
+const float kWordmarkLogoAspect = 64.0f / 19.11f;
+const float kMarkLogoAspect = 64.0f / 40.19f;
 
 
 //	#pragma mark - TSeparatorItem
