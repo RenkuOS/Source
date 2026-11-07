@@ -21,6 +21,9 @@ namespace BPrivate {
 struct buffer_cache_entry {
 	BBuffer*	buffer;
 	port_id		port;
+	int32		source;
+	int32		destination;
+		// the connection the buffer last came in on
 };
 
 
@@ -29,9 +32,16 @@ public:
 								BufferCache();
 								~BufferCache();
 
-			BBuffer*			GetBuffer(media_buffer_id id, port_id port);
+			BBuffer*			GetBuffer(media_buffer_id id,
+									const media_header& header);
 
 			void				FlushCacheForPort(port_id port);
+			void				FlushCacheForConnection(port_id port,
+									int32 source, int32 destination);
+
+private:
+			void				_Flush(port_id port, bool connectionOnly,
+									int32 source, int32 destination);
 
 private:
 	typedef HashMap<HashKey32<media_buffer_id>, buffer_cache_entry> BufferMap;

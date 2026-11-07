@@ -31,7 +31,8 @@ MixerOutput::MixerOutput(MixerCore *core, const media_output &output)
 	fResampler(NULL),
 	fResamplerCount(0),
 	fBufferGroup(NULL),
-	fEnabled(false)
+	fEnabled(false),
+	fSharesClock(true)
 {
 	fix_multiaudio_format(&fOutput.format.u.raw_audio);
 	PRINT_OUTPUT("MixerOutput::MixerOutput", fOutput);
@@ -492,4 +493,11 @@ void
 MixerOutput::SetEnabled(bool enabled)
 {
 	fEnabled = enabled;
+}
+
+
+void
+MixerOutput::SetSharesClock(bool shares)
+{
+	fSharesClock = shares;
 }
