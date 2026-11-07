@@ -209,6 +209,7 @@ private:
 private:
 			void				_InitObject(bool layouted, button_width width);
 			void				_InitContainerView(bool layouted);
+			void				_UpdateFontTabHeight();
 			BSize				_TabsMinSize() const;
 			float				_BorderWidth() const;
 			void				_LayoutContainerView(bool layouted);
@@ -226,7 +227,9 @@ private:
 			border_style		fBorderStyle;
 			tab_side			fTabSide;
 
-			uint32				_reserved[9];
+			bool				fFontTabHeight;
+
+			uint32				_reserved[8];
 };
 
 #endif // _TAB_VIEW_H
