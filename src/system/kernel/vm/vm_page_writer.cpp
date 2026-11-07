@@ -794,7 +794,9 @@ vm_page_write_modified_page_range(struct VMCache* cache, uint32 firstPage,
 
 	while (true) {
 		vm_page* page = it.Next();
-		if (page == NULL || page->cache_offset >= endPage) {
+		const bool atEnd = page == NULL || page->cache_offset >= endPage;
+		const uint32 nextOffset = atEnd ? endPage : page->cache_offset + 1;
+		if (atEnd) {
 			if (transferEmpty)
 				break;
 
@@ -851,6 +853,15 @@ vm_page_write_modified_page_range(struct VMCache* cache, uint32 firstPage,
 			wrappers[usedWrappers++] = wrapper;
 		} else
 			transferEmpty = true;
+
+		if (atEnd && transferEmpty)
+			break;
+
+		// The iterator already holds the page after this one, and that page
+		// may have left the cache while it was unlocked: a page that is not
+		// in the cache any more (no cache, maybe freed) would be written
+		// next. Look the position up again.
+		it = cache->pages.GetIterator(nextOffset, true, true);
 	}
 
 	if (wrapperPool != stackWrappersPool) {
