@@ -78,7 +78,8 @@ SdhciBus::SdhciBus(struct registers* registers, uint8_t irq, bool poll)
 	fDataTransferMode(0),
 	fSelectedRca(0),
 	fCardInterruptHandler(NULL),
-	fCardInterruptCookie(NULL)
+	fCardInterruptCookie(NULL),
+	fCardInterruptLock(B_SPINLOCK_INITIALIZER)
 {
 	const bool haveIrq = irq != 0 && irq != 0xff;
 	if (!haveIrq) {
@@ -821,7 +822,13 @@ SdhciBus::_TransferChunk(uint8 command, uint32 argument, uint32 blockCount,
 		|| (command == SDIO_IO_RW_EXTENDED && blockCount > 1);
 	const size_t length = (size_t)blockCount * blockSize;
 
-	if (blockSize == 0 || blockSize > kBlockSize || (blockSize % 4) != 0
+	// The buffer data port is 32 bits wide. A byte mode CMD53 may move any
+	// size from 1 to 512 bytes: by PIO, the last word is read or written
+	// whole, and the controller moves only blockSize bytes on the bus.
+	const bool partialWord = (blockSize % 4) != 0;
+	if (blockSize == 0 || blockSize > kBlockSize
+		|| (partialWord && (command != SDIO_IO_RW_EXTENDED
+			|| dataMode != kDataModePio))
 		|| blockCount == 0 || blockCount > 0xffff) {
 		return B_BAD_VALUE;
 	}
@@ -930,7 +937,7 @@ SdhciBus::_TransferChunk(uint8 command, uint32 argument, uint32 blockCount,
 	if (dataMode == kDataModePio) {
 		const uint32 readyBit = isWrite
 			? SDHCI_INT_BUF_WRITE_READY : SDHCI_INT_BUF_READ_READY;
-		const uint32 wordCount = blockSize / 4;
+		const uint32 wordCount = (blockSize + 3) / 4;
 		uint32 words[kBlockSize / 4];
 
 		// Present state: buffer write enable (bit 10), buffer read enable
@@ -981,7 +988,10 @@ SdhciBus::_TransferChunk(uint8 command, uint32 argument, uint32 blockCount,
 			size_t offset = (size_t)block * blockSize;
 			if (isWrite) {
 				if (buffer != NULL)
+				{
+					words[wordCount - 1] = 0;
 					memcpy(words, buffer + offset, blockSize);
+				}
 				else
 					vm_memcpy_from_physical(words, physical + offset, blockSize,
 						false);
@@ -1654,17 +1664,23 @@ SdhciBus::TransferIO(uint32 argument, bool isWrite, void* buffer,
 void
 SdhciBus::SetCardInterrupt(void (*handler)(void*), void* cookie)
 {
+	// Mask the interrupt before the handler goes away. The interrupt
+	// handler calls it with fCardInterruptLock held, so once the lock was
+	// taken here, it does not run on any CPU and will not be called again.
+	if (handler == NULL) {
+		fRegisters->interrupt_signal_enable &= ~SDHCI_INT_CARD_STATUS;
+		fRegisters->interrupt_status_enable &= ~SDHCI_INT_CARD_STATUS;
+	}
+
 	cpu_status state = disable_interrupts();
+	acquire_spinlock(&fCardInterruptLock);
 	fCardInterruptHandler = handler;
 	fCardInterruptCookie = cookie;
+	release_spinlock(&fCardInterruptLock);
 	restore_interrupts(state);
 
 	if (handler != NULL)
 		EnableInterrupts(SDHCI_INT_CARD_STATUS);
-	else {
-		fRegisters->interrupt_signal_enable &= ~SDHCI_INT_CARD_STATUS;
-		fRegisters->interrupt_status_enable &= ~SDHCI_INT_CARD_STATUS;
-	}
 }
 
 
@@ -1850,8 +1866,10 @@ SdhciBus::HandleInterrupt()
 	if ((intmask & SDHCI_INT_CARD_STATUS) != 0) {
 		fRegisters->interrupt_signal_enable &= ~SDHCI_INT_CARD_STATUS;
 		fRegisters->interrupt_status_enable &= ~SDHCI_INT_CARD_STATUS;
+		acquire_spinlock(&fCardInterruptLock);
 		if (fCardInterruptHandler != NULL)
 			fCardInterruptHandler(fCardInterruptCookie);
+		release_spinlock(&fCardInterruptLock);
 	}
 
 	// handling command interrupt

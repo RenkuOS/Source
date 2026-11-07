@@ -180,7 +180,10 @@ typedef struct mmc_bus_interface {
 		// interrupt handler when it fires. The card interrupt is then masked
 		// until set_card_interrupt() is called again with the same handler,
 		// once the function driver has cleared the interrupt source in the
-		// card. A NULL handler disables it. May be NULL.
+		// card. A NULL handler disables it; once that call returned, the
+		// handler does not run and is not called again. The handler runs in
+		// interrupt context with a spinlock held: it must not block.
+		// May be NULL.
 } mmc_bus_interface;
 
 
