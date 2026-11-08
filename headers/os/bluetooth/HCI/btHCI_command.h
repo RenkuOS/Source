@@ -65,6 +65,11 @@ struct hci_command_header {
 /* - Host Controller and Baseband Command definition - */
 #define OGF_CONTROL_BASEBAND			0x03
 
+	#define OCF_SET_EVENT_MASK			0x0001
+	struct hci_cp_set_event_mask {
+		uint64		mask;
+	} __attribute__ ((packed));
+
 	#define OCF_RESET					0x0003
   /*struct hci_reset {
 		void no_fields;
@@ -129,6 +134,11 @@ struct hci_command_header {
 	#define OCF_WRITE_PG_TIMEOUT		0x0018
 	struct hci_cp_write_page_timeout {
 		uint16		page_timeout;
+	} __attribute__ ((packed));
+
+	#define OCF_WRITE_SIMPLE_PAIRING_MODE	0x0056
+	struct hci_cp_write_simple_pairing_mode {
+		uint8		mode;
 	} __attribute__ ((packed));
 
 	#define OCF_READ_SCAN_ENABLE		0x0019
@@ -391,6 +401,12 @@ struct hci_command_header {
 		bdaddr_t	bdaddr;
 		uint8		role;
 	} __attribute__ ((packed));
+
+	#define OCF_WRITE_DEFAULT_LINK_POLICY	0x000F
+	struct hci_cp_write_default_link_policy {
+		uint16		policy;
+	} __attribute__ ((packed));
+	#define HCI_LINK_POLICY_ROLE_SWITCH	0x0001
 
 	#define OCF_WRITE_LINK_POLICY		0x000D
 	struct hci_cp_write_link_policy {

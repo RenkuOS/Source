@@ -142,6 +142,8 @@ bluetooth_core_data_module_info sBCDModule = {
 	allocate_command_ident,
 	lookup_command_ident,
 	free_command_ident,
+
+	RemoveConnections,
 };
 
 
