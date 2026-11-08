@@ -152,7 +152,7 @@ LogoView::_Init()
 	else
 		fLogo = BTranslationUtils::GetBitmap(B_PNG_FORMAT, "logo_dark.png");
 #else
-	fLogo = BTranslationUtils::GetBitmap(B_PNG_FORMAT, "walter_logo.png");
+	fLogo = BTranslationUtils::GetBitmap(B_PNG_FORMAT, "renkuos_logo.png");
 #endif
 }
 
