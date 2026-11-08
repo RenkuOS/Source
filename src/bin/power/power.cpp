@@ -412,10 +412,13 @@ print_battery_line(int index, const BatteryState& battery)
 	// The driver reports mWh or mAh; print Wh or Ah.
 	const char* unit = battery_reports_ma(battery) ? "Ah" : "Wh";
 
-	printf("  Battery %d:      %3" B_PRIu32 "%%  %.2f/%.2f %s  %s",
-		index, battery_percent(battery),
-		battery.info.capacity / 1000.0,
-		battery_full_charge(battery) / 1000.0, unit,
+	printf("  Battery %d:      %3" B_PRIu32 "%%  ", index,
+		battery_percent(battery));
+	if (battery.info.capacity == UINT32_MAX)
+		printf("?");
+	else
+		printf("%.2f", battery.info.capacity / 1000.0);
+	printf("/%.2f %s  %s", battery_full_charge(battery) / 1000.0, unit,
 		battery_state_name(battery.info.state));
 
 	double rate = battery_rate_mw(battery);
@@ -427,7 +430,9 @@ print_battery_line(int index, const BatteryState& battery)
 	print_time_left(battery_minutes_left(battery));
 
 	if (battery.hasExtended && battery.extended.design_capacity > 0
-		&& battery.extended.last_full_charge > 0) {
+		&& battery.extended.design_capacity != UINT32_MAX
+		&& battery.extended.last_full_charge > 0
+		&& battery.extended.last_full_charge != UINT32_MAX) {
 		printf("  health %" B_PRIu32 "%%",
 			(uint32)((uint64)battery.extended.last_full_charge * 100
 				/ battery.extended.design_capacity));
@@ -573,29 +578,32 @@ print_monitor(int interval, int count, bool csv)
 		double elapsed = (currentTime - start) / 1000000.0;
 
 		if (csv) {
-			if (sBatteryCount == 0) {
+			bool printed = false;
+			for (int index = 0; index < sBatteryCount; index++) {
+				BatteryState battery;
+				read_battery(sBatteryFDs[index], battery);
+				if (!battery_present(battery))
+					continue;
+				printf("%.1f,%d,%d,%" B_PRIu32 ",", elapsed, online,
+					index, battery_percent(battery));
+				double rate = battery_rate_mw(battery);
+				if (rate >= 0)
+					printf("%.0f", rate);
+				printf(",");
+				if (hasTemperature)
+					printf("%.1f", temperature);
+				printf(",%.1f,%.0f\n", idleAverage,
+					average_frequency(current, currentCount));
+				printed = true;
+			}
+			if (!printed) {
+				// No battery nodes, or none holds a battery: still print one
+				// row per sample, without the battery columns.
 				printf("%.1f,%d,,,,", elapsed, online);
 				if (hasTemperature)
 					printf("%.1f", temperature);
 				printf(",%.1f,%.0f\n", idleAverage,
 					average_frequency(current, currentCount));
-			} else {
-				for (int index = 0; index < sBatteryCount; index++) {
-					BatteryState battery;
-					read_battery(sBatteryFDs[index], battery);
-					if (!battery_present(battery))
-						continue;
-					printf("%.1f,%d,%d,%" B_PRIu32 ",", elapsed, online,
-						index, battery_percent(battery));
-					double rate = battery_rate_mw(battery);
-					if (rate >= 0)
-						printf("%.0f", rate);
-					printf(",");
-					if (hasTemperature)
-						printf("%.1f", temperature);
-					printf(",%.1f,%.0f\n", idleAverage,
-						average_frequency(current, currentCount));
-				}
 			}
 			fflush(stdout);
 		} else {
