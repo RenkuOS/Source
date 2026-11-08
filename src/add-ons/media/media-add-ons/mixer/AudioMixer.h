@@ -137,7 +137,7 @@ private:
 									const media_destination& destination,
 									char* name);
 			MixerOutput*		_OtherOutput(int32 id);
-			int32				_BufferCount() const;
+			int32				_BufferCount(MixerOutput* output) const;
 			void				_GrowBufferGroups();
 
 			BMediaAddOn*		fAddOn;
