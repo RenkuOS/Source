@@ -15,7 +15,7 @@ system_time(void)
 	uint64 freq;
 	// Prevent reordering which could cause time to jump back.
 	arm64_isb();
-	asm volatile("mrs %0, CNTVCT_EL0" : "=r"(ticks));
+	ticks = arm64_read_counter();
 	asm volatile("mrs %0, CNTFRQ_EL0": "=r" (freq));
 
 	return (ticks / freq) * 1000000 + (ticks % freq) * 1000000 / freq;
