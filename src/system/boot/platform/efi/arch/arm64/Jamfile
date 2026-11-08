@@ -32,6 +32,7 @@ for platform in [ MultiBootSubDirSetup efi ] {
 			arch_smp.cpp
 			arch_start.cpp
 			arch_timer.cpp
+			pinephone_display.cpp
 			;
 
 		local generic_src =

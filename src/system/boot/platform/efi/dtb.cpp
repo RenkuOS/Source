@@ -646,6 +646,13 @@ dtb_init()
 }
 
 
+const void*
+dtb_get_fdt()
+{
+	return sDtbTable;
+}
+
+
 void
 dtb_set_kernel_args()
 {

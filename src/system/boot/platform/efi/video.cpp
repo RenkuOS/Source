@@ -19,6 +19,9 @@
 #include <util/list.h>
 
 #include "efi_platform.h"
+#ifdef __aarch64__
+#	include "arch/arm64/pinephone_display.h"
+#endif
 #include <efi/protocol/edid.h>
 #include <efi/protocol/graphics-output.h>
 
@@ -201,6 +204,11 @@ platform_init_video(void)
 		dprintf("GOP protocol not found\n");
 		gKernelArgs.frame_buffer.enabled = false;
 		sGraphicsOutput = NULL;
+#ifdef __aarch64__
+		// Boards whose firmware leaves the display off
+		if (pinephone_display_init() == B_OK)
+			return B_OK;
+#endif
 		return B_ERROR;
 	}
 
@@ -273,6 +281,13 @@ platform_init_video(void)
 extern "C" void
 platform_switch_to_logo(void)
 {
+#ifdef __aarch64__
+	if (pinephone_display_active()) {
+		video_display_splash(gKernelArgs.frame_buffer.physical_buffer.start);
+		pinephone_display_flush();
+		return;
+	}
+#endif
 	if (sGraphicsOutput == NULL || !gKernelArgs.frame_buffer.enabled)
 		return;
 

@@ -31,8 +31,12 @@
 #endif
 #include "efi_platform.h"
 #include "load_options.h"
+#include "../../loader/load_driver_settings.h"
 #include "mmu.h"
 #include "quirks.h"
+#ifdef __aarch64__
+#	include "arch/arm64/pinephone_display.h"
+#endif
 #include "serial.h"
 #include "smp.h"
 #include "timer.h"
@@ -179,6 +183,17 @@ get_kernel_regions(addr_range& text, addr_range& data)
 extern "C" void
 platform_start_kernel(void)
 {
+#ifdef __aarch64__
+	// The PinePhone's UART is on the headphone jack and needs a special
+	// cable; until app_server takes over, show the kernel's output on the
+	// panel the loader brought up. Without a keyboard nobody can answer
+	// the pager's "Press key to continue".
+	if (pinephone_display_active()) {
+		add_safe_mode_settings("debug_screen true\n"
+			"disable_onscreen_paging true\n");
+	}
+#endif
+
 #ifdef KERNEL_FIXUP_FOR_LONG_MODE
 	// This is a 32-bit loader, if it is to start a 64-bit kernel it has to
 	// switch to long mode itself.
@@ -217,6 +232,10 @@ platform_start_kernel(void)
 
 	// Apply any weird EFI quirks
 	quirks_init();
+
+#ifdef __aarch64__
+	pinephone_display_starting_kernel();
+#endif
 
 	// Begin architecture-centric kernel entry.
 	arch_start_kernel(kernelEntry);
