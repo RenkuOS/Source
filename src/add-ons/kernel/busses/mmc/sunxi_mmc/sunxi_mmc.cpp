@@ -5,8 +5,8 @@
  */
 
 /*	The SD/MMC host controllers ("SMHC") of Allwinner SoCs, as found on the
-	A733 of the Radxa Cubie A7S: SMHC0 drives the SD card slot, SMHC2 the
-	optional eMMC.
+	A733 of the Radxa Cubie A7S and the A64 of the PINE64 PinePhone: SMHC0
+	drives the SD card slot, SMHC2 the eMMC.
 
 	The register interface is Allwinner's own (Linux: sunxi-mmc.c, U-Boot:
 	sunxi_mmc.c). Data moves through the controller's internal DMA engine
@@ -14,10 +14,12 @@
 	driver, the descriptors and the data live in one uncached, physically
 	contiguous buffer that the operation's memory is copied through.
 
-	The A733 controllers only run in the "new timing" mode, where the card
-	clock comes straight from the module clock in the clock controller (CCU).
-	Its rate is programmed the way U-Boot does it on these boards, which is
-	what the boot firmware left running when Haiku takes over.
+	The controllers run in the "new timing" mode, where the card clock is
+	half the module clock in the clock controller (CCU). The A733 runs only
+	in that mode; the A64 has both, and Linux uses the new one. The SoCs
+	differ in their CCU layout, in whether descriptors hold addresses shifted
+	by two (A733) or as they are (A64), and in their FIFO size (see
+	sunxi_mmc_variant).
 
 	Pins, card power and the card detect line stay as the boot firmware set
 	them up. The slot is probed when the bus comes up. */
@@ -174,12 +176,57 @@
 #define CCU_MMC_N(n)			((uint32)(n) << 8)	// divides by n + 1
 #define CCU_MMC_M(m)			((uint32)(m) - 1)		// divides by m
 
+// The A64's clock controller: module clocks in a row, bus gates and resets
+// in shared registers (A64 user manual 3.3.5, Linux sun50i-a64-ccu.c). Its
+// PERIPH0 source is the PLL's 2x output; N divides by a power of two.
+#define A64_CCU_BASE			0x01c20000
+#define A64_CCU_SIZE			0x1000
+#define A64_CCU_PLL_PERIPH0		0x028
+#define A64_CCU_BUS_GATE0		0x060
+#define A64_CCU_MMC_CLOCK(n)	(0x088 + 4 * (n))
+#define A64_CCU_BUS_RESET0		0x2c0
+#define A64_CCU_MMC_BUS(n)		(1u << (8 + (n)))
+#define A64_CCU_MMC_N(log2)		((uint32)(log2) << 16)	// divides by 2^log2
+
 // What the sources yield as a card clock (U-Boot's arithmetic for the
 // A733: PERIPH0's 400 MHz output halved by the new timing mode).
 static const uint32 kOscillatorRate = 24000000;
 static const uint32 kPeriph0Rate = 200000000;
 
-// Descriptors carry at most 8 KiB (13 bits); use whole pages.
+
+enum sunxi_ccu_type {
+	SUNXI_CCU_A733,
+	SUNXI_CCU_A64
+};
+
+struct sunxi_mmc_variant {
+	const char*		compatible;
+	sunxi_ccu_type	ccu;
+	phys_addr_t		ccuBase;
+	size_t			ccuSize;
+	phys_addr_t		controllerBase;	// SMHC0; SMHC1 and 2 follow at 4 KiB
+	uint32			descriptorShift;	// addresses in descriptors and DLBA
+	uint32			fifoTrigger;
+	bool			readThreshold;
+};
+
+static const sunxi_mmc_variant kVariants[] = {
+	// Bursts of 8 words, receive at 7 words, transmit at 248 of the 256
+	// word FIFO: the BSP's values for this controller (SMHC v5.3).
+	{ "allwinner,sun60i-a733-mmc", SUNXI_CCU_A733, A733_CCU_BASE,
+		A733_CCU_SIZE, 0x04020000, 2, 0x200700f8, true },
+	{ "allwinner,sun20i-d1-mmc", SUNXI_CCU_A733, A733_CCU_BASE,
+		A733_CCU_SIZE, 0x04020000, 2, 0x200700f8, true },
+	// Linux' values for every controller before the A733: transmit at 8
+	// words, which fits the A64's smaller FIFO.
+	{ "allwinner,sun50i-a64-mmc", SUNXI_CCU_A64, A64_CCU_BASE,
+		A64_CCU_SIZE, 0x01c0f000, 0, 0x20070008, false },
+	{ "allwinner,sun50i-a64-emmc", SUNXI_CCU_A64, A64_CCU_BASE,
+		A64_CCU_SIZE, 0x01c0f000, 0, 0x20070008, false },
+};
+
+// Descriptors carry at most 8 KiB (13 bits, as on the A64's eMMC
+// controller); use whole pages.
 static const size_t kSegmentSize = 4096;
 static const size_t kBufferSize = 512 * 1024;
 static const size_t kDescriptorCount = kBufferSize / kSegmentSize;
@@ -193,8 +240,8 @@ static const uint32 kR1ErrorMask = 0xfff9a080;
 struct idma_descriptor {
 	uint32	config;
 	uint32	size;
-	uint32	buffer;		// physical address >> 2
-	uint32	next;		// physical address >> 2
+	uint32	buffer;		// physical address >> descriptorShift
+	uint32	next;		// physical address >> descriptorShift
 };
 
 
@@ -203,6 +250,7 @@ device_manager_info* gDeviceManager;
 
 struct sunxi_mmc_device {
 	device_node*	node;
+	const sunxi_mmc_variant* variant;
 	uint64			registers;
 	uint64			registersSize;
 	uint32			interrupt;
@@ -246,10 +294,15 @@ private:
 			void				_WriteCcu(uint32 reg, uint32 value)
 									{ *(volatile uint32*)(fCcu + reg) = value; }
 
+			void				_EnableBusClock();
+			uint32				_DescriptorAddress(phys_addr_t address)
+									{ return (uint32)(address
+										>> fDevice.variant->descriptorShift); }
 			status_t			_ResetController();
 			void				_Recover();
 			status_t			_UpdateClock();
 			status_t			_SetModuleClock(uint32 hertz);
+			status_t			_SetModuleClockA64(uint32 hertz);
 			status_t			_AllocateBuffer();
 			void				_SetUpDescriptors(size_t size);
 			void				_StartDma(bool isWrite);
@@ -321,21 +374,22 @@ SunxiMmcBus::SunxiMmcBus(const sunxi_mmc_device& device)
 		fStatus = fRegisterArea;
 		return;
 	}
-	fCcuArea = map_physical_memory("sunxi_mmc clock controller", A733_CCU_BASE,
-		A733_CCU_SIZE, B_ANY_KERNEL_ADDRESS,
-		B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, (void**)&fCcu);
+	fCcuArea = map_physical_memory("sunxi_mmc clock controller",
+		fDevice.variant->ccuBase, fDevice.variant->ccuSize,
+		B_ANY_KERNEL_ADDRESS, B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA,
+		(void**)&fCcu);
 	if (fCcuArea < 0) {
 		fStatus = fCcuArea;
 		return;
 	}
 
-	uint32 firmwareClock = _ReadCcu(A733_CCU_MMC_CLOCK(fDevice.index));
-	uint32 firmwareGate = _ReadCcu(A733_CCU_MMC_GATE(fDevice.index));
+	bool a64 = fDevice.variant->ccu == SUNXI_CCU_A64;
+	uint32 firmwareClock = _ReadCcu(a64 ? A64_CCU_MMC_CLOCK(fDevice.index)
+		: A733_CCU_MMC_CLOCK(fDevice.index));
+	uint32 firmwareGate = _ReadCcu(a64 ? A64_CCU_BUS_GATE0
+		: A733_CCU_MMC_GATE(fDevice.index));
 
-	// bus clock on, out of reset
-	_WriteCcu(A733_CCU_MMC_GATE(fDevice.index),
-		firmwareGate | CCU_GATE_BUS | CCU_GATE_RESET);
-	memory_full_barrier();
+	_EnableBusClock();
 
 	fStatus = _AllocateBuffer();
 	if (fStatus != B_OK)
@@ -388,6 +442,22 @@ SunxiMmcBus::~SunxiMmcBus()
 }
 
 
+/*!	Bus clock on, controller out of reset. */
+void
+SunxiMmcBus::_EnableBusClock()
+{
+	if (fDevice.variant->ccu == SUNXI_CCU_A64) {
+		uint32 bit = A64_CCU_MMC_BUS(fDevice.index);
+		_WriteCcu(A64_CCU_BUS_GATE0, _ReadCcu(A64_CCU_BUS_GATE0) | bit);
+		_WriteCcu(A64_CCU_BUS_RESET0, _ReadCcu(A64_CCU_BUS_RESET0) | bit);
+	} else {
+		uint32 reg = A733_CCU_MMC_GATE(fDevice.index);
+		_WriteCcu(reg, _ReadCcu(reg) | CCU_GATE_BUS | CCU_GATE_RESET);
+	}
+	memory_full_barrier();
+}
+
+
 status_t
 SunxiMmcBus::_ResetController()
 {
@@ -405,20 +475,19 @@ SunxiMmcBus::_ResetController()
 	_Write(REG_HWRST, 1);
 	spin(300);
 
-	// Bursts of 8 words, receive at 7 words, transmit at 248 of the 256
-	// word FIFO: the BSP's values for this controller (SMHC v5.3).
-	_Write(REG_FTRGL, 0x200700f8);
+	_Write(REG_FTRGL, fDevice.variant->fifoTrigger);
 	// The card read threshold only. The write threshold holds a block back
 	// until that much of it is in the FIFO, which the DMA engine never fills
 	// that far: writes stalled with a data request pending. The BSP leaves
 	// it off as well.
-	_Write(REG_THLDC, THLDC_READ_THRESHOLD(512) | THLDC_READ_ENABLE);
+	if (fDevice.variant->readThreshold)
+		_Write(REG_THLDC, THLDC_READ_THRESHOLD(512) | THLDC_READ_ENABLE);
 	_Write(REG_TMOUT, 0xffffffff);
 	_Write(REG_IMASK, 0);
 	_Write(REG_RINTR, 0xffffffff);
 	_Write(REG_DBGC, 0xdeb);
 	_Write(REG_FUNS, FUNS_CEATA_ON);
-	_Write(REG_DLBA, (uint32)(fDescriptorAddress >> 2));
+	_Write(REG_DLBA, _DescriptorAddress(fDescriptorAddress));
 	_Write(REG_IDST, IDST_ALL);
 	_Write(REG_IDIE, 0);
 
@@ -478,6 +547,9 @@ SunxiMmcBus::_UpdateClock()
 status_t
 SunxiMmcBus::_SetModuleClock(uint32 hertz)
 {
+	if (fDevice.variant->ccu == SUNXI_CCU_A64)
+		return _SetModuleClockA64(hertz);
+
 	uint32 source = hertz <= kOscillatorRate
 		? CCU_MMC_SOURCE_OSC24M : CCU_MMC_SOURCE_PERIPH0;
 	uint32 sourceRate = source == CCU_MMC_SOURCE_OSC24M
@@ -498,6 +570,41 @@ SunxiMmcBus::_SetModuleClock(uint32 hertz)
 	memory_full_barrier();
 
 	fClock = sourceRate / (n + 1) / divider;
+	return B_OK;
+}
+
+
+/*!	The A64's module clock: source / 2^N / M, M up to 16, N up to 3, halved
+	once more by the new timing mode (Linux models that as the clock's fixed
+	post divider). PERIPH0 is the PLL's 2x output, 1.2 GHz as U-Boot sets
+	it up; it is read back rather than assumed.
+*/
+status_t
+SunxiMmcBus::_SetModuleClockA64(uint32 hertz)
+{
+	uint32 pll = _ReadCcu(A64_CCU_PLL_PERIPH0);
+	uint32 periph0Rate = kOscillatorRate * (((pll >> 8) & 0x1f) + 1)
+		* (((pll >> 4) & 0x3) + 1);
+	bool useOscillator = hertz <= kOscillatorRate / 2
+		|| (pll & (1u << 31)) == 0;
+	uint32 source = useOscillator
+		? CCU_MMC_SOURCE_OSC24M : CCU_MMC_SOURCE_PERIPH0;
+	uint32 sourceRate = (useOscillator ? kOscillatorRate : periph0Rate) / 2;
+
+	uint32 divider = (sourceRate + hertz - 1) / hertz;
+	uint32 shift = 0;
+	while (divider > 16) {
+		shift++;
+		divider = (divider + 1) / 2;
+	}
+	if (shift > 3)
+		return B_BAD_VALUE;
+
+	_WriteCcu(A64_CCU_MMC_CLOCK(fDevice.index), CCU_MMC_ENABLE | source
+		| A64_CCU_MMC_N(shift) | CCU_MMC_M(divider));
+	memory_full_barrier();
+
+	fClock = sourceRate / (1u << shift) / divider;
 	return B_OK;
 }
 
@@ -559,8 +666,9 @@ SunxiMmcBus::_AllocateBuffer()
 	status_t status = get_memory_map(address, size, &entry, 1);
 	if (status != B_OK)
 		return status;
-	if (entry.size < size || entry.address + size > (1ull << 34)) {
-		// the descriptors hold addresses shifted by two in 32 bits
+	if (entry.size < size
+		|| entry.address + size > (1ull << (32 + fDevice.variant->descriptorShift))) {
+		// the descriptors hold (shifted) addresses in 32 bits
 		return B_BAD_DATA;
 	}
 
@@ -595,9 +703,9 @@ SunxiMmcBus::_SetUpDescriptors(size_t size)
 		size_t offset = i * kSegmentSize;
 		descriptor.config = DES0_CHAINED | DES0_OWN | DES0_DISABLE_INTERRUPT;
 		descriptor.size = (uint32)std::min(kSegmentSize, size - offset);
-		descriptor.buffer = (uint32)((fBufferAddress + offset) >> 2);
-		descriptor.next = (uint32)((fDescriptorAddress
-			+ (i + 1) * sizeof(idma_descriptor)) >> 2);
+		descriptor.buffer = _DescriptorAddress(fBufferAddress + offset);
+		descriptor.next = _DescriptorAddress(fDescriptorAddress
+			+ (i + 1) * sizeof(idma_descriptor));
 	}
 
 	fDescriptors[0].config |= DES0_FIRST;
@@ -1091,10 +1199,15 @@ SunxiMmcBus::HandleInterrupt()
 //	#pragma mark - driver
 
 
-static const char* kCompatible[] = {
-	"allwinner,sun60i-a733-mmc",
-	"allwinner,sun20i-d1-mmc",
-};
+static const sunxi_mmc_variant*
+find_variant(const char* compatible)
+{
+	for (size_t i = 0; i < B_COUNT_OF(kVariants); i++) {
+		if (strcmp(compatible, kVariants[i].compatible) == 0)
+			return &kVariants[i];
+	}
+	return NULL;
+}
 
 
 static float
@@ -1112,12 +1225,7 @@ sunxi_mmc_supports_device(device_node* parent)
 		return 0.0f;
 	}
 
-	bool supported = false;
-	for (size_t i = 0; i < B_COUNT_OF(kCompatible); i++) {
-		if (strcmp(compatible, kCompatible[i]) == 0)
-			supported = true;
-	}
-	if (!supported)
+	if (find_variant(compatible) == NULL)
 		return 0.0f;
 
 	// controllers the board does not wire up are disabled
@@ -1132,6 +1240,10 @@ sunxi_mmc_supports_device(device_node* parent)
 		&& strcmp(status, "ok") != 0) {
 		return 0.0f;
 	}
+	// Slots with a power sequence hold an SDIO device (the PinePhone's
+	// RTL8723CS Wi-Fi), which Haiku has no use for yet.
+	if (fdt->get_prop(device, "mmc-pwrseq", NULL) != NULL)
+		return 0.0f;
 	return 1.0f;
 }
 
@@ -1183,6 +1295,16 @@ sunxi_mmc_init_driver(device_node* node, void** _cookie)
 	}
 	device->node = node;
 
+	const char* compatible = NULL;
+	gDeviceManager->get_attr_string(parent, "fdt/compatible", &compatible,
+		false);
+	device->variant = compatible != NULL ? find_variant(compatible) : NULL;
+	if (device->variant == NULL) {
+		gDeviceManager->put_node(parent);
+		delete device;
+		return B_BAD_VALUE;
+	}
+
 	uint64 interrupt = 0;
 	if (!fdt->get_reg(fdtDevice, 0, &device->registers, &device->registersSize)
 		|| !fdt->get_interrupt(fdtDevice, 0, NULL, &interrupt)) {
@@ -1194,8 +1316,10 @@ sunxi_mmc_init_driver(device_node* node, void** _cookie)
 	device->interrupt = interrupt;
 
 	// SMHC0..2 follow each other at 4 KiB steps
-	device->index = (uint32)((device->registers & 0xffff) >> 12);
-	if (device->index > 2 || (device->registers & ~0xffffull) != 0x04020000) {
+	phys_addr_t base = device->variant->controllerBase;
+	device->index = (uint32)((device->registers - base) >> 12);
+	if (device->registers < base || device->index > 2
+		|| (device->registers & 0xfff) != 0) {
 		ERROR("unexpected controller at %#" B_PRIx64 "\n", device->registers);
 		gDeviceManager->put_node(parent);
 		delete device;
