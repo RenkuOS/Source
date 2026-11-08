@@ -285,11 +285,9 @@ rule TargetBootLibgcc architecture : asPath
 		if $(asPath) = true {
 			flags += path ;
 		}
-		if $(architecture) = arm && $(TARGET_BOOT_LIBGCC) {
-			# see TargetKernelLibgcc
-			return $(TARGET_BOOT_LIBGCC) ;
-		}
 		if $(architecture) = arm {
+			# the loader is built for soft-float calls, unlike the
+			# cross-compiler's libgcc
 			return [
 				BuildFeatureAttribute QUALIFIED $(architecture):gcc_syslibs_devel
 					: libgcc-boot.a : $(flags)
