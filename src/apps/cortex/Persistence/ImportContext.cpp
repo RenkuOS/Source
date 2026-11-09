@@ -35,6 +35,15 @@
 #include "ImportContext.h"
 #include "expat.h"
 
+// expat 2.9 deprecates the line and column getters in favor of 64-bit ones.
+#if XML_MAJOR_VERSION > 2 || (XML_MAJOR_VERSION == 2 && XML_MINOR_VERSION >= 9)
+#define GetCurrentLineNumber XML_GetCurrentLineNumber64
+#define GetCurrentColumnNumber XML_GetCurrentColumnNumber64
+#else
+#define GetCurrentLineNumber XML_GetCurrentLineNumber
+#define GetCurrentColumnNumber XML_GetCurrentColumnNumber
+#endif
+
 using namespace std;
 
 __USE_CORTEX_NAMESPACE
@@ -91,8 +100,8 @@ void ImportContext::reportWarning(
 	err << pText;
 	if(p) {
 		err << "\n         (line " <<
-			(uint32)XML_GetCurrentLineNumber(p) << ", column " <<
-			(uint32)XML_GetCurrentColumnNumber(p) << ", element '" <<
+			(uint32)GetCurrentLineNumber(p) << ", column " <<
+			(uint32)GetCurrentColumnNumber(p) << ", element '" <<
 			(element() ? element() : "(none)") << "')\n";
 	} else
 		err << "\n";
@@ -110,8 +119,8 @@ void ImportContext::reportError(
 	err << pText;
 	if(p) {
 		err << "\n             (line " <<
-			(uint32)XML_GetCurrentLineNumber(p) << ", column " <<
-			(uint32)XML_GetCurrentColumnNumber(p) << ", element '" <<
+			(uint32)GetCurrentLineNumber(p) << ", column " <<
+			(uint32)GetCurrentColumnNumber(p) << ", element '" <<
 			(element() ? element() : "(none)") << "')\n";
 	} else
 		err << "\n";
