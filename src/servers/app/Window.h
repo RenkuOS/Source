@@ -485,6 +485,7 @@ private:
 			BPoint				fBufferOffset;
 			bool				fBufferReady;
 			bool				fBufferLost;
+			bool				fHasRoundedCorners;
 };
 
 
