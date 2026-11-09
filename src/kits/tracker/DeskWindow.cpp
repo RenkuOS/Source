@@ -487,6 +487,14 @@ BDeskWindow::WorkspaceActivated(int32 workspace, bool state)
 }
 
 
+bool
+BDeskWindow::HasBackgroundImage() const
+{
+	return fBackgroundImage != NULL
+		&& fBackgroundImage->HasBitmapForWorkspace(current_workspace());
+}
+
+
 void
 BDeskWindow::SaveDesktopPoseLocations()
 {
@@ -518,6 +526,7 @@ BDeskWindow::Show()
 	if (fBackgroundImage != NULL)
 		fBackgroundImage->Show(PoseView(), current_workspace());
 
+	PoseView()->AdoptSystemColors();
 	PoseView()->CheckPoseVisibility();
 
 	_inherited::Show();

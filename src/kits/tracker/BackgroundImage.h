@@ -104,6 +104,7 @@ public:
 	static BackgroundImage* Refresh(BackgroundImage* oldBackgroundImage,
 		const BNode* fromNode, bool desktop, BPoseView* poseView);
 		// respond to a background image setting change
+	bool HasBitmapForWorkspace(int32 workspace) const;
 
 private:
 	BackgroundImageInfo* ImageInfoForWorkspace(int32) const;

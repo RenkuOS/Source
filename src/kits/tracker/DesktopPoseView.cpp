@@ -48,6 +48,7 @@ All rights reserved.
 
 #include "Background.h"
 #include "Commands.h"
+#include "DeskWindow.h"
 #include "FSUtils.h"
 #include "PoseList.h"
 #include "Tracker.h"
@@ -309,6 +310,14 @@ DesktopPoseView::AdaptToBackgroundColorChange()
 	// It's fairly easy to get something unreadable (even with the default
 	// settings, it's expected that text will be black on white in Tracker
 	// folders, but white on blue on the desktop).
+
+	// With no image, the labels are drawn on the color itself. An image covers
+	// the color, so that says nothing about what is under them.
+	BDeskWindow* window = dynamic_cast<BDeskWindow*>(Window());
+	if (window == NULL || !window->HasBackgroundImage()) {
+		SetHighColor(LowColor().IsLight() ? kBlack : kWhite);
+		return;
+	}
 
 	int32 desktopBrightness = ui_color(B_DESKTOP_COLOR).Brightness();
 	SetHighColor(LowColor().Brightness() <= desktopBrightness ? kWhite : kBlack);
