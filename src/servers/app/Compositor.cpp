@@ -488,7 +488,10 @@ Compositor::_DrawShadow(RenderingBuffer* target, Window* window,
 	const std::vector<BRect>& rects = shape.ShadowRects();
 	const uint8* profile = WindowShape::ShadowProfile();
 	const int32 margin = WindowShape::ShadowMargin();
-	const uint32 strength = WindowShape::ShadowAlpha();
+	const bool isGlow = shape.IsGlow();
+	const rgb_color glow = shape.GlowColor();
+	const uint32 strength = isGlow
+		? WindowShape::GlowAlpha() : WindowShape::ShadowAlpha();
 
 	uint8* bits = (uint8*)target->Bits();
 	uint32 bytesPerRow = target->BytesPerRow();
@@ -528,9 +531,18 @@ Compositor::_DrawShadow(RenderingBuffer* target, Window* window,
 				}
 
 				uint32 keep = 255 - (alpha / 255) * strength / 255;
-				dst[0] = dst[0] * keep / 255;
-				dst[1] = dst[1] * keep / 255;
-				dst[2] = dst[2] * keep / 255;
+				if (isGlow) {
+					// Rounded, or the faint end of it comes out darker than
+					// what is behind it.
+					const uint32 give = 255 - keep;
+					dst[0] = (dst[0] * keep + glow.blue * give + 127) / 255;
+					dst[1] = (dst[1] * keep + glow.green * give + 127) / 255;
+					dst[2] = (dst[2] * keep + glow.red * give + 127) / 255;
+				} else {
+					dst[0] = dst[0] * keep / 255;
+					dst[1] = dst[1] * keep / 255;
+					dst[2] = dst[2] * keep / 255;
+				}
 				dst += 4;
 			}
 		}

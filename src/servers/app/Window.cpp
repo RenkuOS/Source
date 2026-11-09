@@ -233,11 +233,14 @@ Window::SetClipping(BRegion* stillAvailableOnScreen)
 			::Decorator::ShapeRect rect = { fFrame, 0, 0, 0, 0 };
 			shape.push_back(rect);
 		}
+		DesktopSettings settings(fDesktop);
 		fShape.SetTo(shape, fCompositeRegion,
-			DesktopSettings(fDesktop).CompositedShadows()
+			settings.CompositedShadows()
 				&& fLook != kDesktopWindowLook && fFeel != kDesktopWindowFeel
 				&& fLook != B_NO_BORDER_WINDOW_LOOK
-				&& (fFlags & kWindowScreenFlag) == 0);
+				&& (fFlags & kWindowScreenFlag) == 0,
+			settings.UIColor(B_PANEL_BACKGROUND_COLOR).IsDark(),
+			settings.UIColor(B_PANEL_TEXT_COLOR));
 
 		// The buffer can't be drawn to above or left of the screen, but other
 		// windows don't matter anymore: the window draws everything else.
