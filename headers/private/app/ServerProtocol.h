@@ -368,6 +368,10 @@ enum {
 	AS_VIEW_CLIP_TO_RECT,
 	AS_VIEW_CLIP_TO_SHAPE,
 
+	// Composited desktop, applies from the next start of app_server
+	AS_SET_COMPOSITED_DESKTOP,
+	AS_GET_COMPOSITED_DESKTOP,
+
 	AS_LAST_CODE
 };
 

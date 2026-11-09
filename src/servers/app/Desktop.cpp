@@ -42,6 +42,8 @@
 #include <ServerReadOnlyMemory.h>
 #include <ViewPrivate.h>
 #include <WindowInfo.h>
+#include <driver_settings.h>
+#include <syscalls.h>
 
 #include "AppServer.h"
 #include "ClickTarget.h"
@@ -528,18 +530,12 @@ Desktop::Init()
 
 	HWInterface()->SetDPMSMode(B_DPMS_ON);
 
-	bool composited = false;
-	BPath onFile;
-	if (find_directory(B_USER_SETTINGS_DIRECTORY, &onFile) == B_OK
-		&& onFile.Append("system/app_server/" COMPOSITED_DESKTOP_ON_FILE)
-			== B_OK
-		&& BEntry(onFile.Path()).Exists()) {
-		composited = true;
-	}
-	// The compositor builds the screen in the back buffer. Not every kind of
-	// screen has one.
-	if (composited && HWInterface()->IsDoubleBuffered())
+	// The compositor builds the screen in the back buffer, which not every kind
+	// of screen has. Safe mode is the way back if it doesn't work on a machine.
+	if (fSettings->CompositedDesktop() && HWInterface()->IsDoubleBuffered()
+		&& !_IsSafeMode()) {
 		fCompositor.SetTo(new(std::nothrow) Compositor(this));
+	}
 	debug_printf("app_server: desktop is %scomposited\n",
 		fCompositor.IsSet() ? "" : "not ");
 
@@ -3665,6 +3661,20 @@ Desktop::RebuildAndRedrawAfterWindowChange(Window* changedWindow,
 	_WindowChanged(changedWindow);
 
 	_TriggerWindowRedrawing(dirty, dirty);
+}
+
+
+bool
+Desktop::_IsSafeMode() const
+{
+	char buffer[32];
+	size_t size = sizeof(buffer);
+	if (_kern_get_safemode_option(B_SAFEMODE_SAFE_MODE, buffer, &size) != B_OK)
+		return false;
+
+	return !strncasecmp(buffer, "true", size) || !strncasecmp(buffer, "yes", size)
+		|| !strncasecmp(buffer, "on", size)
+		|| !strncasecmp(buffer, "enabled", size);
 }
 
 
