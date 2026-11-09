@@ -1,0 +1,11 @@
+SubDir HAIKU_TOP src add-ons kernel busses mmc sunxi_mmc ;
+
+SubDirC++Flags -fno-rtti ;
+
+UsePrivateKernelHeaders ;
+UsePrivateHeaders drivers ;
+SubDirHdrs $(HAIKU_TOP) src system kernel device_manager ;
+
+KernelAddon sunxi_mmc :
+	sunxi_mmc.cpp
+;
