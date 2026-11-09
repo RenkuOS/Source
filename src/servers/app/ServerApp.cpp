@@ -3504,6 +3504,42 @@ ServerApp::_DispatchMessage(int32 code, BPrivate::LinkReceiver& link)
 			fLink.Flush();
 			break;
 		}
+		case AS_SET_COMPOSITED_SHADOWS:
+		{
+			bool shadows;
+			if (link.Read<bool>(&shadows) == B_OK) {
+				LockedDesktopSettings settings(fDesktop);
+				settings.SetCompositedShadows(shadows);
+			}
+			fDesktop->WindowShapesChanged();
+			break;
+		}
+		case AS_GET_COMPOSITED_SHADOWS:
+		{
+			DesktopSettings settings(fDesktop);
+			fLink.StartMessage(B_OK);
+			fLink.Attach<bool>(settings.CompositedShadows());
+			fLink.Flush();
+			break;
+		}
+		case AS_SET_COMPOSITED_ROUNDED_CORNERS:
+		{
+			bool rounded;
+			if (link.Read<bool>(&rounded) == B_OK) {
+				LockedDesktopSettings settings(fDesktop);
+				settings.SetCompositedRoundedCorners(rounded);
+			}
+			fDesktop->WindowShapesChanged();
+			break;
+		}
+		case AS_GET_COMPOSITED_ROUNDED_CORNERS:
+		{
+			DesktopSettings settings(fDesktop);
+			fLink.StartMessage(B_OK);
+			fLink.Attach<bool>(settings.CompositedRoundedCorners());
+			fLink.Flush();
+			break;
+		}
 		case AS_GET_SUBPIXEL_ANTIALIASING:
 		{
 			DesktopSettings settings(fDesktop);
