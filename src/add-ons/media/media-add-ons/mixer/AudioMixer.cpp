@@ -1457,15 +1457,34 @@ AudioMixer::PublishEventLatencyChange()
 
 
 int32
-AudioMixer::_BufferCount() const
+AudioMixer::_BufferCount(MixerOutput* output) const
 {
-	// allocate enough buffers to span our downstream latency
-	// (plus one for rounding up), plus one extra
-	int32 count = int32(fDownstreamLatency / BufferDuration()) + 2;
+	// The group is for \a output: its own buffer size (outputs share the
+	// first one's frame rate and buffer length, but may have fewer channels).
+	fCore->Lock();
+	media_multi_audio_format format
+		= output->MediaOutput().format.u.raw_audio;
+	fCore->Unlock();
+
+	// Every buffer is out from the moment the mix thread starts on it until
+	// the consumer is done with it: MixAheadTime() plus the downstream
+	// latency before it plays, and up to one more buffer period at the
+	// consumer (a sound card copies it out at its next buffer exchange).
+	// Allocate for all of those, rounded up, plus the one being mixed. With
+	// short buffers that is several more than the downstream latency alone
+	// spans, and a group that runs dry makes RequestBuffer() fail and the
+	// mixer skip that buffer.
+	bigtime_t duration = BufferDuration();
+	if (duration <= 0)
+		duration = buffer_duration(format);
+	bigtime_t outstanding = MixerCore::MixAheadTime(format)
+		+ fDownstreamLatency + duration;
+	int32 count = duration > 0
+		? int32((outstanding + duration - 1) / duration) + 1 : 3;
 
 	TRACE("AudioMixer::_BufferCount: fDownstreamLatency %lld, "
 		"BufferDuration %lld, buffer count = %ld\n", fDownstreamLatency,
-		BufferDuration(), count);
+		duration, count);
 
 	if (count < 3)
 		count = 3;
@@ -1482,8 +1501,8 @@ AudioMixer::_BufferCount() const
 void
 AudioMixer::_GrowBufferGroups()
 {
-	int32 count = _BufferCount();
 	for (int32 i = 0; MixerOutput* output = fCore->OutputAt(i); i++) {
+		int32 count = _BufferCount(output);
 		BBufferGroup* group = output->BufferGroup();
 		int32 have = 0;
 		if (group == NULL || group->CountBuffers(&have) != B_OK
@@ -1522,7 +1541,7 @@ AudioMixer::_GrowBufferGroups()
 status_t
 AudioMixer::CreateBufferGroup(MixerOutput* output, BBufferGroup** buffer) const
 {
-	int32 count = _BufferCount();
+	int32 count = _BufferCount(output);
 
 	fCore->Lock();
 	uint32 size = output->MediaOutput().format.u.raw_audio.buffer_size;

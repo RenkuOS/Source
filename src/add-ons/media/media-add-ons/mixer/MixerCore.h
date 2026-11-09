@@ -90,6 +90,11 @@ public:
 
 			uint32				OutputChannelCount();
 
+	// How long before a buffer plays the mix thread starts on it, on top of
+	// the downstream latency.
+	static	bigtime_t			MixAheadTime(
+									const media_multi_audio_format& format);
+
 private:
 			void				_StartMixThread();
 			void				_StopMixThread();

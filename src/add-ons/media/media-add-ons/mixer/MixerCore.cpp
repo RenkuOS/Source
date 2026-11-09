@@ -399,6 +399,13 @@ MixerCore::Stop()
 }
 
 
+/*static*/ bigtime_t
+MixerCore::MixAheadTime(const media_multi_audio_format& format)
+{
+	return max((bigtime_t)3600, bigtime_t(0.4 * buffer_duration(format)));
+}
+
+
 void
 MixerCore::_StartMixThread()
 {
@@ -640,8 +647,8 @@ MixerCore::_MixThread()
 
 	const bigtime_t start = fTimeSource->Now();
 
-	bigtime_t eventLatency = max((bigtime_t)3600, bigtime_t(0.4 * buffer_duration(
-		fOutput->MediaOutput().format.u.raw_audio)));
+	bigtime_t eventLatency = MixAheadTime(
+		fOutput->MediaOutput().format.u.raw_audio);
 
 	// TODO: when the format changes while running, everything is wrong!
 	bigtime_t bufferRequestTimeout = buffer_duration(
