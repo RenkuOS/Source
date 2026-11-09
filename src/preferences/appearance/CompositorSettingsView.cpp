@@ -27,11 +27,13 @@
 static const int32 kMsgComposited = 'cmps';
 static const int32 kMsgShadows = 'cmpw';
 static const int32 kMsgRoundedCorners = 'cmpr';
+static const int32 kMsgDragTransparency = 'cmpt';
 
 // What app_server uses until it is told otherwise
 static const bool kDefaultComposited = false;
 static const bool kDefaultShadows = true;
 static const bool kDefaultRoundedCorners = true;
+static const bool kDefaultDragTransparency = false;
 
 
 CompositorSettingsView::CompositorSettingsView(const char* name)
@@ -42,6 +44,8 @@ CompositorSettingsView::CompositorSettingsView(const char* name)
 	fSavedShadows = _Get(AS_GET_COMPOSITED_SHADOWS, kDefaultShadows);
 	fSavedRoundedCorners = _Get(AS_GET_COMPOSITED_ROUNDED_CORNERS,
 		kDefaultRoundedCorners);
+	fSavedDragTransparency = _Get(AS_GET_COMPOSITED_DRAG_TRANSPARENCY,
+		kDefaultDragTransparency);
 
 	fCompositedCheckBox = new BCheckBox("composited",
 		B_TRANSLATE("Compositor (after a restart)"),
@@ -51,9 +55,13 @@ CompositorSettingsView::CompositorSettingsView(const char* name)
 	fRoundedCornersCheckBox = new BCheckBox("rounded corners",
 		B_TRANSLATE("Rounded window corners"),
 		new BMessage(kMsgRoundedCorners));
+	fDragTransparencyCheckBox = new BCheckBox("drag transparency",
+		B_TRANSLATE("See-through windows while dragging"),
+		new BMessage(kMsgDragTransparency));
 
 	fShadowsCheckBox->SetValue(fSavedShadows);
 	fRoundedCornersCheckBox->SetValue(fSavedRoundedCorners);
+	fDragTransparencyCheckBox->SetValue(fSavedDragTransparency);
 	_SetComposited(fSavedComposited);
 
 	BLayoutBuilder::Group<>(this, B_VERTICAL, B_USE_DEFAULT_SPACING)
@@ -61,6 +69,7 @@ CompositorSettingsView::CompositorSettingsView(const char* name)
 		.AddGroup(B_VERTICAL, B_USE_SMALL_SPACING)
 			.Add(fShadowsCheckBox)
 			.Add(fRoundedCornersCheckBox)
+			.Add(fDragTransparencyCheckBox)
 			.SetInsets(B_USE_WINDOW_SPACING, 0, 0, 0)
 			.End()
 		.AddGlue()
@@ -81,6 +90,7 @@ CompositorSettingsView::AttachedToWindow()
 	fCompositedCheckBox->SetTarget(this);
 	fShadowsCheckBox->SetTarget(this);
 	fRoundedCornersCheckBox->SetTarget(this);
+	fDragTransparencyCheckBox->SetTarget(this);
 }
 
 
@@ -108,6 +118,12 @@ CompositorSettingsView::MessageReceived(BMessage* message)
 			Window()->PostMessage(kMsgUpdate);
 			break;
 
+		case kMsgDragTransparency:
+			_Set(AS_SET_COMPOSITED_DRAG_TRANSPARENCY,
+				fDragTransparencyCheckBox->Value() == B_CONTROL_ON);
+			Window()->PostMessage(kMsgUpdate);
+			break;
+
 		default:
 			BView::MessageReceived(message);
 			break;
@@ -122,7 +138,9 @@ CompositorSettingsView::IsDefaultable()
 			!= kDefaultComposited
 		|| (fShadowsCheckBox->Value() == B_CONTROL_ON) != kDefaultShadows
 		|| (fRoundedCornersCheckBox->Value() == B_CONTROL_ON)
-			!= kDefaultRoundedCorners;
+			!= kDefaultRoundedCorners
+		|| (fDragTransparencyCheckBox->Value() == B_CONTROL_ON)
+			!= kDefaultDragTransparency;
 }
 
 
@@ -134,6 +152,8 @@ CompositorSettingsView::SetDefaults()
 	_SetOption(fShadowsCheckBox, AS_SET_COMPOSITED_SHADOWS, kDefaultShadows);
 	_SetOption(fRoundedCornersCheckBox, AS_SET_COMPOSITED_ROUNDED_CORNERS,
 		kDefaultRoundedCorners);
+	_SetOption(fDragTransparencyCheckBox,
+		AS_SET_COMPOSITED_DRAG_TRANSPARENCY, kDefaultDragTransparency);
 }
 
 
@@ -143,7 +163,9 @@ CompositorSettingsView::IsRevertable()
 	return (fCompositedCheckBox->Value() == B_CONTROL_ON) != fSavedComposited
 		|| (fShadowsCheckBox->Value() == B_CONTROL_ON) != fSavedShadows
 		|| (fRoundedCornersCheckBox->Value() == B_CONTROL_ON)
-			!= fSavedRoundedCorners;
+			!= fSavedRoundedCorners
+		|| (fDragTransparencyCheckBox->Value() == B_CONTROL_ON)
+			!= fSavedDragTransparency;
 }
 
 
@@ -158,6 +180,8 @@ CompositorSettingsView::Revert()
 	_SetOption(fShadowsCheckBox, AS_SET_COMPOSITED_SHADOWS, fSavedShadows);
 	_SetOption(fRoundedCornersCheckBox, AS_SET_COMPOSITED_ROUNDED_CORNERS,
 		fSavedRoundedCorners);
+	_SetOption(fDragTransparencyCheckBox,
+		AS_SET_COMPOSITED_DRAG_TRANSPARENCY, fSavedDragTransparency);
 }
 
 
@@ -184,6 +208,7 @@ CompositorSettingsView::_SetComposited(bool composited)
 	fCompositedCheckBox->SetValue(composited);
 	fShadowsCheckBox->SetEnabled(composited);
 	fRoundedCornersCheckBox->SetEnabled(composited);
+	fDragTransparencyCheckBox->SetEnabled(composited);
 }
 
 

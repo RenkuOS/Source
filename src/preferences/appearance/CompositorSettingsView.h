@@ -39,10 +39,12 @@ private:
 			BCheckBox*			fCompositedCheckBox;
 			BCheckBox*			fShadowsCheckBox;
 			BCheckBox*			fRoundedCornersCheckBox;
+			BCheckBox*			fDragTransparencyCheckBox;
 
 			bool				fSavedComposited;
 			bool				fSavedShadows;
 			bool				fSavedRoundedCorners;
+			bool				fSavedDragTransparency;
 };
 
 
