@@ -16,6 +16,8 @@
 #define DECORATOR_H
 
 
+#include <vector>
+
 #include <Rect.h>
 #include <Region.h>
 #include <String.h>
@@ -71,6 +73,23 @@ public:
 		ServerBitmap*		closeBitmaps[4];
 		ServerBitmap*		minimizeBitmaps[4];
 		ServerBitmap*		zoomBitmaps[4];
+	};
+
+	// A part of the outline of a window, with rounded corners.
+	struct ShapeRect {
+		BRect				rect;
+		float				leftTop;
+		float				rightTop;
+		float				leftBottom;
+		float				rightBottom;
+
+		bool operator==(const ShapeRect& other) const
+		{
+			return rect == other.rect && leftTop == other.leftTop
+				&& rightTop == other.rightTop
+				&& leftBottom == other.leftBottom
+				&& rightBottom == other.rightBottom;
+		}
 	};
 
 	enum Region {
@@ -172,6 +191,12 @@ public:
 
 			const BRegion&		GetFootprint();
 			::Desktop*			GetDesktop();
+
+			// The outline of the window, for a composited desktop: the compositor
+			// casts its shadow, and blends what is cut off at the corners with
+			// what is behind the window. The first entry is the frame, followed
+			// by the tabs. It isn't virtual to keep the decorator add-ons' ABI.
+			void				GetShape(std::vector<ShapeRect>& shape) const;
 
 			void				MoveBy(float x, float y);
 			void				MoveBy(BPoint offset);
