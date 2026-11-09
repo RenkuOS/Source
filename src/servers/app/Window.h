@@ -141,6 +141,11 @@ public:
 			// When the window can't be seen for a while, its buffer can go. It
 			// comes back on its own when the window is shown and drawn again.
 			void				ReleaseBuffer();
+			// When compositing, how much of what is behind the window shows
+			// through it: 255 is opaque. Used while the window is dragged.
+			void				SetCompositeAlpha(uint8 alpha);
+			uint8				CompositeAlpha() const
+									{ return fCompositeAlpha; }
 
 			// TODO: not protected by a lock, but no one should need this anyways
 			// make private? when used inside Window, it has the ReadLock()
@@ -485,6 +490,7 @@ private:
 			BPoint				fBufferOffset;
 			bool				fBufferReady;
 			bool				fHasRoundedCorners;
+			uint8				fCompositeAlpha;
 };
 
 

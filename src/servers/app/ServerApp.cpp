@@ -3540,6 +3540,23 @@ ServerApp::_DispatchMessage(int32 code, BPrivate::LinkReceiver& link)
 			fLink.Flush();
 			break;
 		}
+		case AS_SET_COMPOSITED_DRAG_TRANSPARENCY:
+		{
+			bool transparent;
+			if (link.Read<bool>(&transparent) == B_OK) {
+				LockedDesktopSettings settings(fDesktop);
+				settings.SetCompositedDragTransparency(transparent);
+			}
+			break;
+		}
+		case AS_GET_COMPOSITED_DRAG_TRANSPARENCY:
+		{
+			DesktopSettings settings(fDesktop);
+			fLink.StartMessage(B_OK);
+			fLink.Attach<bool>(settings.CompositedDragTransparency());
+			fLink.Flush();
+			break;
+		}
 		case AS_GET_SUBPIXEL_ANTIALIASING:
 		{
 			DesktopSettings settings(fDesktop);

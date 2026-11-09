@@ -28,6 +28,7 @@
 #include <WindowPrivate.h>
 
 #include "ClickTarget.h"
+#include "Compositor.h"
 #include "Decorator.h"
 #include "DecorManager.h"
 #include "DefaultDecorator.h"
@@ -125,7 +126,8 @@ Window::Window(const BRect& frame, const char *name,
 	fWorkspacesViewCount(0),
 
 	fBufferReady(false),
-	fHasRoundedCorners(false)
+	fHasRoundedCorners(false),
+	fCompositeAlpha(255)
 {
 	_InitWindowStack();
 
@@ -317,6 +319,20 @@ Window::ReleaseBuffer()
 	fVisibleRegion.MakeEmpty();
 	fVisibleContentRegionValid = false;
 	fEffectiveDrawingRegionValid = false;
+}
+
+
+void
+Window::SetCompositeAlpha(uint8 alpha)
+{
+	if (alpha == fCompositeAlpha)
+		return;
+
+	fCompositeAlpha = alpha;
+
+	Compositor* compositor = fDesktop->GetCompositor();
+	if (compositor != NULL)
+		compositor->Composite(BRegion(fShape.Bounds()));
 }
 
 
