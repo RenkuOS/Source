@@ -246,13 +246,16 @@ TDeskbarMenu::AddStandardDeskbarMenuItems()
 B_TRANSLATE_MARK_VOID("About Haiku")
 B_TRANSLATE_MARK_VOID("About this system")
 
-	item = new BMenuItem(
 #ifdef HAIKU_DISTRO_COMPATIBILITY_OFFICIAL
-	B_TRANSLATE_NOCOLLECT("About Haiku")
+	// The system is RenkuOS. The translations of "About Haiku" are kept and
+	// only the name in them is replaced, so that every language says
+	// "About RenkuOS" without a new string for translators to catch up on.
+	BString aboutLabel(B_TRANSLATE_NOCOLLECT("About Haiku"));
+	aboutLabel.ReplaceAll("Haiku", "RenkuOS");
 #else
-	B_TRANSLATE_NOCOLLECT("About this system")
+	BString aboutLabel(B_TRANSLATE_NOCOLLECT("About this system"));
 #endif
-		, new BMessage(kShowSplash));
+	item = new BMenuItem(aboutLabel.String(), new BMessage(kShowSplash));
 	item->SetEnabled(!dragging);
 	AddItem(item);
 

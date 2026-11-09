@@ -5,7 +5,7 @@
 
 _ARCH=`getarch 2>/dev/null`
 if [ "$_ARCH" = "`getarch -p 2>/dev/null`" ] ; then
-	echo -e "\nWelcome to the Haiku shell.\n"
+	echo -e "\nWelcome to the RenkuOS shell.\n"
 	PS1="\w"
 else
 	echo -e "\nSwitching to architecture `getarch`\n"
