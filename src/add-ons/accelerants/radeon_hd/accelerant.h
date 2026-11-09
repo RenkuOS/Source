@@ -36,6 +36,13 @@ struct gpu_state {
 	uint32 d2crtcControl;
 };
 
+// Evergreen+ supports up to 6 CRTCs and uses different register addresses
+struct evergreen_gpu_state {
+	uint32 vgaRenderControl;
+	uint32 vgaHdpControl;
+	bool crtcEnabled[6];
+};
+
 
 struct fb_info {
 	bool		valid;
