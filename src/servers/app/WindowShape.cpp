@@ -19,6 +19,10 @@ static const int32 kShadowMargin = 15;
 static const int32 kShadowOffset = 4;
 static const uint8 kShadowAlpha = 96;
 
+// On a dark desktop a shadow doesn't show. The window has a glow round it instead,
+// with nothing to say where the light comes from.
+static const uint8 kGlowAlpha = 160;
+
 
 static uint8* sCoverage[kMaxCornerRadius + 1];
 static uint8 sShadowProfile[2 * kShadowMargin + 1];
@@ -27,21 +31,28 @@ static bool sShadowProfileValid = false;
 
 WindowShape::WindowShape()
 	:
-	fHasShadow(false)
+	fHasShadow(false),
+	fIsGlow(false),
+	fGlowColor(make_color(0, 0, 0))
 {
 }
 
 
 bool
 WindowShape::SetTo(const std::vector<Decorator::ShapeRect>& shape,
-	const BRegion& fullRegion, bool hasShadow)
+	const BRegion& fullRegion, bool hasShadow, bool isGlow,
+	rgb_color glowColor)
 {
-	if (shape == fShape && hasShadow == fHasShadow && fullRegion == fFullRegion)
+	if (shape == fShape && hasShadow == fHasShadow && isGlow == fIsGlow
+		&& glowColor == fGlowColor && fullRegion == fFullRegion) {
 		return false;
+	}
 
 	fShape = shape;
 	fFullRegion = fullRegion;
 	fHasShadow = hasShadow;
+	fIsGlow = isGlow;
+	fGlowColor = glowColor;
 
 	fCorners.clear();
 	fShadowRects.clear();
@@ -97,7 +108,8 @@ WindowShape::SetTo(const std::vector<Decorator::ShapeRect>& shape,
 		fShadowFrame = BRect();
 		for (size_t i = 0; i < shape.size(); i++) {
 			BRect rect = shape[i].rect;
-			rect.OffsetBy(0, kShadowOffset);
+			if (!isGlow)
+				rect.OffsetBy(0, kShadowOffset);
 			fShadowRects.push_back(rect);
 			fShadowFrame = fShadowFrame.IsValid() ? fShadowFrame | rect : rect;
 		}
@@ -205,4 +217,11 @@ WindowShape::ShadowOffset()
 WindowShape::ShadowAlpha()
 {
 	return kShadowAlpha;
+}
+
+
+/*static*/ uint8
+WindowShape::GlowAlpha()
+{
+	return kGlowAlpha;
 }
