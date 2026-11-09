@@ -656,6 +656,11 @@ Window::ReloadDecor()
 		return false;
 	}
 
+	// tabs stay where the user slid them
+	BMessage settings;
+	if (stack->Decorator() != NULL && stack->Decorator()->GetSettings(&settings))
+		decorator->SetSettings(settings);
+
 	stack->SetDecorator(decorator);
 
 	fWindowBehaviour.SetTo(windowBehaviour);
