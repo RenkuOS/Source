@@ -18,6 +18,7 @@
 
 #include "TabDecorator.h"
 #include "DecorManager.h"
+#include "RoundedDecorator.h"
 
 
 class Desktop;
@@ -32,7 +33,7 @@ protected:
 									BRect rect, Desktop* desktop);
 };
 
-class FlatDecorator: public TabDecorator {
+class FlatDecorator: public TabDecorator, public RoundedDecorator {
 public:
 								FlatDecorator(DesktopSettings& settings,
 									BRect frame, Desktop* desktop);
@@ -43,6 +44,9 @@ public:
 									Decorator::Tab* tab = NULL);
 
 	virtual void				UpdateColors(DesktopSettings& settings);
+
+	virtual	void				GetRoundedShape(
+									std::vector<ShapeRect>& shape) const;
 
 protected:
 	virtual	void				_DrawFrame(BRect rect);
@@ -57,6 +61,7 @@ protected:
 									BRect rect);
 
 private:
+			void				_DrawFrameCorners();
  			void				_DrawButtonBitmap(ServerBitmap* bitmap,
  									bool direct, BRect rect);
 			void				_DrawBlendedRect(DrawingEngine *engine,
