@@ -13,6 +13,7 @@
 #include <Region.h>
 
 #include "Compositor.h"
+#include "Window.h"
 
 
 // Windows are resized in many small steps. Memory is allocated in larger ones,
@@ -202,7 +203,8 @@ WindowBuffer::_Reallocate(int32 width, int32 height, bool shrink)
 WindowBufferHWInterface::WindowBufferHWInterface(Compositor* compositor)
 	:
 	HWInterface(),
-	fCompositor(compositor)
+	fCompositor(compositor),
+	fWindow(NULL)
 {
 }
 
@@ -356,7 +358,7 @@ WindowBufferHWInterface::IsDoubleBuffered() const
 status_t
 WindowBufferHWInterface::InvalidateRegion(const BRegion& region)
 {
-	fCompositor->Composite(region);
+	_Damaged(region);
 	return B_OK;
 }
 
@@ -365,6 +367,18 @@ status_t
 WindowBufferHWInterface::Invalidate(const BRect& frame)
 {
 	BRegion region(frame);
-	fCompositor->Composite(region);
+	_Damaged(region);
 	return B_OK;
+}
+
+
+void
+WindowBufferHWInterface::_Damaged(const BRegion& region)
+{
+	fCompositor->Composite(region);
+
+	// An application with direct access draws to the screen on its own. What
+	// the window draws must get there first, as it isn't redrawn on top.
+	if (fWindow != NULL && fWindow->ServerWindow()->IsDirectlyAccessing())
+		fCompositor->FlushLocked();
 }
