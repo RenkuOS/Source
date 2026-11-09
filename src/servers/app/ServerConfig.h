@@ -32,6 +32,7 @@
 // What the compositor adds to windows when it is used.
 #define COMPOSITED_SHADOWS_DEFAULT true
 #define COMPOSITED_ROUNDED_CORNERS_DEFAULT true
+#define COMPOSITED_DRAG_TRANSPARENCY_DEFAULT false
 
 // These definitions provide the server something to use for default
 // system fonts.

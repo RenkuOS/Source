@@ -90,6 +90,7 @@ DesktopSettingsPrivate::_SetDefaults()
 	fCompositedDesktop = COMPOSITED_DESKTOP_DEFAULT;
 	fCompositedShadows = COMPOSITED_SHADOWS_DEFAULT;
 	fCompositedRoundedCorners = COMPOSITED_ROUNDED_CORNERS_DEFAULT;
+	fCompositedDragTransparency = COMPOSITED_DRAG_TRANSPARENCY_DEFAULT;
 	gDefaultHintingMode = HINTING_MODE_ON;
 	gSubpixelAverageWeight = 120;
 	gSubpixelOrderingRGB = true;
@@ -311,6 +312,12 @@ DesktopSettingsPrivate::_Load()
 				fCompositedRoundedCorners = rounded;
 			}
 
+			bool dragTransparency;
+			if (settings.FindBool("composited drag transparency",
+					&dragTransparency) == B_OK) {
+				fCompositedDragTransparency = dragTransparency;
+			}
+
 			int8 averageWeight;
 			if (settings.FindInt8("subpixel average weight", &averageWeight)
 					== B_OK) {
@@ -479,6 +486,8 @@ DesktopSettingsPrivate::Save(uint32 mask)
 			settings.AddBool("composited shadows", fCompositedShadows);
 			settings.AddBool("composited rounded corners",
 				fCompositedRoundedCorners);
+			settings.AddBool("composited drag transparency",
+				fCompositedDragTransparency);
 			settings.AddInt8("subpixel average weight", gSubpixelAverageWeight);
 			settings.AddBool("subpixel ordering", gSubpixelOrderingRGB);
 
@@ -813,6 +822,21 @@ DesktopSettingsPrivate::CompositedRoundedCorners() const
 
 
 void
+DesktopSettingsPrivate::SetCompositedDragTransparency(bool transparent)
+{
+	fCompositedDragTransparency = transparent;
+	Save(kAppearanceSettings);
+}
+
+
+bool
+DesktopSettingsPrivate::CompositedDragTransparency() const
+{
+	return fCompositedDragTransparency;
+}
+
+
+void
 DesktopSettingsPrivate::SetSubpixelAntialiasing(bool subpix)
 {
 	gSubpixelAntialiasing = subpix;
@@ -1035,6 +1059,13 @@ DesktopSettings::CompositedRoundedCorners() const
 
 
 bool
+DesktopSettings::CompositedDragTransparency() const
+{
+	return fSettings->CompositedDragTransparency();
+}
+
+
+bool
 DesktopSettings::SubpixelAntialiasing() const
 {
 	return fSettings->SubpixelAntialiasing();
@@ -1181,6 +1212,13 @@ void
 LockedDesktopSettings::SetCompositedRoundedCorners(bool rounded)
 {
 	fSettings->SetCompositedRoundedCorners(rounded);
+}
+
+
+void
+LockedDesktopSettings::SetCompositedDragTransparency(bool transparent)
+{
+	fSettings->SetCompositedDragTransparency(transparent);
 }
 
 
