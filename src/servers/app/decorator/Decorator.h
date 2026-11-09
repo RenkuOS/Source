@@ -196,6 +196,7 @@ public:
 			// casts its shadow, and blends what is cut off at the corners with
 			// what is behind the window. The first entry is the frame, followed
 			// by the tabs. It isn't virtual to keep the decorator add-ons' ABI.
+			// Only DefaultDecorator rounds its corners so far, see Window.
 			void				GetShape(std::vector<ShapeRect>& shape) const;
 
 			void				MoveBy(float x, float y);

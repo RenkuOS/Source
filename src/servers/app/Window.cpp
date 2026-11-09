@@ -30,6 +30,7 @@
 #include "ClickTarget.h"
 #include "Decorator.h"
 #include "DecorManager.h"
+#include "DefaultDecorator.h"
 #include "Desktop.h"
 #include "DrawingEngine.h"
 #include "HWInterface.h"
@@ -213,8 +214,13 @@ Window::SetClipping(BRegion* stillAvailableOnScreen)
 		fBufferInterface->SetFrame(frame);
 
 		std::vector< ::Decorator::ShapeRect> shape;
-		if (::Decorator* decorator = Decorator())
-			decorator->GetShape(shape);
+		if (::Decorator* decorator = Decorator()) {
+			DefaultDecorator* rounded = dynamic_cast<DefaultDecorator*>(decorator);
+			if (rounded != NULL && rounded->HasRoundedCorners())
+				rounded->GetRoundedShape(shape);
+			else
+				decorator->GetShape(shape);
+		}
 		if (shape.empty()) {
 			::Decorator::ShapeRect rect = { fFrame, 0, 0, 0, 0 };
 			shape.push_back(rect);
