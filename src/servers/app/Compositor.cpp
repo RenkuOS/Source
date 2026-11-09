@@ -15,6 +15,7 @@
 #include "Desktop.h"
 #include "HWInterface.h"
 #include "RenderingBuffer.h"
+#include "ServerWindow.h"
 #include "Window.h"
 #include "WindowBuffer.h"
 #include "WindowShape.h"
@@ -139,6 +140,19 @@ Compositor::Composite(const BRegion& damage)
 			_BlendEdges(target, layer->window, edge);
 		}
 		_Copy(target, layer->window, opaque);
+	}
+
+	// A direct window draws straight to the screen, and its buffer is stale:
+	// copying it there would cover what the application has just drawn. A
+	// shadow or a see-through window over it is left out there instead.
+	for (Window* window = windows.FirstWindow(); window != NULL;
+			window = window->NextWindow(workspace)) {
+		if (!window->IsHidden()
+			&& window->ServerWindow()->IsDirectlyAccessing()) {
+			BRegion content;
+			window->GetOnScreenContentRegion(&content);
+			screenDamage.Exclude(&content);
+		}
 	}
 
 	interface->InvalidateRegion(screenDamage);
