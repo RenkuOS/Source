@@ -1234,6 +1234,18 @@ Stream::_Start()
 			? (size_t)(fLastReportedCycle + 1) % fBufferCount : 0;
 		fCaptureFill = 0;
 		fCaptureGapPhase = 0;
+		// Likewise, put the playback requeue back in step with the cycles the
+		// exchange reports: with nothing pending, the two are equal (see
+		// fLastReportedCycle in Stream.h), and output_latency (GetGlobalFormat)
+		// counts on it. A previous run can end with completions the exchange
+		// never reported, which the reset of fProcessedBuffers above drops; left
+		// as it was, every one of them made the slot a client fills go out a
+		// period earlier than reported, and N - 1 of them had it fill the slot
+		// just as it is copied to the wire.
+		if (!fIsInput && fBufferCount > 0) {
+			fLastReportedCycle %= (int32)fBufferCount;
+			fCurrentBuffer = (size_t)fLastReportedCycle;
+		}
 		// Per-RUN, so every run yields fresh feedback evidence instead of the
 		// budget being consumed once for the life of the driver image.
 		fFeedbackLogCount = 0;
@@ -2558,6 +2570,21 @@ Stream::GetGlobalFormat(multi_format_info* Format)
 	TRACE(INF, "%s.rate:%d cvsr:%f format:%#08x\n",
 		fIsInput ? "input" : "ouput",
 		format->rate, format->cvsr, format->format);
+
+	// output_latency is what the hardware path adds to the buffer ring. The
+	// multi_audio contract is that the buffer a client fills after an
+	// exchange (cycle - 1) starts playing return_playback_buffers - 1 periods
+	// after the reported frame count, as on a DMA ring. Here a slot is copied
+	// to the wire when it is requeued (_QueueNextTransfer), which happens
+	// fBufferCount - 1 completions after the client filled it, and the copy
+	// then waits behind the fBufferCount transfers in flight: fBufferCount - 1
+	// periods more than the contract. Capture needs nothing extra: a record
+	// slot is handed out the moment its last frame arrives.
+	uint32 rate = fAlternates[fActiveAlternate]->GetSamplingRate();
+	if (!fIsInput && rate > 0 && fBufferCount > 1) {
+		Format->output_latency = (bigtime_t)(fBufferCount - 1)
+			* (fSamplesCount / fBufferCount) * 1000000 / rate;
+	}
 	return B_OK;
 }
 

@@ -9,7 +9,9 @@
 
 #include "MultiAudioNode.h"
 
+#include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <Autolock.h>
@@ -100,14 +102,25 @@ public:
 	// or right on the beat boundary lose one arrival and zero-fill one beat
 	// per overflow/underflow pair, a stable cycle that silences up to ~25% of
 	// all buffers. A queue deep enough to absorb the bursts plays any arrival
-	// cadence with the correct average rate cleanly, at the price of up to
-	// kInputQueueDepth buffer periods of latency.
+	// cadence with the correct average rate cleanly. The beat empties it into
+	// fRing at every exchange, so it adds no latency: when a buffer plays is
+	// set by its start time alone.
 	// Single producer (arrival path writes fQueueTail), single consumer (the
 	// exchange beat writes fQueueHead); atomic_set/get order the accesses.
 	BBuffer*			fQueue[kInputQueueDepth];
 	int32				fQueueHead;
 	int32				fQueueTail;
 	Resampler			*fResampler;
+
+	// Playback ring, in the device's sample format, fFormat's channels
+	// interleaved. Frame f of the performance timeline lives at f % fRingFrames
+	// (a power of two). The exchange beat writes the queued buffers into it
+	// at their start times and plays each slot from it; nothing else touches
+	// it while the output thread runs.
+	uint8*				fRing;
+	uint32				fRingFrames;
+	int64				fNextWriteFrame;
+		// where the last buffer written ended; -1 when there is none
 };
 
 
@@ -127,6 +140,8 @@ public:
 	volatile uint32 	fBufferCycle;
 	int32				fOldBufferCycle;
 	Resampler*			fResampler;
+	int64				fRecordEnd;
+		// device frame count at the end of the last record buffer sent
 };
 
 
@@ -196,12 +211,16 @@ node_input::node_input(media_input& input, media_format preferredFormat)
 	fQueueHead = 0;
 	fQueueTail = 0;
 	fResampler = NULL;
+	fRing = NULL;
+	fRingFrames = 0;
+	fNextWriteFrame = -1;
 }
 
 
 node_input::~node_input()
 {
 	CALLED();
+	free(fRing);
 }
 
 
@@ -219,6 +238,7 @@ node_output::node_output(media_output& output, media_format preferredFormat)
 	fBufferCycle = 1;
 	fOldBufferCycle = -1;
 	fResampler = NULL;
+	fRecordEnd = -1;
 }
 
 
@@ -240,6 +260,7 @@ MultiAudioNode::MultiAudioNode(BMediaAddOn* addon, const char* name,
 	BMediaEventLooper(),
 	fBufferLock("multi audio buffers"),
 	fActiveOutputs(0),
+	fPlayFrame(-1),
 	fQuitThread(0),
 	fThread(-1),
 	fDevice(device),
@@ -761,7 +782,9 @@ MultiAudioNode::GetLatencyFor(const media_destination& forWhom,
 	if (channel == NULL)
 		return B_MEDIA_BAD_DESTINATION;
 
-	*_latency = EventLatency();
+	// The control loop hands a buffer on EventLatency() plus its scheduling
+	// latency before the buffer's start time, as in the system mixer.
+	*_latency = EventLatency() + SchedulingLatency();
 	*_timeSource = TimeSource()->ID();
 	return B_OK;
 }
@@ -793,6 +816,8 @@ MultiAudioNode::Connected(const media_source& producer,
 	_UpdateInternalLatency(with_format);
 
 	// record the agreed upon values
+	BAutolock locker(fBufferLock);
+	_AllocateRing(*channel);
 	channel->fInput.source = producer;
 	channel->fInput.format = with_format;
 	*out_input = channel->fInput;
@@ -816,6 +841,7 @@ MultiAudioNode::Disconnected(const media_source& producer,
 
 	BAutolock locker(fBufferLock);
 	_FillWithZeros(*channel);
+	_ClearRing(*channel);
 	//GetFormat(&channel->fInput.format);
 }
 
@@ -1256,15 +1282,15 @@ MultiAudioNode::_HandleBuffer(const media_timed_event* event,
 		return B_MEDIA_BAD_DESTINATION;
 	}
 
-	// if the buffer is late, we ignore it and report the fact to the producer
-	// who sent it to us
-	if (RunMode() != B_OFFLINE && RunMode() != B_RECORDING && lateness > 0) {
-		// lateness doesn't matter in offline mode or in recording mode
-		//mLateBuffers++;
+	// A late buffer is reported to the producer who sent it, but still
+	// queued: the reported latency has slack for the slot phase, so a late
+	// buffer usually still makes its slot. The exchange beat drops whatever
+	// part of it is due before the slot it is filling (_WriteToRing).
+	// Lateness doesn't matter in offline mode or in recording mode.
+	if (RunMode() != B_OFFLINE && RunMode() != B_RECORDING && lateness > 0)
 		NotifyLateProducer(channel->fInput.source, lateness, event->event_time);
-		fprintf(stderr,"	<- LATE BUFFER: %" B_PRIdBIGTIME "\n", lateness);
-		buffer->Recycle();
-	} else {
+
+	{
 		// Enqueue (see node_input): store the buffer first, then publish it
 		// by advancing the tail, so the consumer never sees an unwritten
 		// slot.
@@ -2047,6 +2073,9 @@ MultiAudioNode::_OutputThread()
 		//PRINT(("MultiAudioNode::RunThread: played_frames_count: %lld\n", bufferInfo.played_frames_count));
 		//PRINT(("MultiAudioNode::RunThread: buffer_cycle: %li\n", bufferInfo.playback_buffer_cycle));
 
+		// Placed once per exchange, by the first connected input that needs it.
+		int64 slotFrame = -1;
+
 		for (int32 i = 0; i < fInputs.CountItems(); i++) {
 			node_input* input = (node_input*)fInputs.ItemAt(i);
 
@@ -2071,24 +2100,28 @@ MultiAudioNode::_OutputThread()
 
 				input->fOldBufferCycle = bufferInfo.playback_buffer_cycle;
 
-				// Dequeue the oldest queued buffer, if any (see node_input).
-				// The slot is read before the head is advanced, so the
-				// arrival path cannot overwrite it in between.
-				BBuffer* queued = NULL;
-				int32 queueHead = atomic_get(&input->fQueueHead);
-				if (atomic_get(&input->fQueueTail) - queueHead > 0)
-					queued = input->fQueue[queueHead % kInputQueueDepth];
+				bool connected = input->fInput.source != media_source::null;
+				if (connected && slotFrame < 0)
+					slotFrame = _PlaybackSlotFrame(bufferInfo);
 
-				if (queued != NULL) {
-					_FillNextBuffer(*input, queued);
-					queued->Recycle();
-					atomic_set(&input->fQueueHead, queueHead + 1);
-				} else {
-					// put zeros in current buffer
-					if (input->fInput.source != media_source::null)
-						_WriteZeros(*input, input->fBufferCycle);
-					//PRINT(("MultiAudioNode::Runthread WriteZeros\n"));
+				// Move every queued buffer into the ring at its start time
+				// (see node_input), then play the slot from the ring. A
+				// queue slot is read before the head is advanced, so the
+				// arrival path cannot overwrite it in between.
+				int32 queueHead = atomic_get(&input->fQueueHead);
+				while (atomic_get(&input->fQueueTail) - queueHead > 0) {
+					BBuffer* queued
+						= input->fQueue[queueHead % kInputQueueDepth];
+					if (queued != NULL) {
+						if (connected)
+							_WriteToRing(*input, queued, slotFrame);
+						queued->Recycle();
+					}
+					queueHead++;
+					atomic_set(&input->fQueueHead, queueHead);
 				}
+				if (connected)
+					_PlayFromRing(*input, slotFrame);
 			} else {
 				//PRINT(("playback_buffer_cycle non ok input: %i\n", i));
 			}
@@ -2247,39 +2280,213 @@ MultiAudioNode::_FillWithZeros(node_input& input)
 }
 
 
-void
-MultiAudioNode::_FillNextBuffer(node_input& input, BBuffer* buffer)
+/*!	The performance-time frame at which the playback slot this exchange hands
+	out (cycle - 1) starts to play. Under the multi_audio contract that slot
+	follows the return_playback_buffers - 1 slots already queued after the
+	frame count the exchange reported; the driver's output_latency is what its
+	hardware path adds to that.
+
+	Consecutive slots are exactly one buffer apart in device frames, so a
+	result within half a buffer of that is taken as the continuation: the
+	published clock is smoothed and moves by microseconds from one exchange to
+	the next, which must not shift the playback by a frame. Anything further
+	(a missed exchange, a restart) places the slot afresh.
+*/
+int64
+MultiAudioNode::_PlaybackSlotFrame(const multi_buffer_info& info)
 {
+	const multi_buffer_list& list = fDevice->BufferList();
+	double rate = fOutputPreferredFormat.u.raw_audio.frame_rate;
+	int64 bufferFrames = list.return_playback_buffer_size;
+
+	bigtime_t played = TimeSource()->PerformanceTimeFor(info.played_real_time);
+	int64 frame = llround(played * rate / 1000000.0)
+		+ (int64)(list.return_playback_buffers - 1) * bufferFrames
+		+ llround(fDevice->FormatInfo().output_latency * rate / 1000000.0);
+
+	if (fPlayFrame >= 0) {
+		int64 expected = fPlayFrame + bufferFrames;
+		if (frame - expected < bufferFrames / 2
+			&& expected - frame < bufferFrames / 2)
+			frame = expected;
+	}
+	fPlayFrame = frame;
+	return frame;
+}
+
+
+static inline uint8
+silence_byte(uint32 format)
+{
+	return format == media_raw_audio_format::B_AUDIO_UCHAR ? 128 : 0;
+}
+
+
+/*!	(Re)allocates the playback ring of \a input for the current buffer length
+	and empties it. Called with fBufferLock held, so the output thread is not
+	using the ring, and never from it.
+
+	The ring has to hold what can be queued ahead of the slot being played:
+	buffers reach the queue up to the reported latency before their start
+	time, which is at most about 2.5 buffers plus the scheduling latency past
+	the slot (see _UpdateInternalLatency()). Sixteen buffers leave ample room
+	for a producer that runs early.
+*/
+void
+MultiAudioNode::_AllocateRing(node_input& input)
+{
+	uint32 bufferFrames = fDevice->BufferList().return_playback_buffer_size;
+	size_t frameBytes = (input.fFormat.u.raw_audio.format
+			& media_raw_audio_format::B_AUDIO_SIZE_MASK)
+		* input.fFormat.u.raw_audio.channel_count;
+
+	uint32 frames = 1;
+	while (frames < 16 * bufferFrames && frames < (1u << 24))
+		frames <<= 1;
+
+	if (input.fRing == NULL || input.fRingFrames != frames) {
+		free(input.fRing);
+		input.fRing = NULL;
+		input.fRingFrames = 0;
+		if (bufferFrames == 0 || frameBytes == 0)
+			return;
+		input.fRing = (uint8*)malloc(frames * frameBytes);
+		if (input.fRing == NULL) {
+			fprintf(stderr, "multi_audio: no memory for the playback ring of"
+				" %s, it plays silence\n", input.fInput.name);
+			return;
+		}
+		input.fRingFrames = frames;
+	}
+	_ClearRing(input);
+}
+
+
+void
+MultiAudioNode::_ClearRing(node_input& input)
+{
+	input.fNextWriteFrame = -1;
+	if (input.fRing == NULL)
+		return;
+
+	size_t frameBytes = (input.fFormat.u.raw_audio.format
+			& media_raw_audio_format::B_AUDIO_SIZE_MASK)
+		* input.fFormat.u.raw_audio.channel_count;
+	memset(input.fRing, silence_byte(input.fFormat.u.raw_audio.format),
+		input.fRingFrames * frameBytes);
+}
+
+
+/*!	Stores \a buffer in the playback ring of \a input at its start time,
+	converted to the device's format. Frames due before \a slotFrame, the
+	slot about to be played, are late and dropped; so are frames beyond the
+	ring, which a producer within the reported latency never sends.
+*/
+void
+MultiAudioNode::_WriteToRing(node_input& input, BBuffer* buffer,
+	int64 slotFrame)
+{
+	if (input.fRing == NULL || input.fResampler == NULL)
+		return;
+
 	uint32 channelCount = input.fInput.format.u.raw_audio.channel_count;
 	size_t inputSampleSize = input.fInput.format.u.raw_audio.format
 			& media_raw_audio_format::B_AUDIO_SIZE_MASK;
+	int64 bufferFrames = fDevice->BufferList().return_playback_buffer_size;
 
-	uint32 bufferSize = fDevice->BufferList().return_playback_buffer_size;
-
-	if (buffer->SizeUsed() / inputSampleSize / channelCount != bufferSize) {
+	if (channelCount != input.fFormat.u.raw_audio.channel_count
+		|| inputSampleSize == 0) {
+		fprintf(stderr, "MultiAudioNode: Rejecting buffer: channel count is different\n");
+		return;
+	}
+	if ((int64)(buffer->SizeUsed() / inputSampleSize / channelCount)
+			!= bufferFrames) {
 		fprintf(stderr, "MultiAudioNode: Rejecting buffer: size is different\n");
+		return;
+	}
+
+	double rate = fOutputPreferredFormat.u.raw_audio.frame_rate;
+	int64 frame = llround(buffer->Header()->start_time * rate / 1000000.0);
+
+	// Producers stamp their buffers in whole microseconds, so a buffer can
+	// land a frame off where the previous one ended. Within a tenth of a
+	// buffer (the system mixer's tolerance for the same thing) it is the
+	// continuation; anything further is a real jump: a seek, a restart or a
+	// gap.
+	if (input.fNextWriteFrame >= 0) {
+		int64 delta = frame - input.fNextWriteFrame;
+		int64 tolerance = max_c(bufferFrames / 10, 1);
+		if (delta >= -tolerance && delta <= tolerance)
+			frame = input.fNextWriteFrame;
+	}
+	input.fNextWriteFrame = frame + bufferFrames;
+
+	int64 first = max_c(frame, slotFrame);
+	int64 end = min_c(frame + bufferFrames, slotFrame + input.fRingFrames);
+	if (end <= first)
+		return;
+
+	size_t sampleSize = input.fFormat.u.raw_audio.format
+		& media_raw_audio_format::B_AUDIO_SIZE_MASK;
+	size_t frameBytes = sampleSize * channelCount;
+	size_t srcStride = channelCount * inputSampleSize;
+	uint64 mask = input.fRingFrames - 1;
+
+	const char* src = (const char*)buffer->Data() + (first - frame) * srcStride;
+	for (int64 position = first; position < end;) {
+		uint32 index = (uint32)((uint64)position & mask);
+		uint32 count = (uint32)min_c(end - position,
+			(int64)(input.fRingFrames - index));
+		for (uint32 channel = 0; channel < channelCount; channel++) {
+			input.fResampler->Resample(src + channel * inputSampleSize,
+				srcStride, input.fRing + index * frameBytes
+					+ channel * sampleSize, frameBytes, count);
+		}
+		src += count * srcStride;
+		position += count;
+	}
+}
+
+
+/*!	Plays the slot starting at \a slotFrame from the ring of \a input into
+	the device buffer of this cycle, and empties that part of the ring, so a
+	slot nothing was written for plays silence.
+*/
+void
+MultiAudioNode::_PlayFromRing(node_input& input, int64 slotFrame)
+{
+	if (input.fRing == NULL) {
 		_WriteZeros(input, input.fBufferCycle);
 		return;
 	}
 
-	if (channelCount != input.fFormat.u.raw_audio.channel_count) {
-		fprintf(stderr, "MultiAudioNode: Rejecting buffer: channel count is different\n");
-		return;
-	}
+	uint32 channelCount = input.fFormat.u.raw_audio.channel_count;
+	size_t sampleSize = input.fFormat.u.raw_audio.format
+		& media_raw_audio_format::B_AUDIO_SIZE_MASK;
+	size_t frameBytes = sampleSize * channelCount;
+	uint32 bufferFrames = fDevice->BufferList().return_playback_buffer_size;
+	uint64 mask = input.fRingFrames - 1;
+	uint8 silence = silence_byte(input.fFormat.u.raw_audio.format);
 
-	if (input.fResampler != NULL) {
-		size_t srcStride = channelCount * inputSampleSize;
+	for (uint32 done = 0; done < bufferFrames;) {
+		uint32 index = (uint32)((uint64)(slotFrame + done) & mask);
+		uint32 count = min_c(bufferFrames - done, input.fRingFrames - index);
+		uint8* ring = input.fRing + index * frameBytes;
 
 		for (uint32 channel = 0; channel < channelCount; channel++) {
-			char* src = (char*)buffer->Data() + channel * inputSampleSize;
+			size_t stride = _PlaybackStride(input.fBufferCycle,
+				input.fChannelId + channel);
 			char* dst = _PlaybackBuffer(input.fBufferCycle,
-							input.fChannelId + channel);
-			size_t dstStride = _PlaybackStride(input.fBufferCycle,
-							input.fChannelId + channel);
-
-			input.fResampler->Resample(src, srcStride,
-				dst, dstStride, bufferSize);
+				input.fChannelId + channel) + done * stride;
+			const uint8* sample = ring + channel * sampleSize;
+			for (uint32 i = 0; i < count; i++) {
+				memcpy(dst, sample, sampleSize);
+				dst += stride;
+				sample += frameBytes;
+			}
 		}
+		memset(ring, silence, count * frameBytes);
+		done += count;
 	}
 }
 
@@ -2338,7 +2545,9 @@ MultiAudioNode::_StopOutputThread()
 
 		if (fDevice->BufferList().playback_buffers[0][input->fChannelId].base != NULL)
 			_FillWithZeros(*input);
+		_ClearRing(*input);
 	}
+	fPlayFrame = -1;
 
 	return B_OK;
 }
@@ -2387,8 +2596,14 @@ MultiAudioNode::_LeaveDeviceGone(bigtime_t goneSince)
 	// producer scheduling against it.
 	fTimeComputer.Resync(now);
 
-	for (int32 i = 0; i < fInputs.CountItems(); i++)
-		((node_input*)fInputs.ItemAt(i))->fOldBufferCycle = -1;
+	// The replugged device plays from a new position; what the rings held
+	// was due while it was away.
+	fPlayFrame = -1;
+	for (int32 i = 0; i < fInputs.CountItems(); i++) {
+		node_input* input = (node_input*)fInputs.ItemAt(i);
+		input->fOldBufferCycle = -1;
+		_ClearRing(*input);
+	}
 	for (int32 i = 0; i < fOutputs.CountItems(); i++)
 		((node_output*)fOutputs.ItemAt(i))->fOldBufferCycle = -1;
 
@@ -2562,9 +2777,52 @@ MultiAudioNode::_FillNextBuffer(multi_buffer_info& info, node_output& output)
 	header->type = B_MEDIA_RAW_AUDIO;
 	header->size_used = output.fOutput.format.u.raw_audio.buffer_size;
 	header->time_source = TimeSource()->ID();
-	header->start_time = PerformanceTimeFor(info.recorded_real_time);
+	header->start_time = _RecordStartTime(info, output);
 
 	return buffer;
+}
+
+
+/*!	When the first frame of the record buffer this exchange hands out was
+	captured, in our time source's performance time. The buffer holds the
+	return_record_buffer_size frames that end at its frame count, so its start
+	is one buffer before that, less the driver's input_latency.
+
+	A driver that hands out pending record buffers one per exchange (usb_audio
+	walks its completions) reports the newest frame count with each of them,
+	so the end of this buffer is advanced from the last one's by the cycles
+	that passed, as long as that stays within the reported count. A driver
+	that skips to its newest buffer advances the cycle by as many, and both
+	agree with the count.
+*/
+bigtime_t
+MultiAudioNode::_RecordStartTime(const multi_buffer_info& info,
+	node_output& output)
+{
+	const multi_buffer_list& list = fDevice->BufferList();
+	int64 bufferFrames = list.return_record_buffer_size;
+	int32 buffers = list.return_record_buffers;
+	double rate = output.fOutput.format.u.raw_audio.frame_rate;
+	int64 count = info.recorded_frames_count;
+
+	int64 end = count;
+	if (output.fRecordEnd >= 0 && output.fOldBufferCycle >= 0 && buffers > 1) {
+		int32 cycles = ((int32)output.fBufferCycle - output.fOldBufferCycle
+			+ buffers) % buffers;
+		int64 next = output.fRecordEnd + cycles * bufferFrames;
+		if (cycles > 0 && next <= count && next > count - buffers * bufferFrames)
+			end = next;
+	}
+	output.fRecordEnd = end;
+
+	if (rate <= 0)
+		return TimeSource()->PerformanceTimeFor(info.recorded_real_time);
+
+	bigtime_t endTime = info.recorded_real_time
+		- bigtime_t((count - end) * 1000000.0 / rate);
+	return TimeSource()->PerformanceTimeFor(endTime)
+		- bigtime_t(bufferFrames * 1000000.0 / rate)
+		- fDevice->FormatInfo().input_latency;
 }
 
 
@@ -2718,7 +2976,11 @@ MultiAudioNode::_SetNodeInputFrameRate(float frameRate)
 		channel->fInput.format.u.raw_audio.frame_rate = frameRate;
 		channel->fInput.format.u.raw_audio.buffer_size
 			= fOutputPreferredFormat.u.raw_audio.buffer_size;
+
+		// ring positions are frames at the old rate
+		_AllocateRing(*channel);
 	}
+	fPlayFrame = -1;
 
 	// make sure the time base is reset
 	fTimeComputer.SetFrameRate(frameRate);
@@ -2823,7 +3085,9 @@ MultiAudioNode::_SetNodeBufferFrames(uint32 frames)
 			channel->fFormat.u.raw_audio.buffer_size = size;
 			channel->fInput.format.u.raw_audio.buffer_size = size;
 			channel->fOldBufferCycle = -1;
+			_AllocateRing(*channel);
 		}
+		fPlayFrame = -1;
 		_UpdateInternalLatency(fOutputPreferredFormat);
 	}
 
@@ -2884,14 +3148,44 @@ MultiAudioNode::_SetNodeBufferFrames(uint32 frames)
 void
 MultiAudioNode::_UpdateInternalLatency(const media_format& format)
 {
-	// use half a buffer length latency
-	fInternalLatency = format.u.raw_audio.buffer_size * 10000 / 2
+	// Without a playback ring to go by, half a buffer of the given format.
+	bigtime_t latency = format.u.raw_audio.buffer_size * 10000 / 2
 		/ ((format.u.raw_audio.format
 				& media_raw_audio_format::B_AUDIO_SIZE_MASK)
 			* format.u.raw_audio.channel_count)
 		/ ((int32)(format.u.raw_audio.frame_rate / 100));
 
-	PRINT(("  internal latency = %" B_PRIdBIGTIME "\n", fInternalLatency));
+	// A buffer with start time T has to be queued by the exchange whose slot
+	// first reaches T. That slot starts return_playback_buffers - 1 buffers
+	// plus the driver's output_latency after the exchange (see
+	// _PlaybackSlotFrame()), and T can fall anywhere in it, up to a buffer
+	// past its start, since producers do not run in phase with the device.
+	// Half a buffer more covers an exchange that runs early against the
+	// published clock.
+	const multi_buffer_list& list = fDevice->BufferList();
+	float rate = fOutputPreferredFormat.u.raw_audio.frame_rate;
+	if (fOutputPreferredFormat.u.raw_audio.format != 0 && rate > 0
+		&& list.return_playback_buffer_size > 0
+		&& list.return_playback_buffers > 0) {
+		bigtime_t buffer = bigtime_t(list.return_playback_buffer_size
+			* 1000000.0 / rate);
+		latency = list.return_playback_buffers * buffer + buffer / 2
+			+ fDevice->FormatInfo().output_latency;
+	}
 
+	PRINT(("  internal latency = %" B_PRIdBIGTIME "\n", latency));
+
+	bool changed = latency != fInternalLatency;
+	fInternalLatency = latency;
 	SetEventLatency(fInternalLatency);
+
+	// Producers already connected schedule by the old figure.
+	if (!changed)
+		return;
+	for (int32 i = 0; node_input* input = (node_input*)fInputs.ItemAt(i); i++) {
+		if (input->fInput.source == media_source::null)
+			continue;
+		SendLatencyChange(input->fInput.source, input->fInput.destination,
+			EventLatency() + SchedulingLatency());
+	}
 }
