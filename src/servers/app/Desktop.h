@@ -323,6 +323,7 @@ private:
 			void				_TriggerWindowRedrawing(
 									BRegion& dirtyRegion, BRegion& exposeRegion);
 			void				_SetBackground(BRegion& background);
+			bool				_IsSafeMode() const;
 
 			status_t			_ActivateApp(team_id team);
 
