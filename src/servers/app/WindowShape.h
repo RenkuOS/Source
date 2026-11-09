@@ -53,6 +53,10 @@ public:
 			// Everything the window has an effect on.
 			const BRect&		Bounds() const { return fBounds; }
 
+			// Whether a point of the window counts as part of it. Less than
+			// half of a pixel that is cut off doesn't.
+			bool				Contains(const BPoint& where) const;
+
 	// The share of each pixel of a corner that belongs to the window, 0 - 255.
 	// The radius * radius pixels are for the left top corner.
 	static	const uint8*		CoverageFor(int32 radius);

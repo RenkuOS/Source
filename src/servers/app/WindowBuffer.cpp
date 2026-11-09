@@ -140,6 +140,15 @@ WindowBuffer::SetFrame(const BRect& frame)
 }
 
 
+void
+WindowBuffer::Release()
+{
+	_Free();
+	fWidth = 0;
+	fHeight = 0;
+}
+
+
 BRect
 WindowBuffer::Frame() const
 {
