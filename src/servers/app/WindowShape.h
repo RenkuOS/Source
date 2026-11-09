@@ -38,7 +38,8 @@ public:
 			// Returns false if there was nothing to do.
 			bool				SetTo(
 									const std::vector<Decorator::ShapeRect>& shape,
-									const BRegion& fullRegion, bool hasShadow);
+									const BRegion& fullRegion, bool hasShadow,
+									bool isGlow, rgb_color glowColor);
 
 			const BRegion&		OpaqueRegion() const { return fOpaqueRegion; }
 			const BRegion&		EdgeRegion() const { return fEdgeRegion; }
@@ -46,6 +47,8 @@ public:
 								Corners() const { return fCorners; }
 
 			bool				HasShadow() const { return fHasShadow; }
+			bool				IsGlow() const { return fIsGlow; }
+			rgb_color			GlowColor() const { return fGlowColor; }
 			const std::vector<BRect>&
 								ShadowRects() const { return fShadowRects; }
 			const BRect&		ShadowFrame() const { return fShadowFrame; }
@@ -67,12 +70,15 @@ public:
 	static	int32				ShadowMargin();
 	static	int32				ShadowOffset();
 	static	uint8				ShadowAlpha();
+	static	uint8				GlowAlpha();
 
 private:
 			std::vector<Decorator::ShapeRect>
 								fShape;
 			BRegion				fFullRegion;
 			bool				fHasShadow;
+			bool				fIsGlow;
+			rgb_color			fGlowColor;
 
 			BRegion				fOpaqueRegion;
 			BRegion				fEdgeRegion;

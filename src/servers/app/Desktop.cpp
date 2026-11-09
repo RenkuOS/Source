@@ -3084,6 +3084,9 @@ Desktop::_FlushPendingColors()
 	}
 
 	fPendingColors.MakeEmpty();
+
+	// A window's shadow goes with how dark the colors are.
+	WindowShapesChanged();
 }
 
 
