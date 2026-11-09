@@ -44,6 +44,8 @@ public:
 			bool				SetFrame(const BRect& frame);
 			BRect				Frame() const;
 
+			void				Release();
+
 			// Memory address of a pixel inside of Frame(), in screen
 			// coordinates.
 			const uint8*		PixelAt(int32 x, int32 y) const;
@@ -73,6 +75,7 @@ public:
 	virtual						~WindowBufferHWInterface();
 
 			void				SetFrame(const BRect& frame);
+			void				ReleaseBuffer() { fBuffer.Release(); }
 			const WindowBuffer&	Buffer() const { return fBuffer; }
 
 	virtual	status_t			Shutdown();

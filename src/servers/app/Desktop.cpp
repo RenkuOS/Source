@@ -1489,6 +1489,8 @@ Desktop::HideWindow(Window* window, bool fromMinimize)
 		}
 	}
 
+	window->ReleaseBuffer();
+
 	NotifyWindowHidden(window, fromMinimize);
 
 	UnlockAllWindows();
@@ -2045,8 +2047,10 @@ Desktop::WindowAt(BPoint where)
 {
 	for (Window* window = CurrentWindows().LastWindow(); window;
 			window = window->PreviousWindow(fCurrentWorkspace)) {
-		if (window->IsVisible() && window->VisibleRegion().Contains(where))
+		if (window->IsVisible() && window->VisibleRegion().Contains(where)
+			&& window->ShapeContains(where)) {
 			return window->StackedWindowAt(where);
+		}
 	}
 
 	return NULL;
@@ -3101,6 +3105,7 @@ Desktop::_UpdateFloating(int32 previousWorkspace, int32 nextWorkspace,
 			_Windows(previousWorkspace).RemoveWindow(floating);
 			floating->SetCurrentWorkspace(-1);
 			_HideWindow(floating);
+			floating->ReleaseBuffer();
 
 			if (FocusWindow() == floating)
 				SetFocusWindow();
@@ -3356,6 +3361,7 @@ Desktop::_ChangeWindowWorkspaces(Window* window, uint32 oldWorkspaces,
 				if (i == CurrentWorkspace()) {
 					// remove its appearance from the current workspace
 					window->SetCurrentWorkspace(-1);
+					window->ReleaseBuffer();
 
 					if (!window->IsHidden())
 						_HideWindow(window);
@@ -3915,6 +3921,8 @@ Desktop::_SetWorkspace(int32 index, bool moveFocusWindow)
 		}
 
 		window->SetCurrentWorkspace(-1);
+		// Like a hidden window, it redraws when it can be seen again.
+		window->ReleaseBuffer();
 	}
 
 	fPreviousWorkspace = fCurrentWorkspace;
