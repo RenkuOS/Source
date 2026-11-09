@@ -186,8 +186,8 @@ static const size_t kDescriptorCount = kBufferSize / kSegmentSize;
 static const size_t kDescriptorAreaSize = 4096;
 static const uint32 kBlockSize = 512;
 
-// SD CMD6, the switch function command
-#define SD_SWITCH_FUNCTION		6
+// Error bits of an R1 card status
+static const uint32 kR1ErrorMask = 0xfff9a080;
 
 
 struct idma_descriptor {
@@ -229,7 +229,9 @@ public:
 			void				SetBusWidth(int width);
 			void				SetCardType(card_type type)
 									{ fCardType = type; }
-			status_t			ReadExtendedCsd(uint8 data[512]);
+			status_t			ReadData(uint8 command, uint32 argument,
+									void* buffer, size_t length);
+			status_t			SetTiming(int timing, uint32 flags);
 			void				Terminate();
 
 			int32				HandleInterrupt();
@@ -264,7 +266,6 @@ private:
 									size_t size);
 			status_t			_ReadData(uint8 command, uint32 argument,
 									size_t size);
-			void				_SwitchToHighSpeed();
 
 private:
 			sunxi_mmc_device	fDevice;
@@ -783,7 +784,7 @@ SunxiMmcBus::ExecuteCommand(uint8 command, uint32 argument, uint32* response)
 
 		case SD_APP_CMD:
 		case SEND_STATUS:
-		case SET_BLOCK_LENGTH:
+		case SET_BLOCK_COUNT:
 		case SD_ERASE_WR_BLK_START:
 		case SD_ERASE_WR_BLK_END:
 			flags = RESPONSE_R1;
@@ -791,7 +792,7 @@ SunxiMmcBus::ExecuteCommand(uint8 command, uint32 argument, uint32* response)
 
 		case SD_SET_BUS_WIDTH:
 			// also MMC_SWITCH, which has R1b
-			flags = is_mmc_card(fCardType) ? RESPONSE_R1B : RESPONSE_R1;
+			flags = is_mmc_card_type(fCardType) ? RESPONSE_R1B : RESPONSE_R1;
 			break;
 
 		case SELECT_DESELECT_CARD:
@@ -799,6 +800,7 @@ SunxiMmcBus::ExecuteCommand(uint8 command, uint32 argument, uint32* response)
 			break;
 
 		case SD_ERASE:
+		case SD_STOP_TRANSMISSION:
 			flags = RESPONSE_R1B;
 			break;
 
@@ -813,13 +815,13 @@ SunxiMmcBus::ExecuteCommand(uint8 command, uint32 argument, uint32* response)
 			break;
 
 		case SD_SEND_RELATIVE_ADDR:
-			flags = is_mmc_card(fCardType) ? RESPONSE_R1 : RESPONSE_R6;
+			flags = is_mmc_card_type(fCardType) ? RESPONSE_R1 : RESPONSE_R6;
 			break;
 
 		case SD_SEND_IF_COND:
-			if (is_mmc_card(fCardType))
-				return B_NOT_SUPPORTED;
-					// MMC_SEND_EXT_CSD goes through ReadExtendedCsd()
+			if (is_mmc_card_type(fCardType))
+				return B_NOT_ALLOWED;
+					// MMC_SEND_EXT_CSD has a data phase: read_data()
 			flags = RESPONSE_R7;
 			break;
 
@@ -831,19 +833,12 @@ SunxiMmcBus::ExecuteCommand(uint8 command, uint32 argument, uint32* response)
 	if (response == NULL && flags != RESPONSE_NONE)
 		return B_BAD_VALUE;
 
-	// An application command to a card with an address: the disk driver has
-	// selected the card and is about to set its width. That is the moment
-	// for the card's timing, and it comes first, as in other systems.
-	if (command == SD_APP_CMD && argument != 0 && !is_mmc_card(fCardType))
-		_SwitchToHighSpeed();
-
 	bool busy = (flags & RESPONSE_R1B) == RESPONSE_R1B;
 	status_t status = _SendCommand(command, argument, flags & ~(1u << 30),
 		response);
 	if (status == B_OK && busy) {
-		bigtime_t timeout = mmc_cache_busy_timeout(fCardType, command,
-			argument);
-		status = _WaitNotBusy(timeout != 0 ? timeout : 5000000);
+		// an eMMC flushing its cache or an erase can take a while
+		status = _WaitNotBusy(command == SD_ERASE ? 60000000 : 5000000);
 		if (status != B_OK)
 			ERROR("command %u: busy for too long\n", command);
 	}
@@ -908,7 +903,7 @@ SunxiMmcBus::DoIO(uint8 command, IOOperation* operation, bool offsetAsSectors)
 		uint32 response = 0;
 		status_t status = _SendCommand(command, offset / unit, flags,
 			&response, size);
-		if (status == B_OK && (response & kMmcR1ErrorMask) != 0)
+		if (status == B_OK && (response & kR1ErrorMask) != 0)
 			status = B_IO_ERROR;
 		if (status != B_OK) {
 			ERROR("%s of %" B_PRIuSIZE " bytes at %" B_PRIu64 " failed: "
@@ -983,72 +978,60 @@ SunxiMmcBus::_ReadData(uint8 command, uint32 argument, size_t size)
 	uint32 response = 0;
 	status_t status = _SendCommand(command, argument, RESPONSE_R1 | CMD_DATA,
 		&response, size, size);
-	if (status == B_OK && (response & kMmcR1ErrorMask) != 0)
+	if (status == B_OK && (response & kR1ErrorMask) != 0)
 		status = B_IO_ERROR;
 	memory_full_barrier();
 	return status;
 }
 
 
+/*!	A command that reads one small block (at most 512 bytes) through the
+	data lines, such as the eMMC EXT_CSD or the SD switch status.
+*/
 status_t
-SunxiMmcBus::ReadExtendedCsd(uint8 data[512])
+SunxiMmcBus::ReadData(uint8 command, uint32 argument, void* buffer,
+	size_t length)
 {
 	if (fStatus != B_OK)
 		return fStatus;
-	if (!is_mmc_card(fCardType))
-		return B_NOT_SUPPORTED;
+	if (buffer == NULL || length == 0 || length > kBlockSize)
+		return B_BAD_VALUE;
 
-	status_t status = _ReadData(MMC_SEND_EXT_CSD, 0, 512);
+	status_t status = _ReadData(command, argument, length);
 	if (status == B_OK)
-		memcpy(data, fBuffer, 512);
+		memcpy(buffer, fBuffer, length);
 	return status;
 }
 
 
-/*!	Has an SD card that knows the high speed timing use it, and clocks it
-	with 50 MHz then (SD physical layer specification, 4.3.10: CMD6). The
-	card is selected and in the transfer state. A card that does not answer,
-	or does not switch, stays at 25 MHz.
+/*!	The card was switched to \a timing by the bus manager: clock it to
+	match. The controller has no DDR or 1.8 V signaling here, so only the
+	legacy and high speed timings are supported.
 */
-void
-SunxiMmcBus::_SwitchToHighSpeed()
+status_t
+SunxiMmcBus::SetTiming(int timing, uint32 flags)
 {
-	if (fClock > 25000000 || fDevice.maxFrequency < 50000000)
-		return;
-
-	// Group 1 (access mode) to function 1 (high speed), the other groups as
-	// they are; asked first what would become of it, as other systems do.
-	status_t status = _ReadData(SD_SWITCH_FUNCTION, 0x00fffff1, 64);
-	const uint8* switchStatus = fBuffer;
-	if (status != B_OK || (switchStatus[13] & 0x02) == 0
-		|| (switchStatus[16] & 0x0f) != 1) {
-		INFO("no high speed timing on this card: 25 MHz\n");
-		return;
+	uint32 kilohertz;
+	switch (timing) {
+		case MMC_TIMING_LEGACY:
+			kilohertz = 25000;
+			break;
+		case MMC_TIMING_HS:
+		case MMC_TIMING_HS_SDR25:
+			kilohertz = is_mmc_card_type(fCardType) ? 52000 : 50000;
+			if (fDevice.maxFrequency < 50000000)
+				return B_NOT_SUPPORTED;
+			break;
+		default:
+			return B_NOT_SUPPORTED;
 	}
+	if ((flags & MMC_TIMING_QUERY) != 0)
+		return B_OK;
 
-	status = _ReadData(SD_SWITCH_FUNCTION, 0x80fffff1, 64);
-	if (status != B_OK) {
-		INFO("the card does not answer the switch command (%s): 25 MHz\n",
-			strerror(status));
-		return;
-	}
-
-	// Some cards answer the switch with function 0 and have switched all
-	// the same: what counts is the function they name as their current one
-	// when asked without a change.
-	uint8 answered = switchStatus[16] & 0x0f;
-	snooze(1000);
-	status = _ReadData(SD_SWITCH_FUNCTION, 0x00ffffff, 64);
-	if (status != B_OK || (switchStatus[16] & 0x0f) != 1) {
-		INFO("the card stays at default speed (answered %u, now %u): "
-			"25 MHz\n", answered, switchStatus[16] & 0x0f);
-		return;
-	}
-
-	// the card changes its timing within eight clock cycles
-	snooze(1000);
-	if (SetClock(50000) == B_OK)
-		INFO("high speed: %" B_PRIu32 " Hz\n", fClock);
+	status_t status = SetClock(kilohertz);
+	if (status == B_OK)
+		INFO("%s timing: %" B_PRIu32 " Hz\n", mmc_timing_name(timing), fClock);
+	return status;
 }
 
 
@@ -1249,12 +1232,6 @@ sunxi_mmc_register_child_devices(void* cookie)
 			{.string = device->nonRemovable ? "eMMC" : "SD card slot"}},
 		{B_DEVICE_BUS, B_STRING_TYPE, {.string = "mmc"}},
 		{B_DEVICE_FIXED_CHILD, B_STRING_TYPE, {.string = MMC_BUS_MODULE_NAME}},
-		{kMmcReadOnlyAttribute, B_UINT8_TYPE, {.ui8 = 0}},
-		{kMmcNonRemovableAttribute, B_UINT8_TYPE,
-			{.ui8 = (uint8)(device->nonRemovable ? 1 : 0)}},
-		{kMmcMaxBusWidthAttribute, B_UINT8_TYPE,
-			{.ui8 = (uint8)device->busWidth}},
-		{kMmcEnableCacheAttribute, B_UINT8_TYPE, {.ui8 = 0}},
 		// whole blocks in pieces of memory that are copied through the
 		// driver's own buffer, at most the buffer's size per transfer
 		{B_DMA_ALIGNMENT, B_UINT32_TYPE, {.ui32 = kBlockSize - 1}},
@@ -1360,9 +1337,17 @@ sunxi_mmc_set_card_type(void* cookie, card_type type)
 
 
 static status_t
-sunxi_mmc_read_extended_csd(void* cookie, uint8_t data[512])
+sunxi_mmc_read_data(void* cookie, uint8_t command, uint32_t argument,
+	void* buffer, size_t length)
 {
-	return ((SunxiMmcBus*)cookie)->ReadExtendedCsd(data);
+	return ((SunxiMmcBus*)cookie)->ReadData(command, argument, buffer, length);
+}
+
+
+static status_t
+sunxi_mmc_set_timing(void* cookie, int timing, uint32_t flags)
+{
+	return ((SunxiMmcBus*)cookie)->SetTiming(timing, flags);
 }
 
 
@@ -1396,7 +1381,8 @@ static mmc_bus_interface sSunxiMmcBus = {
 	.set_bus_width = sunxi_mmc_set_bus_width,
 	.terminate_bus = sunxi_mmc_terminate_bus,
 	.set_card_type = sunxi_mmc_set_card_type,
-	.read_extended_csd = sunxi_mmc_read_extended_csd
+	.read_data = sunxi_mmc_read_data,
+	.set_timing = sunxi_mmc_set_timing
 };
 
 module_dependency module_dependencies[] = {

@@ -54,6 +54,7 @@ AddFilesToPackage add-ons kernel busses mmc :
 	designware_mmc@riscv64
 	sdhci
 	bcm2711_emmc2@arm64
+	sunxi_mmc@arm64
 	;
 AddFilesToPackage add-ons kernel busses pci :
 	<pci>designware@riscv64
@@ -392,6 +393,7 @@ AddBootModuleSymlinksToPackage
 	designware_mmc@riscv64
 	sdhci
 	bcm2711_emmc2@arm64
+	sunxi_mmc@arm64
 	usb
 	usb_disk
 	<usb>ehci

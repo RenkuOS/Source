@@ -19,3 +19,4 @@ KernelAddon bcm2711_emmc2 :
 ;
 
 SubInclude HAIKU_TOP src add-ons kernel busses mmc designware ;
+SubInclude HAIKU_TOP src add-ons kernel busses mmc sunxi_mmc ;
