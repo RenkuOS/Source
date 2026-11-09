@@ -484,6 +484,7 @@ private:
 			BRegion				fOnScreenRegion;
 			BPoint				fBufferOffset;
 			bool				fBufferReady;
+			bool				fHasRoundedCorners;
 };
 
 

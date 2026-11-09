@@ -36,6 +36,7 @@
 #include "HWInterface.h"
 #include "MessagePrivate.h"
 #include "PortLink.h"
+#include "RoundedDecorator.h"
 #include "ServerApp.h"
 #include "ServerWindow.h"
 #include "WindowBehaviour.h"
@@ -123,7 +124,8 @@ Window::Window(const BRect& frame, const char *name,
 
 	fWorkspacesViewCount(0),
 
-	fBufferReady(false)
+	fBufferReady(false),
+	fHasRoundedCorners(false)
 {
 	_InitWindowStack();
 
@@ -214,20 +216,28 @@ Window::SetClipping(BRegion* stillAvailableOnScreen)
 		fBufferInterface->SetFrame(frame);
 
 		std::vector< ::Decorator::ShapeRect> shape;
+		bool hasRoundedCorners = false;
 		if (::Decorator* decorator = Decorator()) {
-			DefaultDecorator* rounded = dynamic_cast<DefaultDecorator*>(decorator);
-			if (rounded != NULL && rounded->HasRoundedCorners())
+			DefaultDecorator* standard = dynamic_cast<DefaultDecorator*>(decorator);
+			RoundedDecorator* rounded = dynamic_cast<RoundedDecorator*>(decorator);
+			if (standard != NULL && standard->HasRoundedCorners()) {
+				hasRoundedCorners = true;
+				standard->GetRoundedShape(shape);
+			} else if (rounded != NULL && RoundedDecorator::IsActive(fDesktop)) {
+				hasRoundedCorners = true;
 				rounded->GetRoundedShape(shape);
-			else
+			} else
 				decorator->GetShape(shape);
 		}
 		if (shape.empty()) {
 			::Decorator::ShapeRect rect = { fFrame, 0, 0, 0, 0 };
 			shape.push_back(rect);
 		}
-		fShape.SetTo(shape, fCompositeRegion, fLook != kDesktopWindowLook
-			&& fFeel != kDesktopWindowFeel && fLook != B_NO_BORDER_WINDOW_LOOK
-			&& (fFlags & kWindowScreenFlag) == 0);
+		fShape.SetTo(shape, fCompositeRegion,
+			DesktopSettings(fDesktop).CompositedShadows()
+				&& fLook != kDesktopWindowLook && fFeel != kDesktopWindowFeel
+				&& fLook != B_NO_BORDER_WINDOW_LOOK
+				&& (fFlags & kWindowScreenFlag) == 0);
 
 		// The buffer can't be drawn to above or left of the screen, but other
 		// windows don't matter anymore: the window draws everything else.
@@ -244,6 +254,16 @@ Window::SetClipping(BRegion* stillAvailableOnScreen)
 			fBufferOffset = offset;
 			if (fBufferReady)
 				ProcessDirtyRegion(fVisibleRegion);
+		}
+
+		// The decorator draws its border differently around a rounded corner.
+		if (hasRoundedCorners != fHasRoundedCorners) {
+			fHasRoundedCorners = hasRoundedCorners;
+			if (fBufferReady) {
+				BRegion border;
+				GetBorderRegion(&border);
+				ProcessDirtyRegion(border);
+			}
 		}
 		return;
 	}

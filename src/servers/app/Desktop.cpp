@@ -2301,6 +2301,28 @@ Desktop::Redraw()
 }
 
 
+/*!	The windows' shadows or rounded corners have been switched on or off. The
+	windows on other workspaces follow when their clipping is rebuilt.
+*/
+void
+Desktop::WindowShapesChanged()
+{
+	AutoWriteLocker _(fWindowLock);
+
+	if (!fCompositor.IsSet())
+		return;
+
+	BRegion background;
+	_RebuildClippingForAllWindows(background);
+	_SetBackground(background);
+
+	// Rounding a corner doesn't change the bounds of a window, so the compositor
+	// can't see that anything has changed.
+	BRegion dirty(fVirtualScreen.Frame());
+	fCompositor->Composite(dirty);
+}
+
+
 /*!	\brief Redraws the background (ie. the desktop window, if any).
 */
 void

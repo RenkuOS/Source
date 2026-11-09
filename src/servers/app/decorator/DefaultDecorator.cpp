@@ -44,6 +44,7 @@
 #include "DrawState.h"
 #include "FontManager.h"
 #include "PatternHandler.h"
+#include "RoundedDecorator.h"
 #include "SATDecorator.h"
 #include "ServerBitmap.h"
 #include "WindowShape.h"
@@ -201,9 +202,10 @@ bool
 DefaultDecorator::HasRoundedCorners() const
 {
 	// Without a compositor to cut them off, corners stay as they always were.
-	::Desktop* desktop = const_cast<DefaultDecorator*>(this)->GetDesktop();
-	if (desktop == NULL || desktop->GetCompositor() == NULL)
+	if (!RoundedDecorator::IsActive(
+			const_cast<DefaultDecorator*>(this)->GetDesktop())) {
 		return false;
+	}
 
 	return typeid(*this) == typeid(DefaultDecorator)
 		|| typeid(*this) == typeid(SATDecorator);
@@ -214,91 +216,21 @@ void
 DefaultDecorator::GetRoundedShape(std::vector<ShapeRect>& shape) const
 {
 	GetShape(shape);
-
-	const window_look look = fTopTab->look;
-	if (look != B_TITLED_WINDOW_LOOK && look != B_DOCUMENT_WINDOW_LOOK
-		&& look != B_MODAL_WINDOW_LOOK && look != B_FLOATING_WINDOW_LOOK
-		&& look != kLeftTitledWindowLook) {
-		return;
-	}
-
-	ShapeRect& frame = shape[0];
-	const BRect border = frame.rect;
-	frame.leftTop = frame.rightTop = frame.leftBottom = frame.rightBottom
-		= kFrameCornerRadius;
-
-	for (size_t i = 1; i < shape.size(); i++) {
-		ShapeRect& tab = shape[i];
-		tab.leftTop = kTabCornerRadius;
-
-		// The frame keeps its corner where a tab grows out of it.
-		if (look == kLeftTitledWindowLook) {
-			tab.leftBottom = kTabCornerRadius;
-			if (tab.rect.top <= border.top + kFrameCornerRadius)
-				frame.leftTop = 0;
-			if (tab.rect.bottom >= border.bottom - kFrameCornerRadius)
-				frame.leftBottom = 0;
-		} else {
-			tab.rightTop = kTabCornerRadius;
-			if (tab.rect.left <= border.left + kFrameCornerRadius)
-				frame.leftTop = 0;
-			if (tab.rect.right >= border.right - kFrameCornerRadius)
-				frame.rightTop = 0;
-		}
-	}
+	RoundedDecorator::RoundShape(shape, fTopTab->look, kFrameCornerRadius,
+		kTabCornerRadius);
 }
 
 
 // #pragma mark - Protected methods
 
 
-/*!	Draws the line of the border along a rounded corner. What a line through
-	the corner would do to the color fringes of subpixel antialiasing is avoided
-	by drawing it from what the compositor cuts off: a pixel is mixed with the
-	line color by how much of the pixel's visible part belongs to the line.
-*/
 void
 DefaultDecorator::_StrokeCorner(BPoint leftTop, int32 radius,
 	WindowShape::corner_kind kind, rgb_color color)
 {
-	if (!HasRoundedCorners())
-		return;
-
-	const uint8* outer = WindowShape::CoverageFor(radius);
-	if (outer == NULL)
-		return;
-	const uint8* inner = WindowShape::CoverageFor(radius - 1);
-
-	// Other than lines, this depends on the state the engine has been left in.
-	fDrawingEngine->SetTransform(BAffineTransform(), 0, 0);
-	fDrawingEngine->SetDrawingMode(B_OP_ALPHA);
-	fDrawingEngine->SetBlendingMode(B_PIXEL_ALPHA, B_ALPHA_OVERLAY);
-	fDrawingEngine->SetPattern(B_SOLID_HIGH);
-
-	const bool right = kind == WindowShape::RIGHT_TOP
-		|| kind == WindowShape::RIGHT_BOTTOM;
-	const bool bottom = kind == WindowShape::LEFT_BOTTOM
-		|| kind == WindowShape::RIGHT_BOTTOM;
-
-	for (int32 row = 0; row < radius; row++) {
-		for (int32 column = 0; column < radius; column++) {
-			int32 visible = outer[row * radius + column];
-			if (visible == 0)
-				continue;
-
-			int32 hidden = 0;
-			if (inner != NULL && row > 0 && column > 0)
-				hidden = inner[(row - 1) * (radius - 1) + column - 1];
-			if (hidden >= visible)
-				continue;
-
-			color.alpha = (visible - hidden) * 255 / visible;
-			fDrawingEngine->SetHighColor(color);
-
-			BPoint where(leftTop.x + (right ? radius - 1 - column : column),
-				leftTop.y + (bottom ? radius - 1 - row : row));
-			fDrawingEngine->FillRect(BRect(where, where));
-		}
+	if (HasRoundedCorners()) {
+		RoundedDecorator::StrokeCorner(fDrawingEngine, leftTop, radius, kind,
+			color);
 	}
 }
 
