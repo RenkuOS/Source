@@ -515,6 +515,28 @@ void			set_ui_color(const color_which& which, const rgb_color& color);
 void			set_ui_colors(const BMessage* colors);
 rgb_color		tint_color(rgb_color color, float tint);
 
+/*!	Whether the user interface is dark: light text on a darker panel. An
+	application can use this to choose its icons and other artwork, like
+	prefers-color-scheme elsewhere. Check it when a view is attached, and again
+	on each B_COLORS_UPDATED, which every view gets in MessageReceived():
+
+		if (message->what == B_COLORS_UPDATED && ui_is_dark() != fDark) {
+			fDark = !fDark;
+			_LoadArtwork(fDark);
+		}
+
+	This describes the panel. To draw on another surface, compare that surface's
+	own colours, as themes can mix light and dark ones. Without a BApplication,
+	ui_color() returns the default colours, so this is false.
+*/
+static inline bool
+ui_is_dark()
+{
+	return ui_color(B_PANEL_TEXT_COLOR).Brightness()
+		> ui_color(B_PANEL_BACKGROUND_COLOR).Brightness();
+}
+
+
 extern "C" status_t _init_interface_kit_();
 	// for convenience, should be removed including the friend declarations
 	// in Menu.h, ...
