@@ -32,6 +32,9 @@ upstream honest and the fix attributable.
 
 ## Declined
 
-Nothing yet. When an upstream commit is looked at and rejected, record it here with the reason
-— that record is what makes "we did not just run away" a checkable claim rather than a
-sentiment.
+When an upstream commit is looked at and rejected, record it here with the reason — that record
+is what makes "we did not just run away" a checkable claim rather than a sentiment.
+
+| Date | Upstream commit | Subject | Why not |
+|---|---|---|---|
+| 2026-11-08 | `8564207c29` | nvme_disk: add support for B_GET_DEVICE_NAME and B_GET_DEVICE_SERIAL_NUMBER | It copies the raw Identify Controller fields, which are padded with spaces and have no terminator. Names and serial numbers come back with trailing spaces, a 40-character model or 20-character serial loses its last character, and `user_strlcpy()` reads past the field looking for the end. Replaced by our own version in `nvme_disk.cpp`, which returns the trimmed strings libnvme already makes. `B_GET_DEVICE_SERIAL_NUMBER` keeps upstream's name, value, and line in `Drivers.h` |
