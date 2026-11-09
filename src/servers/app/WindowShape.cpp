@@ -109,6 +109,34 @@ WindowShape::SetTo(const std::vector<Decorator::ShapeRect>& shape,
 }
 
 
+bool
+WindowShape::Contains(const BPoint& where) const
+{
+	if (!fEdgeRegion.Contains(where))
+		return true;
+
+	for (size_t i = 0; i < fCorners.size(); i++) {
+		const Corner& corner = fCorners[i];
+		if (!corner.frame.Contains(where))
+			continue;
+
+		const uint8* coverage = CoverageFor(corner.radius);
+		if (coverage == NULL)
+			return true;
+
+		int32 column = (int32)(where.x - corner.frame.left);
+		int32 row = (int32)(where.y - corner.frame.top);
+		if (corner.kind == RIGHT_TOP || corner.kind == RIGHT_BOTTOM)
+			column = corner.radius - 1 - column;
+		if (corner.kind == LEFT_BOTTOM || corner.kind == RIGHT_BOTTOM)
+			row = corner.radius - 1 - row;
+
+		return coverage[row * corner.radius + column] >= 128;
+	}
+	return true;
+}
+
+
 /*static*/ const uint8*
 WindowShape::CoverageFor(int32 radius)
 {

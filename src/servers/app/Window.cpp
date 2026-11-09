@@ -269,6 +269,34 @@ Window::GetOnScreenContentRegion(BRegion* region)
 }
 
 
+bool
+Window::ShapeContains(const BPoint& where) const
+{
+	return !fBufferInterface.IsSet() || fShape.Contains(where);
+}
+
+
+/*!	The window lock must be held for writing.
+*/
+void
+Window::ReleaseBuffer()
+{
+	if (!fBufferInterface.IsSet())
+		return;
+
+	// The Painter has to let go of the memory. Nothing can draw to the window
+	// either until its clipping is rebuilt when it is shown.
+	fDrawingEngine->SetHWInterface(NULL);
+	fBufferInterface->ReleaseBuffer();
+	fDrawingEngine->SetHWInterface(fBufferInterface.Get());
+
+	fBufferReady = false;
+	fVisibleRegion.MakeEmpty();
+	fVisibleContentRegionValid = false;
+	fEffectiveDrawingRegionValid = false;
+}
+
+
 void
 Window::SetBufferInterface(WindowBufferHWInterface* interface)
 {

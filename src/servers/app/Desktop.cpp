@@ -1489,6 +1489,8 @@ Desktop::HideWindow(Window* window, bool fromMinimize)
 		}
 	}
 
+	window->ReleaseBuffer();
+
 	NotifyWindowHidden(window, fromMinimize);
 
 	UnlockAllWindows();
@@ -2045,8 +2047,10 @@ Desktop::WindowAt(BPoint where)
 {
 	for (Window* window = CurrentWindows().LastWindow(); window;
 			window = window->PreviousWindow(fCurrentWorkspace)) {
-		if (window->IsVisible() && window->VisibleRegion().Contains(where))
+		if (window->IsVisible() && window->VisibleRegion().Contains(where)
+			&& window->ShapeContains(where)) {
 			return window->StackedWindowAt(where);
+		}
 	}
 
 	return NULL;

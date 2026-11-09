@@ -119,6 +119,21 @@ WindowBuffer::SetFrame(const BRect& frame)
 }
 
 
+void
+WindowBuffer::Release()
+{
+	if (fArea >= 0)
+		delete_area(fArea);
+
+	fArea = -1;
+	fPixels = NULL;
+	fCapacityWidth = 0;
+	fCapacityHeight = 0;
+	fWidth = 0;
+	fHeight = 0;
+}
+
+
 BRect
 WindowBuffer::Frame() const
 {

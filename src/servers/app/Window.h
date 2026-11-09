@@ -136,6 +136,11 @@ public:
 			const BRegion&		CompositeRegion() const
 									{ return fCompositeRegion; }
 			const WindowShape&	Shape() const { return fShape; }
+			// When compositing, clicks go through what is cut off at a corner.
+			bool				ShapeContains(const BPoint& where) const;
+			// When the window can't be seen for a while, its buffer can go. It
+			// comes back on its own when the window is shown and drawn again.
+			void				ReleaseBuffer();
 
 			// TODO: not protected by a lock, but no one should need this anyways
 			// make private? when used inside Window, it has the ReadLock()
