@@ -1232,6 +1232,21 @@ VMAnonymousCache::_SwapBlockGetAddress(off_t pageIndex)
 }
 
 
+/*static*/ void
+VMAnonymousCache::_PrepareToFreeShadowedPage(vm_page* page)
+{
+	// A page shadowed by the consumer is discarded, so it need not be written
+	// back. It must leave the MODIFIED state while it is still in its cache:
+	// a MODIFIED page's queue is found through its cache, and
+	// vm_page_free_etc() refuses one (as VMCache::_FreePageRange() and
+	// VMCache::Delete() already handle).
+	if (page->State() == PAGE_STATE_MODIFIED) {
+		page->modified = false;
+		vm_page_set_state(page, PAGE_STATE_CACHED);
+	}
+}
+
+
 void
 VMAnonymousCache::_MergePagesSmallerConsumer(VMAnonymousCache* source)
 {
@@ -1255,6 +1270,7 @@ VMAnonymousCache::_MergePagesSmallerConsumer(VMAnonymousCache* source)
 			ASSERT_PRINT(sourcePage->WiredCount() == 0
 					&& sourcePage->mappings.IsEmpty(),
 				"sourcePage: %p, page: %p", sourcePage, page);
+			_PrepareToFreeShadowedPage(sourcePage);
 			source->RemovePage(sourcePage);
 			vm_page_free_etc(source, sourcePage, &reservation);
 		}
@@ -1307,6 +1323,7 @@ VMAnonymousCache::_MergeSwapPages(VMAnonymousCache* source)
 					if (page != NULL) {
 						DEBUG_PAGE_ACCESS_START(page);
 						ASSERT_PRINT(!page->busy, "page: %p", page);
+						_PrepareToFreeShadowedPage(page);
 						source->RemovePage(page);
 						vm_page_free(source, page);
 					}
