@@ -11,6 +11,8 @@
 
 #include <HaikuControlLook.h>
 
+#include <stdlib.h>
+
 #include <algorithm>
 
 #include <Bitmap.h>
@@ -31,6 +33,9 @@ namespace BPrivate {
 static const float kHoverTintFactor = 0.85;
 
 static const int32 kButtonPopUpIndicatorWidth = B_USE_ITEM_SPACING;
+
+// how far apart in brightness a label's color and background have to be to read
+static const int32 kMinLabelContrast = 80;
 
 static const rgb_color kBlack = { 0, 0, 0, 255 };
 static const rgb_color kWhite = { 255, 255, 255, 255 };
@@ -2231,12 +2236,20 @@ HaikuControlLook::DrawLabel(BView* view, const char* label, const rgb_color& bas
 
 	if (textColor != NULL)
 		glowColor = *textColor;
-	else if (view->Parent() != NULL)
-		glowColor = view->Parent()->HighColor();
-	else if ((flags & B_IS_CONTROL) != 0)
-		glowColor = ui_color(B_CONTROL_TEXT_COLOR);
-	else
-		glowColor = ui_color(B_PANEL_TEXT_COLOR);
+	else {
+		glowColor = ui_color((flags & B_IS_CONTROL) != 0
+			? B_CONTROL_TEXT_COLOR : B_PANEL_TEXT_COLOR);
+
+		// A parent that only set its background still has a black high color,
+		// which can't be read on a dark one, so it isn't used then.
+		if (view->Parent() != NULL) {
+			const rgb_color parentColor = view->Parent()->HighColor();
+			if (abs(parentColor.Brightness() - base.Brightness())
+					>= kMinLabelContrast) {
+				glowColor = parentColor;
+			}
+		}
+	}
 
 	color = glowColor;
 
