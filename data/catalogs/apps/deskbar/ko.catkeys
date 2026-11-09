@@ -45,3 +45,6 @@ Window	PreferencesWindow		창
 Preferences	B_USER_DESKBAR_DIRECTORY/Preferences		환경설정
 Time preferences…	TimeView		시간 설정…
 Desktop applets	B_USER_DESKBAR_DIRECTORY/Desktop applets		데스크탑 애플릿
+%appname% preferences…	DeskbarMenu		%appname% 설정…
+%appname% preferences	PreferencesWindow		%appname% 설정
+Deskbar	System name		데스크바

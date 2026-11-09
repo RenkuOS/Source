@@ -15,6 +15,8 @@
 
 #include <Directory.h>
 #include <File.h>
+#include <Node.h>
+#include <Path.h>
 #include <StringList.h>
 
 #include <AutoDeleter.h>
@@ -503,6 +505,14 @@ VirtualDirectoryManager::TranslateDirectoryEntry(
 		if (error != B_OK)
 			return error;
 
+		// The definition file stands in for the merged directories, so it
+		// also has to carry their localized name: without it, Deskbar's
+		// menu showed "Applications", "Demos", "Desktop applets" and
+		// "Preferences" untranslated. The entry handed in may be one without
+		// the attribute (a user's own Deskbar menu folder), so look at every
+		// directory of the parent.
+		_CopyLocalizedName(definitionFileRef, _entryRef, definitionFile);
+
 		// create the info
 		info = parentInfo->CreateChild(nodeRef, entryRef);
 		if (info == NULL || !_AddInfo(info))
@@ -597,6 +607,43 @@ VirtualDirectoryManager::GetEntry(const BStringList& directoryPaths,
 	}
 
 	return false;
+}
+
+
+void
+VirtualDirectoryManager::_CopyLocalizedName(const node_ref& parentRef,
+	const entry_ref& entryRef, BNode& definitionFile)
+{
+	static const char* kLocalizedNameAttribute = "SYS:NAME";
+
+	BStringList candidates;
+	BPath entryPath(&entryRef);
+	if (entryPath.InitCheck() == B_OK)
+		candidates.Add(entryPath.Path());
+
+	// the same directory in each of the merged roots
+	Info* parentInfo = _InfoForNodeRef(parentRef);
+	if (parentInfo != NULL) {
+		const BStringList& rootPaths = parentInfo->Root()->DirectoryPaths();
+		for (int32 i = 0; i < rootPaths.CountStrings(); i++) {
+			BString path = rootPaths.StringAt(i);
+			if (!parentInfo->Path().IsEmpty())
+				path << '/' << parentInfo->Path();
+			path << '/' << entryRef.name;
+			candidates.Add(path);
+		}
+	}
+
+	for (int32 i = 0; i < candidates.CountStrings(); i++) {
+		BNode node(candidates.StringAt(i));
+		BString name;
+		if (node.InitCheck() == B_OK
+			&& node.ReadAttrString(kLocalizedNameAttribute, &name) == B_OK
+			&& !name.IsEmpty()) {
+			definitionFile.WriteAttrString(kLocalizedNameAttribute, &name);
+			return;
+		}
+	}
 }
 
 
