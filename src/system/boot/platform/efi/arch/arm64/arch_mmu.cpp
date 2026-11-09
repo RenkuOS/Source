@@ -276,7 +276,16 @@ arch_mmu_post_efi_setup(size_t memory_map_size,
 	}
 	gKernelArgs.arch_args.num_cacheable_memory_ranges = cacheableCount;
 
-	// Switch EFI to virtual mode, using the kernel pmap.
+	// GetMemoryMap leaves VirtualStart unset. Runtime regions are identity
+	// mapped in the transition page tables; passing zero virtual addresses
+	// would relocate every firmware runtime image onto the same address.
+	for (size_t offset = 0; offset < memory_map_size; offset += descriptor_size) {
+		efi_memory_descriptor* entry = (efi_memory_descriptor*)((addr_t)memory_map + offset);
+		if ((entry->Attribute & EFI_MEMORY_RUNTIME) != 0)
+			entry->VirtualStart = entry->PhysicalStart;
+	}
+
+	// Switch EFI to virtual mode using those identity mappings.
 	kRuntimeServices->SetVirtualAddressMap(memory_map_size, descriptor_size,
 		descriptor_version, memory_map);
 
@@ -351,10 +360,16 @@ arch_mmu_generate_post_efi_page_tables(size_t memory_map_size,
 			|| (entry->Type == EfiBootServicesData)
 			|| (entry->Type == EfiBootServicesCode)
 			|| (entry->Type == EfiReservedMemoryType)
-			)
+			) {
+			uint64 flags = ARMv8TranslationTableDescriptor::DefaultCodeAttribute
+				| currentMair.MaskOf(MAIR_NORMAL_WB);
+			if (entry->Type == EfiMemoryMappedIO || entry->Type == EfiMemoryMappedIOPortSpace) {
+				flags = ARMv8TranslationTableDescriptor::DefaultPeripheralAttribute
+					| currentMair.MaskOf(MAIR_DEVICE_nGnRnE);
+			}
 			map_range(entry->PhysicalStart, entry->PhysicalStart,
-				entry->NumberOfPages * B_PAGE_SIZE,
-				ARMv8TranslationTableDescriptor::DefaultCodeAttribute | currentMair.MaskOf(MAIR_NORMAL_WB));
+				entry->NumberOfPages * B_PAGE_SIZE, flags);
+		}
 	}
 
 	TRACE("Mapping \"next\" regions\n");
