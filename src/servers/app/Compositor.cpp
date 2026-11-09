@@ -29,21 +29,52 @@
 #endif
 
 
+// 60 Hz, for screens where the driver can't tell
+static const bigtime_t kFrameInterval = 16667;
+
+
 Compositor::Compositor(Desktop* desktop)
 	:
 	fDesktop(desktop),
 	fLock("compositor"),
+	fDamageLock("compositor damage"),
+	fWakePending(false),
+	fWakeSem(create_sem(0, "compositor wake")),
+	fThread(-1),
+	fQuit(false),
+	fNextFrame(0),
+	fUsesRetrace(false),
+	fReportedPacing(false),
 	fSceneBits(NULL),
 	fSceneWidth(0),
 	fSceneHeight(0)
 {
+	fThread = spawn_thread(&_ThreadEntry, "compositor", B_DISPLAY_PRIORITY, this);
+	if (fThread >= 0)
+		resume_thread(fThread);
 }
 
 
 Compositor::~Compositor()
 {
+	fQuit = true;
+	delete_sem(fWakeSem);
+	if (fThread >= 0) {
+		status_t result;
+		wait_for_thread(fThread, &result);
+	}
+
 	for (size_t i = 0; i < fLayers.size(); i++)
 		delete fLayers[i];
+}
+
+
+status_t
+Compositor::InitCheck() const
+{
+	if (fWakeSem < 0)
+		return fWakeSem;
+	return fThread >= 0 ? B_OK : fThread;
 }
 
 
@@ -53,10 +84,169 @@ Compositor::Composite(const BRegion& damage)
 	if (damage.CountRects() == 0)
 		return;
 
-	// Other window threads may composite at the same time. Serializing them
-	// also makes sure the screen ends up correct: a window's drawing is done
-	// when it gets here, so whoever comes next sees its new pixels.
+	BAutolock _(fDamageLock);
+	fDamage.Include(&damage);
+	if (!fWakePending) {
+		fWakePending = true;
+		release_sem(fWakeSem);
+	}
+}
+
+
+void
+Compositor::Flush()
+{
+	if (fDesktop->LockSingleWindow()) {
+		_CompositeDamage();
+		fDesktop->UnlockSingleWindow();
+	}
+}
+
+
+void
+Compositor::FlushLocked()
+{
+	_CompositeDamage();
+}
+
+
+void
+Compositor::ScreenTaken()
+{
+	// _Composite() looks at the owner of the screen with this held.
 	BAutolock _(fLock);
+}
+
+
+void
+Compositor::ScreenReleased()
+{
+	BRegion all((BRect)fDesktop->HWInterface()->DrawingBuffer()->Bounds());
+	Composite(all);
+}
+
+
+/*static*/ status_t
+Compositor::_ThreadEntry(void* data)
+{
+	((Compositor*)data)->_Run();
+	return B_OK;
+}
+
+
+void
+Compositor::_Run()
+{
+	while (!fQuit) {
+		status_t status = acquire_sem(fWakeSem);
+		if (status == B_INTERRUPTED)
+			continue;
+		if (status != B_OK)
+			break;
+
+		if (!fUsesRetrace) {
+			_WaitForFrame();
+
+			if (fDesktop->LockSingleWindow()) {
+				_CompositeDamage();
+				fDesktop->UnlockSingleWindow();
+			}
+			continue;
+		}
+
+		// With a retrace, the frame is built first and only copied to the
+		// screen in the vertical blank. Building it takes longer than the
+		// blank lasts, so building it after the retrace left the top of the
+		// screen to tear; the copy alone runs ahead of the scanout.
+		BRegion present;
+		if (fDesktop->LockSingleWindow()) {
+			_CompositeDamage(&present);
+			fDesktop->UnlockSingleWindow();
+		}
+		_WaitForFrame();
+		_Present(present);
+	}
+}
+
+
+/*!	Paces the updates of the screen. When the driver knows about the vertical
+	retrace, the screen is updated right after it, which keeps a window from
+	tearing while the update is done. Otherwise this just limits the rate, and
+	what comes after an idle moment goes straight to the screen.
+*/
+void
+Compositor::_WaitForFrame()
+{
+	status_t status = fDesktop->HWInterface()->WaitForRetrace(kFrameInterval);
+	fUsesRetrace = status == B_OK || status == B_TIMED_OUT;
+
+	if (!fReportedPacing) {
+		debug_printf("app_server: compositor paced by %s\n",
+			fUsesRetrace ? "the vertical retrace" : "a timer");
+		fReportedPacing = true;
+	}
+
+	if (!fUsesRetrace) {
+		if (system_time() < fNextFrame)
+			snooze_until(fNextFrame, B_SYSTEM_TIMEBASE);
+		fNextFrame = system_time() + kFrameInterval;
+	}
+}
+
+
+void
+Compositor::_CompositeDamage(BRegion* present)
+{
+	BRegion damage;
+	{
+		BAutolock _(fDamageLock);
+		damage = fDamage;
+		fDamage.MakeEmpty();
+		fWakePending = false;
+	}
+	_Composite(damage, present);
+}
+
+
+/*!	Copies \a region, as built by _Composite(), from the back buffer to the
+	screen.
+*/
+void
+Compositor::_Present(const BRegion& region)
+{
+	if (region.CountRects() == 0)
+		return;
+
+	BAutolock _(fLock);
+
+	if (fDesktop->IsDirectScreenLocked())
+		return;
+
+	::HWInterface* interface = fDesktop->HWInterface();
+	if (!interface->LockParallelAccess())
+		return;
+
+	interface->InvalidateRegion(region);
+
+	interface->UnlockParallelAccess();
+}
+
+
+/*!	The window lock must be held at least for reading. With \a present, what
+	changed on screen is added to it, to be copied there by _Present();
+	otherwise it is copied at once.
+*/
+void
+Compositor::_Composite(const BRegion& damage, BRegion* present)
+{
+	if (damage.CountRects() == 0)
+		return;
+
+	// Flush() can get here at the same time.
+	BAutolock _(fLock);
+
+	if (fDesktop->IsDirectScreenLocked())
+		return;
 
 	::HWInterface* interface = fDesktop->HWInterface();
 	if (!interface->LockParallelAccess())
@@ -155,7 +345,10 @@ Compositor::Composite(const BRegion& damage)
 		}
 	}
 
-	interface->InvalidateRegion(screenDamage);
+	if (present != NULL)
+		present->Include(&screenDamage);
+	else
+		interface->InvalidateRegion(screenDamage);
 
 	interface->UnlockParallelAccess();
 }

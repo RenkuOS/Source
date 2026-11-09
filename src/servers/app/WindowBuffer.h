@@ -13,6 +13,7 @@
 
 
 class Compositor;
+class Window;
 
 
 /*!	The off-screen pixels of one window, used when the desktop is composited.
@@ -77,6 +78,8 @@ public:
 								WindowBufferHWInterface(Compositor* compositor);
 	virtual						~WindowBufferHWInterface();
 
+			void				SetWindow(Window* window) { fWindow = window; }
+
 			// Fails if there isn't memory for the window at \a frame: it
 			// isn't drawn until a later frame change gets it some.
 			status_t			SetFrame(const BRect& frame);
@@ -118,7 +121,10 @@ public:
 	virtual	status_t			Invalidate(const BRect& frame);
 
 private:
+			void				_Damaged(const BRegion& region);
+
 			Compositor*			fCompositor;
+			Window*				fWindow;
 	mutable	WindowBuffer		fBuffer;
 };
 
