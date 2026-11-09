@@ -82,6 +82,9 @@ private:
 								VirtualDirectoryManager();
 
 			Info*				_InfoForNodeRef(const node_ref& nodeRef) const;
+			void				_CopyLocalizedName(const node_ref& parentRef,
+									const entry_ref& entryRef,
+									BNode& definitionFile);
 
 			bool				_AddInfo(Info* info);
 			void				_RemoveInfo(Info* info);
