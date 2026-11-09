@@ -108,6 +108,8 @@ typedef struct {
 	struct nvme_ctrlr*		ctrlr;
 
 	struct nvme_ns*			ns;
+	char					model_number[NVME_MODEL_NUMBER_LENGTH];
+	char					serial_number[NVME_SERIAL_NUMBER_LENGTH];
 	uint64					capacity;
 	uint32					block_size;
 	uint32					max_io_blocks;
@@ -234,6 +236,11 @@ nvme_disk_init_device(void* _info, void** _cookie)
 	TRACE_ALWAYS("attached to NVMe device \"%s (%s)\"\n", cstat->mn, cstat->sn);
 	TRACE_ALWAYS("\tmaximum transfer size: %" B_PRIuSIZE "\n", cstat->max_xfer_size);
 	TRACE_ALWAYS("\tqpair count: %d\n", cstat->io_qpairs);
+
+	// nvme_ctrlr_stat() returns these trimmed and terminated. The raw
+	// Identify fields are padded with spaces and have no terminator.
+	strlcpy(info->model_number, cstat->mn, sizeof(info->model_number));
+	strlcpy(info->serial_number, cstat->sn, sizeof(info->serial_number));
 
 	// TODO: export more than just the first namespace!
 	info->ns = nvme_ns_open(info->ctrlr, cstat->ns_ids[0]);
@@ -1097,6 +1104,14 @@ nvme_disk_ioctl(void* cookie, uint32 op, void* buffer, size_t length)
 
 			return user_memcpy(buffer, &geometry, length);
 		}
+
+		case B_GET_DEVICE_NAME:
+			return user_strlcpy((char*)buffer, info->model_number, length) >= 0
+				? B_OK : B_BAD_ADDRESS;
+
+		case B_GET_DEVICE_SERIAL_NUMBER:
+			return user_strlcpy((char*)buffer, info->serial_number, length) >= 0
+				? B_OK : B_BAD_ADDRESS;
 
 		case B_GET_ICON_NAME:
 			return user_strlcpy((char*)buffer, "devices/drive-harddisk",
