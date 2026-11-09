@@ -137,6 +137,8 @@ public:
 
 			status_t			LockDirectScreen(team_id team);
 			status_t			UnlockDirectScreen(team_id team);
+			bool				IsDirectScreenLocked() const
+									{ return fDirectScreenTeam != -1; }
 
 			const ::VirtualScreen& VirtualScreen() const
 									{ return fVirtualScreen; }

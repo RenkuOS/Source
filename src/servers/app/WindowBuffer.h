@@ -13,6 +13,7 @@
 
 
 class Compositor;
+class Window;
 
 
 /*!	The off-screen pixels of one window, used when the desktop is composited.
@@ -73,6 +74,8 @@ public:
 								WindowBufferHWInterface(Compositor* compositor);
 	virtual						~WindowBufferHWInterface();
 
+			void				SetWindow(Window* window) { fWindow = window; }
+
 			void				SetFrame(const BRect& frame);
 			void				ReleaseBuffer() { fBuffer.Release(); }
 			const WindowBuffer&	Buffer() const { return fBuffer; }
@@ -112,7 +115,10 @@ public:
 	virtual	status_t			Invalidate(const BRect& frame);
 
 private:
+			void				_Damaged(const BRegion& region);
+
 			Compositor*			fCompositor;
+			Window*				fWindow;
 	mutable	WindowBuffer		fBuffer;
 };
 

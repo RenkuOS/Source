@@ -50,6 +50,7 @@
 #include "BitmapManager.h"
 #include "CursorManager.h"
 #include "CursorSet.h"
+#include "Compositor.h"
 #include "Desktop.h"
 #include "DecorManager.h"
 #include "DrawingEngine.h"
@@ -3407,6 +3408,8 @@ ServerApp::_DispatchMessage(int32 code, BPrivate::LinkReceiver& link)
 
 			BReference<ServerBitmap> bitmap(GetBitmap(token), true);
 			if (bitmap != NULL) {
+				if (Compositor* compositor = fDesktop->GetCompositor())
+					compositor->Flush();
 				if (fDesktop->GetDrawingEngine()->LockExclusiveAccess()) {
 					success = fDesktop->GetDrawingEngine()->ReadBitmap(bitmap,
 						drawCursor, bounds) == B_OK;
