@@ -244,6 +244,12 @@ Window::SetClipping(BRegion* stillAvailableOnScreen)
 			settings.UIColor(B_PANEL_BACKGROUND_COLOR).IsDark(),
 			settings.UIColor(B_PANEL_TEXT_COLOR));
 
+		fTransparentRegion.MakeEmpty();
+		if (IsTransparent()) {
+			GetContentRegion(&fTransparentRegion);
+			fTransparentRegion.IntersectWith(&fCompositeRegion);
+		}
+
 		// The buffer can't be drawn to above or left of the screen, but other
 		// windows don't matter anymore: the window draws everything else.
 		BRegion drawable(BRect(0, 0, 65535, 65535));
@@ -297,7 +303,22 @@ Window::GetOnScreenContentRegion(BRegion* region)
 bool
 Window::ShapeContains(const BPoint& where) const
 {
-	return !fBufferInterface.IsSet() || fShape.Contains(where);
+	if (!fBufferInterface.IsSet())
+		return true;
+	if (!fShape.Contains(where))
+		return false;
+
+	// What the window hasn't drawn at all can't be clicked.
+	if (fTransparentRegion.Contains(where) && fBufferReady) {
+		const WindowBuffer& buffer = fBufferInterface->Buffer();
+		int32 x = (int32)where.x;
+		int32 y = (int32)where.y;
+		if (buffer.InitCheck() == B_OK && x >= 0 && y >= 0
+			&& buffer.Frame().Contains(BPoint(x, y))) {
+			return buffer.PixelAt(x, y)[3] != 0;
+		}
+	}
+	return true;
 }
 
 
@@ -1517,6 +1538,14 @@ Window::SetFeel(window_feel feel)
 void
 Window::SetFlags(uint32 flags, BRegion* updateRegion)
 {
+	// Turning transparency on or off changes how the whole window is drawn.
+	if (((fFlags ^ flags) & B_TRANSPARENT_WINDOW) != 0
+		&& fBufferInterface.IsSet() && updateRegion != NULL) {
+		BRegion full;
+		GetFullRegion(&full);
+		updateRegion->Include(&full);
+	}
+
 	fOriginalFlags = flags;
 	fFlags = flags & ValidWindowFlags(fFeel);
 	if (!IsNormal())
@@ -1886,6 +1915,7 @@ Window::ValidWindowFlags()
 		| B_SAME_POSITION_IN_ALL_WORKSPACES
 		| B_AUTO_UPDATE_SIZE_LIMITS
 		| B_CLOSE_ON_ESCAPE
+		| B_TRANSPARENT_WINDOW
 		| B_NO_SERVER_SIDE_WINDOW_MODIFIERS
 		| kWindowScreenFlag
 		| kAcceptKeyboardFocusFlag;

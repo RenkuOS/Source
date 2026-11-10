@@ -136,8 +136,19 @@ public:
 			const BRegion&		CompositeRegion() const
 									{ return fCompositeRegion; }
 			const WindowShape&	Shape() const { return fShape; }
-			// When compositing, clicks go through what is cut off at a corner.
+			// When compositing, clicks go through what is cut off at a corner,
+			// and through the clear pixels of a transparent window.
 			bool				ShapeContains(const BPoint& where) const;
+			// Whether the window's contents are mixed with what is behind it
+			// by their own alpha: only on a composited desktop, and when the
+			// window asked for it with B_TRANSPARENT_WINDOW.
+			bool				IsTransparent() const
+									{ return fBufferInterface.IsSet()
+										&& (fFlags & B_TRANSPARENT_WINDOW)
+											!= 0; }
+			// The part of the window that is transparent, its content area.
+			const BRegion&		TransparentRegion() const
+									{ return fTransparentRegion; }
 			// When the window can't be seen for a while, its buffer can go. It
 			// comes back on its own when the window is shown and drawn again.
 			void				ReleaseBuffer();
@@ -491,6 +502,7 @@ private:
 			bool				fBufferReady;
 			bool				fHasRoundedCorners;
 			uint8				fCompositeAlpha;
+			BRegion				fTransparentRegion;
 };
 
 

@@ -380,6 +380,9 @@ enum {
 	AS_SET_COMPOSITED_DRAG_TRANSPARENCY,
 	AS_GET_COMPOSITED_DRAG_TRANSPARENCY,
 
+	// Whether the desktop is composited right now
+	AS_IS_DESKTOP_COMPOSITED,
+
 	AS_LAST_CODE
 };
 

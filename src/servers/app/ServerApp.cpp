@@ -3504,6 +3504,13 @@ ServerApp::_DispatchMessage(int32 code, BPrivate::LinkReceiver& link)
 			fLink.Flush();
 			break;
 		}
+		case AS_IS_DESKTOP_COMPOSITED:
+		{
+			fLink.StartMessage(B_OK);
+			fLink.Attach<bool>(fDesktop->GetCompositor() != NULL);
+			fLink.Flush();
+			break;
+		}
 		case AS_SET_COMPOSITED_SHADOWS:
 		{
 			bool shadows;
