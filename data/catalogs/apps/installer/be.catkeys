@@ -21,7 +21,7 @@ Write boot sector to '%s'	InstallerWindow		Запісаць загрузачны
 Boot sector not written because of an internal error.	InstallProgress		Загрузачны сектар не запісаны з-за ўнутранай памылкі.
 Choose the source and destination disk from the pop-up menus. Then click 'Begin'.	InstallerWindow		Абярыце зыходны і мэтавы падзелы ў меню. Пасля націсніце 'Усталяваць'.
 Running BootManager and DriveSetup…\n\nClose both applications to continue with the installation.	InstallerWindow		BootManager і DriveSetup актыўныя…\n\nКалі ласка завяршыце іх працу перш чым працягнуць усталёўку.
-Welcome to the Haiku Installer!\n\n	InstallerApp		Прывітанне! Гэта ўсталёўшчык Haiku!\n\n
+Welcome to the RenkuOS Installer!\n\n	InstallerApp		Прывітанне! Гэта ўсталёўшчык RenkuOS!\n\n
 ?? of ??	InstallerWindow	Unknown progress	?? з ??
 DriveSetup, the application to configure disk partitions, could not be launched.	InstallerWindow		DriveSetup, праграма для праўкі дыскавых падзелаў, не запусцілася.
 Quit DriveSetup	InstallerWindow		Выйсці з DriveSetup
@@ -35,14 +35,14 @@ This is beta-quality software! It means there is a risk of losing important data
 Install anyway	InstallProgress		Усталяваць безумоўна
 Hide optional packages	InstallerWindow		Прыхаваць дадатковыя пакункі
 ???	InstallerWindow	Unknown partition name	???
-Have fun and thanks for trying out Haiku!	InstallerApp		Зычым Вам прыемный працы і дзякуем за жаданне пазнаёміцца з Haiku!
+Have fun and thanks for trying out RenkuOS!	InstallerApp		Зычым Вам прыемный працы і дзякуем за жаданне пазнаёміцца з RenkuOS!
 Quit	InstallerApp		Выйсці
 Quit BootManager and DriveSetup	InstallerWindow		Спыніць працу BootManager і DriveSetup
 Error writing boot sector.	InstallProgress		Памылка запісу загрузачнага сэктара.
 OK	InstallerWindow		ОК
-3)   When you successfully boot into Haiku for the first time, make sure to read our \"User Guide\" and take the \"Quick Tour\". There are links on the Desktop and in WebPositive's bookmarks.\n\n	InstallerApp		3) Першасную інфармацыю пра Haiku, пасля усталёўкі можна будзе знайсці ў файлах \"User Guide\" і \"Quick Tour\" па спасылках на Вашым працоўным стале і ў закладках WebPositive.\n\n
+3)   When you successfully boot into RenkuOS for the first time, make sure to read our \"User Guide\" and take the \"Quick Tour\". There are links on the Desktop and in WebPositive's bookmarks.\n\n	InstallerApp		3) Першасную інфармацыю пра RenkuOS, пасля усталёўкі можна будзе знайсці ў файлах \"User Guide\" і \"Quick Tour\" па спасылках на Вашым працоўным стале і ў закладках WebPositive.\n\n
 Try installing anyway	InstallProgress		Ўсё роўна паспрабаваць усталёўку
-IMPORTANT INFORMATION BEFORE INSTALLING HAIKU\n\n	InstallerApp		ВАЖНАЯ ІНФАРМАЦЫЯ НАКОНТ УСТАЛЁЎКІ\n\n
+IMPORTANT INFORMATION BEFORE INSTALLING RENKUOS\n\n	InstallerApp		ВАЖНАЯ ІНФАРМАЦЫЯ НАКОНТ УСТАЛЁЎКІ\n\n
 Additional disk space required: %s	InstallerWindow		Патрэбна месца дадаткова: %s
 Stop	InstallerWindow	In alert after pressing Stop	Стоп
 Boot sector successfully written.	InstallProgress		Загрузачны сектар паспяхова запісаны.

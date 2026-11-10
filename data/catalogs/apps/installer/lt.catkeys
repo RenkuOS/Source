@@ -12,7 +12,7 @@ README	InstallerApp		Lydimoji instrukcija
 Quit	InstallerWindow		Baigti darbą
 Write boot sector to '%s'	InstallerWindow		Įrašyti paleidimo sektorių į „%s“
 Boot sector not written because of an internal error.	InstallProgress		Paleidimo sektoriaus nepavyko įrašyti dėl vidinės klaidos.
-Welcome to the Haiku Installer!\n\n	InstallerApp		Sveiki! Tai – „Haiku“ įdiegimo programa!\n\n
+Welcome to the RenkuOS Installer!\n\n	InstallerApp		Sveiki! Tai – „RenkuOS“ įdiegimo programa!\n\n
 ?? of ??	InstallerWindow	Unknown progress	?? iš ??
 DriveSetup, the application to configure disk partitions, could not be launched.	InstallerWindow		Diskų ženklintuvo – priemonės skaidiniams tvarkyti – paleisti nepavyko.
 Quit DriveSetup	InstallerWindow		Užbaikite Diskų ženklintuvo darbą
@@ -26,7 +26,7 @@ Hide optional packages	InstallerWindow		Nerodyti papildomų paketų
 Quit	InstallerApp		Baigti darbą
 OK	InstallerWindow		Gerai
 Try installing anyway	InstallProgress		Vis tiek bandyti įdiegti
-IMPORTANT INFORMATION BEFORE INSTALLING HAIKU\n\n	InstallerApp		SVARBI INFORMACIJA PRIEŠ ĮDIEGIANT „HAIKU“\n\n
+IMPORTANT INFORMATION BEFORE INSTALLING RENKUOS\n\n	InstallerApp		SVARBI INFORMACIJA PRIEŠ ĮDIEGIANT „RENKUOS“\n\n
 Additional disk space required: %s	InstallerWindow		Papildomai reikės disko vietos: %s
 Stop	InstallerWindow	In alert after pressing Stop	Nutraukti
 Boot sector successfully written.	InstallProgress		Paleidimo sektorius sėkmingai įrašytas.
