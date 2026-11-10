@@ -165,9 +165,9 @@ PackageManager::Warn(status_t error, const char* format, ...)
 	va_end(args);
 
 	if (error == B_OK)
-		printf("\n");
+		fprintf(stderr, "\n");
 	else
-		printf(": %s\n", strerror(error));
+		fprintf(stderr, ": %s\n", strerror(error));
 }
 
 

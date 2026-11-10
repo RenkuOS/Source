@@ -881,6 +881,28 @@ BPackageManager::_ApplyPackageChanges(bool fromMostSpecific)
 }
 
 
+/*!	Returns the installed package that \a package replaces with the very
+	same version from a repository, as a reinstall does, or NULL if it isn't
+	a reinstall.
+*/
+static BSolverPackage*
+reinstalled_package(BSolverPackage* package,
+	BObjectList<BSolverPackage>& packagesToDeactivate)
+{
+	const BPackageInfo& info = package->Info();
+	for (int32 i = 0;
+			BSolverPackage* installed = packagesToDeactivate.ItemAt(i); i++) {
+		const BPackageInfo& installedInfo = installed->Info();
+		if (installedInfo.Name() == info.Name()
+			&& installedInfo.Architecture() == info.Architecture()
+			&& installedInfo.Version().Compare(info.Version()) == 0) {
+			return installed;
+		}
+	}
+	return NULL;
+}
+
+
 void
 BPackageManager::_PreparePackageChanges(
 	InstalledRepository& installationRepository)
@@ -903,6 +925,9 @@ BPackageManager::_PreparePackageChanges(
 	status_t error = fInstallationInterface->PrepareTransaction(*transaction);
 	if (error != B_OK)
 		DIE(error, "Failed to create transaction");
+
+	// reinstalls whose download failed, by the installed package's file name
+	BStringList skippedReinstalls;
 
 	// download the new packages and prepare the transaction
 	for (int32 i = 0; BSolverPackage* package = packagesToActivate.ItemAt(i);
@@ -985,6 +1010,21 @@ retryDownload:
 						goto retryDownload;
 					}
 				}
+
+				// A reinstall is optional: a repository that lists a package
+				// it can't serve shouldn't stop the other changes.
+				BSolverPackage* installed
+					= reinstalled_package(package, packagesToDeactivate);
+				if (installed != NULL) {
+					entry.Remove();
+					fUserInteractionHandler->Warn(error,
+						B_TRANSLATE("Not reinstalling %s, its download failed"),
+						package->Info().Name().String());
+					if (!skippedReinstalls.Add(installed->Info().FileName()))
+						throw std::bad_alloc();
+					continue;
+				}
+
 				DIE(error, "Failed to download package %s",
 					package->Info().Name().String());
 			}
@@ -1008,11 +1048,27 @@ retryDownload:
 
 	for (int32 i = 0; BSolverPackage* package = packagesToDeactivate.ItemAt(i);
 		i++) {
+		// keep a package whose reinstall was skipped
+		if (skippedReinstalls.HasString(package->Info().FileName()))
+			continue;
+
 		// add package to transaction
 		if (!transaction->ActivationTransaction().AddPackageToDeactivate(
 				package->Info().FileName())) {
 			throw std::bad_alloc();
 		}
+	}
+
+	// if every change was a skipped reinstall, there's nothing to commit
+	BActivationTransaction& activation = transaction->ActivationTransaction();
+	if (activation.PackagesToActivate().IsEmpty()
+		&& activation.PackagesToDeactivate().IsEmpty()) {
+		BEntry directoryEntry;
+		if (transaction->TransactionDirectory().GetEntry(&directoryEntry)
+				== B_OK) {
+			directoryEntry.Remove();
+		}
+		fTransactions.RemoveItem(transaction);
 	}
 }
 
