@@ -406,6 +406,17 @@ get_synaptics_movment(synaptics_cookie *cookie, touchpad_movement *_event, bigti
 
 			// Other values are reserved for other uses (usually enabled with special commands)
 
+			if (extendedWValue != 0) {
+				// The secondary finger and finger state packets describe
+				// fingers besides the primary one. Reported as an event of
+				// their own, the secondary finger position was taken for the
+				// primary finger: the pointer jumped, for example to the
+				// thumb resting on the clickpad button area while clicking.
+				// The finger count also comes with the primary packets
+				// (W 0 or 1), so these packets are not reported.
+				return B_ENTRY_NOT_FOUND;
+			}
+
 			// Extended W packets do not report the buttons. Repeat the last
 			// reported state, so that a held button (a clickpad click while
 			// a second finger moves, for example) is not seen as released.
@@ -1052,14 +1063,34 @@ synaptics_ioctl(void *_cookie, uint32 op, void *buffer, size_t length)
 			return user_memcpy(buffer, &gHardwareSpecs, sizeof(gHardwareSpecs));
 
 		case MS_READ_TOUCHPAD:
+		{
 			TRACE("SYNAPTICS: MS_READ get event\n");
 			if (user_memcpy(&read.timeout, &(((touchpad_read*)buffer)->timeout),
 					sizeof(bigtime_t)) != B_OK)
 				return B_BAD_ADDRESS;
-			if ((status = get_synaptics_movment(cookie, &read.u.touchpad, read.timeout)) != B_OK)
+
+			// Packets that are not reported (B_ENTRY_NOT_FOUND) do not end
+			// the wait; the timeout still counts from the start.
+			bigtime_t timeout = read.timeout;
+			bigtime_t deadline = 0;
+			if (timeout != B_INFINITE_TIMEOUT)
+				deadline = system_time() + timeout;
+			while (true) {
+				status = get_synaptics_movment(cookie, &read.u.touchpad,
+					timeout);
+				if (status != B_ENTRY_NOT_FOUND)
+					break;
+				if (deadline != 0) {
+					timeout = deadline - system_time();
+					if (timeout <= 0)
+						return B_TIMED_OUT;
+				}
+			}
+			if (status != B_OK)
 				return status;
 			read.event = MS_READ_TOUCHPAD;
 			return user_memcpy(buffer, &read, sizeof(read));
+		}
 
 		default:
 			TRACE("SYNAPTICS: unknown opcode: %" B_PRIu32 "\n", op);
