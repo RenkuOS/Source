@@ -106,3 +106,16 @@ The partition %s is already mounted.	MainWindow		A partição %s já está monta
 Size	PartitionList		Tamanho
 Creation of the partition has failed.	MainWindow		A criação da partição falhou.
 Mount	MainWindow		Montar
+Disk image	MainWindow		Imagem de disco
+Register disk image…	MainWindow		Registar imagem de disco…
+Unregister disk image	MainWindow		Anular registo da imagem de disco
+Save image…	MainWindow		Guardar imagem…
+Write image…	MainWindow		Gravar imagem…
+%appname%: Register disk image	MainWindow		%appname%: Registar imagem de disco
+%appname%: Select disk image	MainWindow		%appname%: Selecionar imagem de disco
+%appname%: Save disk image	MainWindow		%appname%: Guardar imagem de disco
+Disk image has been added.	MainWindow		A imagem de disco foi adicionada.
+Disk image has been removed.	MainWindow		A imagem de disco foi removida.
+Creating disk image	MainWindow		A criar imagem de disco
+Disk image successfully created.	MainWindow		A imagem de disco foi criada com sucesso.
+Disk image successfully written to the target.	MainWindow		A imagem de disco foi gravada com sucesso no destino.

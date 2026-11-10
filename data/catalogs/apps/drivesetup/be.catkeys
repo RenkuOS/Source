@@ -81,3 +81,16 @@ The partition %s is already mounted.	MainWindow		Падзел %s ужо зман
 Size	PartitionList		Памер
 Creation of the partition has failed.	MainWindow		Не удалося стварыць падзел.
 Mount	MainWindow		Змантаваць
+Disk image	MainWindow		Выява дыска
+Register disk image…	MainWindow		Зарэгістраваць выяву дыска…
+Unregister disk image	MainWindow		Скасаваць рэгістрацыю выявы дыска
+Save image…	MainWindow		Захаваць выяву…
+Write image…	MainWindow		Запісаць выяву…
+%appname%: Register disk image	MainWindow		%appname%: Зарэгістраваць выяву дыска
+%appname%: Select disk image	MainWindow		%appname%: Выбраць выяву дыска
+%appname%: Save disk image	MainWindow		%appname%: Захаваць выяву дыска
+Disk image has been added.	MainWindow		Выява дыска дададзена.
+Disk image has been removed.	MainWindow		Выява дыска выдалена.
+Creating disk image	MainWindow		Стварэнне выявы дыска
+Disk image successfully created.	MainWindow		Выява дыска паспяхова створана.
+Disk image successfully written to the target.	MainWindow		Выява дыска паспяхова запісана ў мэтавае месца.

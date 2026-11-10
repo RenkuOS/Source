@@ -110,3 +110,16 @@ The partition %s is already mounted.	MainWindow		%s 파티션이 이미 마운�
 Size	PartitionList		크기
 Creation of the partition has failed.	MainWindow		파티션 생성에 실패했습니다.
 Mount	MainWindow		마운트
+Disk image	MainWindow		디스크 이미지
+Register disk image…	MainWindow		디스크 이미지 등록…
+Unregister disk image	MainWindow		디스크 이미지 등록 해제
+Save image…	MainWindow		이미지 저장…
+Write image…	MainWindow		이미지 쓰기…
+%appname%: Register disk image	MainWindow		%appname%: 디스크 이미지 등록
+%appname%: Select disk image	MainWindow		%appname%: 디스크 이미지 선택
+%appname%: Save disk image	MainWindow		%appname%: 디스크 이미지 저장
+Disk image has been added.	MainWindow		디스크 이미지를 추가했습니다.
+Disk image has been removed.	MainWindow		디스크 이미지를 제거했습니다.
+Creating disk image	MainWindow		디스크 이미지 만드는 중
+Disk image successfully created.	MainWindow		디스크 이미지를 만들었습니다.
+Disk image successfully written to the target.	MainWindow		디스크 이미지를 대상에 썼습니다.

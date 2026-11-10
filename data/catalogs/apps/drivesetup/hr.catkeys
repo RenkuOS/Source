@@ -77,3 +77,16 @@ The partition %s is already mounted.	MainWindow		Particija %s je već montirana.
 Size	PartitionList		Veličina
 Creation of the partition has failed.	MainWindow		Stvaranje particije nije uspjelo.
 Mount	MainWindow		Montiraj
+Disk image	MainWindow		Slika diska
+Register disk image…	MainWindow		Registriraj sliku diska…
+Unregister disk image	MainWindow		Odjavi sliku diska
+Save image…	MainWindow		Spremi sliku…
+Write image…	MainWindow		Zapiši sliku…
+%appname%: Register disk image	MainWindow		%appname%: Registriraj sliku diska
+%appname%: Select disk image	MainWindow		%appname%: Odaberi sliku diska
+%appname%: Save disk image	MainWindow		%appname%: Spremi sliku diska
+Disk image has been added.	MainWindow		Slika diska je dodana.
+Disk image has been removed.	MainWindow		Slika diska je uklonjena.
+Creating disk image	MainWindow		Stvaranje slike diska
+Disk image successfully created.	MainWindow		Slika diska je uspješno stvorena.
+Disk image successfully written to the target.	MainWindow		Slika diska je uspješno zapisana na odredište.

@@ -81,3 +81,16 @@ The partition %s is already mounted.	MainWindow		Skaidinys „%s“ jau yra prij
 Size	PartitionList		Dydis
 Creation of the partition has failed.	MainWindow		Nepavyko sukurti skaidinio.
 Mount	MainWindow		Prijungti
+Disk image	MainWindow		Disko atvaizdas
+Register disk image…	MainWindow		Registruoti disko atvaizdą…
+Unregister disk image	MainWindow		Išregistruoti disko atvaizdą
+Save image…	MainWindow		Išsaugoti atvaizdą…
+Write image…	MainWindow		Įrašyti atvaizdą…
+%appname%: Register disk image	MainWindow		%appname%: Registruoti disko atvaizdą
+%appname%: Select disk image	MainWindow		%appname%: Pasirinkti disko atvaizdą
+%appname%: Save disk image	MainWindow		%appname%: Išsaugoti disko atvaizdą
+Disk image has been added.	MainWindow		Disko atvaizdas pridėtas.
+Disk image has been removed.	MainWindow		Disko atvaizdas pašalintas.
+Creating disk image	MainWindow		Kuriamas disko atvaizdas
+Disk image successfully created.	MainWindow		Disko atvaizdas sėkmingai sukurtas.
+Disk image successfully written to the target.	MainWindow		Disko atvaizdas sėkmingai įrašytas į paskirtį.
