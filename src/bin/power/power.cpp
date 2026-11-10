@@ -327,15 +327,27 @@ battery_rate_mw(const BatteryState& battery)
 }
 
 
-// ACPI reports an absent or unreadable battery with all values unknown.
+static bool
+capacity_known(uint32 value)
+{
+	return value != 0 && value != UINT32_MAX;
+}
+
+
+// ACPI reports an absent battery with unknown values. Some firmware (the
+// empty second slot of a ThinkPad X270) still reports a remaining capacity
+// of 0, but never a full charge or design capacity: a battery that is
+// there has at least one of them.
 static bool
 battery_present(const BatteryState& battery)
 {
 	if (battery.status != B_OK)
 		return false;
-	return battery.info.capacity != UINT32_MAX
-		|| (battery.hasExtended
-			&& battery.extended.last_full_charge != UINT32_MAX);
+	if (battery.hasExtended) {
+		return capacity_known(battery.extended.last_full_charge)
+			|| capacity_known(battery.extended.design_capacity);
+	}
+	return battery.info.capacity != UINT32_MAX;
 }
 
 
@@ -344,11 +356,11 @@ battery_full_charge(const BatteryState& battery)
 {
 	if (!battery.hasExtended)
 		return 0;
-	if (battery.extended.last_full_charge > 0
-		&& battery.extended.last_full_charge != UINT32_MAX)
+	if (capacity_known(battery.extended.last_full_charge))
 		return battery.extended.last_full_charge;
-
-	return battery.extended.design_capacity;
+	if (capacity_known(battery.extended.design_capacity))
+		return battery.extended.design_capacity;
+	return 0;
 }
 
 
