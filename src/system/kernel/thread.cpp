@@ -1491,10 +1491,10 @@ common_setrlimit(int resource, const struct rlimit * rlp)
 			return vfs_setrlimit(resource, rlp);
 
 		case RLIMIT_CORE:
-			// air/OS: there are no core files (debug_server decides), so 0/0
-			// is what the limit already is. Programs that turn core files off
-			// (ssh, crash handlers, "ulimit -c 0") check the result: upstream
-			// made this EINVAL too.
+			// Core files are controlled by debug_server, so the limit is
+			// always 0/0 (see common_getrlimit()). Programs that turn core
+			// files off (ssh, crash handlers, "ulimit -c 0") check the result,
+			// so accept a request for the limit that is already in effect.
 			if (rlp->rlim_cur == 0 && rlp->rlim_max == 0)
 				return B_OK;
 			return EINVAL;
