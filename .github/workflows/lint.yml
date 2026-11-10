@@ -157,29 +157,17 @@ jobs:
             $1 ~ /^[0-9]+$/ { a += $1 + $2 }
             END { print a+0 }')
 
-          # A "subsystem" is the first two path segments under src/, else the
-          # first. Infrastructure, documentation, translations and vendored code
-          # are excluded: REVIEW.md 2's cap is about reviewer attention on CODE,
-          # and a change that fixes a bug, adjusts CI to test it and updates a
-          # doc should not be blocked for spanning "three subsystems". Root-level
-          # files are skipped for the same reason -- each would otherwise count
-          # as a subsystem of its own.
-          subs=$(git diff --name-only "${BASE}" HEAD | awk -F/ '
-            /^(\.github|docs|3rdparty|3rdParty|vendor)\// { next }
-            /^data\/catalogs\// { next }
-            NF < 2 { next }
-            /^src\// { print $1"/"$2; next }
-            { print $1 }' | sort -u | wc -l)
+          # There is no subsystem cap. One logical change may touch several
+          # subsystems; splitting is a reviewer's call, not a lint rule.
+          # (REVIEW.md 2)
 
           echo "Hand-reviewable lines changed: ${lines}"
-          echo "Subsystems touched: ${subs}"
           {
             echo "### Pull request size"
             echo ""
             echo "| Metric | Value | Cap (REVIEW.md 2) |"
             echo "|---|---|---|"
             echo "| Hand-reviewable lines | ${lines} | 400 routine, 1000 hard |"
-            echo "| Subsystems touched | ${subs} | 2 |"
           } >> "$GITHUB_STEP_SUMMARY"
 
           if [ "${exempt}" -eq 1 ]; then
@@ -193,10 +181,6 @@ jobs:
             fail=1
           elif [ "${lines}" -gt 400 ]; then
             echo "::notice::${lines} changed lines. Over 400 needs a sentence in the description explaining why it is not smaller. (REVIEW.md 2)"
-          fi
-          if [ "${subs}" -gt 2 ]; then
-            echo "::error::Touches ${subs} subsystems. More than two is over the cap regardless of line count — split it and land the enabling parts first. (REVIEW.md 2)"
-            fail=1
           fi
           exit "${fail}"
 

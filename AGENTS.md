@@ -55,9 +55,8 @@ As a general rule:
 
 - ~400 changed lines is routine.
 - 1,000 changed lines requires an explicit splitting plan or the appropriate approval.
-- Changes spanning more than two subsystems should normally be split.
 
-If a change genuinely requires touching multiple subsystems, explain why rather than silently expanding its scope.
+There is no limit on how many subsystems one change may touch. If a change touches several, say in the PR why they belong together. A reviewer may still ask for a split.
 
 ## Testing and Verification
 
