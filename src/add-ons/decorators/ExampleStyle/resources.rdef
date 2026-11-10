@@ -1,0 +1,15 @@
+/*
+ * Copyright 2026, Ian Dumych, idumych@gmail.com.
+ * SPDX-License-Identifier: MIT
+ */
+
+resource("be:decor:info") message('deco') {
+	"name"				= "Example",
+	"authors"			= "Ian Dumych",
+	"short_descr"		= "An example of a decorator style",
+	"long_descr"		= "A title bar across the top of the window over a thin frame, written against DecorStyle.h alone to show how a decorator style is made.",
+	"lic_url"			= "",
+	"lic_name"			= "MIT",
+	"support_url"		= "",
+	float "version"		= 1.0
+};
