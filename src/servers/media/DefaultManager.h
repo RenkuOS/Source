@@ -62,7 +62,8 @@ private:
 
 			// See _FindPhysical().
 			static	int32		_TypeIndex(uint32 defaultType);
-			BMessage*			_SavedDefault(uint32 defaultType) const;
+			bool				_SavedDefault(uint32 defaultType,
+									BMessage* _saved) const;
 
 private:
 			volatile bool 		fMixerConnected;
@@ -80,6 +81,7 @@ private:
 			media_input 		fPhysicalAudioOutFromMixer;
 
 			BList				fMsgList;
+			mutable BLocker		fMsgListLock;
 
 			// Per default type (_TypeIndex()), whether the current
 			// default is only standing in because the saved one was absent at
