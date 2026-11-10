@@ -16,7 +16,7 @@ Please close the BootManager window before closing the Installer window.	Install
 Write boot sector to '%s'	InstallerWindow		Tulis boot-sector ke '%s'
 Boot sector not written because of an internal error.	InstallProgress		Boot sector tidak ditulis karena kesalahan internal.
 Choose the source and destination disk from the pop-up menus. Then click 'Begin'.	InstallerWindow		Pilih disk sumber dan tujuan dari menu munculan. Kemudian tekan 'Mulai'.
-Welcome to the Haiku Installer!\n\n	InstallerApp		Selamat datang di Haiku Installer!\n\n
+Welcome to the RenkuOS Installer!\n\n	InstallerApp		Selamat datang di RenkuOS Installer!\n\n
 ?? of ??	InstallerWindow	Unknown progress	?? of ??
 DriveSetup, the application to configure disk partitions, could not be launched.	InstallerWindow		DriveSetup, aplikasi untuk mengkonfigurasi partisi disk, tidak dapat diluncurkan.
 The target volume is not empty. If it already contains a Haiku installation, it will be overwritten. This will remove all installed software.\n\nIf you want to upgrade your system without removing installed software, see the Haiku User Guide's topic on the application \"SoftwareUpdater\" for update instructions.\n\nAre you sure you want to continue the installation?	InstallProgress		Volume target tidak kosong. Jika sudah berisi instalasi Haiku, ini akan ditimpa. Ini akan menghapus semua perangkat lunak yang diinstal.\n\nJika Anda ingin meningkatkan sistem tanpa menghapus perangkat lunak yang diinstal, lihat topik Panduan Pengguna Haiku pada aplikasi \"SoftwareUpdater\" untuk petunjuk pembaruan.\n\nApakah Anda yakin ingin melanjutkan penginstalan?
@@ -29,16 +29,16 @@ Additional disk space required: 0.0 KiB	InstallerWindow		Ruang diska tambahan ya
 This is beta-quality software! It means there is a risk of losing important data. Make frequent backups! You have been warned.\n\n\n	InstallerApp		Ini adalah perangkat lunak berkualitas beta! Itu berarti ada risiko kehilangan data penting. Sering membuat cadangan! Anda telah diperingatkan.\n\n\n
 ???	InstallerWindow	Unknown currently copied item	???
 Install anyway	InstallProgress		Tetap instal
-1)   If you are installing Haiku onto real hardware (not inside an emulator), you may want to prepare a hard disk partition from another OS (you could, for example, use a GParted Live-CD, which can also resize existing partitions to make room).\nYou can also set up partitions by launching DriveSetup from Installer, but you won't be able to resize existing partitions with it. While DriveSetup has been quite thoroughly tested over the years, it's recommended to have up-to-date backups of the other partitions on your system. Just in case…	InstallerApp		1)   Jika Anda menginstal Haiku ke perangkat keras yang sebenarnya (tidak di dalam emulator),Anda mungkin ingin menyiapkan partisi hard disk dari OS lain (Anda dapat, misalnya, menggunakan GParted Live-CD, yang juga dapat mengubah ukuran partisi yang ada untuk membuat ruang).\nAnda juga dapat mengatur partisi dengan meluncurkan DriveSetup dari Installer, tetapi Anda tidak akan dapat mengubah ukuran partisi yang ada dengannya. Sementara DriveSetup telah diuji secara menyeluruh selama bertahun-tahun,disarankan untuk memiliki cadangan terbaru dari partisi lain di sistem Anda. Untuk berjaga-jaga…
+1)   If you are installing RenkuOS onto real hardware (not inside an emulator), you may want to prepare a hard disk partition from another OS (you could, for example, use a GParted Live-CD, which can also resize existing partitions to make room).\nYou can also set up partitions by launching DriveSetup from Installer, but you won't be able to resize existing partitions with it. While DriveSetup has been quite thoroughly tested over the years, it's recommended to have up-to-date backups of the other partitions on your system. Just in case…	InstallerApp		1)   Jika Anda menginstal RenkuOS ke perangkat keras yang sebenarnya (tidak di dalam emulator),Anda mungkin ingin menyiapkan partisi hard disk dari OS lain (Anda dapat, misalnya, menggunakan GParted Live-CD, yang juga dapat mengubah ukuran partisi yang ada untuk membuat ruang).\nAnda juga dapat mengatur partisi dengan meluncurkan DriveSetup dari Installer, tetapi Anda tidak akan dapat mengubah ukuran partisi yang ada dengannya. Sementara DriveSetup telah diuji secara menyeluruh selama bertahun-tahun,disarankan untuk memiliki cadangan terbaru dari partisi lain di sistem Anda. Untuk berjaga-jaga…
 Hide optional packages	InstallerWindow		Sembunyikan paket opsional
 ???	InstallerWindow	Unknown partition name	???
-Have fun and thanks for trying out Haiku!	InstallerApp		Bersenang-senanglah dan terima kasih telah mencoba Haiku!
+Have fun and thanks for trying out RenkuOS!	InstallerApp		Bersenang-senanglah dan terima kasih telah mencoba RenkuOS!
 Quit	InstallerApp		Keluar
 Quit BootManager and DriveSetup	InstallerWindow		Keluar dari BootManager dan DriveSetup
 Error writing boot sector.	InstallProgress		Ada kesalahan saat menulis sektor boot.
 OK	InstallerWindow		OKE
 Try installing anyway	InstallProgress		Bagaimanapun coba instal
-IMPORTANT INFORMATION BEFORE INSTALLING HAIKU\n\n	InstallerApp		INFORMASI PENTING SEBELUM MENGINSTAL HAIKU\n\n
+IMPORTANT INFORMATION BEFORE INSTALLING RENKUOS\n\n	InstallerApp		INFORMASI PENTING SEBELUM MENGINSTAL RENKUOS\n\n
 Additional disk space required: %s	InstallerWindow		Ruang diska tambahan yang diperlukan: %s
 Stop	InstallerWindow	In alert after pressing Stop	Berhenti
 Boot sector successfully written.	InstallProgress		Boot-sector berhasil ditulis.

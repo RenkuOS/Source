@@ -27,7 +27,7 @@ Boot sector not written because of an internal error.	InstallProgress		内部エ
 Choose the source and destination disk from the pop-up menus. Then click 'Begin'.	InstallerWindow		ポップアップメニューよりインストール元とインストール先ディスクを選んでから'開始'ボタンを押してください。
 Running BootManager and DriveSetup…\n\nClose both applications to continue with the installation.	InstallerWindow		ブートマネージャーとDriveSetupが起動中です…\n\nインストールを続行するために両方のアプリケーションを閉じてください。
 Click on 'Set up partitions…' to create one.	InstallerWindow		'パーティションの設定…' をクリックしてパーティションを作成します。
-Welcome to the Haiku Installer!\n\n	InstallerApp		Haikuインストーラーへようこそ!\n\n
+Welcome to the RenkuOS Installer!\n\n	InstallerApp		RenkuOSインストーラーへようこそ!\n\n
 ?? of ??	InstallerWindow	Unknown progress	?? / ??
 DriveSetup, the application to configure disk partitions, could not be launched.	InstallerWindow		パーティションを設定するDriveSetupアプリケーションが起動できません。
 The target volume is not empty. If it already contains a Haiku installation, it will be overwritten. This will remove all installed software.\n\nIf you want to upgrade your system without removing installed software, see the Haiku User Guide's topic on the application \"SoftwareUpdater\" for update instructions.\n\nAre you sure you want to continue the installation?	InstallProgress		インストール先は空ではありません。そこにHaikuのインストールを含む場合、上書きされてしまいます。すべてのインストール済ソフトウェアを削除するでしょう。\n\nインストール済ソフトウェアを削除せずにシステムをアップグレードしたいなら、アップデート方法に関してHaikuユーザーガイドの\"ソフトウェアの更新(SoftwareUpdater)\"アプリケーションの章を見てください。\n\nそれでもインストールを続行しますか?
@@ -42,21 +42,21 @@ This is beta-quality software! It means there is a risk of losing important data
 ???	InstallerWindow	Unknown currently copied item	???
 Rename	InstallProgress		名前の変更
 Install anyway	InstallProgress		とにかくインストールする
-1)   If you are installing Haiku onto real hardware (not inside an emulator), you may want to prepare a hard disk partition from another OS (you could, for example, use a GParted Live-CD, which can also resize existing partitions to make room).\nYou can also set up partitions by launching DriveSetup from Installer, but you won't be able to resize existing partitions with it. While DriveSetup has been quite thoroughly tested over the years, it's recommended to have up-to-date backups of the other partitions on your system. Just in case…	InstallerApp		1) Haiku を (エミュレータでなく) 実機にインストールする場合は、先に別の OS からハードディスクのパーティションを用意するとよいでしょう (たとえば、GParted LiveCD が使えます。それは、既存のパーティションをリサイズして空き容量を作成することもできます)。\nまた、インストーラーから DriveSetup を呼び出してパーティションを設定できます。しかし、既存のパーティションのリサイズはできません。DriveSetup は、長年に渡って徹底的にテストされていますが、システムの他のパーティションの最新のバックアップを取ることを勧めます。念の為...
+1)   If you are installing RenkuOS onto real hardware (not inside an emulator), you may want to prepare a hard disk partition from another OS (you could, for example, use a GParted Live-CD, which can also resize existing partitions to make room).\nYou can also set up partitions by launching DriveSetup from Installer, but you won't be able to resize existing partitions with it. While DriveSetup has been quite thoroughly tested over the years, it's recommended to have up-to-date backups of the other partitions on your system. Just in case…	InstallerApp		1) RenkuOS を (エミュレータでなく) 実機にインストールする場合は、先に別の OS からハードディスクのパーティションを用意するとよいでしょう (たとえば、GParted LiveCD が使えます。それは、既存のパーティションをリサイズして空き容量を作成することもできます)。\nまた、インストーラーから DriveSetup を呼び出してパーティションを設定できます。しかし、既存のパーティションのリサイズはできません。DriveSetup は、長年に渡って徹底的にテストされていますが、システムの他のパーティションの最新のバックアップを取ることを勧めます。念の為...
 Unknown type	InstallProgress	Partition content type	不明なタイプ
-2)   The Installer will make the Haiku partition itself bootable, but takes no steps to integrate Haiku into an existing boot menu. If you have GRUB already installed, you can add Haiku to it.\nFor details, please consult the guide on booting Haiku on our website at https://www.haiku-os.org/guides/booting.\nOr you can set up a boot menu from Installer's \"Tools\" menu, see the Haiku User Guide's topic on the application \"BootManager\".\n\n\n	InstallerApp		2) インストーラーは、Haiku のパーティションを起動可能にしますが、Haiku を既存のブートメニューに結合する機能はありません。すでに GRUB がインストールされているなら、Haikuを追加できます。\n詳しくは、Haiku ウェブサイトの Haiku の起動に関するガイドを参考にしてください (https://www.haiku-os.org/guides/booting)。\nまたは、インストーラーの \"ツール\" メニューからブートメニューを設定できます。Haikuユーザーガイドの \"ブートマネージャー(BootManager)\" アプリケーションのトピックを見てください。\n\n\n
+2)   The Installer will make the RenkuOS partition itself bootable, but takes no steps to integrate RenkuOS into an existing boot menu. If you have GRUB already installed, you can add RenkuOS to it.\nFor details, please consult the guide on booting RenkuOS on our website at https://www.renkuos.org/.\nOr you can set up a boot menu from Installer's \"Tools\" menu, see the RenkuOS User Guide's topic on the application \"BootManager\".\n\n\n	InstallerApp		2) インストーラーは、RenkuOS のパーティションを起動可能にしますが、RenkuOS を既存のブートメニューに結合する機能はありません。すでに GRUB がインストールされているなら、RenkuOSを追加できます。\n詳しくは、RenkuOS ウェブサイトの RenkuOS の起動に関するガイドを参考にしてください (https://www.renkuos.org/)。\nまたは、インストーラーの \"ツール\" メニューからブートメニューを設定できます。RenkuOSユーザーガイドの \"ブートマネージャー(BootManager)\" アプリケーションのトピックを見てください。\n\n\n
 Hide optional packages	InstallerWindow		オプショナルパッケージを隠す
 ???	InstallerWindow	Unknown partition name	???
-Have fun and thanks for trying out Haiku!	InstallerApp		Haikuを試用していただきありがとうございます。Haikuを堪能してください!
+Have fun and thanks for trying out RenkuOS!	InstallerApp		RenkuOSを試用していただきありがとうございます。RenkuOSを堪能してください!
 Failed to copy EFI loader to selected partition!	InstallProgress		EFIローダーの選択されたパーティションへのインストールが失敗しました!
 Quit	InstallerApp		終了
 Quit BootManager and DriveSetup	InstallerWindow		ブートマネージャーとDriveSetupを終了します。
 Error writing boot sector.	InstallProgress		ブートセクターの書き込みに失敗しました。
 OK	InstallerWindow		OK
 Failed to find EFI loader file!	InstallProgress		EFIローダーファイルを見つけられませんでした!
-3)   When you successfully boot into Haiku for the first time, make sure to read our \"User Guide\" and take the \"Quick Tour\". There are links on the Desktop and in WebPositive's bookmarks.\n\n	InstallerApp		3) Haiku のブートに成功したら、忘れずに \"Userguide\" を読んで、\"Quick Tour\" を手に取ってください。 これらはデスクトップ上のリンクおよび WebPositive のブックマーク中にあります。\n\n
+3)   When you successfully boot into RenkuOS for the first time, make sure to read our \"User Guide\" and take the \"Quick Tour\". There are links on the Desktop and in WebPositive's bookmarks.\n\n	InstallerApp		3) RenkuOS のブートに成功したら、忘れずに \"Userguide\" を読んで、\"Quick Tour\" を手に取ってください。 これらはデスクトップ上のリンクおよび WebPositive のブックマーク中にあります。\n\n
 Try installing anyway	InstallProgress		それでもインストールを試みる
-IMPORTANT INFORMATION BEFORE INSTALLING HAIKU\n\n	InstallerApp		Haikuをインストールする前の注意\n\n
+IMPORTANT INFORMATION BEFORE INSTALLING RENKUOS\n\n	InstallerApp		RenkuOSをインストールする前の注意\n\n
 Additional disk space required: %s	InstallerWindow		必要な追加ディスク容量: %s
 Stop	InstallerWindow	In alert after pressing Stop	中断
 Boot sector successfully written.	InstallProgress		ブートセクターの書き込みに成功しました。

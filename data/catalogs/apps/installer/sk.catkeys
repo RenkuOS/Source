@@ -12,7 +12,7 @@ README	InstallerApp		README
 Quit	InstallerWindow		Ukončiť
 Write boot sector to '%s'	InstallerWindow		Zapísať zavádzací sektor na „%s“
 Boot sector not written because of an internal error.	InstallProgress		Zavádzací sektor nebol zapísaný z dôvodu vnútornej chyby.
-Welcome to the Haiku Installer!\n\n	InstallerApp		Vitajte v Inštalátore Haiku!\n\n
+Welcome to the RenkuOS Installer!\n\n	InstallerApp		Vitajte v Inštalátore RenkuOS!\n\n
 ?? of ??	InstallerWindow	Unknown progress	?? z ??
 DriveSetup, the application to configure disk partitions, could not be launched.	InstallerWindow		Nastavenie diskových oblastí, aplikáciu na konfiguráciu diskových oblastí, nebolo možné spustiť.
 Quit DriveSetup	InstallerWindow		Ukončiť Nastavenie diskových oblastí
@@ -26,7 +26,7 @@ Hide optional packages	InstallerWindow		Skryť voliteľné balíky
 Quit	InstallerApp		Ukončiť
 OK	InstallerWindow		OK
 Try installing anyway	InstallProgress		Skúsiť inštalovať napriek tomu
-IMPORTANT INFORMATION BEFORE INSTALLING HAIKU\n\n	InstallerApp		DÔLEŽITÉ INFORMÁCIE PRED INŠTALÁCIOU HAIKU\n\n
+IMPORTANT INFORMATION BEFORE INSTALLING RENKUOS\n\n	InstallerApp		DÔLEŽITÉ INFORMÁCIE PRED INŠTALÁCIOU RENKUOS\n\n
 Additional disk space required: %s	InstallerWindow		Je potrebných ešte %s miesta.
 Stop	InstallerWindow	In alert after pressing Stop	Zastaviť
 Boot sector successfully written.	InstallProgress		Zavádzací sektor úspešne zapísaný.

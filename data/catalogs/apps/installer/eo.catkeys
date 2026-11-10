@@ -13,7 +13,7 @@ README	InstallerApp		LEGU_MIN
 Quit	InstallerWindow		Ĉesi
 Write boot sector to '%s'	InstallerWindow		Skribi la startsektoron al '%s'
 Boot sector not written because of an internal error.	InstallProgress		Praŝarga sektoro ne estis skribita pro interna eraro.
-Welcome to the Haiku Installer!\n\n	InstallerApp		Bonvenon ĉe la Haiku Instalilo!\n\n
+Welcome to the RenkuOS Installer!\n\n	InstallerApp		Bonvenon ĉe la RenkuOS Instalilo!\n\n
 ?? of ??	InstallerWindow	Unknown progress	?? de ??
 DriveSetup, the application to configure disk partitions, could not be launched.	InstallerWindow		Diskagordilo, la programo por agordi subdiskojn, ne povas esti rulita.
 The target volume is not empty. If it already contains a Haiku installation, it will be overwritten. This will remove all installed software.\n\nIf you want to upgrade your system without removing installed software, see the Haiku User Guide's topic on the application \"SoftwareUpdater\" for update instructions.\n\nAre you sure you want to continue the installation?	InstallProgress		La alcelata subdisko ne estas malplena. Se Hakiu jam estas instalita, ĝi estos anstataŭigota. Ĉiu programaroj en ĉi tiu instalado estos forigotaj.\n\nSe vi volas ĝisdatigi vian sistemon sen forigi instalitaj programaroj, kontrolu la Haiku manlibro por uzantoj, la temo pri la programaro \"Ĝisdatigilo\" por instrukcioj pri ĝisdatigo.\n\nĈu vi certas ke vi volas daŭri la instaladon?
@@ -26,16 +26,16 @@ Additional disk space required: 0.0 KiB	InstallerWindow		Ekstra bezonata diskosp
 This is beta-quality software! It means there is a risk of losing important data. Make frequent backups! You have been warned.\n\n\n	InstallerApp		Ĉi tio estas beta-kvalita programaro! Tio intencas, ke estas hazardo de perdi gravan datumon. Faru oftajn savkopiojn! Vi estis avertita.\n\n\n
 ???	InstallerWindow	Unknown currently copied item	???
 Install anyway	InstallProgress		Instali senkondiĉe
-1)   If you are installing Haiku onto real hardware (not inside an emulator), you may want to prepare a hard disk partition from another OS (you could, for example, use a GParted Live-CD, which can also resize existing partitions to make room).\nYou can also set up partitions by launching DriveSetup from Installer, but you won't be able to resize existing partitions with it. While DriveSetup has been quite thoroughly tested over the years, it's recommended to have up-to-date backups of the other partitions on your system. Just in case…	InstallerApp		1)   Se vi instalas Haiku-on per efektiva aparataro (ne en imitilo), vi eble volus fari subdiskon per alia operaciumo (vi povus, ekzemple, uzi GParted-an aŭtonoman KD-on, kiu ankaŭ povas ŝanĝi la grandecon de jamaj subdiskoj por malokupi diskospacon).\nVi ankaŭ povas agordi subdiskojn per ruli DiskAgordilon el la Instalilo, sed vi ne povos ŝanĝi la grandecon de jamaj subdiskoj per ĝi. Kvankam DiskAgordilo estis ĝisfunde provita tra multaj jaroj, estas rekomendita havi aktualajn savkopiojn de la aliaj subdiskoj en via sistemo. Nur por sekureco…
+1)   If you are installing RenkuOS onto real hardware (not inside an emulator), you may want to prepare a hard disk partition from another OS (you could, for example, use a GParted Live-CD, which can also resize existing partitions to make room).\nYou can also set up partitions by launching DriveSetup from Installer, but you won't be able to resize existing partitions with it. While DriveSetup has been quite thoroughly tested over the years, it's recommended to have up-to-date backups of the other partitions on your system. Just in case…	InstallerApp		1)   Se vi instalas RenkuOS-on per efektiva aparataro (ne en imitilo), vi eble volus fari subdiskon per alia operaciumo (vi povus, ekzemple, uzi GParted-an aŭtonoman KD-on, kiu ankaŭ povas ŝanĝi la grandecon de jamaj subdiskoj por malokupi diskospacon).\nVi ankaŭ povas agordi subdiskojn per ruli DiskAgordilon el la Instalilo, sed vi ne povos ŝanĝi la grandecon de jamaj subdiskoj per ĝi. Kvankam DiskAgordilo estis ĝisfunde provita tra multaj jaroj, estas rekomendita havi aktualajn savkopiojn de la aliaj subdiskoj en via sistemo. Nur por sekureco…
 Hide optional packages	InstallerWindow		Kaŝi malneprajn pakaĵojn
 ???	InstallerWindow	Unknown partition name	???
-Have fun and thanks for trying out Haiku!	InstallerApp		Amuziĝu, kaj dankon pro provi Haiku-on!
+Have fun and thanks for trying out RenkuOS!	InstallerApp		Amuziĝu, kaj dankon pro provi RenkuOS-on!
 Quit	InstallerApp		Ĉesi
 Error writing boot sector.	InstallProgress		Eraro okazis dum skribado de praŝarga sektoro.
 OK	InstallerWindow		Bone
-3)   When you successfully boot into Haiku for the first time, make sure to read our \"User Guide\" and take the \"Quick Tour\". There are links on the Desktop and in WebPositive's bookmarks.\n\n	InstallerApp		3)   Kiam Haiku sukcese praŝargos unuafoje, bonvole legu nian \"Manlibron por uzantoj\" kaj vidu la \"Enkonduka Travizito\". Ili troviĝas kiel ligiloj sur la Labortablo kaj en la legosignoj de Retprospero.\n\n
+3)   When you successfully boot into RenkuOS for the first time, make sure to read our \"User Guide\" and take the \"Quick Tour\". There are links on the Desktop and in WebPositive's bookmarks.\n\n	InstallerApp		3)   Kiam RenkuOS sukcese praŝargos unuafoje, bonvole legu nian \"Manlibron por uzantoj\" kaj vidu la \"Enkonduka Travizito\". Ili troviĝas kiel ligiloj sur la Labortablo kaj en la legosignoj de Retprospero.\n\n
 Try installing anyway	InstallProgress		Provi instali ĉiuokaze
-IMPORTANT INFORMATION BEFORE INSTALLING HAIKU\n\n	InstallerApp		GRAVA INFORMO ANTAŬ VI INSTALAS HAIKU-ON\n\n
+IMPORTANT INFORMATION BEFORE INSTALLING RENKUOS\n\n	InstallerApp		GRAVA INFORMO ANTAŬ VI INSTALAS RENKUOS-ON\n\n
 Additional disk space required: %s	InstallerWindow		Ekstra bezonata diskospaco: %s
 Stop	InstallerWindow	In alert after pressing Stop	Halti
 Boot sector successfully written.	InstallProgress		La skribado de la startsektoron sukcesis.

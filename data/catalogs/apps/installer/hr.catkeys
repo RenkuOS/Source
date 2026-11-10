@@ -7,7 +7,7 @@ Are you sure you want to to stop the installation?	InstallerWindow		Jeste li sig
 Installer	System name		Instalacijski program
 Quit	InstallerWindow		Isključi
 Write boot sector to '%s'	InstallerWindow		Zapišite boot sektor na '%s'
-Welcome to the Haiku Installer!\n\n	InstallerApp		Dobrodošli u Haiku instaler!\n\n
+Welcome to the RenkuOS Installer!\n\n	InstallerApp		Dobrodošli u RenkuOS instaler!\n\n
 ?? of ??	InstallerWindow	Unknown progress	?? od ??
 Write boot sector	InstallerWindow		Zapiši boot sektor
 %1ld of %2ld	InstallerWindow	number of files copied	%1ld od %2ld
@@ -18,11 +18,11 @@ This is beta-quality software! It means there is a risk of losing important data
 ???	InstallerWindow	Unknown currently copied item	???
 Hide optional packages	InstallerWindow		Sakrij neobavezne pakete.
 ???	InstallerWindow	Unknown partition name	???
-Have fun and thanks for trying out Haiku!	InstallerApp		Uživajte i hvala Vam što isprobavate Haiku!
+Have fun and thanks for trying out RenkuOS!	InstallerApp		Uživajte i hvala Vam što isprobavate RenkuOS!
 Quit	InstallerApp		Isključi
 OK	InstallerWindow		Uredu
 Try installing anyway	InstallProgress		Ipak pokušaj instalirati
-IMPORTANT INFORMATION BEFORE INSTALLING HAIKU\n\n	InstallerApp		VAŽNA INFORMACIJA PRIJE HAIKU INSTALACIJE\n\n
+IMPORTANT INFORMATION BEFORE INSTALLING RENKUOS\n\n	InstallerApp		VAŽNA INFORMACIJA PRIJE RENKUOS INSTALACIJE\n\n
 Additional disk space required: %s	InstallerWindow		Potreban dodatni prostor na disku: %s
 Stop	InstallerWindow	In alert after pressing Stop	Stop
 Boot sector successfully written.	InstallProgress		Boot sektor je uspješno zapisan.
