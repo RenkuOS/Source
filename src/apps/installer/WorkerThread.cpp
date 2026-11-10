@@ -588,10 +588,10 @@ WorkerThread::_PerformInstall(partition_id sourcePartitionID,
 
 	if (entries != 0) {
 		BAlert* alert = new BAlert("", B_TRANSLATE("The target volume is not "
-			"empty. If it already contains a Haiku installation, it will be "
+			"empty. If it already contains a RenkuOS installation, it will be "
 			"overwritten. This will remove all installed software.\n\n"
 			"If you want to upgrade your system without removing installed "
-			"software, see the Haiku User Guide's topic on the application "
+			"software, see the RenkuOS User Guide's topic on the application "
 			"\"SoftwareUpdater\" for update instructions.\n\n"
 			"Are you sure you want to continue the installation?"),
 			B_TRANSLATE("Install anyway"), B_TRANSLATE("Cancel"), 0,

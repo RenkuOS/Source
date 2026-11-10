@@ -1931,7 +1931,7 @@ MainWindow::_CreateBootLayout(BDiskDevice* disk)
 	// Two passes over the same two partitions: create them, then format
 	// them. A partition cannot be given a file system before it exists.
 	const char* types[2] = { kEfiPartitionType, kPartitionTypeBFS };
-	const char* names[2] = { "EFI", "Haiku" };
+	const char* names[2] = { "EFI", "RenkuOS" };
 
 	for (int32 pass = 0; pass < 2; pass++) {
 		off_t wanted = pass == 0 ? kEfiPartitionSize : -1;
@@ -2034,7 +2034,7 @@ MainWindow::_CreateBootLayout(BDiskDevice* disk)
 			name = "EFI";
 		} else if (strcmp(child->Type(), kPartitionTypeBFS) == 0) {
 			diskSystem = kPartitionTypeBFS;
-			name = "Haiku";
+			name = "RenkuOS";
 		} else
 			continue;
 

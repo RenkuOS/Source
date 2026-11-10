@@ -120,7 +120,7 @@ InitializeBFSEditor::GetParameters(BString& parameters)
 void
 InitializeBFSEditor::_CreateViewControls()
 {
-	fNameControl = new BTextControl(B_TRANSLATE("Name:"), "Haiku", NULL);
+	fNameControl = new BTextControl(B_TRANSLATE("Name:"), "RenkuOS", NULL);
 	fNameControl->SetModificationMessage(new BMessage(MSG_NAME_CHANGED));
 	fNameControl->TextView()->SetMaxBytes(31);
 
