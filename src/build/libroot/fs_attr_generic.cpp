@@ -65,10 +65,15 @@ init_attribute_dir_base_dir()
 			initError = B_FILE_ERROR;
 		}
 
-	} else {
-		// doesn't exist yet: create it
-		if (mkdir(sAttributeDirBasePath, S_IRWXU | S_IRWXG | S_IRWXO) < 0)
-			initError = errno;
+	} else if (mkdir(sAttributeDirBasePath, S_IRWXU | S_IRWXG | S_IRWXO) < 0) {
+		// doesn't exist yet and creating it failed -- another build process
+		// may have created it at the same time, which is fine as long as it
+		// is a directory
+		initError = errno;
+		if (initError == EEXIST) {
+			initError = lstat(sAttributeDirBasePath, &st) == 0
+				&& S_ISDIR(st.st_mode) ? B_OK : B_FILE_ERROR;
+		}
 	}
 
 	initialized = true;
@@ -306,9 +311,14 @@ ensure_attribute_dir_exists(NodeRef ref, const char *path, int fd)
 		return B_OK;
 	}
 
-	// doesn't exist yet: create it
-	if (mkdir(attrDirPath.c_str(), S_IRWXU | S_IRWXG | S_IRWXO) < 0)
-		return errno;
+	// doesn't exist yet: create it -- another build process may create it at
+	// the same time, which is fine as long as it is a directory
+	if (mkdir(attrDirPath.c_str(), S_IRWXU | S_IRWXG | S_IRWXO) < 0) {
+		if (errno != EEXIST)
+			return errno;
+		if (lstat(attrDirPath.c_str(), &st) != 0 || !S_ISDIR(st.st_mode))
+			return B_FILE_ERROR;
+	}
 
 	return B_OK;
 }
@@ -339,10 +349,8 @@ get_attribute_path(NodeRef ref, const char *path, int fd,
 
 	// make sure the attribute dir for the node exits
 	status_t error = ensure_attribute_dir_exists(ref, path, fd);
-	if (error != B_OK) {
-		errno = error;
-		return -1;
-	}
+	if (error != B_OK)
+		return error;
 
 	// construct the attribute path
 	attrPath = get_attribute_dir_path(ref, path, fd) + '/';
