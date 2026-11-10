@@ -4,4 +4,5 @@ Update this file to specify if you want to appear as a Contributor in the about 
 |----|----|
 |KevinAdams05|Kevin Adams|
 |shaka444|Jimmy Shaka|
+|12akakor|Michiel van Dijk|
 
