@@ -569,6 +569,13 @@ BPackageManager::Update(const BSolverPackageSpecifierList& packages)
 void
 BPackageManager::FullSync()
 {
+	FullSync(false);
+}
+
+
+void
+BPackageManager::FullSync(bool reinstall)
+{
 	Init(B_ADD_INSTALLED_REPOSITORIES | B_ADD_REMOTE_REPOSITORIES
 		| B_REFRESH_REPOSITORIES);
 
@@ -584,6 +591,8 @@ BPackageManager::FullSync()
 
 	// install/uninstall packages
 	_AnalyzeResult();
+	if (reinstall)
+		_AddReinstalls();
 	_ConfirmChanges();
 	_ApplyPackageChanges();
 	_UpdateAutoInstalledPackages(BStringList(), installedPackages);
@@ -787,6 +796,53 @@ BPackageManager::_AnalyzeResult()
 
 
 void
+BPackageManager::_AddReinstalls()
+{
+	// Replace every installed package the result keeps with a fresh copy of
+	// the very same version from a repository, so that damaged package files
+	// are mended. Packages no repository has are left as they are.
+	InstalledRepository& installationRepository = InstallationRepository();
+	PackageList& packagesToActivate
+		= installationRepository.PackagesToActivate();
+	PackageList& packagesToDeactivate
+		= installationRepository.PackagesToDeactivate();
+
+	for (int32 i = 0;
+			BSolverPackage* installed = installationRepository.PackageAt(i);
+			i++) {
+		if (packagesToDeactivate.HasItem(installed))
+			continue;
+
+		const BPackageInfo& info = installed->Info();
+		BSolverPackage* fresh = NULL;
+		for (int32 j = 0;
+				RemoteRepository* repository = fOtherRepositories.ItemAt(j);
+				j++) {
+			for (int32 k = 0;
+					BSolverPackage* package = repository->PackageAt(k); k++) {
+				const BPackageInfo& otherInfo = package->Info();
+				if (otherInfo.Name() == info.Name()
+					&& otherInfo.Architecture() == info.Architecture()
+					&& otherInfo.Version().Compare(info.Version()) == 0) {
+					fresh = package;
+					break;
+				}
+			}
+			if (fresh != NULL)
+				break;
+		}
+		if (fresh == NULL)
+			continue;
+
+		if (!packagesToActivate.AddItem(fresh)
+			|| !packagesToDeactivate.AddItem(installed)) {
+			throw std::bad_alloc();
+		}
+	}
+}
+
+
+void
 BPackageManager::_ConfirmChanges(bool fromMostSpecific)
 {
 	// check, if there are any changes at all
@@ -868,12 +924,13 @@ BPackageManager::_PreparePackageChanges(
 			bool reusingDownload = false;
 
 			// Check for matching files in already existing transaction
-			// directories
+			// directories. Not in old state directories: a reinstall would
+			// find the very package file it replaces there.
 			BPath path(&transaction->TransactionDirectory());
 			BPath parent;
 			if (path.GetParent(&parent) == B_OK) {
 				BString globPath = parent.Path();
-				globPath << "/*/" << fileName;
+				globPath << "/transaction-*/" << fileName;
 				glob_t globbuf;
 				if (glob(globPath.String(), GLOB_NOSORT, NULL, &globbuf) == 0) {
 					off_t bestSize = 0;
