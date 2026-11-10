@@ -606,20 +606,21 @@ synaptics_guest_standard_fallback(ps2_dev *dev)
 
 
 bool
-synaptics_hot_plug_is_pt_payload(ps2_dev *dev)
+synaptics_hot_plug_is_packet_data(ps2_dev *dev)
 {
-	// An aa, 00 byte pair on the pad can be the payload of a pass-through
-	// packet carrying the guest's self-test announce, not a reset announce
-	// of the pad itself. It is payload only when the aa sits at position 1
-	// of a pass-through packet and the 00 is about to be stored at
-	// position 2; a genuine pad reset announce elsewhere mid-packet still
-	// triggers the hot-plug recovery.
+	// An aa, 00 byte pair is a reset announce of the pad only if the aa
+	// started a new packet. Bytes 2, 3, 5 and 6 of an absolute packet can
+	// hold any value: aa, 00 there is ordinary data (for example the low X
+	// and Y bytes), or the payload of a pass-through packet carrying the
+	// guest's self-test announce. An aa that starts a packet fails the sync
+	// check in synaptics_handle_int() (bit 3 set), which leaves the packet
+	// index at 0, as does an aa at byte 4 (bits 7:6 not 11). A partial
+	// packet followed by a pause is dropped there too, so an announce after
+	// the pad reset in the middle of a packet still counts.
 	if (dev->handle_int != &synaptics_handle_int || dev->cookie == NULL)
 		return false;
 	synaptics_cookie *cookie = (synaptics_cookie*)dev->cookie;
-	return cookie->packet_index == 2
-		&& (cookie->buffer[0] & 0xFC) == 0x84
-		&& cookie->buffer[1] == PS2_CMD_TEST_PASSED;
+	return cookie->packet_index != 0;
 }
 
 
@@ -1074,6 +1075,19 @@ synaptics_handle_int(ps2_dev *dev)
 	uint8 val;
 
 	val = cookie->dev->history[0].data;
+
+	// The bytes of one packet follow each other within a few milliseconds.
+	// After a long pause, a partial packet will not be completed (the pad
+	// reset, or bytes were lost): start over.
+	bigtime_t time = cookie->dev->history[0].time;
+	if (cookie->packet_index != 0
+		&& time - cookie->last_byte_time > SYN_PACKET_TIMEOUT) {
+		INFO("SYNAPTICS: dropping %" B_PRIuSIZE " byte partial packet after %"
+			B_PRIdBIGTIME " us\n", cookie->packet_index,
+			time - cookie->last_byte_time);
+		cookie->packet_index = 0;
+	}
+	cookie->last_byte_time = time;
 
 	if ((cookie->packet_index == 0 || cookie->packet_index == 3) && (val & 8) != 0) {
 		INFO("SYNAPTICS: bad mouse data %#02x, trying resync\n", val);

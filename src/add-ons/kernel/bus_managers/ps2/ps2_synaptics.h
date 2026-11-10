@@ -38,6 +38,9 @@
 // Synaptics Passthrough port
 #define SYN_CHANGE_MODE			0x14
 #define SYN_PASSTHROUGH_CMD		0x28
+// Longest pause between the bytes of one packet before a partial packet
+// is dropped (Linux psmouse uses half a second as well)
+#define SYN_PACKET_TIMEOUT		500000
 
 
 #define SYNAPTICS_HISTORY_SIZE	256
@@ -57,12 +60,13 @@ struct packet_buffer*	synaptics_ring_buffer;
 	uint8				mode;
 	uint32				buttons;
 		// last reported button state, see get_synaptics_movment()
+	bigtime_t			last_byte_time;
 } synaptics_cookie;
 
 
 void synaptics_guest_detect_failed(ps2_dev *dev);
 void synaptics_guest_standard_fallback(ps2_dev *dev);
-bool synaptics_hot_plug_is_pt_payload(ps2_dev *dev);
+bool synaptics_hot_plug_is_packet_data(ps2_dev *dev);
 status_t synaptics_pass_through_set_packet_size(ps2_dev *dev, uint8 size);
 status_t passthrough_command(ps2_dev *dev, uint8 cmd, const uint8 *out,
 	int out_count, uint8 *in, int in_count, bigtime_t timeout);
