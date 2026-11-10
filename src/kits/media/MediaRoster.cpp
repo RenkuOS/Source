@@ -1419,7 +1419,9 @@ BMediaRoster::StartTimeSource(const media_node& node, bigtime_t atRealTime)
 	TRACE("BMediaRoster::StartTimeSource, node %" B_PRId32 ", at real %"
 		B_PRId64 "\n", node.node, atRealTime);
 
-	BTimeSource::time_source_op_info msg;
+	// All of it set: the performance time is not given, and a clock that
+	// took it as its start began anywhere (days ahead of the others).
+	BTimeSource::time_source_op_info msg = {};
 	msg.op = BTimeSource::B_TIMESOURCE_START;
 	msg.real_time = atRealTime;
 
@@ -1456,7 +1458,7 @@ BMediaRoster::StopTimeSource(const media_node& node, bigtime_t atRealTime,
 	TRACE("BMediaRoster::StopTimeSource, node %" B_PRId32 ", at real %" B_PRId64
 		" %s\n", node.node, atRealTime, immediate ? "NOW" : "");
 
-	BTimeSource::time_source_op_info msg;
+	BTimeSource::time_source_op_info msg = {};
 	msg.op = immediate ? BTimeSource::B_TIMESOURCE_STOP_IMMEDIATELY
 		: BTimeSource::B_TIMESOURCE_STOP;
 	msg.real_time = atRealTime;
