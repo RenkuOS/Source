@@ -393,7 +393,7 @@ get_attribute_path(int fd, const char *attribute, string &attrPath,
 	if (get_descriptor(fd)) {
 		// This is a virtual file descriptor -- we have a special function
 		// for handling it.
-		return  get_attribute_path_virtual_fd(fd, attribute, attrPath,
+		return get_attribute_path_virtual_fd(fd, attribute, attrPath,
 			typePath);
 	} else {
 		// This is a real (i.e. system) file descriptor -- fstat() it and
