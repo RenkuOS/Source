@@ -596,10 +596,22 @@ init_bus(device_node* node, void** bus_cookie)
 		bus->base_addr, bus->map_size, B_ANY_KERNEL_ADDRESS,
 		B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA,
 		(void **)&bus->registers);
+	if (bus->registersArea < 0) {
+		ERROR("init_bus() cannot map the registers\n");
+		return bus->registersArea;
+	}
 
 	// init bus
 	uint32 version = read32(bus->registers + PCH_IC_COMP_VERSION);
 	TRACE_ALWAYS("version 0x%" B_PRIx32 "\n", version);
+	if (version == 0xffffffff) {
+		// Nothing decodes this address: the controller is off, hidden, or
+		// the firmware gave a stale address. Do not program it.
+		status = B_DEVICE_NOT_FOUND;
+		ERROR("init_bus() no controller at 0x%" B_PRIxPHYSADDR "\n",
+			bus->base_addr);
+		goto err;
+	}
 
 	if (bus->version >= PCH_SKYLAKE) {
 		bus->capabilities = read32(bus->registers + PCH_SUP_CAPABLITIES);

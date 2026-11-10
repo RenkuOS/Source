@@ -191,6 +191,30 @@ remove_region_handler(void* cookie)
 }
 
 
+// Whether the firmware reports the controller as present and enabled.
+// Firmware often keeps the ACPI mode controller nodes in the namespace while
+// the controllers run in PCI mode, where the PCI variant of this driver
+// handles them. Such nodes should report themselves absent in _STA; their
+// fixed _CRS address decodes to nothing.
+static bool
+pch_i2c_acpi_is_enabled(acpi_device_module_info* acpi, acpi_device device)
+{
+	acpi_object_type object;
+	acpi_data buffer;
+	buffer.pointer = &object;
+	buffer.length = sizeof(object);
+
+	if (acpi->evaluate_method(device, "_STA", NULL, &buffer) != B_OK
+		|| object.object_type != ACPI_TYPE_INTEGER) {
+		// no _STA: the device is present and enabled (ACPI 6.5, 6.3.7)
+		return true;
+	}
+
+	const uint64 mask = ACPI_STA_DEVICE_PRESENT | ACPI_STA_DEVICE_ENABLED;
+	return (object.integer.integer & mask) == mask;
+}
+
+
 static status_t
 pch_i2c_acpi_set_powerstate(pch_i2c_acpi_sim_info* info, uint8 power)
 {
@@ -302,6 +326,12 @@ init_device(device_node* node, void** device_cookie)
 		}
 
 		gDeviceManager->put_node(acpiParent);
+	}
+
+	if (!pch_i2c_acpi_is_enabled(acpi, device)) {
+		TRACE("skipping disabled I2C controller\n");
+		free(bus);
+		return B_DEVICE_NOT_FOUND;
 	}
 
 	bus->acpi = acpi;
