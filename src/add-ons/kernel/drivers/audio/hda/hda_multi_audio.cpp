@@ -719,7 +719,7 @@ get_mix(hda_audio_group* audioGroup, multi_mix_value_info * mmvi)
 					control->nid, mmvi->values[i].gain, value);
 			}
 
-		} else if ((control->mix_control.flags & B_MIX_MUX_MIXER) != 0) {
+		} else if (control->type == B_MIX_MUX_MIXER) {
 			hda_widget* mixer = hda_audio_group_get_widget(audioGroup,
 				control->nid);
 			mmvi->values[i].mux = 0;
@@ -742,7 +742,7 @@ get_mix(hda_audio_group* audioGroup, multi_mix_value_info * mmvi)
 			}
 			TRACE("get_mix: %" B_PRId32 " mixer: %" B_PRIu32 "\n",
 				control->nid, mmvi->values[i].mux);
-		} else if ((control->mix_control.flags & B_MIX_MUX_SELECTOR) != 0) {
+		} else if (control->type == B_MIX_MUX_SELECTOR) {
 			uint32 verb = MAKE_VERB(audioGroup->codec->addr, control->nid,
 				VID_GET_CONNECTION_SELECT, 0);
 			uint32 resp;
@@ -875,7 +875,7 @@ set_mix(hda_audio_group* audioGroup, multi_mix_value_info * mmvi)
 
 			if (control2)
 				i++;
-		} else if ((control->mix_control.flags & B_MIX_MUX_MIXER) != 0) {
+		} else if (control->type == B_MIX_MUX_MIXER) {
 			TRACE("set_mix: %" B_PRId32 " mixer: %" B_PRIu32 "\n",
 				control->nid, mmvi->values[i].mux);
 			hda_widget *mixer = hda_audio_group_get_widget(audioGroup,
@@ -895,7 +895,7 @@ set_mix(hda_audio_group* audioGroup, multi_mix_value_info * mmvi)
 				!= B_OK)
 				dprintf("hda: Setting mixer %" B_PRId32 " failed on widget %"
 					B_PRIu32 "!\n", mmvi->values[i].mux, control->nid);
-		} else if ((control->mix_control.flags & B_MIX_MUX_SELECTOR) != 0) {
+		} else if (control->type == B_MIX_MUX_SELECTOR) {
 			uint32 verb = MAKE_VERB(audioGroup->codec->addr, control->nid,
 				VID_SET_CONNECTION_SELECT, mmvi->values[i].mux);
 			if (hda_send_verbs(audioGroup->codec, &verb, NULL, 1) != B_OK) {
