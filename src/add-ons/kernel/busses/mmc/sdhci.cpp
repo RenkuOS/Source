@@ -70,11 +70,16 @@ SdhciBus::SdhciBus(struct registers* registers, uint8_t irq, bool poll)
 	fBouncePhysical(0),
 	fTransferModeSelected(false),
 	fDataMode(kDataModePio),
+	fSdioAdmaFailed(false),
+	fLastAdmaError(0),
 	fStopMode(kStopModeSingle),
 	fReference(NULL),
 	fUseDataTransferMode(false),
 	fDataTransferMode(0),
-	fSelectedRca(0)
+	fSelectedRca(0),
+	fCardInterruptHandler(NULL),
+	fCardInterruptCookie(NULL),
+	fCardInterruptLock(B_SPINLOCK_INITIALIZER)
 {
 	const bool haveIrq = irq != 0 && irq != 0xff;
 	if (!haveIrq) {
@@ -280,6 +285,17 @@ SdhciBus::ExecuteCommand(uint8_t command, uint32_t argument, uint32_t* response)
 	// Note that this should normally never happen: the command line is busy
 	// only during command execution, and we don't leave this function with a
 	// command running.
+	// After a command timed out, the controller can keep the inhibit bit set
+	// for a short moment after the reset of the command line. Give it 50ms
+	// before reporting busy: the SDIO probe (CMD5) comes right after CMD8,
+	// which times out on SDIO cards, and was lost that way.
+	if (fRegisters->present_state.CommandInhibit()) {
+		bigtime_t deadline = system_time() + 50000;
+		while (fRegisters->present_state.CommandInhibit()
+			&& system_time() < deadline) {
+			snooze(1000);
+		}
+	}
 	if (fRegisters->present_state.CommandInhibit()) {
 		TRACE_ALWAYS("Command execution impossible, command inhibit\n");
 		return B_BUSY;
@@ -295,6 +311,8 @@ SdhciBus::ExecuteCommand(uint8_t command, uint32_t argument, uint32_t* response)
 			replyType = Command::kNoReplyType;
 			break;
 		case SD_APP_CMD:
+		case SDIO_IO_RW_DIRECT:
+			// R5 has the size and checks of R1
 		case SD_ERASE_WR_BLK_START:
 		case SD_ERASE_WR_BLK_END:
 		case SEND_STATUS:
@@ -312,6 +330,9 @@ SdhciBus::ExecuteCommand(uint8_t command, uint32_t argument, uint32_t* response)
 			break;
 		case MMC_SEND_OP_COND:
 		case SD_SEND_OP_COND: // SD Application command
+		case SDIO_IO_SEND_OP_COND:
+			// R4, the reply to the SDIO command, has the same format as R3:
+			// 48 bits, no CRC and no command index
 			replyType = Command::kR3Type;
 			break;
 
@@ -351,6 +372,7 @@ SdhciBus::ExecuteCommand(uint8_t command, uint32_t argument, uint32_t* response)
 		case SD_WRITE_SINGLE_BLOCK:
 		case SD_WRITE_MULTIPLE_BLOCKS:
 		case MMC_SEND_TUNING_BLOCK:
+		case SDIO_IO_RW_EXTENDED:
 			if (!fUseDataTransferMode) {
 				ERROR("Data command %d sent outside of the data transfer code\n",
 					command);
@@ -735,7 +757,27 @@ SdhciBus::_AbortTransfer(const char* reason)
 	uint32 response = 0;
 	status_t status;
 	bool needStop = true;
-	if (fSelectedRca != 0) {
+	if (fCardType == CARD_TYPE_SDIO) {
+		// The card does not know about an error the host saw (a data CRC
+		// error, for example) and goes on sending the remaining blocks of a
+		// read. A command sent meanwhile is not seen correctly, and the card
+		// and host lose step. Wait until the card let go of DAT[3:0]
+		// (present state bits 23:20) first.
+		const uint32 kDataLevelsMask = 0xF << 20;
+		bigtime_t deadline = system_time() + 5000;
+		while ((fRegisters->present_state.Bits() & kDataLevelsMask)
+				!= kDataLevelsMask && system_time() < deadline) {
+			spin(10);
+		}
+		fRegisters->software_reset.ResetCommandAndDataLines();
+		fRegisters->interrupt_status = kClearableStatusBits;
+
+		// No command to the card: like Linux, only the host lines are
+		// reset. An I/O abort (CCCR 06h) stopped the RTL8723BS in the
+		// middle of a receive request, after which it received nothing
+		// any more.
+		needStop = false;
+	} else if (fSelectedRca != 0) {
 		status = ExecuteCommand(SEND_STATUS, (uint32)fSelectedRca << 16,
 			&response);
 		if (status == B_OK) {
@@ -776,10 +818,17 @@ SdhciBus::_TransferChunk(uint8 command, uint32 argument, uint32 blockCount,
 	phys_addr_t physical, uint8* buffer, bigtime_t timeout)
 {
 	const bool multi = command == SD_READ_MULTIPLE_BLOCKS
-		|| command == SD_WRITE_MULTIPLE_BLOCKS;
+		|| command == SD_WRITE_MULTIPLE_BLOCKS
+		|| (command == SDIO_IO_RW_EXTENDED && blockCount > 1);
 	const size_t length = (size_t)blockCount * blockSize;
 
-	if (blockSize == 0 || blockSize > kBlockSize || (blockSize % 4) != 0
+	// The buffer data port is 32 bits wide. A byte mode CMD53 may move any
+	// size from 1 to 512 bytes: by PIO, the last word is read or written
+	// whole, and the controller moves only blockSize bytes on the bus.
+	const bool partialWord = (blockSize % 4) != 0;
+	if (blockSize == 0 || blockSize > kBlockSize
+		|| (partialWord && (command != SDIO_IO_RW_EXTENDED
+			|| dataMode != kDataModePio))
 		|| blockCount == 0 || blockCount > 0xffff) {
 		return B_BAD_VALUE;
 	}
@@ -873,7 +922,14 @@ SdhciBus::_TransferChunk(uint8 command, uint32 argument, uint32 blockCount,
 		return status;
 	}
 
-	if ((response & kCardStatusErrorBits) != 0)
+	if (command == SDIO_IO_RW_EXTENDED) {
+		// R5: COM_CRC_ERROR, ILLEGAL_COMMAND, ERROR, FUNCTION_NUMBER and
+		// OUT_OF_RANGE in bits 15:8
+		if ((response & 0xCB00) != 0) {
+			ERROR("CMD53 %08" B_PRIx32 " failed, R5 flags %02" B_PRIx32 "\n",
+				argument, (response >> 8) & 0xFF);
+		}
+	} else if ((response & kCardStatusErrorBits) != 0)
 		_LogCardStatus("in response to the data command", response);
 
 	uint32 intStatus = 0;
@@ -881,7 +937,7 @@ SdhciBus::_TransferChunk(uint8 command, uint32 argument, uint32 blockCount,
 	if (dataMode == kDataModePio) {
 		const uint32 readyBit = isWrite
 			? SDHCI_INT_BUF_WRITE_READY : SDHCI_INT_BUF_READ_READY;
-		const uint32 wordCount = blockSize / 4;
+		const uint32 wordCount = (blockSize + 3) / 4;
 		uint32 words[kBlockSize / 4];
 
 		// Present state: buffer write enable (bit 10), buffer read enable
@@ -889,8 +945,16 @@ SdhciBus::_TransferChunk(uint8 command, uint32 argument, uint32 blockCount,
 		// cannot be lost by a status acknowledge, so check both.
 		const uint32 bufferEnableBit = isWrite ? (1 << 10) : (1 << 11);
 
+		// A multi-block CMD53 by PIO (after an ADMA error) is read as fast as
+		// the blocks come: a reader that comes late lets the controller stop
+		// SDCLK between the blocks, which the RTL8723BS answered with data
+		// CRC and end bit errors. Spin up to 2ms per block.
+		const bool spinForBlocks = command == SDIO_IO_RW_EXTENDED
+			&& blockCount > 1;
+
 		for (uint32 block = 0; block < blockCount; block++) {
 			bigtime_t deadline = system_time() + timeout;
+			bigtime_t spinUntil = spinForBlocks ? system_time() + 2000 : 0;
 			bigtime_t delay = 5;
 			while (true) {
 				uint32 live = fRegisters->interrupt_status;
@@ -903,9 +967,14 @@ SdhciBus::_TransferChunk(uint8 command, uint32 argument, uint32 blockCount,
 				if ((live & readyBit) != 0
 					|| (fRegisters->present_state.Bits() & bufferEnableBit) != 0)
 					break;
-				if (system_time() >= deadline) {
+				bigtime_t now = system_time();
+				if (now >= deadline) {
 					status = B_TIMED_OUT;
 					break;
+				}
+				if (now < spinUntil) {
+					spin(1);
+					continue;
 				}
 				snooze(delay);
 				if (delay < 1000)
@@ -919,7 +988,10 @@ SdhciBus::_TransferChunk(uint8 command, uint32 argument, uint32 blockCount,
 			size_t offset = (size_t)block * blockSize;
 			if (isWrite) {
 				if (buffer != NULL)
+				{
+					words[wordCount - 1] = 0;
 					memcpy(words, buffer + offset, blockSize);
+				}
 				else
 					vm_memcpy_from_physical(words, physical + offset, blockSize,
 						false);
@@ -999,6 +1071,10 @@ SdhciBus::_TransferChunk(uint8 command, uint32 argument, uint32 blockCount,
 			}
 		}
 	}
+
+	fLastAdmaError = 0;
+	if (status != B_OK && (intStatus & SDHCI_INT_ADMA_ERROR) != 0)
+		fLastAdmaError = fRegisters->adma_error_status | 0x100;
 
 	if (status != B_OK) {
 		ERROR("transfer failed: command %u, argument %" B_PRIx32 ", %" B_PRIu32
@@ -1540,6 +1616,74 @@ SdhciBus::ReadData(uint8_t command, uint32_t argument, void* buffer,
 }
 
 
+/*!	Executes an SDIO CMD53 with its data phase, through the bounce buffer:
+	by ADMA2 for more than one block, by PIO otherwise. The transfer mode
+	self test, which reads blocks of a memory card, is not used for SDIO.
+*/
+status_t
+SdhciBus::TransferIO(uint32 argument, bool isWrite, void* buffer,
+	uint32 blockCount, uint32 blockSize)
+{
+	const size_t length = (size_t)blockCount * blockSize;
+	if (buffer == NULL || length == 0 || length > B_PAGE_SIZE)
+		return B_BAD_VALUE;
+
+	if (isWrite)
+		memcpy(fBounceBuffer, buffer, length);
+
+	// Multi-block transfers use ADMA2 as on Linux, so that the controller
+	// never has to stop SDCLK between blocks for a late PIO reader. After
+	// an ADMA error, PIO is used for the rest of the session.
+	int dataMode = kDataModePio;
+	if (blockCount > 1 && !fSdioAdmaFailed
+		&& fRegisters->capabilities.AdvancedDMA())
+		dataMode = kDataModeAdma2;
+
+	status_t status = _TransferChunk(SDIO_IO_RW_EXTENDED, argument,
+		blockCount, blockSize, isWrite, dataMode, kStopModeSingle,
+		fBouncePhysical, dataMode == kDataModePio ? fBounceBuffer : NULL,
+		kTransferTimeout);
+	if (status != B_OK && dataMode == kDataModeAdma2
+		&& fLastAdmaError != 0) {
+		fSdioAdmaFailed = true;
+		ERROR("SDIO: ADMA error %02" B_PRIx32 ", using PIO from now on\n",
+			fLastAdmaError);
+	}
+	if (status != B_OK) {
+		TRACE("CMD53 %08" B_PRIx32 " (%" B_PRIu32 " x %" B_PRIu32 ") failed: "
+			"%s\n", argument, blockCount, blockSize, strerror(status));
+		return status;
+	}
+
+	if (!isWrite)
+		memcpy(buffer, fBounceBuffer, length);
+	return B_OK;
+}
+
+
+void
+SdhciBus::SetCardInterrupt(void (*handler)(void*), void* cookie)
+{
+	// Mask the interrupt before the handler goes away. The interrupt
+	// handler calls it with fCardInterruptLock held, so once the lock was
+	// taken here, it does not run on any CPU and will not be called again.
+	if (handler == NULL) {
+		fRegisters->interrupt_signal_enable &= ~SDHCI_INT_CARD_STATUS;
+		fRegisters->interrupt_status_enable &= ~SDHCI_INT_CARD_STATUS;
+	}
+
+	cpu_status state = disable_interrupts();
+	acquire_spinlock(&fCardInterruptLock);
+	fCardInterruptHandler = handler;
+	fCardInterruptCookie = cookie;
+	release_spinlock(&fCardInterruptLock);
+	restore_interrupts(state);
+
+	if (handler != NULL)
+		EnableInterrupts(SDHCI_INT_CARD_STATUS);
+}
+
+
 void
 SdhciBus::SetScanSemaphore(sem_id sem)
 {
@@ -1715,6 +1859,21 @@ SdhciBus::HandleInterrupt()
 
 		fRegisters->interrupt_status = SDHCI_INT_CARD_INS;
 		TRACE("Card presence interrupt handled\n");
+	}
+
+	// SDIO card interrupt. It is level triggered in the card: mask it until
+	// the function driver has cleared the source and enables it again.
+	if ((intmask & SDHCI_INT_CARD_STATUS) != 0) {
+		fRegisters->interrupt_signal_enable &= ~SDHCI_INT_CARD_STATUS;
+		fRegisters->interrupt_status_enable &= ~SDHCI_INT_CARD_STATUS;
+		// HandleInterrupt() also runs in the poller thread of a controller
+		// without a usable IRQ, with interrupts enabled.
+		cpu_status state = disable_interrupts();
+		acquire_spinlock(&fCardInterruptLock);
+		if (fCardInterruptHandler != NULL)
+			fCardInterruptHandler(fCardInterruptCookie);
+		release_spinlock(&fCardInterruptLock);
+		restore_interrupts(state);
 	}
 
 	// handling command interrupt
@@ -1987,6 +2146,23 @@ set_timing(void* controller, int timing, uint32_t flags)
 {
 	SdhciBus* bus = (SdhciBus*)controller;
 	return bus->SetTiming(timing, flags);
+}
+
+
+status_t
+transfer_io(void* controller, uint32_t argument, bool isWrite, void* buffer,
+	uint32_t blockCount, uint32_t blockSize)
+{
+	SdhciBus* bus = (SdhciBus*)controller;
+	return bus->TransferIO(argument, isWrite, buffer, blockCount, blockSize);
+}
+
+
+void
+set_card_interrupt(void* controller, void (*handler)(void*), void* cookie)
+{
+	SdhciBus* bus = (SdhciBus*)controller;
+	bus->SetCardInterrupt(handler, cookie);
 }
 
 
