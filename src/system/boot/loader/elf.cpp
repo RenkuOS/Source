@@ -616,6 +616,7 @@ ELFLoader<Class>::_ParseDynamicSection(ImageType* image)
 	for (int i = 0; d[i].d_tag != DT_NULL; i++) {
 		switch (d[i].d_tag) {
 			case DT_HASH:
+			case DT_GNU_HASH:
 			case DT_STRTAB:
 				break;
 			case DT_SYMTAB:
@@ -648,7 +649,7 @@ ELFLoader<Class>::_ParseDynamicSection(ImageType* image)
 				break;
 
 			default:
-				continue;
+				break;
 		}
 	}
 

@@ -20,6 +20,7 @@
 #include <boot/net/IP.h>
 #include <boot/net/NetStack.h>
 
+#include "efi/types.h"
 #include "efi_platform.h"
 #include <efi/protocol/simple-network.h>
 #include <efi/protocol/loaded-image.h>
@@ -32,6 +33,8 @@ static efi_guid sLoadedImageProtocolGUID = EFI_LOADED_IMAGE_PROTOCOL_GUID;
 static efi_guid sDevicePathProtocolGUID = EFI_DEVICE_PATH_PROTOCOL_GUID;
 static efi_guid sLoadedImageDevicePathProtocolGUID = EFI_LOADED_IMAGE_DEVICE_PATH_PROTOCOL_GUID;
 #endif
+
+static const bigtime_t kTimeout = 500000LL;
 
 
 //#define TRACE_NETWORK
@@ -154,7 +157,7 @@ EFIEthernetInterface::Init()
 		return B_ERROR;
 	}
 
-	TRACE_ALWAYS("EFI reports network avaiable\n");
+	TRACE_ALWAYS("EFI reports network available\n");
 
 	// Attempt to locate IP address from command line arguments passed by
 	// the bootloader (for example, U-Boot bootargs variable)
@@ -304,16 +307,21 @@ EFIEthernetInterface::Init()
 
 	status = fNetwork->Start(fNetwork);
 
-	if (status != EFI_SUCCESS) {
-		TRACE_ALWAYS("error starting network\n");
+	if (status != EFI_SUCCESS && status != EFI_ALREADY_STARTED) {
+		TRACE_ALWAYS("error starting network: %lx\n", status);
 		return B_ERROR;
 	}
 
 	status = fNetwork->Initialize(fNetwork, 0, 0);
 
 	if (status != EFI_SUCCESS) {
-		TRACE_ALWAYS("error initializing network\n");
-		return B_ERROR;
+		TRACE_ALWAYS("error initializing network: %lx, trying Reset()...\n", status);
+		status = fNetwork->Reset(fNetwork, false);
+		if (status != EFI_SUCCESS) {
+			TRACE_ALWAYS("\nerror resetting network: %lx\n", status);
+			return B_ERROR;
+		}
+		TRACE_ALWAYS("success\n");
 	}
 
 	if (FindMACAddress() != B_OK) {
@@ -351,19 +359,50 @@ EFIEthernetInterface::Send(const void *buffer, size_t size)
 {
 	TRACE("EFIEthernetInterface::Send(%p, %lu)\n", buffer, size);
 
-	if (!buffer)
+	if (buffer == NULL)
 		return B_BAD_VALUE;
 
 	hex_dump(buffer, size);
 
-	efi_status status = fNetwork->Transmit(fNetwork, 0, size,
-		const_cast<void*>(buffer), NULL, NULL, NULL);
+	bigtime_t timeout = system_time() + kTimeout;
+	while (system_time() < timeout) {
+		efi_status status = fNetwork->Transmit(fNetwork, 0, size,
+			const_cast<void*>(buffer), NULL, NULL, NULL);
+		if (status == EFI_SUCCESS) {
+			timeout = -1;
+			break;
+		}
 
-	if (status != EFI_SUCCESS) {
-		TRACE("Send: Result is %lx\n", status);
-		return B_ERROR;
+		if (status != EFI_NOT_READY) {
+			TRACE_ALWAYS("send failed: %lx\n", status);
+			return B_ERROR;
+		}
+
+		spin(1000);
 	}
-	return size;
+	if (timeout != -1)
+		return B_TIMED_OUT;
+
+	// The EFI specification states that the buffer is used directly,
+	// and not copied, so we need to wait for it to be marked transmitted.
+	timeout = system_time() + kTimeout;
+	while (system_time() < timeout) {
+		uint32_t interruptStatus;
+		void* transmittedBuffer;
+		efi_status status = fNetwork->GetStatus(fNetwork,
+			&interruptStatus, &transmittedBuffer);
+		if (status != EFI_SUCCESS) {
+			TRACE_ALWAYS("getting status failed: %lx\n", status);
+			return B_ERROR;
+		}
+
+		if (transmittedBuffer == buffer)
+			return size;
+
+		spin(1000);
+	}
+
+	return B_TIMED_OUT;
 }
 
 
@@ -380,7 +419,7 @@ EFIEthernetInterface::Receive(void *buffer, size_t size)
 		return B_WOULD_BLOCK;
 
 	if (status != EFI_SUCCESS) {
-		TRACE("EFIEthernetInterface::Receive(%p, %lu): %ld\n", buffer, size, status);
+		TRACE_ALWAYS("receive(%p, %lu) failed: %ld\n", buffer, size, status);
 		return B_ERROR;
 	}
 
