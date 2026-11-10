@@ -25,6 +25,12 @@ class BView;
 namespace BPrivate {
 
 
+class HaikuControlLook;
+
+
+// Look add-ons are built against this class, so its layout only changes by
+// using the reserved slots and members below: virtual methods are never
+// reordered or removed.
 class BControlLook {
 public:
 								BControlLook();
@@ -446,6 +452,8 @@ protected:
 			BMessage			fBackgroundInfo;
 
 			uint32				_reserved[20];
+
+	friend class HaikuControlLook;
 };
 
 extern BControlLook* be_control_look;
@@ -454,6 +462,12 @@ extern "C" _EXPORT BControlLook *instantiate_control_look(image_id id);
 
 
 } // namespace BPrivate
+
+
+// Returns a new default look that a look add-on can wrap, passing itself as
+// outer; the caller deletes it.
+extern "C" BPrivate::BControlLook* create_default_control_look(
+	BPrivate::BControlLook* outer);
 
 using BPrivate::BControlLook;
 using BPrivate::be_control_look;
