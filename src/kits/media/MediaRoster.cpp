@@ -1419,7 +1419,7 @@ BMediaRoster::StartTimeSource(const media_node& node, bigtime_t atRealTime)
 	TRACE("BMediaRoster::StartTimeSource, node %" B_PRId32 ", at real %"
 		B_PRId64 "\n", node.node, atRealTime);
 
-	BTimeSource::time_source_op_info msg;
+	BTimeSource::time_source_op_info msg = {};
 	msg.op = BTimeSource::B_TIMESOURCE_START;
 	msg.real_time = atRealTime;
 
@@ -1456,7 +1456,7 @@ BMediaRoster::StopTimeSource(const media_node& node, bigtime_t atRealTime,
 	TRACE("BMediaRoster::StopTimeSource, node %" B_PRId32 ", at real %" B_PRId64
 		" %s\n", node.node, atRealTime, immediate ? "NOW" : "");
 
-	BTimeSource::time_source_op_info msg;
+	BTimeSource::time_source_op_info msg = {};
 	msg.op = immediate ? BTimeSource::B_TIMESOURCE_STOP_IMMEDIATELY
 		: BTimeSource::B_TIMESOURCE_STOP;
 	msg.real_time = atRealTime;
@@ -1496,7 +1496,7 @@ BMediaRoster::SeekTimeSource(const media_node& node,
 	TRACE("BMediaRoster::SeekTimeSource, node %" B_PRId32 ", at real %" B_PRId64
 		", to perf %" B_PRId64 "\n", node.node, atRealTime, toPerformanceTime);
 
-	BTimeSource::time_source_op_info msg;
+	BTimeSource::time_source_op_info msg = {};
 	msg.op = BTimeSource::B_TIMESOURCE_SEEK;
 	msg.real_time = atRealTime;
 	msg.performance_time = toPerformanceTime;

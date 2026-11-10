@@ -23,11 +23,18 @@ TimeComputer::TimeComputer()
 }
 
 
+/*!	The performance time starts at the real time, as the node publishes it
+	while its output is stopped. It is started again with every start of
+	the output: from 0, it went back by the time since boot, and what was
+	scheduled in it, or in the clock of the output the mixer came from,
+	waited that long (MediaPlayer stood still when the mixer moved to
+	another output while it played).
+*/
 void
 TimeComputer::Init(float frameRate, bigtime_t realBaseTime)
 {
 	fRealTime = realBaseTime;
-	fPerformanceTime = 0;
+	fPerformanceTime = realBaseTime;
 	fDrift = 1;
 	fResetTimeBase = true;
 	SetFrameRate(frameRate);
