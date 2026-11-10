@@ -645,6 +645,13 @@ extern int nvme_admin_get_log_page(struct nvme_ctrlr *ctrlr,
 extern int nvme_admin_abort_cmd(struct nvme_ctrlr *ctrlr,
 				uint16_t cid, uint16_t sqid);
 
+extern int nvme_admin_passthrough(struct nvme_ctrlr *ctrlr,
+				  const struct nvme_cmd *cmd,
+				  void *buf, uint32_t len,
+				  uint32_t timeout_ms,
+				  struct nvme_cpl *cpl,
+				  bool *buf_busy);
+
 extern int nvme_admin_create_ioq(struct nvme_ctrlr *ctrlr,
 				 struct nvme_qpair *io_que,
 				 enum nvme_io_queue_type io_qtype);

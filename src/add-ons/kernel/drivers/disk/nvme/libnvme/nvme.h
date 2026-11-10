@@ -628,6 +628,41 @@ extern int nvme_ctrlr_set_feature(struct nvme_ctrlr *ctrlr,
 				  uint32_t *attributes);
 
 /**
+ * @brief Execute an admin command built by the caller, with a time limit
+ *
+ * @param ctrlr		Controller handle
+ * @param cmd		The command. Its CID, FUSE, PSDT, metadata pointer,
+ *			and data pointer are ignored and set here.
+ * @param buf		Data buffer, or NULL when len is 0. It must be
+ *			physically contiguous kernel memory.
+ * @param len		Data buffer size in bytes, at most the controller's
+ *			maximum transfer size (see nvme_ctrlr_stat()). The
+ *			caller must make it match what the opcode transfers.
+ * @param timeout_ms	How long to wait for the command, in milliseconds.
+ *			Must not be 0.
+ * @param cpl		Receives the completion queue entry on success
+ * @param buf_busy	Set to true if the controller may still access buf.
+ *			The caller must then never free or reuse it.
+ *
+ * The command is not retried, so cpl holds the drive's own status. If the
+ * command does not complete in time, an Abort is sent and the call waits
+ * a few more seconds for the command's own completion. This function is
+ * thread safe. It holds the controller lock for the whole wait, which
+ * delays other admin commands to this controller.
+ *
+ * @return 0 when the command completed (cpl may still report an error
+ * status), ETIMEDOUT when it did not complete in time, EINVAL for a bad
+ * timeout, buffer, or length, or another errno value when it could not be
+ * submitted.
+ */
+extern int nvme_ctrlr_passthrough_admin(struct nvme_ctrlr *ctrlr,
+					const struct nvme_cmd *cmd,
+					void *buf, uint32_t len,
+					uint32_t timeout_ms,
+					struct nvme_cpl *cpl,
+					bool *buf_busy);
+
+/**
  * @brief Attach the specified namespace to controllers
  *
  * @param ctrlr Controller handle to use for command submission

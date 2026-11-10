@@ -1213,6 +1213,28 @@ int nvme_ctrlr_set_feature(struct nvme_ctrlr *ctrlr,
 }
 
 /*
+ * Execute an admin command built by the caller, with a time limit.
+ */
+int nvme_ctrlr_passthrough_admin(struct nvme_ctrlr *ctrlr,
+				 const struct nvme_cmd *cmd,
+				 void *buf, uint32_t len,
+				 uint32_t timeout_ms,
+				 struct nvme_cpl *cpl,
+				 bool *buf_busy)
+{
+	int ret;
+
+	pthread_mutex_lock(&ctrlr->lock);
+
+	ret = nvme_admin_passthrough(ctrlr, cmd, buf, len, timeout_ms,
+				     cpl, buf_busy);
+
+	pthread_mutex_unlock(&ctrlr->lock);
+
+	return ret;
+}
+
+/*
  * Attach a namespace.
  */
 int nvme_ctrlr_attach_ns(struct nvme_ctrlr *ctrlr, unsigned int nsid,

@@ -428,6 +428,251 @@ int nvme_admin_abort_cmd(struct nvme_ctrlr *ctrlr,
 }
 
 /*
+ * Admin pass-through timing. The NVMe specification leaves command timeouts
+ * to the host, so these are our own choices.
+ */
+#define NVME_PASSTHROUGH_POLL_US	100
+#define NVME_PASSTHROUGH_ABORT_GRACE_MS	5000
+
+/*
+ * Allocate a request whose completion is written to a poll status the
+ * caller allocated, and submit it to the admin queue. Errors are never
+ * retried, so the caller sees the drive's status as it was.
+ */
+static int nvme_admin_submit_polled(struct nvme_ctrlr *ctrlr,
+				    const struct nvme_cmd *cmd,
+				    void *buf, uint32_t len,
+				    struct nvme_completion_poll_status *status,
+				    struct nvme_request **reqp)
+{
+	struct nvme_request *req;
+	int ret;
+
+	if (buf)
+		req = nvme_request_allocate_contig(&ctrlr->adminq, buf, len,
+						   nvme_request_completion_poll_cb,
+						   status);
+	else
+		req = nvme_request_allocate_null(&ctrlr->adminq,
+						 nvme_request_completion_poll_cb,
+						 status);
+	if (!req)
+		return ENOMEM;
+
+	/*
+	 * The data and metadata pointers are ours to set, never the caller's.
+	 * With no buffer they stay zero; with one, the PRP builder fills them.
+	 */
+	memcpy(&req->cmd, cmd, sizeof(req->cmd));
+	req->cmd.fuse = 0;
+	req->cmd.psdt = 0;
+	req->cmd.mptr = 0;
+	memset(&req->cmd.dptr, 0, sizeof(req->cmd.dptr));
+	req->retries = NVME_MAX_RETRY_COUNT;
+	*reqp = req;
+
+	/*
+	 * On failure the request has already been freed, or completed
+	 * with an error status, so nothing refers to the buffer.
+	 */
+	ret = nvme_qpair_submit_request(&ctrlr->adminq, req);
+	if (ret != 0)
+		return ret == ENXIO ? ENXIO : EIO;
+
+	return 0;
+}
+
+/*
+ * Poll the admin queue until both commands have completed (the second
+ * one is optional) or the deadline passes.
+ */
+static bool nvme_admin_wait_until(struct nvme_ctrlr *ctrlr,
+				  struct nvme_completion_poll_status *first,
+				  struct nvme_completion_poll_status *second,
+				  bigtime_t deadline)
+{
+	for (;;) {
+		nvme_qpair_poll(&ctrlr->adminq, 0);
+
+		if (first->done && (second == NULL || second->done))
+			return true;
+
+		if (system_time() >= deadline)
+			return false;
+
+		nvme_usleep(NVME_PASSTHROUGH_POLL_US);
+	}
+}
+
+/*
+ * Execute an admin command for a caller outside libnvme, waiting no
+ * longer than timeout_ms. The caller holds ctrlr->lock.
+ *
+ * When the deadline passes, the command is aborted. An Abort is only a
+ * request, and its own completion says nothing certain about the command
+ * it names: the controller may post that command's completion before the
+ * Abort's, after it, or not abort it at all (NVM Express Base
+ * Specification 2.3, section 5.2.1, PDF pp. 200-201). Only the command's
+ * own completion shows that the controller no longer accesses its buffer,
+ * so that is what we wait for. If it never arrives, *buf_busy is set and
+ * the caller must not free or reuse the buffer.
+ */
+int nvme_admin_passthrough(struct nvme_ctrlr *ctrlr,
+			   const struct nvme_cmd *cmd,
+			   void *buf, uint32_t len,
+			   uint32_t timeout_ms,
+			   struct nvme_cpl *cpl,
+			   bool *buf_busy)
+{
+	struct nvme_qpair *adminq = &ctrlr->adminq;
+	struct nvme_completion_poll_status *status;
+	struct nvme_completion_poll_status *abort_status;
+	struct nvme_request *req, *abort_req, *queued;
+	struct nvme_tracker *tr;
+	struct nvme_cmd abort_cmd;
+	bool submitted = false;
+	bool cancelled = false;
+	bool done;
+	uint16_t cid = 0;
+	bigtime_t deadline;
+	int ret;
+
+	*buf_busy = false;
+
+	if (timeout_ms == 0)
+		return EINVAL;
+
+	/*
+	 * A buffer and its length come together. The length is capped at
+	 * max_xfer_size, which is the smaller of the drive's MDTS and what one
+	 * tracker's PRP list can describe.
+	 */
+	if ((buf == NULL) != (len == 0) || len > ctrlr->max_xfer_size)
+		return EINVAL;
+
+	/*
+	 * Both poll statuses live on the heap: a command that completes
+	 * after we gave up on it still writes its completion there.
+	 */
+	status = calloc(1, sizeof(*status));
+	if (!status)
+		return ENOMEM;
+
+	deadline = system_time() + (bigtime_t)timeout_ms * 1000;
+
+	ret = nvme_admin_submit_polled(ctrlr, cmd, buf, len, status, &req);
+	if (ret != 0) {
+		free(status);
+		return ret;
+	}
+
+	if (nvme_admin_wait_until(ctrlr, status, NULL, deadline)) {
+		memcpy(cpl, &status->cpl, sizeof(*cpl));
+		free(status);
+		return 0;
+	}
+
+	/*
+	 * The deadline passed. If the request holds a tracker, the controller
+	 * has it: note the tracker's command identifier for the Abort. If it
+	 * is still waiting for a free tracker, the controller never saw it,
+	 * so take it back. Completions are only processed under the queue
+	 * lock, so the request cannot finish while we look.
+	 */
+	pthread_mutex_lock(&adminq->lock);
+	done = status->done;
+	if (!done) {
+		LIST_FOREACH(tr, &adminq->outstanding_tr, list) {
+			if (tr->req == req) {
+				cid = tr->cid;
+				submitted = true;
+				break;
+			}
+		}
+		if (!submitted) {
+			STAILQ_FOREACH(queued, &adminq->queued_req, stailq) {
+				if (queued == req)
+					break;
+			}
+			if (queued) {
+				STAILQ_REMOVE(&adminq->queued_req, req,
+					      nvme_request, stailq);
+				nvme_request_free_locked(req);
+				cancelled = true;
+			}
+		}
+	}
+	pthread_mutex_unlock(&adminq->lock);
+
+	if (done) {
+		memcpy(cpl, &status->cpl, sizeof(*cpl));
+		free(status);
+		return 0;
+	}
+
+	if (cancelled) {
+		nvme_notice("Admin command %02x timed out before submission\n",
+			    (unsigned int)cmd->opc);
+		free(status);
+		return ETIMEDOUT;
+	}
+
+	if (submitted)
+		nvme_notice("Admin command %02x (cid %u) timed out after %u ms, "
+			    "aborting\n", (unsigned int)cmd->opc,
+			    (unsigned int)cid, (unsigned int)timeout_ms);
+	else
+		nvme_notice("Admin command %02x timed out during submission\n",
+			    (unsigned int)cmd->opc);
+
+	/*
+	 * Abort: CDW10 holds the CID in bits 31:16 and the submission queue
+	 * ID in bits 15:00 (Base Specification 2.3, Figure 146, PDF p. 201).
+	 * A request that was neither queued nor on a tracker is in the
+	 * middle of being submitted, so there is no CID to name yet.
+	 */
+	abort_status = submitted ? calloc(1, sizeof(*abort_status)) : NULL;
+	if (abort_status) {
+		memset(&abort_cmd, 0, sizeof(abort_cmd));
+		abort_cmd.opc = NVME_OPC_ABORT;
+		abort_cmd.cdw10 = ((uint32_t)cid << 16) | adminq->id;
+
+		if (nvme_admin_submit_polled(ctrlr, &abort_cmd, NULL, 0,
+					     abort_status, &abort_req) != 0) {
+			free(abort_status);
+			abort_status = NULL;
+		}
+	}
+
+	/*
+	 * Even if the Abort could not be sent, give the command the same
+	 * grace period to complete on its own.
+	 */
+	deadline = system_time()
+		+ (bigtime_t)NVME_PASSTHROUGH_ABORT_GRACE_MS * 1000;
+	nvme_admin_wait_until(ctrlr, status, abort_status, deadline);
+
+	/* An Abort that is still outstanding keeps its status. */
+	if (abort_status && abort_status->done)
+		free(abort_status);
+
+	if (status->done) {
+		free(status);
+		return ETIMEDOUT;
+	}
+
+	/*
+	 * The controller may still read or write the buffer, and will
+	 * still post a completion to status. Leave both allocated.
+	 */
+	nvme_err("Admin command %02x did not complete within the grace "
+		 "period, leaking its buffer\n", (unsigned int)cmd->opc);
+	*buf_busy = true;
+
+	return ETIMEDOUT;
+}
+
+/*
  * Validate a FW.
  */
 int nvme_admin_fw_commit(struct nvme_ctrlr *ctrlr,
