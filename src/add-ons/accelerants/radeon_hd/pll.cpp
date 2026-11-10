@@ -801,6 +801,13 @@ pll_set(display_mode* mode, uint8 crtcID)
 	pll_compute(pll);
 		// compute dividers and spread spectrum
 
+	// On DisplayPort the dividers target the link clock, so pll_compute()
+	// may have replaced the pixel clock with a link-derived one. The
+	// SetPixelClock table needs the mode's pixel clock there.
+	if (encoderMode == ATOM_ENCODER_MODE_DP
+		|| encoderMode == ATOM_ENCODER_MODE_DP_MST)
+		pll->pixelClock = mode->timing.pixel_clock;
+
 	uint8 tableMajor;
 	uint8 tableMinor;
 
