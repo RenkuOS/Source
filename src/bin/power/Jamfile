@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: MIT
+
+SubDir HAIKU_TOP src bin power ;
+
+UsePrivateHeaders device ;
+
+Application power :
+	power.cpp
+	: be [ TargetLibsupc++ ]
+;
