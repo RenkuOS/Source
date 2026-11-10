@@ -1,6 +1,7 @@
 /*
  * Copyright 2026, Haiku, Inc. All rights reserved.
  * Distributed under the terms of the MIT License.
+ * SPDX-License-Identifier: MIT
  */
 
 
