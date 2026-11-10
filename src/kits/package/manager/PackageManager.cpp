@@ -566,6 +566,19 @@ BPackageManager::Update(const BSolverPackageSpecifierList& packages)
 }
 
 
+/*!	Returns the package named \a name in \a repository, or NULL.
+*/
+static BSolverPackage*
+installed_package_named(BSolverRepository& repository, const BString& name)
+{
+	for (int32 i = 0; BSolverPackage* package = repository.PackageAt(i); i++) {
+		if (package->Info().Name() == name)
+			return package;
+	}
+	return NULL;
+}
+
+
 void
 BPackageManager::FullSync()
 {
@@ -596,6 +609,66 @@ BPackageManager::FullSync(bool reinstall)
 	_ConfirmChanges();
 	_ApplyPackageChanges();
 	_UpdateAutoInstalledPackages(BStringList(), installedPackages);
+}
+
+
+void
+BPackageManager::Reinstall(const char* const* packages, int packageCount)
+{
+	Init(B_ADD_INSTALLED_REPOSITORIES | B_ADD_REMOTE_REPOSITORIES
+		| B_REFRESH_REPOSITORIES);
+
+	InstalledRepository& installationRepository = InstallationRepository();
+
+	// A package file replaces the installed package of the same name and
+	// version directly; names are looked up in the repositories.
+	BStringList names;
+	for (int i = 0; i < packageCount; i++) {
+		if (!_IsLocalPackage(packages[i])) {
+			if (!names.Add(packages[i]))
+				throw std::bad_alloc();
+			continue;
+		}
+
+		BSolverPackage* file = _AddLocalPackage(packages[i]);
+		const BPackageInfo& info = file->Info();
+		BSolverPackage* installed
+			= installed_package_named(installationRepository, info.Name());
+		if (installed == NULL)
+			DIE(B_ENTRY_NOT_FOUND, "%s isn't installed", info.Name().String());
+		if (installed->Info().Version().Compare(info.Version()) != 0) {
+			DIE(B_BAD_VALUE, "%s is version %s, but %s is installed; use "
+				"\"pkgman install\" to change versions", packages[i],
+				info.Version().ToString().String(),
+				installed->VersionedName().String());
+		}
+
+		if (!installationRepository.PackagesToActivate().AddItem(file)
+			|| !installationRepository.PackagesToDeactivate().AddItem(
+				installed)) {
+			throw std::bad_alloc();
+		}
+	}
+
+	// Same version in, same version out: nothing else needs to change, so
+	// there's nothing to solve.
+	if (!names.IsEmpty()) {
+		BStringList added;
+		_AddReinstalls(&names, &added);
+		for (int32 i = 0; i < names.CountStrings(); i++) {
+			const BString& name = names.StringAt(i);
+			if (added.HasString(name))
+				continue;
+			if (installed_package_named(installationRepository, name) == NULL)
+				DIE(B_ENTRY_NOT_FOUND, "%s isn't installed", name.String());
+			DIE(B_ENTRY_NOT_FOUND,
+				"No repository has the installed version of %s",
+				name.String());
+		}
+	}
+
+	_ConfirmChanges();
+	_ApplyPackageChanges(false, false);
 }
 
 
@@ -796,11 +869,12 @@ BPackageManager::_AnalyzeResult()
 
 
 void
-BPackageManager::_AddReinstalls()
+BPackageManager::_AddReinstalls(const BStringList* names, BStringList* added)
 {
-	// Replace every installed package the result keeps with a fresh copy of
-	// the very same version from a repository, so that damaged package files
-	// are mended. Packages no repository has are left as they are.
+	// Replace every installed package the result keeps (or only those in
+	// \a names) with a fresh copy of the very same version from a
+	// repository, so that damaged package files are mended. Packages no
+	// repository has are left as they are.
 	InstalledRepository& installationRepository = InstallationRepository();
 	PackageList& packagesToActivate
 		= installationRepository.PackagesToActivate();
@@ -814,6 +888,9 @@ BPackageManager::_AddReinstalls()
 			continue;
 
 		const BPackageInfo& info = installed->Info();
+		if (names != NULL && !names->HasString(info.Name()))
+			continue;
+
 		BSolverPackage* fresh = NULL;
 		for (int32 j = 0;
 				RemoteRepository* repository = fOtherRepositories.ItemAt(j);
@@ -835,7 +912,8 @@ BPackageManager::_AddReinstalls()
 			continue;
 
 		if (!packagesToActivate.AddItem(fresh)
-			|| !packagesToDeactivate.AddItem(installed)) {
+			|| !packagesToDeactivate.AddItem(installed)
+			|| (added != NULL && !added->Add(info.Name()))) {
 			throw std::bad_alloc();
 		}
 	}
@@ -863,15 +941,18 @@ BPackageManager::_ConfirmChanges(bool fromMostSpecific)
 
 
 void
-BPackageManager::_ApplyPackageChanges(bool fromMostSpecific)
+BPackageManager::_ApplyPackageChanges(bool fromMostSpecific,
+	bool optionalReinstalls)
 {
 	int32 count = fInstalledRepositories.CountItems();
 	if (fromMostSpecific) {
 		for (int32 i = count - 1; i >= 0; i--)
-			_PreparePackageChanges(*fInstalledRepositories.ItemAt(i));
+			_PreparePackageChanges(*fInstalledRepositories.ItemAt(i),
+				optionalReinstalls);
 	} else {
 		for (int32 i = 0; i < count; i++)
-			_PreparePackageChanges(*fInstalledRepositories.ItemAt(i));
+			_PreparePackageChanges(*fInstalledRepositories.ItemAt(i),
+				optionalReinstalls);
 	}
 
 	for (int32 i = 0; Transaction* transaction = fTransactions.ItemAt(i); i++)
@@ -905,7 +986,7 @@ reinstalled_package(BSolverPackage* package,
 
 void
 BPackageManager::_PreparePackageChanges(
-	InstalledRepository& installationRepository)
+	InstalledRepository& installationRepository, bool optionalReinstalls)
 {
 	if (!installationRepository.HasChanges())
 		return;
@@ -1013,12 +1094,13 @@ retryDownload:
 
 				// A reinstall is optional: a repository that lists a package
 				// it can't serve shouldn't stop the other changes.
-				BSolverPackage* installed
-					= reinstalled_package(package, packagesToDeactivate);
+				BSolverPackage* installed = optionalReinstalls
+					? reinstalled_package(package, packagesToDeactivate) : NULL;
 				if (installed != NULL) {
 					entry.Remove();
 					fUserInteractionHandler->Warn(error,
-						B_TRANSLATE("Not reinstalling %s, its download failed"),
+						B_TRANSLATE("Couldn't download %s again, keeping the "
+							"installed copy"),
 						package->Info().Name().String());
 					if (!skippedReinstalls.Add(installed->Info().FileName()))
 						throw std::bad_alloc();

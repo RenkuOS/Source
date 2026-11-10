@@ -15,6 +15,7 @@ Application pkgman :
 	command_mark.cpp
 	command_update.cpp
 	command_refresh.cpp
+	command_reinstall.cpp
 	command_resolve_dependencies.cpp
 	command_search.cpp
 	command_uninstall.cpp
