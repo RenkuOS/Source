@@ -399,7 +399,7 @@ arch_setup_signal_frame(Thread* thread, struct sigaction* action,
 	// Only a syscall can be restarted when the handler returns: restoring the
 	// frame rewinds the instruction pointer by the size of the syscall
 	// instruction, which in code interrupted elsewhere lands inside the
-	// instruction before (summit#119: a JavaScriptCore GC thread resumed two
+	// instruction before it (seen as a JavaScriptCore GC thread resuming two
 	// bytes into a call, an invalid opcode).
 	if ((frame->type & IFRAME_TYPE_MASK) != IFRAME_TYPE_SYSCALL) {
 		signalFrameData->thread_flags &= ~(THREAD_FLAGS_RESTART_SYSCALL

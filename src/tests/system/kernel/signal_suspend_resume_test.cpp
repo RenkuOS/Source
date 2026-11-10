@@ -14,7 +14,7 @@
 	and waits in sigsuspend() for SIGUSR1 again; then resumes it. Another
 	thread keeps sending the workers SIGCHLD, which they ignore by default.
 
-	summit#119: a GC helper thread died with an invalid opcode, its
+	This reproduces a GC helper thread dying with an invalid opcode, its
 	instruction pointer two bytes before the return address of the call in
 	pthread_cond_timedwait(), as a syscall restart rewinds it. Prints
 	the handshakes; a crash or a hang (no progress for 5 s) fails.
