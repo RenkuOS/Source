@@ -877,6 +877,86 @@ probe_synaptics(ps2_dev *dev)
 //	#pragma mark - Device functions
 
 
+// Bytes that do not fit the absolute packet format, without a complete
+// packet in between, after which the pad is assumed to have lost its mode.
+// A relative packet (3 bytes, bit 3 set in the first) is rejected as one or
+// two bytes, so this is about ten such packets.
+static const int32 kResyncBadBytes = 16;
+// Do not restore the pad more often than this: if it does not help, the
+// log should show it rather than the driver looping.
+static const bigtime_t kResyncInterval = 3000000;
+static bigtime_t sLastResync;
+static int32 sResyncCount;
+
+
+static void
+synaptics_count_bad_byte(synaptics_cookie *cookie)
+{
+	// interrupt context
+	if (++cookie->bad_bytes < kResyncBadBytes)
+		return;
+	if (atomic_test_and_set(&cookie->resync_pending, 1, 0) == 0)
+		ps2_service_notify_synaptics_resync(cookie->dev);
+}
+
+
+/*!	Restores the touchpad after it stopped sending absolute packets.
+	Both PS/2 Reset and Set Defaults clear the Absolute bit of the mode byte
+	(Synaptics TouchPad Interfacing Guide, 2.5), after which the pad sends
+	relative mouse packets; Linux psmouse likewise re-initializes a device
+	that keeps sending data it cannot parse. Sets the mode byte again,
+	re-enables the TrackPoint behind the pass-through port and the pad.
+	Runs in the PS/2 service thread.
+*/
+void
+synaptics_resync(ps2_dev *dev)
+{
+	synaptics_cookie *cookie = (synaptics_cookie*)dev->cookie;
+	if ((atomic_get(&dev->flags) & PS2_FLAG_OPEN) == 0 || cookie == NULL)
+		return;
+
+	bigtime_t now = system_time();
+	if (now - sLastResync < kResyncInterval) {
+		atomic_set(&cookie->resync_pending, 0);
+		return;
+	}
+	sLastResync = now;
+	sResyncCount++;
+
+	INFO("SYNAPTICS: pad lost its mode (%" B_PRId32 " bad bytes), restoring "
+		"(%" B_PRId32 ")\n", cookie->bad_bytes, sResyncCount);
+
+	// No pass-through command may run between the bytes of the mode
+	// setting sequence.
+	mutex_lock(&sGuestCommandLock);
+	ps2_dev_command_timeout(dev, PS2_CMD_DISABLE, NULL, 0, NULL, 0, 150000);
+	snooze(30000);
+	cookie->packet_index = 0;
+
+	status_t status = set_touchpad_mode(dev, cookie->mode);
+	mutex_unlock(&sGuestCommandLock);
+	if (status != B_OK)
+		INFO("SYNAPTICS: resync: setting mode failed: %s\n", strerror(status));
+
+	if (sTouchpadInfo.capPassThrough && sPassthroughDevice->active) {
+		// This wraps the command in pad disable/enable.
+		status = passthrough_command(sPassthroughDevice, PS2_CMD_ENABLE, NULL,
+			0, NULL, 0, 500000);
+		if (status != B_OK) {
+			INFO("SYNAPTICS: resync: enabling the TrackPoint failed: %s\n",
+				strerror(status));
+		}
+	}
+
+	status = ps2_dev_command_timeout(dev, PS2_CMD_ENABLE, NULL, 0, NULL, 0,
+		150000);
+	INFO("SYNAPTICS: resync done: %s\n", strerror(status));
+
+	cookie->bad_bytes = 0;
+	atomic_set(&cookie->resync_pending, 0);
+}
+
+
 status_t
 synaptics_open(const char *name, uint32 flags, void **_cookie)
 {
@@ -1010,6 +1090,7 @@ synaptics_close(void *_cookie)
 	// Reset the touchpad so it generate standard ps2 packets instead of
 	// extended ones. If not, BeOS is confused with such packets when rebooting
 	// without a complete shutdown.
+	INFO("SYNAPTICS: close, resetting the pad\n");
 	status = ps2_reset_mouse(cookie->dev);
 	if (status != B_OK) {
 		INFO("ps2_synaptics: reset failed\n");
@@ -1123,15 +1204,18 @@ synaptics_handle_int(ps2_dev *dev)
 	if ((cookie->packet_index == 0 || cookie->packet_index == 3) && (val & 8) != 0) {
 		INFO("SYNAPTICS: bad mouse data %#02x, trying resync\n", val);
 		cookie->packet_index = 0;
+		synaptics_count_bad_byte(cookie);
 		return B_UNHANDLED_INTERRUPT;
 	}
 	if (cookie->packet_index == 0 && val >> 6 != 0x02) {
 		TRACE("SYNAPTICS: first package %#02x begins not with bit 1, 0\n", val);
+		synaptics_count_bad_byte(cookie);
 		return B_UNHANDLED_INTERRUPT;
 	}
 	if (cookie->packet_index == 3 && val >> 6 != 0x03) {
 		TRACE("SYNAPTICS: third package %#02x begins not with bit 1, 1\n", val);
 		cookie->packet_index = 0;
+		synaptics_count_bad_byte(cookie);
 		return B_UNHANDLED_INTERRUPT;
 	}
 	if (cookie->packet_index == 0)
@@ -1141,6 +1225,7 @@ synaptics_handle_int(ps2_dev *dev)
 	cookie->packet_index++;
 	if (cookie->packet_index >= 6) {
 		cookie->packet_index = 0;
+		cookie->bad_bytes = 0;
 		check_stall();
 
 		if (IS_SYN_PT_PACKAGE(cookie->buffer)) {

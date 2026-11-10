@@ -61,6 +61,9 @@ struct packet_buffer*	synaptics_ring_buffer;
 	uint32				buttons;
 		// last reported button state, see get_synaptics_movment()
 	bigtime_t			last_byte_time;
+	int32				bad_bytes;
+		// bytes dropped since the last complete packet
+	int32				resync_pending;
 } synaptics_cookie;
 
 
@@ -72,6 +75,7 @@ status_t passthrough_command(ps2_dev *dev, uint8 cmd, const uint8 *out,
 	int out_count, uint8 *in, int in_count, bigtime_t timeout);
 status_t probe_synaptics(ps2_dev *dev);
 void synaptics_stall_probe(ps2_dev *guest);
+void synaptics_resync(ps2_dev *dev);
 
 status_t synaptics_open(const char *name, uint32 flags, void **_cookie);
 status_t synaptics_close(void *_cookie);
