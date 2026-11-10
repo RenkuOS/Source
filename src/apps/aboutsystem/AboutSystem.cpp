@@ -1652,6 +1652,12 @@ AboutView::_CreateCreditsView()
 	fCreditsView->Insert(kRenkuOSCurrentMaintainers);
 
 	fCreditsView->SetFontAndColor(&font, B_FONT_ALL, &fHaikuOrangeColor);
+	fCreditsView->Insert(B_TRANSLATE("RenkuOS current contributors:\n"));
+
+	fCreditsView->SetFontAndColor(be_plain_font, B_FONT_ALL, &fTextColor);
+	fCreditsView->Insert(kRenkuOSCurrentContributors);
+
+	fCreditsView->SetFontAndColor(&font, B_FONT_ALL, &fHaikuOrangeColor);
 	fCreditsView->Insert(B_TRANSLATE("Haiku maintainers:\n"));
 
 	fCreditsView->SetFontAndColor(be_plain_font, B_FONT_ALL, &fTextColor);

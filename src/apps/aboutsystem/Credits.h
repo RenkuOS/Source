@@ -519,6 +519,11 @@ static const Translation kTranslations[] = {
 	"Kevin Adams\n" \
 	"\n"
 
+#define kRenkuOSCurrentContributors \
+	"Jimmy Shaka\n" \
+	"Michiel van Dijk\n" \
+	"\n"
+
 #define kCurrentMaintainers \
 	"Pascal R. G. Abresch\n" \
 	"Máximo Castañeda\n" \
