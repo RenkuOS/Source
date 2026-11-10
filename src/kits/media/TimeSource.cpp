@@ -585,7 +585,7 @@ BTimeSource::DirectAddMe(const media_node& node)
 
 	if (fSlaveNodes->CountSlaves() == 1) {
 		// start the time source
-		time_source_op_info msg;
+		time_source_op_info msg = {};
 		msg.op = B_TIMESOURCE_START;
 		msg.real_time = RealTime();
 
