@@ -93,6 +93,7 @@ private:
 			void				_SwapBlockFree(off_t pageIndex, uint32 count);
 			swap_addr_t			_SwapBlockGetAddress(off_t pageIndex);
 
+	static	void				_PrepareToFreeShadowedPage(vm_page* page);
 			void				_MergePagesSmallerConsumer(
 									VMAnonymousCache* source);
 			void				_MergeSwapPages(VMAnonymousCache* source);
