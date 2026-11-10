@@ -487,6 +487,9 @@ StyleDecorator::_SetFocus(Decorator::Tab* tab)
 		|| ((tab->look == B_FLOATING_WINDOW_LOOK
 			|| tab->look == kLeftTitledWindowLook)
 			&& (tab->flags & B_AVOID_FOCUS) != 0);
+	// a stack's tabs may be laid out by which one is in front
+	if (CountTabs() > 1 && fTopTab != NULL)
+		_DoLayout();
 }
 
 
