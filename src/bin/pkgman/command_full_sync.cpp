@@ -40,10 +40,19 @@ static const char* const kLongUsage =
 	"  -H, --home\n"
 	"    Synchronizes the packages in the user's home directory. Default is\n"
 	"    to synchronize the packages in the system directory.\n"
+	"  --reinstall\n"
+	"    Also downloads a fresh copy of every package that is already up to\n"
+	"    date and installs it again, to mend damaged package files. Packages\n"
+	"    no repository has are left as they are.\n"
 	"  -y\n"
 	"    Non-interactive mode. Automatically confirm changes, but fail when\n"
 	"    encountering problems.\n"
 	"\n";
+
+
+enum {
+	OPTION_REINSTALL = OPTION_DEBUG + 1,
+};
 
 
 DEFINE_COMMAND(FullSyncCommand, "full-sync", kShortUsage, kLongUsage,
@@ -56,12 +65,14 @@ FullSyncCommand::Execute(int argc, const char* const* argv)
 	BPackageInstallationLocation location
 		= B_PACKAGE_INSTALLATION_LOCATION_SYSTEM;
 	bool interactive = true;
+	bool reinstall = false;
 
 	while (true) {
 		static struct option sLongOptions[] = {
 			{ "debug", required_argument, 0, OPTION_DEBUG },
 			{ "help", no_argument, 0, 'h' },
 			{ "home", no_argument, 0, 'H' },
+			{ "reinstall", no_argument, 0, OPTION_REINSTALL },
 			{ 0, 0, 0, 0 }
 		};
 
@@ -86,6 +97,10 @@ FullSyncCommand::Execute(int argc, const char* const* argv)
 				interactive = false;
 				break;
 
+			case OPTION_REINSTALL:
+				reinstall = true;
+				break;
+
 			default:
 				PrintUsageAndExit(true);
 				break;
@@ -99,7 +114,7 @@ FullSyncCommand::Execute(int argc, const char* const* argv)
 	// perform the sync
 	PackageManager packageManager(location, interactive);
 	packageManager.SetDebugLevel(fCommonOptions.DebugLevel());
-	packageManager.FullSync();
+	packageManager.FullSync(reinstall);
 
 	return 0;
 }

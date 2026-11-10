@@ -390,7 +390,13 @@ PackageManager::_PrintResult(InstalledRepository& installationRepository)
 			repository.SetToFormat("repository %s", package->Repository()->Name().String());
 
 		int position = upgradedPackages.IndexOf(package->Info().Name());
-		if (position >= 0) {
+		if (position >= 0 && upgradedPackageVersions.StringAt(position)
+				== package->Info().Version().ToString()) {
+			printf("    reinstall package %s-%s from %s\n",
+				package->Info().Name().String(),
+				package->Info().Version().ToString().String(),
+				repository.String());
+		} else if (position >= 0) {
 			printf("    upgrade package %s-%s to %s from %s\n",
 				package->Info().Name().String(),
 				upgradedPackageVersions.StringAt(position).String(),

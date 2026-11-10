@@ -105,6 +105,7 @@ public:
 			void				Update(const BSolverPackageSpecifierList&
 									packages);
 			void				FullSync();
+			void				FullSync(bool reinstall);
 
 			void				VerifyInstallation();
 
@@ -130,6 +131,7 @@ protected:
 private:
 			void				_HandleProblems();
 			void				_AnalyzeResult();
+			void				_AddReinstalls();
 			void				_ConfirmChanges(bool fromMostSpecific = false);
 			void				_ApplyPackageChanges(
 									bool fromMostSpecific = false);
