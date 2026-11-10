@@ -55,6 +55,8 @@ struct packet_buffer*	synaptics_ring_buffer;
 	size_t				packet_index;
 	uint8				buffer[PS2_PACKET_SYNAPTICS];
 	uint8				mode;
+	uint32				buttons;
+		// last reported button state, see get_synaptics_movment()
 } synaptics_cookie;
 
 

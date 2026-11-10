@@ -258,7 +258,9 @@ static status_t
 set_touchpad_mode(ps2_dev *dev, uint8 mode)
 {
 	uint8 sample_rate = SYN_CHANGE_MODE;
-	send_touchpad_arg(dev, mode);
+	status_t status = send_touchpad_arg(dev, mode);
+	if (status != B_OK)
+		return status;
 	return ps2_dev_command(dev, PS2_CMD_SET_SAMPLE_RATE, &sample_rate, 1,
 		NULL, 0);
 }
@@ -290,7 +292,7 @@ get_synaptics_movment(synaptics_cookie *cookie, touchpad_movement *_event, bigti
 	status_t status;
 	touchpad_movement event = {};
 	uint8 event_buffer[PS2_MAX_PACKET_SIZE];
-	uint8 wValue0, wValue1, wValue2, wValue3, wValue;
+	uint8 wValue0, wValue1, wValue2, wValue3, wValue, vValue;
 	uint32 val32;
 	uint32 xTwelfBit, yTwelfBit;
 
@@ -336,16 +338,14 @@ get_synaptics_movment(synaptics_cookie *cookie, touchpad_movement *_event, bigti
 			// Multiple fingers detected, report the finger count.
 			event.fingers = (1 << (2 + wValue)) - 1;
 
-			// There is a separate "v" value indicating the finger width
-			wValue0 = event_buffer[3] >> 1 & 1;
-			wValue1 = event_buffer[4] >> 1 & 1;
-			wValue2 = event_buffer[2] >> 0 & 1;
+			// There is a separate "v" value indicating the finger width.
+			// Keep it apart from W: W is tested below, and a V of 2 would
+			// make this packet look like an extended W packet.
+			vValue = (event_buffer[3] >> 1 & 1)
+				| (event_buffer[4] >> 1 & 1) << 1
+				| (event_buffer[2] & 1) << 2;
 
-			wValue = wValue0;
-			wValue = wValue | (wValue1 << 1);
-			wValue = wValue | (wValue2 << 2);
-
-			event.fingerWidth = wValue * 2;
+			event.fingerWidth = vValue * 2;
 		} else if (wValue >= 4) {
 			// wValue = 4 to 15 corresponds to a finger width report for a single finger
 			event.fingerWidth = wValue;
@@ -390,15 +390,11 @@ get_synaptics_movment(synaptics_cookie *cookie, touchpad_movement *_event, bigti
 				event.zPressure += event_buffer[3] & 0x30;
 
 				// There is a separate "v" value indicating the finger width
-				wValue0 = event_buffer[1] >> 0 & 1;
-				wValue1 = event_buffer[2] >> 0 & 1;
-				wValue2 = event_buffer[5] >> 0 & 1;
+				vValue = (event_buffer[1] & 1)
+					| (event_buffer[2] & 1) << 1
+					| (event_buffer[5] & 1) << 2;
 
-				wValue = wValue0;
-				wValue = wValue | (wValue1 << 1);
-				wValue = wValue | (wValue2 << 2);
-
-				event.fingerWidth = wValue * 2;
+				event.fingerWidth = vValue * 2;
 			}
 
 			// Extended W = 2 - Finger state info
@@ -410,6 +406,10 @@ get_synaptics_movment(synaptics_cookie *cookie, touchpad_movement *_event, bigti
 
 			// Other values are reserved for other uses (usually enabled with special commands)
 
+			// Extended W packets do not report the buttons. Repeat the last
+			// reported state, so that a held button (a clickpad click while
+			// a second finger moves, for example) is not seen as released.
+			event.buttons = cookie->buttons;
 
 			*_event = event;
 
@@ -439,6 +439,8 @@ get_synaptics_movment(synaptics_cookie *cookie, touchpad_movement *_event, bigti
  		}
  		event.gesture = event_buffer[0] >> 2 & 1;
  	}
+
+	cookie->buttons = event.buttons;
 
 	if (!isExtended) {
 		event.xPosition = event_buffer[4];
