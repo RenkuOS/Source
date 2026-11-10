@@ -440,6 +440,38 @@
 
 
 /*!
+	\var B_TRANSPARENT_WINDOW
+
+	Let what is behind the window show through wherever it hasn't drawn.
+
+	On a composited desktop, the window's content area starts out clear,
+	and each pixel is mixed with what is behind it by its alpha value.
+	Views whose view color is \c B_TRANSPARENT_COLOR are cleared before they
+	draw, unless they have the \c B_TRANSPARENT_BACKGROUND flag. Other view
+	colors are drawn with their alpha. Clicks on pixels the window hasn't
+	drawn at all (alpha 0) go to what is behind it. The border and tab
+	stay as they are.
+
+	Most drawing is opaque. To keep partial alpha, draw a \c B_RGBA32
+	bitmap with \c B_OP_COPY, or draw with \c B_OP_ALPHA and
+	\c B_ALPHA_COMPOSITE. Colors are not premultiplied.
+
+	Without a compositor, the flag has no effect. is_composited_desktop()
+	tells whether there is one. It asks app_server each time, but the answer
+	doesn't change while app_server runs, so ask once and keep it. It has C
+	linkage, so an application that also runs on systems without it can look
+	it up by name with \c dlsym().
+
+	\note This flag is a RenkuOS extension: it did not exist in BeOS R5 or
+	Haiku. RenkuOS takes the bits of its own window flags from the top down
+	(this one is \c 0x80000000), to stay clear of those Haiku assigns from
+	the bottom up.
+
+	\since Renku
+*/
+
+
+/*!
 	\var B_NO_SERVER_SIDE_WINDOW_MODIFIERS
 
 	\since Haiku R1
@@ -658,6 +690,8 @@
 	       - \c B_AUTO_UPDATE_SIZE_LIMITS Automatically adjust the size according
 	            to layout constraints.
 	       - \c B_CLOSE_ON_ESCAPE Close when the user pushes the Escape key.
+	       - \c B_TRANSPARENT_WINDOW Show what is behind where nothing is
+	            drawn, on a composited desktop.
 	       - \c B_NO_SERVER_SIDE_WINDOW_MODIFIERS ??
 	\param workspace Mask that indicates which of the 32 potential workspace(s)
 	       the window should be displayed in or \c B_CURRENT_WORKSPACE or
