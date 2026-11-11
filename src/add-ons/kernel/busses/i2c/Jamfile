@@ -1,4 +1,5 @@
 SubDir HAIKU_TOP src add-ons kernel busses i2c ;
 
+SubInclude HAIKU_TOP src add-ons kernel busses i2c i801 ;
 SubInclude HAIKU_TOP src add-ons kernel busses i2c ocores ;
 SubInclude HAIKU_TOP src add-ons kernel busses i2c pch ;
