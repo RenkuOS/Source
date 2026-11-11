@@ -166,6 +166,7 @@ AddNewDriversToPackage input :
 	i2c_elan
 	i2c_goodix@x86,x86_64
 	i2c_hid
+	rmi4_smbus@x86,x86_64
 	virtio_input
 	;
 AddNewDriversToPackage display :
