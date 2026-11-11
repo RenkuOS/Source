@@ -28,7 +28,9 @@ class Window;
 
 	It does so on a thread of its own, at most once for every refresh of the
 	screen, and after the vertical retrace where the driver can wait for it. So
-	what is drawn many times per frame only reaches the screen once.
+	what is drawn many times per frame only reaches the screen once. Where
+	much of the screen changes, it is cut into bands, which are drawn by one
+	thread for each processor.
 */
 class Compositor {
 public:
@@ -66,6 +68,10 @@ private:
 				BRegion			region;
 				BRegion			shadow;
 				uint8			alpha;
+				// The parts that are drawn in different ways
+				BRegion			opaque;
+				BRegion			clear;
+				BRegion			edge;
 			};
 
 	static	status_t			_ThreadEntry(void* data);
@@ -75,6 +81,14 @@ private:
 			void				_Composite(const BRegion& damage,
 									BRegion* present = NULL);
 			void				_Present(const BRegion& region);
+
+	static	status_t			_HelperEntry(void* data);
+			void				_Help();
+			void				_DrawBands(const BRegion& damage);
+			void				_DrawNextBands(
+									std::vector<uint8>& shadowColumns);
+			void				_DrawBand(const BRect& band,
+									std::vector<uint8>& shadowColumns);
 
 			void				_Fill(RenderingBuffer* target,
 									const BRegion& region, const rgb_color& color);
@@ -89,7 +103,8 @@ private:
 									Window* window, const BRegion& region,
 									uint8 alpha);
 			void				_DrawShadow(RenderingBuffer* target,
-									Window* window, const BRegion& region);
+									Window* window, const BRegion& region,
+									std::vector<uint8>& columns);
 
 private:
 			Desktop*			fDesktop;
@@ -109,6 +124,21 @@ private:
 			std::vector<SceneEntry>
 								fScene;
 			std::vector<uint8>	fShadowColumns;
+
+			// Threads that draw bands of the screen together with the
+			// compositor's own, and what they draw
+			std::vector<thread_id>
+								fHelpers;
+			sem_id				fHelpSem;
+			sem_id				fHelpDoneSem;
+			RenderingBuffer*	fBandTarget;
+			const BRegion*		fBandBackground;
+			rgb_color			fBandColor;
+			size_t				fBandLayerCount;
+			BRect				fBandBounds;
+			int32				fBandCount;
+			int32				fNextBand;
+
 			const void*			fSceneBits;
 			uint32				fSceneWidth;
 			uint32				fSceneHeight;
