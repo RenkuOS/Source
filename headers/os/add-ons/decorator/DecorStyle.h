@@ -32,6 +32,11 @@
 	\c apiVersion is app_server's DECOR_STYLE_API_VERSION. Return NULL to
 	decline, and app_server uses its own decorator.
 
+	A style runs inside app_server, which exports its own classes. Link it
+	with -Wl,--no-undefined: a symbol the style lacks would otherwise bind
+	to app_server's private code when it loads, and tie the style to that
+	build after all.
+
 	Coordinates are app_server's: screen pixels, with rectangles including
 	their right and bottom edges, as BRect.
 */
