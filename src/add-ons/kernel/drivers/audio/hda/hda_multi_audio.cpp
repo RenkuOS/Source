@@ -685,6 +685,51 @@ get_control_gain_mute(hda_audio_group* audioGroup,
 }
 
 
+/*!	The menu of a mux control lists only the pin complexes among the
+	widget's inputs (see hda_create_mux_control()). Converts a menu index to
+	the widget's connection index; returns -1 when there is no such entry.
+*/
+static int32
+mux_menu_to_connection(hda_audio_group* audioGroup, uint32 nid, uint32 item)
+{
+	hda_widget* widget = hda_audio_group_get_widget(audioGroup, nid);
+	if (widget == NULL)
+		return -1;
+	uint32 count = 0;
+	for (uint32 j = 0; j < widget->num_inputs; j++) {
+		hda_widget* input = hda_audio_group_get_widget(audioGroup,
+			widget->inputs[j]);
+		if (input == NULL || input->type != WT_PIN_COMPLEX)
+			continue;
+		if (count++ == item)
+			return j;
+	}
+	return -1;
+}
+
+
+//!	The reverse of mux_menu_to_connection(); -1 for an input not in the menu.
+static int32
+mux_connection_to_menu(hda_audio_group* audioGroup, uint32 nid,
+	uint32 connection)
+{
+	hda_widget* widget = hda_audio_group_get_widget(audioGroup, nid);
+	if (widget == NULL || connection >= widget->num_inputs)
+		return -1;
+	uint32 count = 0;
+	for (uint32 j = 0; j < widget->num_inputs; j++) {
+		hda_widget* input = hda_audio_group_get_widget(audioGroup,
+			widget->inputs[j]);
+		if (input == NULL || input->type != WT_PIN_COMPLEX)
+			continue;
+		if (j == connection)
+			return count;
+		count++;
+	}
+	return -1;
+}
+
+
 static status_t
 get_mix(hda_audio_group* audioGroup, multi_mix_value_info * mmvi)
 {
@@ -732,8 +777,10 @@ get_mix(hda_audio_group* audioGroup, multi_mix_value_info * mmvi)
 					TRACE("get_mix: %" B_PRId32 " mixer %" B_PRIu32
 						" is %smute\n", control->nid,
 						j, (resp & AMP_MUTE) != 0 ? "" : "un");
-					if ((resp & AMP_MUTE) == 0) {
-						mmvi->values[i].mux = j;
+					int32 item = mux_connection_to_menu(audioGroup,
+						control->nid, j);
+					if ((resp & AMP_MUTE) == 0 && item >= 0) {
+						mmvi->values[i].mux = item;
 #ifndef TRACE_MULTI_AUDIO
 						break;
 #endif
@@ -746,8 +793,11 @@ get_mix(hda_audio_group* audioGroup, multi_mix_value_info * mmvi)
 			uint32 verb = MAKE_VERB(audioGroup->codec->addr, control->nid,
 				VID_GET_CONNECTION_SELECT, 0);
 			uint32 resp;
-			if (hda_send_verbs(audioGroup->codec, &verb, &resp, 1) == B_OK)
-				mmvi->values[i].mux = resp & 0xff;
+			if (hda_send_verbs(audioGroup->codec, &verb, &resp, 1) == B_OK) {
+				int32 item = mux_connection_to_menu(audioGroup, control->nid,
+					resp & 0xff);
+				mmvi->values[i].mux = item >= 0 ? item : 0;
+			}
 			TRACE("get_mix: %" B_PRId32 " selector: %" B_PRIu32 "\n",
 				control->nid, mmvi->values[i].mux);
 		}
@@ -878,6 +928,13 @@ set_mix(hda_audio_group* audioGroup, multi_mix_value_info * mmvi)
 		} else if (control->type == B_MIX_MUX_MIXER) {
 			TRACE("set_mix: %" B_PRId32 " mixer: %" B_PRIu32 "\n",
 				control->nid, mmvi->values[i].mux);
+			int32 connection = mux_menu_to_connection(audioGroup,
+				control->nid, mmvi->values[i].mux);
+			if (connection < 0) {
+				dprintf("hda: invalid mixer input %" B_PRIu32 " for widget %"
+					B_PRIu32 "\n", mmvi->values[i].mux, control->nid);
+				continue;
+			}
 			hda_widget *mixer = hda_audio_group_get_widget(audioGroup,
 				control->nid);
 			uint32 verb[mixer->num_inputs];
@@ -886,18 +943,28 @@ set_mix(hda_audio_group* audioGroup, multi_mix_value_info * mmvi)
 					control->nid, VID_SET_AMPLIFIER_GAIN_MUTE, AMP_SET_INPUT
 					| AMP_SET_LEFT_CHANNEL | AMP_SET_RIGHT_CHANNEL
 					| AMP_SET_INPUT_INDEX(j)
-					| ((mmvi->values[i].mux == j) ? 0 : AMP_MUTE));
+					| ((uint32)connection == j ? 0 : AMP_MUTE));
 				TRACE("set_mix: %" B_PRId32 " mixer %smuting %" B_PRIu32 " (%"
 					B_PRIu32 ")\n", control->nid,
-					(mmvi->values[i].mux == j) ? "un" : "", j, verb[j]);
+					((uint32)connection == j) ? "un" : "", j, verb[j]);
 			}
 			if (hda_send_verbs(audioGroup->codec, verb, NULL, mixer->num_inputs)
 				!= B_OK)
 				dprintf("hda: Setting mixer %" B_PRId32 " failed on widget %"
 					B_PRIu32 "!\n", mmvi->values[i].mux, control->nid);
 		} else if (control->type == B_MIX_MUX_SELECTOR) {
+			// A value outside the menu would end up in other bits of the
+			// verb; the codec then does not answer at all.
+			int32 connection = mux_menu_to_connection(audioGroup,
+				control->nid, mmvi->values[i].mux);
+			if (connection < 0) {
+				dprintf("hda: invalid selector input %" B_PRIu32
+					" for widget %" B_PRIu32 "\n", mmvi->values[i].mux,
+					control->nid);
+				continue;
+			}
 			uint32 verb = MAKE_VERB(audioGroup->codec->addr, control->nid,
-				VID_SET_CONNECTION_SELECT, mmvi->values[i].mux);
+				VID_SET_CONNECTION_SELECT, connection);
 			if (hda_send_verbs(audioGroup->codec, &verb, NULL, 1) != B_OK) {
 				dprintf("hda: Setting output selector %" B_PRId32 " failed on "
 					"widget %" B_PRIu32 "!\n", mmvi->values[i].mux,
