@@ -1031,8 +1031,10 @@ SysInfoView::_GetABIVersion()
 			abiVersion = versionInfo.short_info;
 	}
 
+	// libbe.so carries no release name on development builds, so show only
+	// the ABI then
 	if (abiVersion.IsEmpty())
-		abiVersion = B_TRANSLATE("Unknown");
+		return B_HAIKU_ABI_NAME;
 
 	abiVersion << " (" << B_HAIKU_ABI_NAME << ")";
 
