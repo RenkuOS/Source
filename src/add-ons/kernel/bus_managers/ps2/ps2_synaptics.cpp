@@ -427,13 +427,17 @@ get_synaptics_movment(synaptics_cookie *cookie, touchpad_movement *_event, bigti
 			return status;
 		}
 
-		// Clickpad pretends that all clicks on the touchpad are middle clicks.
-		// Pass them to userspace as left clicks instead.
+		// A one-button clickpad reports its click like a middle button
+		// (byte 1 bit 0 XOR byte 4 bit 0). It is the primary button: report
+		// it as the left button, and only as that, even when the pad also
+		// claims a middle button (as on a ThinkPad X270); otherwise every
+		// click on the pad arrives as left plus middle. Linux handles
+		// clickpads the same way.
+		uint8 clickBit = (event_buffer[0] ^ event_buffer[3]) & 0x01;
 		if (sTouchpadInfo.capClickPadButtonCount == 1)
-			event.buttons |= ((event_buffer[0] ^ event_buffer[3]) & 0x01);
-
-		if (sTouchpadInfo.capMiddleButton || sTouchpadInfo.capFourButtons)
-			event.buttons |= ((event_buffer[0] ^ event_buffer[3]) & 0x01) << 2;
+			event.buttons = (event.buttons & ~1) | clickBit;
+		else if (sTouchpadInfo.capMiddleButton || sTouchpadInfo.capFourButtons)
+			event.buttons |= clickBit << 2;
 
 		if (sTouchpadInfo.nExtendedButtons > 0 && !ext_buttons_use_guest()) {
 			// The state is tracked in synaptics_ext_buttons_changed(); when
