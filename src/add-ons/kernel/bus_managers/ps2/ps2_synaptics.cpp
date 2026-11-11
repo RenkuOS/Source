@@ -17,7 +17,9 @@
 #include <string.h>
 #include <stdlib.h>
 
+#include <driver_settings.h>
 #include <keyboard_mouse_driver.h>
+#include <synaptics_intertouch.h>
 
 #include "ps2_service.h"
 
@@ -85,6 +87,10 @@ typedef struct {
 	bool capExtendedWMode : 1;
 	bool capClickPadUniform : 1;
 	int  capClickPadButtonCount : 2;
+	bool capInterTouch : 1;
+	bool capTrackstickButtons : 1;
+
+	uint8 continuedCapabilities[3];
 } touchpad_info;
 
 
@@ -497,8 +503,16 @@ query_capability(ps2_dev *dev)
 	TRACE("SYNAPTICS: palm detection %2x\n", val[2] & 1);
 	sTouchpadInfo.capPalmDetection = val[2] & 1;
 
+	sTouchpadInfo.capInterTouch = 0;
+	sTouchpadInfo.capTrackstickButtons = 0;
+	memset(sTouchpadInfo.continuedCapabilities, 0,
+		sizeof(sTouchpadInfo.continuedCapabilities));
+
 	if (get_information_query(dev, nExtendedQueries, kContinuedCapabilities,
 			val) == B_OK) {
+		memcpy(sTouchpadInfo.continuedCapabilities, val, 3);
+		// bit 14 of the 24 bit answer: the pad also talks RMI4 over SMBus
+		sTouchpadInfo.capInterTouch = val[1] >> 6 & 1;
 		sTouchpadInfo.capAdvancedGestures = val[0] >> 3 & 1;
 		TRACE("SYNAPTICS: advanced gestures %x\n", sTouchpadInfo.capAdvancedGestures);
 
@@ -550,8 +564,10 @@ query_capability(ps2_dev *dev)
 	// used as buttons for the trackpoint, so they should be reported
 	// as buttons 0, 1, 2 rather than 3, 4, 5.
 	TRACE("SYNAPTICS: alternate buttons %2x\n", val[0] >> 0 & 1);
-	if (val[0] >> 0 & 1)
+	if (val[0] >> 0 & 1) {
 		sTouchpadInfo.firstExtendedButton = 0;
+		sTouchpadInfo.capTrackstickButtons = 1;
+	}
 }
 
 
@@ -819,6 +835,144 @@ synaptics_stall_probe(ps2_dev *guest)
 }
 
 
+//	#pragma mark - InterTouch hand-over
+
+
+// The PS/2 driver takes the pad back when the RMI4 driver does not answer
+// within this time; it waits for the pad's SMBus side and reads a few
+// registers before it answers.
+static const bigtime_t kInterTouchReplyTimeout = 30000000;
+
+// Set when the RMI4 driver could not drive the pad: from then on, the
+// probe keeps the pad on PS/2.
+static bool sInterTouchDeclined;
+// The device given to the RMI4 driver, from the hand-over until it is taken
+// back. The PS/2 side then leaves it alone completely: its bytes (a pad
+// switching to SMBus may announce itself with AA 00) must not lead to a
+// probe, which would reset the pad under the RMI4 driver.
+static ps2_dev* volatile sInterTouchDevice;
+
+
+bool
+synaptics_handed_over(ps2_dev* dev)
+{
+	return dev == sInterTouchDevice;
+}
+
+
+static bool
+intertouch_wanted()
+{
+	bool wanted = false;
+	void* settings = load_driver_settings(SYNAPTICS_INTERTOUCH_SETTINGS);
+	if (settings != NULL) {
+		wanted = get_driver_boolean_parameter(settings,
+			SYNAPTICS_INTERTOUCH_PARAMETER, false, true);
+		unload_driver_settings(settings);
+	}
+	return wanted;
+}
+
+
+static status_t
+intertouch_watch(void* data)
+{
+	ps2_dev* dev = (ps2_dev*)data;
+
+	port_id replyPort = find_port(SYNAPTICS_INTERTOUCH_REPLY_PORT);
+	int32 code = 0;
+	ssize_t size = B_ERROR;
+	if (replyPort >= 0) {
+		size = read_port_etc(replyPort, &code, NULL, 0, B_RELATIVE_TIMEOUT,
+			kInterTouchReplyTimeout);
+	}
+
+	// Whatever the answer, the hand-over is over: a late RMI4 driver must
+	// not find the pad offered any more.
+	port_id handOffPort = find_port(SYNAPTICS_INTERTOUCH_HAND_OFF_PORT);
+	if (handOffPort >= 0)
+		delete_port(handOffPort);
+	if (replyPort >= 0)
+		delete_port(replyPort);
+
+	if (size >= 0 && code == kSynapticsInterTouchTaken) {
+		INFO("SYNAPTICS: the RMI4 SMBus driver took over the touchpad\n");
+		return B_OK;
+	}
+
+	INFO("SYNAPTICS: the RMI4 SMBus driver %s, keeping the touchpad on "
+		"PS/2\n", size >= 0 ? "could not drive the touchpad" : "did not answer");
+	sInterTouchDeclined = true;
+	sInterTouchDevice = NULL;
+	ps2_service_notify_device_republish(dev);
+	return B_OK;
+}
+
+
+/*!	Gives the touchpad to the RMI4 SMBus driver, see
+	<synaptics_intertouch.h>. Like Linux psmouse, the pad is reset (done by
+	the probe) and disabled before its SMBus side is used, and the PS/2
+	driver does not publish it. Returns B_OK when the pad was offered.
+*/
+static status_t
+intertouch_hand_off(ps2_dev* dev)
+{
+
+	synaptics_intertouch_info info;
+	memset(&info, 0, sizeof(info));
+	if (sTouchpadInfo.capClickPadButtonCount == 1)
+		info.flags |= SYNAPTICS_INTERTOUCH_CLICKPAD;
+	if (sTouchpadInfo.capTrackstickButtons)
+		info.flags |= SYNAPTICS_INTERTOUCH_TRACKSTICK_BUTTONS;
+	memcpy(info.continued_capabilities, sTouchpadInfo.continuedCapabilities,
+		sizeof(info.continued_capabilities));
+
+	// The capability queries left the pad in its reset state; also stop
+	// any streaming before the SMBus side is used.
+	status_t status = ps2_dev_command(dev, PS2_CMD_DISABLE, NULL, 0, NULL, 0);
+	if (status != B_OK) {
+		INFO("SYNAPTICS: cannot disable the touchpad for the hand-over: "
+			"%s\n", strerror(status));
+		return status;
+	}
+
+	port_id replyPort = create_port(1, SYNAPTICS_INTERTOUCH_REPLY_PORT);
+	if (replyPort < 0)
+		return replyPort;
+	port_id handOffPort = create_port(1, SYNAPTICS_INTERTOUCH_HAND_OFF_PORT);
+	if (handOffPort < 0) {
+		delete_port(replyPort);
+		return handOffPort;
+	}
+
+	// from here on, the PS/2 side ignores the pad
+	sInterTouchDevice = dev;
+
+	status = write_port(handOffPort, kSynapticsInterTouchHandOff, &info,
+		sizeof(info));
+	thread_id watcher = status == B_OK
+		? spawn_kernel_thread(&intertouch_watch, "synaptics intertouch",
+			B_LOW_PRIORITY, dev)
+		: (thread_id)B_ERROR;
+	if (watcher < 0) {
+		sInterTouchDevice = NULL;
+		delete_port(handOffPort);
+		delete_port(replyPort);
+		return status != B_OK ? status : watcher;
+	}
+	resume_thread(watcher);
+
+	INFO("SYNAPTICS: InterTouch touchpad (continued capabilities %02x %02x "
+		"%02x), handed over to the RMI4 SMBus driver\n",
+		info.continued_capabilities[0], info.continued_capabilities[1],
+		info.continued_capabilities[2]);
+	return B_OK;
+}
+
+
+//	#pragma mark -
+
+
 status_t
 probe_synaptics(ps2_dev *dev)
 {
@@ -856,6 +1010,18 @@ probe_synaptics(ps2_dev *dev)
 		return B_ERROR;
 	}
 	dev->name = kSynapticsPath[dev->idx];
+
+	// Only the touchpad itself can be handed over, not a guest behind its
+	// pass-through port.
+	if (dev != sPassthroughDevice && !sInterTouchDeclined
+		&& intertouch_wanted()) {
+		query_capability(dev);
+		if (sTouchpadInfo.capInterTouch
+			&& intertouch_hand_off(dev) == B_OK) {
+			// the device is found, but it belongs to the RMI4 driver now
+			return B_BUSY;
+		}
+	}
 	return B_OK;
 }
 
