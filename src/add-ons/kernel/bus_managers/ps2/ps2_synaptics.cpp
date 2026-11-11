@@ -286,6 +286,11 @@ get_information_query(ps2_dev *dev, uint8 extendedQueries, uint8 query,
 }
 
 
+// Larger position steps between two packets (about 12 ms apart) come
+// from the pad switching to another finger, not from a moving finger.
+static const int32 kFingerJump = 800;
+
+
 static status_t
 get_synaptics_movment(synaptics_cookie *cookie, touchpad_movement *_event, bigtime_t timeout)
 {
@@ -470,6 +475,34 @@ get_synaptics_movment(synaptics_cookie *cookie, touchpad_movement *_event, bigti
 		event.xPosition += xTwelfBit << 12;
 		yTwelfBit = event_buffer[3] >> 5 & 1;
 		event.yPosition += yTwelfBit << 12;
+
+		// The pad reports one position. When the finger it follows changes,
+		// for example when the finger that moved the pointer lifts while a
+		// thumb presses the clickpad, the position jumps to the other
+		// finger. movement_maker would turn that into a pointer jump (on a
+		// ThinkPad X270 down and to the left after each click). Report the
+		// packet as a lift instead: tracking starts again at the new
+		// position with the next packet. The button state is kept.
+		bool contact = event.zPressure >= MIN_PRESSURE
+			&& (event.xPosition != 0 || event.yPosition != 0);
+		if (contact && cookie->had_contact
+			&& (abs((int32)event.xPosition - (int32)cookie->last_x)
+					> kFingerJump
+				|| abs((int32)event.yPosition - (int32)cookie->last_y)
+					> kFingerJump)) {
+			cookie->last_x = event.xPosition;
+			cookie->last_y = event.yPosition;
+			event.xPosition = 0;
+			event.yPosition = 0;
+			event.zPressure = 0;
+			event.fingers = 0;
+			event.fingerWidth = 4;
+			contact = false;
+		} else if (contact) {
+			cookie->last_x = event.xPosition;
+			cookie->last_y = event.yPosition;
+		}
+		cookie->had_contact = contact;
 	}
 
 	*_event = event;

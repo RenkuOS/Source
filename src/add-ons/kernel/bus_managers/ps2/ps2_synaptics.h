@@ -64,6 +64,11 @@ struct packet_buffer*	synaptics_ring_buffer;
 	int32				bad_bytes;
 		// bytes dropped since the last complete packet
 	int32				resync_pending;
+
+	// last reported contact, to detect jumps between fingers
+	bool				had_contact;
+	uint32				last_x;
+	uint32				last_y;
 } synaptics_cookie;
 
 
