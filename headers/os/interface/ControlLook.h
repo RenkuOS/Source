@@ -465,7 +465,9 @@ extern "C" _EXPORT BControlLook *instantiate_control_look(image_id id);
 
 
 // Returns a new default look that a look add-on can wrap, passing itself as
-// outer; the caller deletes it.
+// outer; the caller deletes it. Such an add-on runs inside applications whose
+// libbe exports HaikuControlLook: link it with -Wl,--no-undefined, or a
+// symbol it lacks binds to that private class and ties it to one build.
 extern "C" BPrivate::BControlLook* create_default_control_look(
 	BPrivate::BControlLook* outer);
 
