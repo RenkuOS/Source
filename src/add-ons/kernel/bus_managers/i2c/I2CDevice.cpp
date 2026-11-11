@@ -19,6 +19,10 @@ I2CDevice::I2CDevice(device_node *node, I2CBus* bus, i2c_addr slaveAddress)
 
 I2CDevice::~I2CDevice()
 {
+	// a peripheral driver that forgot to uninstall must not leave a
+	// dangling hook behind
+	if (fBus != NULL)
+		fBus->UninstallHostNotify(fSlaveAddress);
 }
 
 
@@ -52,6 +56,22 @@ I2CDevice::ReleaseBus()
 {
 	CALLED();
 	fBus->ReleaseBus();
+}
+
+
+status_t
+I2CDevice::InstallHostNotify(i2c_host_notify_hook hook, void* cookie)
+{
+	CALLED();
+	return fBus->InstallHostNotify(fSlaveAddress, hook, cookie);
+}
+
+
+void
+I2CDevice::UninstallHostNotify()
+{
+	CALLED();
+	fBus->UninstallHostNotify(fSlaveAddress);
 }
 
 
@@ -133,6 +153,23 @@ i2c_release_bus(i2c_device _device)
 
 
 static status_t
+i2c_install_host_notify(i2c_device _device, i2c_host_notify_hook hook,
+	void* cookie)
+{
+	I2CDevice *device = (I2CDevice *)_device;
+	return device->InstallHostNotify(hook, cookie);
+}
+
+
+static void
+i2c_uninstall_host_notify(i2c_device _device)
+{
+	I2CDevice *device = (I2CDevice *)_device;
+	device->UninstallHostNotify();
+}
+
+
+static status_t
 std_ops(int32 op, ...)
 {
 	switch (op) {
@@ -173,4 +210,6 @@ i2c_device_interface gI2CDeviceModule = {
 	i2c_exec_command,
 	i2c_acquire_bus,
 	i2c_release_bus,
+	i2c_install_host_notify,
+	i2c_uninstall_host_notify,
 };

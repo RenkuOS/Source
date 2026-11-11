@@ -27,6 +27,23 @@ typedef enum {
 #define IS_STOP_OP(op)	(((op) & 1) != 0)
 #define IS_BLOCK_OP(op)	(((op) & 4) != 0)
 
+// SMBus block transfers (I2C_OP_READ_BLOCK, I2C_OP_WRITE_BLOCK) on an
+// SMBus controller: cmdBuffer holds the one byte SMBus command code.
+// For a block write, dataBuffer holds the payload (1 to 32 bytes, the
+// byte count is dataLength). For a block read, the controller stores
+// the byte count the slave sent in ((uint8*)dataBuffer)[0], followed by
+// the bytes; dataLength must be at least count + 1 (33 covers any
+// block). A count that does not fit returns B_BUFFER_OVERFLOW.
+#define I2C_SMBUS_BLOCK_MAX	32
+
+
+// SMBus Host Notify (SMBus 2.0 and later): a slave sends its own address
+// and a 16 bit value to the host. The hook runs in interrupt context. It
+// must not block; it may only signal, for example with
+// release_sem_etc(..., B_DO_NOT_RESCHEDULE) or a ConditionVariable.
+typedef void (*i2c_host_notify_hook)(void* cookie, i2c_addr address,
+	uint16 data);
+
 
 // bus/device handle
 typedef void* i2c_bus;
@@ -55,6 +72,12 @@ typedef struct {
 		size_t dataLength);
 	status_t (*acquire_bus)(i2c_device cookie);
 	void (*release_bus)(i2c_device cookie);
+
+	// SMBus Host Notify for this device's slave address. Returns
+	// B_NOT_SUPPORTED when the controller has no Host Notify support.
+	status_t (*install_host_notify)(i2c_device cookie,
+		i2c_host_notify_hook hook, void* hookCookie);
+	void (*uninstall_host_notify)(i2c_device cookie);
 } i2c_device_interface;
 
 
@@ -130,6 +153,13 @@ typedef struct {
 
 	status_t (*uninstall_interrupt_handler)(i2c_bus_cookie cookie,
 		i2c_intr_cookie intrCookie);
+
+	// SMBus Host Notify. The bus manager installs one hook per bus; the
+	// controller calls it, in interrupt context, for every Host Notify
+	// message it receives. A NULL hook disables Host Notify. A controller
+	// without Host Notify leaves this field NULL.
+	status_t (*set_host_notify_hook)(i2c_bus_cookie cookie,
+		i2c_host_notify_hook hook, void* hookCookie);
 } i2c_sim_interface;
 
 
