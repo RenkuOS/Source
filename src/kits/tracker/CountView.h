@@ -52,6 +52,7 @@ public:
 	BCountView(BPoseView*);
 	~BCountView();
 
+	virtual void MessageReceived(BMessage*);
 	virtual void Draw(BRect);
 	virtual void MouseDown(BPoint);
 	virtual void AttachedToWindow();
@@ -74,6 +75,7 @@ public:
 	bool IsFiltering() const;
 
 private:
+	void _UpdateFont();
 	BRect BarberPoleInnerRect() const;
 	BRect BarberPoleOuterRect() const;
 	BRect TextRect() const;

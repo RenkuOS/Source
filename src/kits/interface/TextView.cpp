@@ -151,6 +151,15 @@ private:
 };
 
 
+static bool
+same_font_parts(const BFont& first, const BFont& second, uint32 mode)
+{
+	return ((mode & B_FONT_FAMILY_AND_STYLE) == 0
+			|| first.FamilyAndStyle() == second.FamilyAndStyle())
+		&& ((mode & B_FONT_SIZE) == 0 || first.Size() == second.Size());
+}
+
+
 struct BTextView::LayoutData {
 	LayoutData()
 		: leftInset(0),
@@ -158,7 +167,8 @@ struct BTextView::LayoutData {
 		  rightInset(0),
 		  bottomInset(0),
 		  valid(false),
-		  overridden(false)
+		  overridden(false),
+		  followsSystemFont(false)
 	{
 	}
 
@@ -171,6 +181,8 @@ struct BTextView::LayoutData {
 	BSize				preferred;
 	bool				valid : 1;
 	bool				overridden : 1;
+	bool				followsSystemFont;
+		// the text uses be_plain_font; only used when not stylable
 };
 
 
@@ -875,6 +887,14 @@ BTextView::MessageReceived(BMessage* message)
 	}
 
 	switch (message->what) {
+		case B_FONTS_UPDATED:
+			if (!fStylable && fLayoutData->followsSystemFont) {
+				SetFontAndColor(0, fText->Length(), be_plain_font,
+					B_FONT_FAMILY_AND_STYLE | B_FONT_SIZE, NULL);
+			}
+			BView::MessageReceived(message);
+			break;
+
 		case B_CUT:
 			if (!IsTypingHidden())
 				Cut(be_clipboard);
@@ -1635,6 +1655,18 @@ BTextView::SetFontAndColor(int32 startOffset, int32 endOffset,
 	const BFont* font, uint32 mode, const rgb_color* color)
 {
 	CALLED();
+
+	if (font != NULL && (mode & (B_FONT_FAMILY_AND_STYLE | B_FONT_SIZE)) != 0
+		&& fLayoutData->followsSystemFont) {
+		// A font other than the system's, or than the one the text already
+		// has, is the application's choice.
+		BFont current;
+		GetFontAndColor(startOffset, &current);
+		if (!same_font_parts(*font, current, mode)
+			&& !same_font_parts(*font, *be_plain_font, mode)) {
+			fLayoutData->followsSystemFont = false;
+		}
+	}
 
 	_HideCaret();
 
@@ -3295,6 +3327,7 @@ BTextView::_InitObject(BRect textRect, const BFont* initialFont,
 	fTrackingMouse = NULL;
 
 	fLayoutData = new LayoutData;
+	fLayoutData->followsSystemFont = initialFont == NULL;
 	_UpdateInsets(textRect);
 
 	fLastClickOffset = -1;

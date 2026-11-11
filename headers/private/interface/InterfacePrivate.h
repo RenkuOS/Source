@@ -17,6 +17,10 @@ void _init_global_fonts_();
 extern "C" status_t _fini_interface_kit_();
 
 
+class BFont;
+class BString;
+
+
 namespace BPrivate {
 
 bool		get_mode_parameter(uint32 mode, int32& width, int32& height,
@@ -29,6 +33,9 @@ void		set_workspaces_layout(uint32 columns, uint32 rows);
 bool		get_control_look(BString& path);
 status_t	set_control_look(const BString& path);
 bool		update_control_look();
+
+const BFont*	menu_font();
+bool		update_system_fonts();
 
 }	// namespace BPrivate
 

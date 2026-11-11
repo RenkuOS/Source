@@ -44,6 +44,7 @@
 #include <AutoDeleter.h>
 #include <binary_compatibility/Interface.h>
 #include <BMCPrivate.h>
+#include <InterfacePrivate.h>
 #include <MenuPrivate.h>
 #include <MenuWindow.h>
 #include <ServerProtocol.h>
@@ -1604,10 +1605,7 @@ BMenu::_InitData(BMessage* archive)
 	BPrivate::kEmptyMenuLabel = B_TRANSLATE("<empty>");
 
 	// TODO: Get _color, _fname, _fflt from the message, if present
-	BFont font;
-	font.SetFamilyAndStyle(sMenuInfo.f_family, sMenuInfo.f_style);
-	font.SetSize(sMenuInfo.font_size);
-	SetFont(&font, B_FONT_FAMILY_AND_STYLE | B_FONT_SIZE);
+	SetFont(BPrivate::menu_font(), B_FONT_FAMILY_AND_STYLE | B_FONT_SIZE);
 
 	fExtraMenuData = new (nothrow) BPrivate::ExtraMenuData();
 

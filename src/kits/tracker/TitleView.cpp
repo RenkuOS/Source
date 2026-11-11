@@ -120,6 +120,15 @@ BTitleView::BTitleView(BPoseView* view)
 	SetViewColor(B_TRANSPARENT_COLOR);
 #endif
 
+	_UpdateFont();
+
+	Reset();
+}
+
+
+void
+BTitleView::_UpdateFont()
+{
 	float fontSize = std::max(kMinFontSize,
 		floorf(be_plain_font->Size() * 0.75f));
 
@@ -129,8 +138,19 @@ BTitleView::BTitleView(BPoseView* view)
 
 	fPreferredHeight = std::max(kMinTitleHeight,
 		ceilf(fontSize * kTitleSpacing));
+}
 
-	Reset();
+
+void
+BTitleView::MessageReceived(BMessage* message)
+{
+	if (message->what == B_FONTS_UPDATED) {
+		_UpdateFont();
+		InvalidateLayout();
+		Invalidate();
+	}
+
+	BView::MessageReceived(message);
 }
 
 
