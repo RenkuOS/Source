@@ -1450,6 +1450,17 @@ hda_audio_group_get_widgets(hda_audio_group* audioGroup, hda_stream* stream)
 			|| widget.d.io.formats == 0)
 			continue;
 
+		// On the X270's ALC298, ADC 8 receives the external microphone and
+		// ADC 9 receives the fixed internal microphone. Both converters would
+		// otherwise be assigned channel 0 of the same two-channel stream.
+		// Select the internal microphone converter for this capture path.
+		if (stream->type == STREAM_RECORD
+			&& audioGroup->codec->vendor_id == 0x10ec
+			&& audioGroup->codec->product_id == 0x0298
+			&& audioGroup->codec->subsystem_id == 0x17aa5062
+			&& widget.node_id == 8)
+			continue;
+
 		if (count == 0) {
 			stream->sample_format = widget.d.io.formats;
 			stream->sample_rate = widget.d.io.rates;
