@@ -413,11 +413,13 @@ standard_mouse_close(void* _cookie)
 	ps2_dev_command_timeout(cookie->dev, PS2_CMD_DISABLE, NULL, 0, NULL, 0,
 		150000);
 
+	// Stop the interrupt handler from using the buffer and semaphore
+	// before they are deleted.
+	atomic_and(&cookie->dev->flags, ~PS2_FLAG_ENABLED);
+	atomic_and(&cookie->dev->flags, ~PS2_FLAG_OPEN);
+
 	delete_packet_buffer(cookie->standard_mouse_buffer);
 	delete_sem(cookie->standard_mouse_sem);
-
-	atomic_and(&cookie->dev->flags, ~PS2_FLAG_OPEN);
-	atomic_and(&cookie->dev->flags, ~PS2_FLAG_ENABLED);
 
 	TRACE("ps2: standard_mouse_close %s done\n", cookie->dev->name);
 	return B_OK;
