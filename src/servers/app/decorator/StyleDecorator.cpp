@@ -647,6 +647,8 @@ StyleDecorator::_SyncIn() const
 	for (int32 region = 1; region < DECOR_REGION_COUNT; region++)
 		fWindow.highlights[region] = RegionHighlight((Region)region);
 	fWindow.outline_resizing = IsOutlineResizing();
+	fWindow.corners_cut = RoundedDecorator::IsActive(
+		const_cast<StyleDecorator*>(this)->GetDesktop());
 	fWindow.outline_frame = to_decor_rect(BRect(fFrame.LeftTop(),
 		fFrame.RightBottom() + fOutlinesDelta));
 
@@ -773,6 +775,40 @@ StyleDecorator::_DrawButton(Decorator::Tab* tab, int32 button, bool direct,
 	fStyle->draw_button(&fWindow, fCanvas, index, button,
 		to_decor_rect(rect));
 	fDrawingEngine->SetCopyToFrontEnabled(copyToFront);
+}
+
+
+/*!	The outline the compositor cuts the corners off, with the radii the
+	style gives it. A style without rounded_shape() keeps square corners.
+*/
+void
+StyleDecorator::GetRoundedShape(std::vector<Decorator::ShapeRect>& shape) const
+{
+	GetShape(shape);
+	if (!_HasStyle() || !_StyleHas(offsetof(decor_style, rounded_shape)
+			+ sizeof(fStyle->rounded_shape))
+		|| fStyle->rounded_shape == NULL) {
+		return;
+	}
+
+	std::vector<decor_shape_rect> styleShape(shape.size());
+	for (size_t i = 0; i < shape.size(); i++) {
+		styleShape[i].rect = to_decor_rect(shape[i].rect);
+		styleShape[i].left_top = 0;
+		styleShape[i].right_top = 0;
+		styleShape[i].left_bottom = 0;
+		styleShape[i].right_bottom = 0;
+	}
+
+	_SyncIn();
+	fStyle->rounded_shape(&fWindow, &styleShape[0], styleShape.size());
+
+	for (size_t i = 0; i < shape.size(); i++) {
+		shape[i].leftTop = std::max((int32)0, styleShape[i].left_top);
+		shape[i].rightTop = std::max((int32)0, styleShape[i].right_top);
+		shape[i].leftBottom = std::max((int32)0, styleShape[i].left_bottom);
+		shape[i].rightBottom = std::max((int32)0, styleShape[i].right_bottom);
+	}
 }
 
 
