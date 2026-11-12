@@ -122,6 +122,24 @@ static int32 sGuestCommandInFlight;
 static int32 sGuestReinits;
 
 
+/*!	Whether the guest's interrupt handler may be called. handle_int and
+	cookie stay set after the guest device is closed, and the close frees
+	the cookie: calling the handler then is a use after free (seen as a
+	kernel panic when a button above the pad was pressed while the
+	TrackPoint was being re-probed). Only an open and enabled guest takes
+	packets, like ps2_dev_handle_int() requires for any device.
+*/
+static bool
+guest_can_take_packets()
+{
+	return sPassthroughDevice->active
+		&& sPassthroughDevice->handle_int != NULL
+		&& (atomic_get(&sPassthroughDevice->flags)
+			& (PS2_FLAG_OPEN | PS2_FLAG_ENABLED))
+			== (PS2_FLAG_OPEN | PS2_FLAG_ENABLED);
+}
+
+
 static bool
 ext_buttons_use_guest()
 {
@@ -131,8 +149,7 @@ ext_buttons_use_guest()
 	// holding a button and moving the stick looks like a drag coming from
 	// a single device.
 	return sTouchpadInfo.firstExtendedButton == 0
-		&& sPassthroughDevice->active
-		&& sPassthroughDevice->handle_int != NULL;
+		&& guest_can_take_packets();
 }
 
 
@@ -1121,8 +1138,7 @@ synaptics_handle_int(ps2_dev *dev)
 				return B_INVOKE_SCHEDULER;
 			}
 
-			if (sPassthroughDevice->active
-				&& sPassthroughDevice->handle_int != NULL) {
+			if (guest_can_take_packets()) {
 				TRACE("SYNAPTICS: forward packet to passthrough device\n");
 				status_t status;
 
