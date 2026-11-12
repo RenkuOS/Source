@@ -1042,7 +1042,7 @@ void TransportView::_updateTimeSource() {
 		if(err < B_OK)
 			continue;
 
-		itemNode = *((media_node*)data);
+		memcpy((void*)&itemNode, data, sizeof(itemNode));
 		if(itemNode != tsNode)
 			continue;
 
@@ -1164,7 +1164,7 @@ void TransportView::_timeSourceDeleted(
 		if(err < B_OK)
 			continue;
 
-		itemNode = *((media_node*)data);
+		memcpy((void*)&itemNode, data, sizeof(itemNode));
 		if(itemNode.node != id)
 			continue;
 

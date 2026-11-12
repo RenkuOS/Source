@@ -2235,7 +2235,7 @@ inline void NodeManager::_handleConnectionMade(
 				"* NodeManager::_handleConnectionMade(): not enough data for output.\n"));
 			break;
 		}
-		output = *(media_output*)data;
+		memcpy((void*)&output, data, sizeof(output));
 
 		// fetch input
 		err = message->FindData("input", B_RAW_TYPE, n, &data, &dataSize);
@@ -2251,7 +2251,7 @@ inline void NodeManager::_handleConnectionMade(
 				"* NodeManager::_handleConnectionMade(): not enough data for input.\n"));
 			break;
 		}
-		input = *(media_input*)data;
+		memcpy((void*)&input, data, sizeof(input));
 
 		// look for existing Connection instance
 		Connection found;
@@ -2311,7 +2311,7 @@ inline void NodeManager::_handleConnectionBroken(
 				"* NodeManager::_handleConnectionBroken(): not enough data for source.\n"));
 			continue;
 		}
-		source = *(media_source*)data;
+		memcpy((void*)&source, data, sizeof(source));
 
 		// look up the connection +++++ SLOW +++++
 		Connection con;
@@ -2378,6 +2378,17 @@ NodeManager::_handleFormatChanged(BMessage *message)
 			"* NodeManager::_handleFormatChanged(): incomplete entry in message.\n"));
 		return;
 	}
+
+	// the data in the message does not have to be aligned
+	media_source sourceCopy;
+	memcpy((void*)&sourceCopy, source, sizeof(sourceCopy));
+	source = &sourceCopy;
+	media_destination destinationCopy;
+	memcpy((void*)&destinationCopy, destination, sizeof(destinationCopy));
+	destination = &destinationCopy;
+	media_format formatCopy;
+	memcpy((void*)&formatCopy, format, sizeof(formatCopy));
+	format = &formatCopy;
 
 	// find matching connection
 	for(con_map::const_iterator it = m_conSourceMap.begin();

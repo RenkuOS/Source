@@ -730,7 +730,7 @@ void NodeGroup::MessageReceived(
 						"  no timeSourceNode!\n"));
 					break;
 				}
-				timeSource = *(media_node*)data;
+				memcpy((void*)&timeSource, data, sizeof(timeSource));
 
 				setTimeSource(timeSource);
 			}

@@ -611,11 +611,13 @@ void InfoWindowManager::MessageReceived(
 			if (message->FindData("source", B_RAW_TYPE, &data, &dataSize) != B_OK) {
 				return;
 			}
-			const media_source source = *reinterpret_cast<const media_source *>(data);
+			media_source source;
+			memcpy((void*)&source, data, sizeof(source));
 			if (message->FindData("destination", B_RAW_TYPE, &data, &dataSize) != B_OK) {
 				return;
 			}
-			const media_destination destination = *reinterpret_cast<const media_destination *>(data);
+			media_destination destination;
+			memcpy((void*)&destination, data, sizeof(destination));
 			BWindow *window;
 			if (_findWindowFor(source, destination, &window)) {
 				window->Lock();
