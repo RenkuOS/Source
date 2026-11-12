@@ -2067,10 +2067,8 @@ encoder_dpms_set_dig(uint8 crtcID, int mode)
 				transmitter_dig_setup(connectorIndex, pll->pixelClock,
 					0, 0, ATOM_TRANSMITTER_ACTION_LCD_BLOFF);
 			}
-			if (connector_is_dp(connectorIndex) && !travisQuirk) {
-				// If not TRAVIS on < DCE 5, set_rx_power_state D3
-				ERROR("%s: TODO: dpms off set_rx_power_state D3\n", __func__);
-			}
+			if (connector_is_dp(connectorIndex) && !travisQuirk)
+				dp_set_rx_power_state(connectorIndex, DP_SET_POWER_D3);
 			if (info.dceMajor >= 4) {
 				// Disable transmitter
 				transmitter_dig_setup(connectorIndex, pll->pixelClock, 0, 0,
@@ -2083,10 +2081,9 @@ encoder_dpms_set_dig(uint8 crtcID, int mode)
 			}
 
 			if (connector_is_dp(connectorIndex)) {
-				if (travisQuirk) {
-					ERROR("%s: TODO: dpms off set_rx_power_state D3\n",
-						__func__);
-				}
+				// Travis takes the receiver down after the transmitter
+				if (travisQuirk)
+					dp_set_rx_power_state(connectorIndex, DP_SET_POWER_D3);
 				if (connector->type == VIDEO_CONNECTOR_EDP) {
 					// TODO: ATOM_TRANSMITTER_ACTION_POWER_OFF
 					ERROR("%s: TODO, edp_panel_power!\n", __func__);

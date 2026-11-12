@@ -24,7 +24,7 @@
 
 
 uint8 dpcd_reg_read(uint32 connectorIndex, uint32 address);
-void dpcd_reg_write(uint32 connectorIndex, uint32 address, uint8 value);
+status_t dpcd_reg_write(uint32 connectorIndex, uint32 address, uint8 value);
 
 // Communication over DisplayPort AUX channel
 status_t dp_aux_transaction(uint32 connectorIndex, dp_aux_msg* message);
@@ -38,6 +38,7 @@ uint32 dp_get_link_rate(uint32 connectorIndex, display_mode* mode);
 uint32 dp_get_lane_count(uint32 connectorIndex, display_mode* mode);
 uint32 dp_get_encoder_config(uint32 connectorIndex);
 uint8 dp_get_sink_type(uint32 connectorIndex);
+void dp_set_rx_power_state(uint32 connectorIndex, uint8 state);
 
 void dp_setup_connectors();
 

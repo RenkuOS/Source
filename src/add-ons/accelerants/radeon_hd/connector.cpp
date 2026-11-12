@@ -127,7 +127,8 @@ connector_pick_atom_hpdid(uint32 connectorIndex)
 	if (info.dceMajor >= 4
 		&& gGPIOInfo[hpdPinIndex]->valid) {
 
-		// See mmDC_GPIO_HPD_A in drm for register value
+		// See mmDC_GPIO_HPD_A in drm for register value. hwReg is a byte
+		// offset, while the SEA, VOL, and CAR values are dword indices.
 		uint32 targetReg = AVIVO_DC_GPIO_HPD_A;
 		if (info.dceMajor >= 13) {
 			ERROR("WARNING: CHECK NEW DCE mmDC_GPIO_HPD_A value!\n");
@@ -136,11 +137,11 @@ connector_pick_atom_hpdid(uint32 connectorIndex)
 			|| (info.dceMajor == 11 && info.dceMinor == 2))
 			targetReg = POL_mmDC_GPIO_HPD_A;
 		else if (info.dceMajor >= 11)
-			targetReg = CAR_mmDC_GPIO_HPD_A;
+			targetReg = CAR_mmDC_GPIO_HPD_A * 4;
 		else if (info.dceMajor >= 10)
-			targetReg = VOL_mmDC_GPIO_HPD_A;
+			targetReg = VOL_mmDC_GPIO_HPD_A * 4;
 		else if (info.dceMajor >= 8)
-			targetReg = SEA_mmDC_GPIO_HPD_A;
+			targetReg = SEA_mmDC_GPIO_HPD_A * 4;
 		else if (info.dceMajor >= 6)
 			targetReg = SI_DC_GPIO_HPD_A;
 		else if (info.dceMajor >= 4)

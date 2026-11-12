@@ -187,7 +187,7 @@ dp_aux_transaction(uint32 connectorIndex, dp_aux_msg* message)
 }
 
 
-void
+status_t
 dpcd_reg_write(uint32 connectorIndex, uint32 address, uint8 value)
 {
 	//TRACE("%s: connector(%" B_PRId32 "): 0x%" B_PRIx32 " -> 0x%" B_PRIx8 "\n",
@@ -205,6 +205,7 @@ dpcd_reg_write(uint32 connectorIndex, uint32 address, uint8 value)
 		ERROR("%s: error on DisplayPort aux write (0x%" B_PRIx32 ")\n",
 			__func__, result);
 	}
+	return result;
 }
 
 
@@ -214,6 +215,8 @@ dpcd_reg_read(uint32 connectorIndex, uint32 address)
 	//TRACE("%s: connector(%" B_PRId32 "): read 0x%" B_PRIx32 ".\n",
 	//	__func__, connectorIndex, address);
 	uint8 response[3];
+	memset(response, 0, sizeof(response));
+		// a failed read returns 0
 
 	dp_aux_msg message;
 	memset(&message, 0, sizeof(message));
@@ -451,6 +454,26 @@ dp_get_sink_type(uint32 connectorIndex)
 	dp_info* dpInfo = &gConnector[connectorIndex]->dpInfo;
 	return dp_encoder_service(ATOM_DP_ACTION_GET_SINK_TYPE, 0, 0,
 		dpInfo->auxPin);
+}
+
+
+void
+dp_set_rx_power_state(uint32 connectorIndex, uint8 state)
+{
+	// DP_SET_POWER is only defined from DPCD 1.1
+	if (gConnector[connectorIndex]->dpInfo.revision < DP_DPCD_REV_11)
+		return;
+
+	TRACE("%s: connector %" B_PRIu32 ", %s\n", __func__, connectorIndex,
+		state == DP_SET_POWER_D3 ? "D3" : "D0");
+
+	// A sink waking from D3 may not answer the first write
+	for (int attempt = 0; attempt < 3; attempt++) {
+		if (dpcd_reg_write(connectorIndex, DP_SET_POWER, state) == B_OK)
+			break;
+		snooze(1000);
+	}
+	snooze(1000);
 }
 
 
@@ -827,6 +850,9 @@ dp_link_train(uint8 crtcID)
 		return B_ERROR;
 	}
 
+	// Wake the sink before reading its DPCD, as DPMS off leaves it in D3
+	dp_set_rx_power_state(connectorIndex, DP_SET_POWER_D0);
+
 	dp->revision = dpcd_reg_read(connectorIndex, DP_DPCD_REV);
 	dp->trainingReadInterval
 		= dpcd_reg_read(connectorIndex, DP_TRAINING_AUX_RD_INTERVAL);
@@ -841,8 +867,7 @@ dp_link_train(uint8 crtcID)
 	// *** DisplayPort link training initialization
 
 	// Power up the DP sink
-	if (dp->revision >= DP_DPCD_REV_11)
-		dpcd_reg_write(connectorIndex, DP_SET_POWER, DP_SET_POWER_D0);
+	dp_set_rx_power_state(connectorIndex, DP_SET_POWER_D0);
 
 	// Possibly enable downspread on the sink
 	if ((dpcd_reg_read(connectorIndex, DP_MAX_DOWNSPREAD) & 0x1) != 0) {
@@ -881,8 +906,9 @@ dp_link_train(uint8 crtcID)
 	// Disable the training pattern on the sink
 	dpcd_reg_write(connectorIndex, DP_TRAINING_PATTERN_SET, DP_TRAINING_PATTERN_DISABLE);
 
-	dp_link_train_cr(connectorIndex);
-	dp_link_train_ce(connectorIndex, dpTPS3Supported);
+	status_t result = dp_link_train_cr(connectorIndex);
+	if (result == B_OK)
+		result = dp_link_train_ce(connectorIndex, dpTPS3Supported);
 
 	// *** DisplayPort link training finish
 	snooze(400);
@@ -899,7 +925,11 @@ dp_link_train(uint8 crtcID)
 			mode->timing.pixel_clock, 0, encoderConfig);
 	}
 
-	return B_OK;
+	if (result != B_OK) {
+		ERROR("%s: link training failed on connector %" B_PRIu32 "\n",
+			__func__, connectorIndex);
+	}
+	return result;
 }
 
 
