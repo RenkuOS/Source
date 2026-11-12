@@ -723,7 +723,7 @@ InstallerWindow::_LaunchBootManager()
 			BAlert* alert = new BAlert(
 				B_TRANSLATE("Failed to launch BootManager"),
 				B_TRANSLATE("BootManager, the application to configure the "
-					"Haiku boot menu, could not be launched."),
+					"RenkuOS boot menu, could not be launched."),
 				B_TRANSLATE("OK"), NULL, NULL, B_WIDTH_AS_USUAL, B_STOP_ALERT);
 			alert->SetFlags(alert->Flags() | B_CLOSE_ON_ESCAPE);
 			alert->Go();
@@ -826,7 +826,7 @@ InstallerWindow::_UpdateControls()
 			"from '%1s' onto '%2s'."), srcItem->Name(), dstItem->Name());
 	} else if (srcItem != NULL) {
 		BString partitionRequiredHaiku = B_TRANSLATE(
-			"Haiku has to be installed on a partition that uses "
+			"RenkuOS has to be installed on a partition that uses "
 			"the Be File System, but there are currently no such "
 			"partitions available on your system.");
 

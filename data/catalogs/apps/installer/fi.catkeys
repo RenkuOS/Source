@@ -6,9 +6,9 @@ This operating system has to be installed on a partition that uses the Be File S
 The mount point could not be retrieved.	InstallProgress		Liittämispisteen noutaminen epäonnistui.
 <none>	InstallerWindow	No partition available	<ei mitään>
 Installation completed. Boot sector has been written to '%s'. Press 'Restart' to restart the computer or choose a new target volume to perform another installation.	InstallerWindow		Asennus valmis. Käynnistyssektori on kirjoitettu kohteeseen ’%s’. Paina ’Käynnistä uudelleen’ tietokoneen käynnistämiseksi tai valitse uusi kohdetaltio toisen asennuksen suorittamiseksi.
-Haiku has to be installed on a partition that uses the Be File System, but there are currently no such partitions available on your system.	InstallerWindow		Haiku on asennettava osiolle, joka käyttää Be-tiedostojärjestelmää, mutta tällä hetkellä järjestelmässäsi ei ole saatavissa sellaisia osioita.
+RenkuOS has to be installed on a partition that uses the Be File System, but there are currently no such partitions available on your system.	InstallerWindow		RenkuOS on asennettava osiolle, joka käyttää Be-tiedostojärjestelmää, mutta tällä hetkellä järjestelmässäsi ei ole saatavissa sellaisia osioita.
 Please choose target	InstallerWindow		Valitse kohde
-BootManager, the application to configure the Haiku boot menu, could not be launched.	InstallerWindow		Käynnistyshallinnan, Haikun käynnistysvalikon asettamissovelluksen käynnistäminen epäonnistui. 
+BootManager, the application to configure the RenkuOS boot menu, could not be launched.	InstallerWindow		Käynnistyshallinnan, RenkuOS:n käynnistysvalikon asettamissovelluksen käynnistäminen epäonnistui. 
 Cancel	InstallProgress		Peru
 Are you sure you want to to stop the installation?	InstallerWindow		Oletko varma, että haluat pysäyttää asennuksen?
 Installer	System name		Asennusohjelma
@@ -25,7 +25,7 @@ Click on 'Set up partitions…' to create one.	InstallerWindow		Napsauta valinta
 Welcome to the Haiku Installer!\n\n	InstallerApp		Tervetuloa Haiku-asennusohjelmaan!\n\n
 ?? of ??	InstallerWindow	Unknown progress	?? / ??
 DriveSetup, the application to configure disk partitions, could not be launched.	InstallerWindow		Levyasema-asetukset -sovelluksen käynnistäminen osioiden asettamiseksi epäonnistui.
-The target volume is not empty. If it already contains a Haiku installation, it will be overwritten. This will remove all installed software.\n\nIf you want to upgrade your system without removing installed software, see the Haiku User Guide's topic on the application \"SoftwareUpdater\" for update instructions.\n\nAre you sure you want to continue the installation?	InstallProgress		Kohdetaltio ei ole tyhjä. Jos se sisältää jo Haiku-asennuksen, se korvataan uudella asennuksella. Se poistaa kaiken asennetun ohjelmiston.\n\nJos haluat päivittää järjestelmäsi poistamatta asennettua ohjelmistoa, katso Haikun käyttöohjeen aihetta sovelluksesta \"Ohjelmistopäivittäjä\" päivityskäskyistä.\n\nOletko varma, että haluat jatkaa asennusta?
+The target volume is not empty. If it already contains a RenkuOS installation, it will be overwritten. This will remove all installed software.\n\nIf you want to upgrade your system without removing installed software, see the RenkuOS User Guide's topic on the application \"SoftwareUpdater\" for update instructions.\n\nAre you sure you want to continue the installation?	InstallProgress		Kohdetaltio ei ole tyhjä. Jos se sisältää jo RenkuOS-asennuksen, se korvataan uudella asennuksella. Se poistaa kaiken asennetun ohjelmiston.\n\nJos haluat päivittää järjestelmäsi poistamatta asennettua ohjelmistoa, katso RenkuOS:n käyttöohjeen aihetta sovelluksesta \"Ohjelmistopäivittäjä\" päivityskäskyistä.\n\nOletko varma, että haluat jatkaa asennusta?
 Quit DriveSetup	InstallerWindow		Poistu Levyasema-asetuksista
 Write boot sector	InstallerWindow		Kirjoita käynnistyssektori
 %1ld of %2ld	InstallerWindow	number of files copied	%1ld / %2ld

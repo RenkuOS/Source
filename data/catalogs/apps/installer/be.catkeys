@@ -6,9 +6,9 @@ This operating system has to be installed on a partition that uses the Be File S
 The mount point could not be retrieved.	InstallProgress		Не ўдалося атрымаць пункт мантавання.
 <none>	InstallerWindow	No partition available	<няма>
 Installation completed. Boot sector has been written to '%s'. Press 'Restart' to restart the computer or choose a new target volume to perform another installation.	InstallerWindow		Усталёўка завершаная. Загрузачны сэктар быў запісаны на '%s'. Перазапусціце кампутар альбо абярыце наступны падзел для яшчэ адной усталёўкі.
-Haiku has to be installed on a partition that uses the Be File System, but there are currently no such partitions available on your system.	InstallerWindow		Haiku мае быць інсталяванай на раздзел фармату Be File System, але ў Вашай сістэме адпаведны раздзел адсутнічае. 
+RenkuOS has to be installed on a partition that uses the Be File System, but there are currently no such partitions available on your system.	InstallerWindow		RenkuOS мае быць інсталяванай на раздзел фармату Be File System, але ў Вашай сістэме адпаведны раздзел адсутнічае. 
 Please choose target	InstallerWindow		Калі ласка, выберыце раздзел
-BootManager, the application to configure the Haiku boot menu, could not be launched.	InstallerWindow		Не ўдалося запусціць BootManager, прыладу для наладкі загрузачнага меню Haiku.
+BootManager, the application to configure the RenkuOS boot menu, could not be launched.	InstallerWindow		Не ўдалося запусціць BootManager, прыладу для наладкі загрузачнага меню RenkuOS.
 Cancel	InstallProgress		Адмена
 Are you sure you want to to stop the installation?	InstallerWindow		Сапраўды жадаеце спыніць усталёўку?
 Installer	System name		Усталёўшчык

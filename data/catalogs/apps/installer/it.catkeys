@@ -7,13 +7,13 @@ The mount point could not be retrieved.	InstallProgress		Impossibile recuperare 
 <none>	InstallerWindow	No partition available	<nessuna>
 Installation completed. Boot sector has been written to '%s'. Press 'Restart' to restart the computer or choose a new target volume to perform another installation.	InstallerWindow		Installazione completata. Il settore di avvio è stato scritto in '%s'. Premi 'Riavvia' per riavviare il computer o scegli un nuovo volume di destinazione per eseguire un'altra installazione.
 Are you sure you want to install onto the current boot disk? The %appname% will have to reboot your machine if you proceed.	InstallProgress		Vuoi davvero eseguire l'installazione sul disco di avvio corrente? Se procedi, %appname% richiederà il riavvio del computer.
-Haiku has to be installed on a partition that uses the Be File System, but there are currently no such partitions available on your system.	InstallerWindow		Haiku deve essere installato su una partizione che utilizza il Be File System, ma al momento non ci sono tali partizioni disponibili sul tuo sistema.
+RenkuOS has to be installed on a partition that uses the Be File System, but there are currently no such partitions available on your system.	InstallerWindow		RenkuOS deve essere installato su una partizione che utilizza il Be File System, ma al momento non ci sono tali partizioni disponibili sul tuo sistema.
 Please choose target	InstallerWindow		Scegli destinazione
-BootManager, the application to configure the Haiku boot menu, could not be launched.	InstallerWindow		Impossibile avviare BootManager, l'applicazione per configurare il menu di avvio di Haiku.
+BootManager, the application to configure the RenkuOS boot menu, could not be launched.	InstallerWindow		Impossibile avviare BootManager, l'applicazione per configurare il menu di avvio di RenkuOS.
 Cancel	InstallProgress		Annulla
 Failed to rename existing loader!	InstallProgress		Impossibile rinominare il programma di avvio esistente!
 Are you sure you want to to stop the installation?	InstallerWindow		Sei sicuro di voler interrompere l'installazione?
-Installer	System name		Installazione di Haiku
+Installer	System name		Installazione di RenkuOS
 EFI loader successfully installed!	InstallProgress		Il programma di avvio EFI è stato installato correttamente!
 Press the 'Begin' button to install from '%1s' onto '%2s'.	InstallerWindow		Premi il pulsante 'Inizia' per installare da '%1s' a '%2s'.
 Failed to read EFI loader file!	InstallProgress		Impossibile leggere il file del programma di avvio EFI!
@@ -30,7 +30,7 @@ Click on 'Set up partitions…' to create one.	InstallerWindow		Fare clic su 'Im
 Welcome to the Haiku Installer!\n\n	InstallerApp		Benvenuto nel programma di installazione di Haiku!\n\n
 ?? of ??	InstallerWindow	Unknown progress	?? di ??
 DriveSetup, the application to configure disk partitions, could not be launched.	InstallerWindow		Impossibile lanciare Gestione Disco, l'applicazione per configurare le partizioni dei dischi.
-The target volume is not empty. If it already contains a Haiku installation, it will be overwritten. This will remove all installed software.\n\nIf you want to upgrade your system without removing installed software, see the Haiku User Guide's topic on the application \"SoftwareUpdater\" for update instructions.\n\nAre you sure you want to continue the installation?	InstallProgress		Il volume di destinazione non è vuoto. Se contiene un'installazione precedente di Haiku questa verrà sovrascritta. Ciò ne rimuoverà tutto il software installato.\n\nSe vuoi aggiornare le il tuo sistema senza rimuoverne il software installato, consulta la Guida Utente Haiku sulla sezione dell'applicazione \"Aggiornamento Software\" per le istruzioni sull'aggiornamento.\n\nSei sicuro di voler proseguire con l'installazione?
+The target volume is not empty. If it already contains a RenkuOS installation, it will be overwritten. This will remove all installed software.\n\nIf you want to upgrade your system without removing installed software, see the RenkuOS User Guide's topic on the application \"SoftwareUpdater\" for update instructions.\n\nAre you sure you want to continue the installation?	InstallProgress		Il volume di destinazione non è vuoto. Se contiene un'installazione precedente di RenkuOS questa verrà sovrascritta. Ciò ne rimuoverà tutto il software installato.\n\nSe vuoi aggiornare le il tuo sistema senza rimuoverne il software installato, consulta la Guida Utente RenkuOS sulla sezione dell'applicazione \"Aggiornamento Software\" per le istruzioni sull'aggiornamento.\n\nSei sicuro di voler proseguire con l'installazione?
 Quit DriveSetup	InstallerWindow		Esci da Gestione Disco
 Installation completed. Boot sector has been written to '%s'. Press 'Quit' to leave the %appname% or choose a new target volume to perform another installation.	InstallerWindow		Installazione completata. Il settore di avvio è stato scritto su "%s". Premi "Esci" per uscire da %appname% oppure seleziona un nuovo volume di destinazione per eseguire un'altra installazione.
 Write boot sector	InstallerWindow		Scrivi settore d'avvio

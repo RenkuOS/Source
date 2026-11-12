@@ -6,9 +6,9 @@ This operating system has to be installed on a partition that uses the Be File S
 The mount point could not be retrieved.	InstallProgress		Monteringspunktet kunne ikke hentes.
 <none>	InstallerWindow	No partition available	<ingen>
 Installation completed. Boot sector has been written to '%s'. Press 'Restart' to restart the computer or choose a new target volume to perform another installation.	InstallerWindow		Installasjonen fullført. Oppstartssektoren er skrevet til '%s'. Trykk "Start på nytt" for å starte datamaskinen på nytt, eller velg et nytt målvolum for å foreta en ny installasjon.
-Haiku has to be installed on a partition that uses the Be File System, but there are currently no such partitions available on your system.	InstallerWindow		Haiku må installeres på en partisjon som bruker Be-filsystemet, men det er for øyeblikket ingen slike partisjoner tilgjengelig på systemet ditt.
+RenkuOS has to be installed on a partition that uses the Be File System, but there are currently no such partitions available on your system.	InstallerWindow		RenkuOS må installeres på en partisjon som bruker Be-filsystemet, men det er for øyeblikket ingen slike partisjoner tilgjengelig på systemet ditt.
 Please choose target	InstallerWindow		Vennligst velg mål
-BootManager, the application to configure the Haiku boot menu, could not be launched.	InstallerWindow		Oppstartsbehandler, programmet for å konfigurere Haiku-oppstartsmenyen, kunne ikke startes.
+BootManager, the application to configure the RenkuOS boot menu, could not be launched.	InstallerWindow		Oppstartsbehandler, programmet for å konfigurere RenkuOS-oppstartsmenyen, kunne ikke startes.
 Cancel	InstallProgress		Avbryt
 Are you sure you want to to stop the installation?	InstallerWindow		Er du sikker på at du vil stoppe installasjonen?
 Installer	System name		Installer
@@ -25,7 +25,7 @@ Click on 'Set up partitions…' to create one.	InstallerWindow		Klikk på "Sett 
 Welcome to the Haiku Installer!\n\n	InstallerApp		Velkommen til Haikus installasjonsprogram!\n\n
 ?? of ??	InstallerWindow	Unknown progress	?? av ??
 DriveSetup, the application to configure disk partitions, could not be launched.	InstallerWindow		DriveSetup, programmet for å konfigurere diskpartisjoner, kunne ikke startes.
-The target volume is not empty. If it already contains a Haiku installation, it will be overwritten. This will remove all installed software.\n\nIf you want to upgrade your system without removing installed software, see the Haiku User Guide's topic on the application \"SoftwareUpdater\" for update instructions.\n\nAre you sure you want to continue the installation?	InstallProgress		Målvolumet er ikke tomt. Hvis det allerede inneholder en Haiku-installasjon, vil den bli overskrevet. Dette vil fjerne all installert programvare.\n\nHvis du ønsker å oppgradere systemet ditt uten å fjerne installert programvare, se Haiku-brukerveiledningens emne om programmet \"SoftwareUpdater\" for ingsinstruksjoner.\n\nEr du sikker på at du vil fortsette installasjonen?
+The target volume is not empty. If it already contains a RenkuOS installation, it will be overwritten. This will remove all installed software.\n\nIf you want to upgrade your system without removing installed software, see the RenkuOS User Guide's topic on the application \"SoftwareUpdater\" for update instructions.\n\nAre you sure you want to continue the installation?	InstallProgress		Målvolumet er ikke tomt. Hvis det allerede inneholder en RenkuOS-installasjon, vil den bli overskrevet. Dette vil fjerne all installert programvare.\n\nHvis du ønsker å oppgradere systemet ditt uten å fjerne installert programvare, se RenkuOS-brukerveiledningens emne om programmet \"SoftwareUpdater\" for ingsinstruksjoner.\n\nEr du sikker på at du vil fortsette installasjonen?
 Quit DriveSetup	InstallerWindow		Avslutt Diskoppsett
 Write boot sector	InstallerWindow		Skriv oppstartssektor
 %1ld of %2ld	InstallerWindow	number of files copied	%1ld av %2ld
