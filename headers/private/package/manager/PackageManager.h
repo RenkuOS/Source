@@ -105,6 +105,9 @@ public:
 			void				Update(const BSolverPackageSpecifierList&
 									packages);
 			void				FullSync();
+			void				FullSync(bool reinstall);
+			void				Reinstall(const char* const* packages,
+									int packageCount);
 
 			void				VerifyInstallation();
 
@@ -130,12 +133,17 @@ protected:
 private:
 			void				_HandleProblems();
 			void				_AnalyzeResult();
+			void				_AddReinstalls(
+									const BStringList* names = NULL,
+									BStringList* added = NULL);
 			void				_ConfirmChanges(bool fromMostSpecific = false);
 			void				_ApplyPackageChanges(
-									bool fromMostSpecific = false);
+									bool fromMostSpecific = false,
+									bool optionalReinstalls = true);
 			void				_PreparePackageChanges(
 									InstalledRepository&
-										installationRepository);
+										installationRepository,
+									bool optionalReinstalls);
 			void				_CommitPackageChanges(Transaction& transaction);
 
 			void				_ClonePackageFile(

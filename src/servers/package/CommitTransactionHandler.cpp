@@ -1822,9 +1822,26 @@ CommitTransactionHandler::_ChangePackageActivationIOCtl(
 	const PackageSet& packagesToActivate,
 	const PackageSet& packagesToDeactivate)
 {
+	// A package replaced by a file of the same name (a reinstall) has to be
+	// reactivated: packagefs refuses to activate a name that is still active.
+	PackageSet packagesToReactivate;
+	PackageSet packagesReplaced;
+	for (PackageSet::iterator it = packagesToActivate.begin();
+		 it != packagesToActivate.end(); ++it) {
+		for (PackageSet::iterator oldIt = packagesToDeactivate.begin();
+			 oldIt != packagesToDeactivate.end(); ++oldIt) {
+			if ((*it)->FileName() == (*oldIt)->FileName()) {
+				packagesToReactivate.insert(*it);
+				packagesReplaced.insert(*oldIt);
+				break;
+			}
+		}
+	}
+
 	// compute the size of the allocation we need for the activation change
 	// request
-	int32 itemCount = packagesToActivate.size() + packagesToDeactivate.size();
+	int32 itemCount = packagesToActivate.size() + packagesToDeactivate.size()
+		- packagesReplaced.size();
 	size_t requestSize = sizeof(PackageFSActivationChangeRequest)
 		+ itemCount * sizeof(PackageFSActivationChangeItem);
 
@@ -1835,7 +1852,8 @@ CommitTransactionHandler::_ChangePackageActivationIOCtl(
 
 	for (PackageSet::iterator it = packagesToDeactivate.begin();
 		 it != packagesToDeactivate.end(); ++it) {
-		requestSize += (*it)->FileName().Length() + 1;
+		if (packagesReplaced.find(*it) == packagesReplaced.end())
+			requestSize += (*it)->FileName().Length() + 1;
 	}
 
 	// allocate and prepare the request
@@ -1852,14 +1870,20 @@ CommitTransactionHandler::_ChangePackageActivationIOCtl(
 
 	for (PackageSet::iterator it = packagesToActivate.begin();
 		it != packagesToActivate.end(); ++it, item++) {
-		_FillInActivationChangeItem(item, PACKAGE_FS_ACTIVATE_PACKAGE, *it,
-			nameBuffer);
+		bool reactivate
+			= packagesToReactivate.find(*it) != packagesToReactivate.end();
+		_FillInActivationChangeItem(item, reactivate
+				? PACKAGE_FS_REACTIVATE_PACKAGE : PACKAGE_FS_ACTIVATE_PACKAGE,
+			*it, nameBuffer);
 	}
 
 	for (PackageSet::iterator it = packagesToDeactivate.begin();
-		it != packagesToDeactivate.end(); ++it, item++) {
+		it != packagesToDeactivate.end(); ++it) {
+		if (packagesReplaced.find(*it) != packagesReplaced.end())
+			continue;
 		_FillInActivationChangeItem(item, PACKAGE_FS_DEACTIVATE_PACKAGE, *it,
 			nameBuffer);
+		item++;
 	}
 
 	// issue the request
