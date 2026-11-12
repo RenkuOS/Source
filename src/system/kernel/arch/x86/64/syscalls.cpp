@@ -19,8 +19,9 @@
 #include <smp.h>
 
 
-// SYSCALL handler (in interrupts.S).
+// SYSCALL handlers (in interrupts.S).
 extern "C" void x86_64_syscall_entry(void);
+extern "C" void x86_64_syscall32_unsupported(void);
 
 
 #ifdef _COMPAT_MODE
@@ -63,9 +64,17 @@ init_syscall_registers(void* dummy, int cpuNum)
 	// Entry point address.
 	x86_write_msr(IA32_MSR_LSTAR, (addr_t)x86_64_syscall_entry);
 
+	// Entry point for SYSCALL from 32-bit code. AMD CPUs support that
+	// (AMD64 APM Vol. 2, 24593, section 6.1.1, "CSTAR"), while Intel ones
+	// raise #UD (Intel SDM Vol. 2B, SYSCALL, "Compatibility Mode
+	// Exceptions"). Every team can run 32-bit code, since the GDT always has
+	// a 32-bit user code segment, so CSTAR must always point at a handler.
+	// Left unset, SYSCALL would enter kernel mode at whatever address the
+	// register held.
 #ifdef _COMPAT_MODE
-	// Syscall compat entry point address.
 	x86_write_msr(IA32_MSR_CSTAR, (addr_t)x86_64_syscall32_entry);
+#else
+	x86_write_msr(IA32_MSR_CSTAR, (addr_t)x86_64_syscall32_unsupported);
 #endif
 
 	// Segments that will be set upon entry and return. This is very strange

@@ -633,6 +633,18 @@ FUNCTION(x86_64_syscall_entry):
 FUNCTION_END(x86_64_syscall_entry)
 
 
+/*!	SYSCALL from 32-bit code in a kernel without ia32 support (CSTAR, see
+	init_syscall_registers()). The CPU enters it in kernel mode, but still on
+	the user stack and with the user GS base, so it must use neither. It
+	returns to the caller at once with SYSRET in 32-bit operand size, which
+	takes the return EIP from ECX and RFLAGS from R11, where SYSCALL put them.
+	Interrupts are masked on entry (IA32_MSR_FMASK).
+*/
+FUNCTION(x86_64_syscall32_unsupported):
+	sysretl
+FUNCTION_END(x86_64_syscall32_unsupported)
+
+
 /*!	\fn void x86_return_to_userland(iframe* frame)
 	\brief Returns to the userland environment given by \a frame.
 
