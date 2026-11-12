@@ -29,6 +29,17 @@ class node_input;
 class node_output;
 
 
+// One place a connection can go: a bus as the driver groups its channels
+// (the jacks this node always had), or a single channel. Every port keeps one
+// free jack, so it takes any number of connections (see _KeepOneFreeInput()).
+struct channel_port {
+	int32				channelId;
+		// first device channel, as in the driver's channel list
+	int32				channelCount;
+	char				name[B_MEDIA_NAME_LENGTH];
+};
+
+
 class MultiAudioNode : public BBufferConsumer, public BBufferProducer,
 		public BTimeSource,	public BMediaEventLooper, public BControllable {
 protected:
@@ -196,6 +207,17 @@ private:
 										.record_buffers
 											[cycle][channel].stride; }
 
+			void				_AddPort(channel_port* ports, int32 capacity,
+									int32& count, int32 channelId,
+									int32 channelCount, const char* name);
+			node_input*			_AddInput(int32 port, int32 id);
+			node_output*		_AddOutput(int32 port, int32 id);
+			void				_KeepOneFreeInput(int32 port);
+			void				_KeepOneFreeOutput(int32 port);
+			bool				_ChannelFed(int32 channel,
+									const node_input* except);
+			void				_SilenceChannel(int32 channel);
+
 			void				_WriteZeros(node_input& input,
 									uint32 bufferCycle);
 			void				_FillWithZeros(node_input& input);
@@ -206,7 +228,7 @@ private:
 			void				_WriteToRing(node_input& input,
 									BBuffer* buffer, int64 slotFrame);
 			void				_PlayFromRing(node_input& input,
-									int64 slotFrame);
+									int64 slotFrame, bool* fed);
 			bigtime_t			_RecordStartTime(
 									const multi_buffer_info& info,
 									node_output& output);
@@ -264,6 +286,19 @@ private:
 
 			bigtime_t 			fLatency;
 			BList				fOutputs;
+
+			channel_port*		fInputPorts;
+			int32				fInputPortCount;
+			channel_port*		fOutputPorts;
+			int32				fOutputPortCount;
+				// allocated in NodeRegistered(), two per device channel at
+				// most: a port per bus and one per channel of a bus
+			int32				fNextInputId;
+			int32				fNextOutputId;
+				// ids for the jacks added after NodeRegistered(); the first
+				// jack of each port keeps a fixed id, so a saved default
+				// output channel ("output 0" = id 0) still finds its jack
+
 			media_format 		fOutputPreferredFormat;
 			media_format 		fInputPreferredFormat;
 			int32				fActiveOutputs;

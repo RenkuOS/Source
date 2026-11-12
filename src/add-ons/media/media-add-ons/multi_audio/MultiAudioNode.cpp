@@ -10,6 +10,7 @@
 #include "MultiAudioNode.h"
 
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -83,6 +84,17 @@ record_buffer_bytes(uint32 frames, const media_format& format)
 }
 
 
+// The same for a playback input: a producer sends its own channels only. The
+// node used to give every input the length of a stereo buffer, so a mono
+// input asked for twice the frames a buffer plays, and every buffer a mono
+// producer sent was refused as the wrong size.
+static size_t
+playback_buffer_bytes(uint32 frames, const media_format& format)
+{
+	return record_buffer_bytes(frames, format);
+}
+
+
 // This represents a hardware output.
 class node_input {
 public:
@@ -90,6 +102,10 @@ public:
 	~node_input();
 
 	int32				fChannelId;
+	int32				fPort;
+		// index in fInputPorts
+	bool				fClock;
+		// this jack's exchanges drive the time source, connected or not
 	media_input			fInput;
 	media_format 		fPreferredFormat;
 	media_format		fFormat;
@@ -121,6 +137,9 @@ public:
 	uint32				fRingFrames;
 	int64				fNextWriteFrame;
 		// where the last buffer written ended; -1 when there is none
+	int64				fLoopOffset;
+		// for our own capture played back here: how many frames later than
+		// recorded it plays (see _WriteToRing()); -1 until the first buffer
 };
 
 
@@ -131,6 +150,8 @@ public:
 	~node_output();
 
 	int32				fChannelId;
+	int32				fPort;
+		// index in fOutputPorts
 	media_output		fOutput;
 	media_format 		fPreferredFormat;
 
@@ -204,6 +225,9 @@ node_input::node_input(media_input& input, media_format preferredFormat)
 	CALLED();
 	fInput = input;
 	fPreferredFormat = preferredFormat;
+	fChannelId = 0;
+	fPort = -1;
+	fClock = false;
 	fBufferCycle = 1;
 	fOldBufferCycle = -1;
 	for (int32 i = 0; i < kInputQueueDepth; i++)
@@ -214,6 +238,7 @@ node_input::node_input(media_input& input, media_format preferredFormat)
 	fRing = NULL;
 	fRingFrames = 0;
 	fNextWriteFrame = -1;
+	fLoopOffset = -1;
 }
 
 
@@ -221,6 +246,7 @@ node_input::~node_input()
 {
 	CALLED();
 	free(fRing);
+	delete fResampler;
 }
 
 
@@ -235,6 +261,9 @@ node_output::node_output(media_output& output, media_format preferredFormat)
 	CALLED();
 	fOutput = output;
 	fPreferredFormat = preferredFormat;
+	fChannelId = 0;
+	fPort = -1;
+	fSamplesSent = 0;
 	fBufferCycle = 1;
 	fOldBufferCycle = -1;
 	fResampler = NULL;
@@ -245,6 +274,7 @@ node_output::node_output(media_output& output, media_format preferredFormat)
 node_output::~node_output()
 {
 	CALLED();
+	delete fResampler;
 }
 
 
@@ -259,6 +289,12 @@ MultiAudioNode::MultiAudioNode(BMediaAddOn* addon, const char* name,
 	BBufferProducer(B_MEDIA_RAW_AUDIO),
 	BMediaEventLooper(),
 	fBufferLock("multi audio buffers"),
+	fInputPorts(NULL),
+	fInputPortCount(0),
+	fOutputPorts(NULL),
+	fOutputPortCount(0),
+	fNextInputId(0),
+	fNextOutputId(0),
 	fActiveOutputs(0),
 	fPlayFrame(-1),
 	fQuitThread(0),
@@ -346,6 +382,9 @@ MultiAudioNode::~MultiAudioNode()
 
 	_StopOutputThread();
 	BMediaEventLooper::Quit();
+
+	delete[] fInputPorts;
+	delete[] fOutputPorts;
 }
 
 
@@ -450,133 +489,141 @@ MultiAudioNode::NodeRegistered()
 		return;
 	}
 
-	node_input *currentInput = NULL;
-	int32 currentId = 0;
+	// The ports (see channel_port). First the buses, grouped from the
+	// driver's channel designations as before: their jacks keep the ids and
+	// names they always had ("output 0" is id 0), so a saved default output
+	// channel still finds its jack, and they are listed first because the
+	// media server looks for that jack among the first ten free inputs only.
+	// Then a port of its own for each channel of a bus of two or more, so
+	// every channel can be wired by itself. The first jack of port p has id p.
+	const multi_description& description = fDevice->Description();
+	int32 outputChannels = description.output_channel_count;
+	int32 inputChannels = description.input_channel_count;
 
-	for (int32 i = 0; i < fDevice->Description().output_channel_count; i++) {
-		if (currentInput == NULL
-			|| (fDevice->Description().channels[i].designations
-					& B_CHANNEL_MONO_BUS) != 0
-			|| ((fDevice->Description().channels[currentId].designations
+	int32 inputCapacity = 2 * outputChannels;
+	int32 outputCapacity = 2 * inputChannels;
+	fInputPorts = new(std::nothrow) channel_port[inputCapacity];
+	fOutputPorts = new(std::nothrow) channel_port[outputCapacity];
+	if (fInputPorts == NULL || fOutputPorts == NULL) {
+		ReportError(B_NODE_IN_DISTRESS);
+		return;
+	}
+
+	int32 currentId = 0;
+	for (int32 i = 0; i < outputChannels; i++) {
+		if (fInputPortCount == 0
+			|| (description.channels[i].designations & B_CHANNEL_MONO_BUS) != 0
+			|| ((description.channels[currentId].designations
 					& B_CHANNEL_STEREO_BUS) != 0
-				&& ((fDevice->Description().channels[i].designations
+				&& ((description.channels[i].designations
 						& B_CHANNEL_LEFT) != 0
-					|| (fDevice->Description().channels[i].designations
+					|| (description.channels[i].designations
 						& B_CHANNEL_STEREO_BUS) == 0))
-			|| ((fDevice->Description().channels[currentId].designations
+			|| ((description.channels[currentId].designations
 					& B_CHANNEL_SURROUND_BUS) != 0
-				&& ((fDevice->Description().channels[i].designations
+				&& ((description.channels[i].designations
 						& B_CHANNEL_LEFT) != 0
-					|| (fDevice->Description().channels[i].designations
+					|| (description.channels[i].designations
 						& B_CHANNEL_SURROUND_BUS) == 0))) {
 			PRINT(("NodeRegistered(): creating an input for %" B_PRIi32 "\n",
 				i));
 			PRINT(("%" B_PRId32 "\t%d\t0x%" B_PRIx32 "\t0x%" B_PRIx32 "\n",
-				fDevice->Description().channels[i].channel_id,
-				fDevice->Description().channels[i].kind,
-				fDevice->Description().channels[i].designations,
-				fDevice->Description().channels[i].connectors));
+				description.channels[i].channel_id,
+				description.channels[i].kind,
+				description.channels[i].designations,
+				description.channels[i].connectors));
 
-			media_input* input = new media_input;
-
-			input->format = fOutputPreferredFormat;
-			input->destination.port = ControlPort();
-			input->destination.id = fInputs.CountItems();
-			input->node = Node();
-			sprintf(input->name, "output %" B_PRId32, input->destination.id);
-
-			currentInput = new node_input(*input, fOutputPreferredFormat);
-			currentInput->fPreferredFormat.u.raw_audio.channel_count = 1;
-			currentInput->fFormat = currentInput->fPreferredFormat;
-			currentInput->fInput.format = currentInput->fPreferredFormat;
-
-			delete currentInput->fResampler;
-			currentInput->fResampler = new
-				Resampler(currentInput->fPreferredFormat.AudioFormat(),
-					fOutputPreferredFormat.AudioFormat());
-
-			currentInput->fChannelId
-				= fDevice->Description().channels[i].channel_id;
-			fInputs.AddItem(currentInput);
-
+			char name[B_MEDIA_NAME_LENGTH];
+			snprintf(name, sizeof(name), "output %" B_PRId32, fInputPortCount);
+			_AddPort(fInputPorts, inputCapacity, fInputPortCount,
+				description.channels[i].channel_id, 1, name);
 			currentId = i;
 		} else {
 			PRINT(("NodeRegistered(): adding a channel\n"));
-			currentInput->fPreferredFormat.u.raw_audio.channel_count++;
-			currentInput->fFormat = currentInput->fPreferredFormat;
-			currentInput->fInput.format = currentInput->fPreferredFormat;
+			fInputPorts[fInputPortCount - 1].channelCount++;
 		}
-		currentInput->fInput.format.u.raw_audio.format
-			= media_raw_audio_format::wildcard.format;
+	}
+	int32 buses = fInputPortCount;
+	for (int32 bus = 0; bus < buses; bus++) {
+		if (fInputPorts[bus].channelCount < 2)
+			continue;
+		for (int32 i = 0; i < fInputPorts[bus].channelCount; i++) {
+			int32 channelId = fInputPorts[bus].channelId + i;
+			char name[B_MEDIA_NAME_LENGTH];
+			snprintf(name, sizeof(name), "playback %" B_PRId32, channelId + 1);
+			_AddPort(fInputPorts, inputCapacity, fInputPortCount, channelId,
+				1, name);
+		}
 	}
 
-	node_output *currentOutput = NULL;
 	currentId = 0;
-
-	for (int32 i = fDevice->Description().output_channel_count;
-			i < fDevice->Description().output_channel_count
-				+ fDevice->Description().input_channel_count; i++) {
-		if (currentOutput == NULL
-			|| (fDevice->Description().channels[i].designations
-					& B_CHANNEL_MONO_BUS) != 0
-			|| ((fDevice->Description().channels[currentId].designations
+	for (int32 i = outputChannels; i < outputChannels + inputChannels; i++) {
+		if (fOutputPortCount == 0
+			|| (description.channels[i].designations & B_CHANNEL_MONO_BUS) != 0
+			|| ((description.channels[currentId].designations
 					& B_CHANNEL_STEREO_BUS) != 0
-				&& ((fDevice->Description().channels[i].designations
+				&& ((description.channels[i].designations
 						& B_CHANNEL_LEFT) != 0
-					|| (fDevice->Description().channels[i].designations
+					|| (description.channels[i].designations
 						& B_CHANNEL_STEREO_BUS) == 0))
-			|| ((fDevice->Description().channels[currentId].designations
+			|| ((description.channels[currentId].designations
 					& B_CHANNEL_SURROUND_BUS) != 0
-				&& ((fDevice->Description().channels[i].designations
+				&& ((description.channels[i].designations
 						& B_CHANNEL_LEFT) != 0
-					|| (fDevice->Description().channels[i].designations
+					|| (description.channels[i].designations
 						& B_CHANNEL_SURROUND_BUS) == 0))) {
 			PRINT(("NodeRegistered(): creating an output for %" B_PRIi32 "\n",
 				i));
 			PRINT(("%" B_PRId32 "\t%d\t0x%" B_PRIx32 "\t0x%" B_PRIx32 "\n",
-				fDevice->Description().channels[i].channel_id,
-				fDevice->Description().channels[i].kind,
-				fDevice->Description().channels[i].designations,
-				fDevice->Description().channels[i].connectors));
+				description.channels[i].channel_id,
+				description.channels[i].kind,
+				description.channels[i].designations,
+				description.channels[i].connectors));
 
-			media_output *output = new media_output;
-
-			output->format = fInputPreferredFormat;
-			output->destination = media_destination::null;
-			output->source.port = ControlPort();
-			output->source.id = fOutputs.CountItems();
-			output->node = Node();
-			sprintf(output->name, "input %" B_PRId32, output->source.id);
-
-			currentOutput = new node_output(*output, fInputPreferredFormat);
-			currentOutput->fPreferredFormat.u.raw_audio.channel_count = 1;
-			currentOutput->fOutput.format = currentOutput->fPreferredFormat;
-
-			delete currentOutput->fResampler;
-			currentOutput->fResampler = new
-				Resampler(fInputPreferredFormat.AudioFormat(),
-					currentOutput->fPreferredFormat.AudioFormat());
-
-			currentOutput->fChannelId
-				= fDevice->Description().channels[i].channel_id;
-			fOutputs.AddItem(currentOutput);
-
+			char name[B_MEDIA_NAME_LENGTH];
+			snprintf(name, sizeof(name), "input %" B_PRId32, fOutputPortCount);
+			_AddPort(fOutputPorts, outputCapacity, fOutputPortCount,
+				description.channels[i].channel_id, 1, name);
 			currentId = i;
 		} else {
 			PRINT(("NodeRegistered(): adding a channel\n"));
-			currentOutput->fPreferredFormat.u.raw_audio.channel_count++;
-			currentOutput->fOutput.format = currentOutput->fPreferredFormat;
+			fOutputPorts[fOutputPortCount - 1].channelCount++;
+		}
+	}
+	buses = fOutputPortCount;
+	for (int32 bus = 0; bus < buses; bus++) {
+		if (fOutputPorts[bus].channelCount < 2)
+			continue;
+		for (int32 i = 0; i < fOutputPorts[bus].channelCount; i++) {
+			int32 channelId = fOutputPorts[bus].channelId + i;
+			char name[B_MEDIA_NAME_LENGTH];
+			snprintf(name, sizeof(name), "capture %" B_PRId32,
+				channelId - outputChannels + 1);
+			_AddPort(fOutputPorts, outputCapacity, fOutputPortCount,
+				channelId, 1, name);
 		}
 	}
 
-	// Now that each output knows its channel count, size its buffers for it.
-	for (int32 i = 0; node_output* channel = (node_output*)fOutputs.ItemAt(i);
-			i++) {
-		channel->fPreferredFormat.u.raw_audio.buffer_size = record_buffer_bytes(
-			fDevice->BufferList().return_record_buffer_size,
-			channel->fPreferredFormat);
-		channel->fOutput.format = channel->fPreferredFormat;
+	// The first jack of each port. The first bus's jack drives the time
+	// source, as the jack of channel 0 did.
+	for (int32 port = 0; port < fInputPortCount; port++) {
+		node_input* input = _AddInput(port, port);
+		if (input == NULL || !fInputs.AddItem(input)) {
+			delete input;
+			break;
+		}
+		input->fClock = port == 0;
 	}
+	fNextInputId = fInputPortCount;
+
+	for (int32 port = 0; port < fOutputPortCount; port++) {
+		node_output* output = _AddOutput(port, port);
+		if (output == NULL || !fOutputs.AddItem(output)) {
+			delete output;
+			break;
+		}
+	}
+	fNextOutputId = fOutputPortCount;
 
 	// Set up our parameter web
 	fWeb = MakeParameterWeb();
@@ -822,6 +869,9 @@ MultiAudioNode::Connected(const media_source& producer,
 	channel->fInput.format = with_format;
 	*out_input = channel->fInput;
 
+	// so that the next connection to this port finds a free jack
+	_KeepOneFreeInput(channel->fPort);
+
 	return B_OK;
 }
 
@@ -840,9 +890,18 @@ MultiAudioNode::Disconnected(const media_source& producer,
 	channel->fInput.format = channel->fPreferredFormat;
 
 	BAutolock locker(fBufferLock);
-	_FillWithZeros(*channel);
+	// Silence the channels nothing else plays into; another jack of the same
+	// port or of an overlapping bus keeps its own.
+	for (uint32 i = 0; i < channel->fFormat.u.raw_audio.channel_count; i++) {
+		int32 id = channel->fChannelId + i;
+		if (!_ChannelFed(id, channel))
+			_SilenceChannel(id);
+	}
 	_ClearRing(*channel);
 	//GetFormat(&channel->fInput.format);
+
+	// may delete channel
+	_KeepOneFreeInput(channel->fPort);
 }
 
 
@@ -1107,8 +1166,13 @@ MultiAudioNode::Connect(status_t error, const media_source& source,
 
 	// Now that we're connected, we can determine our downstream latency.
 	// Do so, then make sure we get our events early enough.
+	// Asking our own port from its own thread would wait for ourselves
+	// until the roster gives up, so our own playback is asked directly.
 	media_node_id id;
-	FindLatencyFor(channel->fOutput.destination, &fLatency, &id);
+	if (channel->fOutput.destination.port == ControlPort())
+		GetLatencyFor(channel->fOutput.destination, &fLatency, &id);
+	else
+		FindLatencyFor(channel->fOutput.destination, &fLatency, &id);
 	PRINT(("\tdownstream latency = %" B_PRIdBIGTIME "\n", fLatency));
 
 	fInternalLatency = BufferDuration();
@@ -1122,6 +1186,9 @@ MultiAudioNode::Connect(status_t error, const media_source& source,
 	// within its Connected() method.
 	if (channel->fBufferGroup == NULL)
 		_AllocateBuffers(*channel);
+
+	// so that the next connection to this port finds a free jack
+	_KeepOneFreeOutput(channel->fPort);
 
 	_StartOutputThreadIfNeeded();
 }
@@ -1149,6 +1216,9 @@ MultiAudioNode::Disconnect(const media_source& what,
 		delete channel->fBufferGroup;
 		channel->fBufferGroup = NULL;
 		fActiveOutputs--;
+
+		// may delete channel
+		_KeepOneFreeOutput(channel->fPort);
 	} else {
 		fprintf(stderr, "\tDisconnect() called with wrong source/destination ("
 			"%" B_PRId32 "/%" B_PRId32 "), ours is (%" B_PRId32 "/%" B_PRId32
@@ -1287,7 +1357,10 @@ MultiAudioNode::_HandleBuffer(const media_timed_event* event,
 	// buffer usually still makes its slot. The exchange beat drops whatever
 	// part of it is due before the slot it is filling (_WriteToRing).
 	// Lateness doesn't matter in offline mode or in recording mode.
-	if (RunMode() != B_OFFLINE && RunMode() != B_RECORDING && lateness > 0)
+	// Our own capture is always late by its start time; _WriteToRing()
+	// moves it.
+	if (RunMode() != B_OFFLINE && RunMode() != B_RECORDING && lateness > 0
+		&& channel->fInput.source.port != ControlPort())
 		NotifyLateProducer(channel->fInput.source, lateness, event->event_time);
 
 	{
@@ -1616,7 +1689,7 @@ MultiAudioNode::SetParameterValue(int32 id, bigtime_t performanceTime,
 			media_format newFormat = channel->fInput.format;
 			newFormat.u.raw_audio.frame_rate = frameRate;
 			newFormat.u.raw_audio.buffer_size
-				= fOutputPreferredFormat.u.raw_audio.buffer_size;
+				= channel->fPreferredFormat.u.raw_audio.buffer_size;
 
 			int32 changeTag = 0;
 			status_t error = RequestFormatChange(channel->fInput.source,
@@ -2076,6 +2149,11 @@ MultiAudioNode::_OutputThread()
 		// Placed once per exchange, by the first connected input that needs it.
 		int64 slotFrame = -1;
 
+		// The channels an input has played into in this exchange: the next
+		// input on the same channel adds to it (see _PlayFromRing()).
+		bool fed[MAX_CHANNELS];
+		memset(fed, 0, sizeof(fed));
+
 		for (int32 i = 0; i < fInputs.CountItems(); i++) {
 			node_input* input = (node_input*)fInputs.ItemAt(i);
 
@@ -2085,7 +2163,7 @@ MultiAudioNode::_OutputThread()
 				&& (input->fOldBufferCycle != bufferInfo.playback_buffer_cycle
 					|| fDevice->BufferList().return_playback_buffers == 1)
 				&& (input->fInput.source != media_source::null
-					|| input->fChannelId == 0)) {
+					|| input->fClock)) {
 				//PRINT(("playback_buffer_cycle ok input: %li %ld\n", i, bufferInfo.playback_buffer_cycle));
 
 				input->fBufferCycle = (bufferInfo.playback_buffer_cycle - 1
@@ -2093,7 +2171,7 @@ MultiAudioNode::_OutputThread()
 					% fDevice->BufferList().return_playback_buffers;
 
 				// update the timesource
-				if (input->fChannelId == 0) {
+				if (input->fClock) {
 					//PRINT(("updating timesource\n"));
 					_UpdateTimeSource(bufferInfo, *input);
 				}
@@ -2121,7 +2199,7 @@ MultiAudioNode::_OutputThread()
 					atomic_set(&input->fQueueHead, queueHead);
 				}
 				if (connected)
-					_PlayFromRing(*input, slotFrame);
+					_PlayFromRing(*input, slotFrame, fed);
 			} else {
 				//PRINT(("playback_buffer_cycle non ok input: %i\n", i));
 			}
@@ -2366,6 +2444,7 @@ void
 MultiAudioNode::_ClearRing(node_input& input)
 {
 	input.fNextWriteFrame = -1;
+	input.fLoopOffset = -1;
 	if (input.fRing == NULL)
 		return;
 
@@ -2408,6 +2487,16 @@ MultiAudioNode::_WriteToRing(node_input& input, BBuffer* buffer,
 	double rate = fOutputPreferredFormat.u.raw_audio.frame_rate;
 	int64 frame = llround(buffer->Header()->start_time * rate / 1000000.0);
 
+	// Our own capture played back by this device, a monitoring loop: its
+	// buffers carry the time they were recorded, which is always past the
+	// slot playing now. They play a fixed time later instead, as in JACK:
+	// the first one a buffer past the current slot, the rest in step.
+	if (input.fInput.source.port == ControlPort()) {
+		if (input.fLoopOffset < 0)
+			input.fLoopOffset = max_c(slotFrame + bufferFrames - frame, 0);
+		frame += input.fLoopOffset;
+	}
+
 	// Producers stamp their buffers in whole microseconds, so a buffer can
 	// land a frame off where the previous one ended. Within a tenth of a
 	// buffer (the system mixer's tolerance for the same thing) it is the
@@ -2448,44 +2537,148 @@ MultiAudioNode::_WriteToRing(node_input& input, BBuffer* buffer,
 }
 
 
+/*!	Adds \a count samples at \a src, \a srcStride bytes apart, to those at
+	\a dst, \a dstStride bytes apart, in the device's sample \a format.
+	Integer samples clip at full scale.
+*/
+static void
+mix_samples(char* dst, size_t dstStride, const uint8* src, size_t srcStride,
+	uint32 count, uint32 format)
+{
+	for (; count > 0; count--, dst += dstStride, src += srcStride) {
+		switch (format) {
+			case media_raw_audio_format::B_AUDIO_FLOAT:
+			{
+				float a, b;
+				memcpy(&a, dst, sizeof(a));
+				memcpy(&b, src, sizeof(b));
+				a += b;
+				memcpy(dst, &a, sizeof(a));
+				break;
+			}
+			case media_raw_audio_format::B_AUDIO_DOUBLE:
+			{
+				double a, b;
+				memcpy(&a, dst, sizeof(a));
+				memcpy(&b, src, sizeof(b));
+				a += b;
+				memcpy(dst, &a, sizeof(a));
+				break;
+			}
+			case media_raw_audio_format::B_AUDIO_INT:
+			{
+				int32 a, b;
+				memcpy(&a, dst, sizeof(a));
+				memcpy(&b, src, sizeof(b));
+				int64 sum = (int64)a + b;
+				a = (int32)max_c(min_c(sum, (int64)INT32_MAX),
+					(int64)INT32_MIN);
+				memcpy(dst, &a, sizeof(a));
+				break;
+			}
+			case media_raw_audio_format::B_AUDIO_SHORT:
+			{
+				int16 a, b;
+				memcpy(&a, dst, sizeof(a));
+				memcpy(&b, src, sizeof(b));
+				int32 sum = (int32)a + b;
+				a = (int16)max_c(min_c(sum, (int32)INT16_MAX),
+					(int32)INT16_MIN);
+				memcpy(dst, &a, sizeof(a));
+				break;
+			}
+			case media_raw_audio_format::B_AUDIO_CHAR:
+			{
+				int32 sum = (int32)*(int8*)dst + *(const int8*)src;
+				*(int8*)dst = (int8)max_c(min_c(sum, (int32)INT8_MAX),
+					(int32)INT8_MIN);
+				break;
+			}
+			case media_raw_audio_format::B_AUDIO_UCHAR:
+			{
+				// unsigned, silence is 128
+				int32 sum = (int32)*(uint8*)dst - 128 + *src - 128;
+				*(uint8*)dst = (uint8)(max_c(min_c(sum, (int32)INT8_MAX),
+					(int32)INT8_MIN) + 128);
+				break;
+			}
+			default:
+				return;
+		}
+	}
+}
+
+
 /*!	Plays the slot starting at \a slotFrame from the ring of \a input into
 	the device buffer of this cycle, and empties that part of the ring, so a
 	slot nothing was written for plays silence.
+
+	A channel can have several inputs: the jacks of its own port, and those
+	of a bus it is part of. The first input to play into a channel in an
+	exchange replaces what the device buffer held, the others add to it;
+	\a fed says which channels have had their first input.
 */
 void
-MultiAudioNode::_PlayFromRing(node_input& input, int64 slotFrame)
+MultiAudioNode::_PlayFromRing(node_input& input, int64 slotFrame, bool* fed)
 {
-	if (input.fRing == NULL) {
-		_WriteZeros(input, input.fBufferCycle);
-		return;
-	}
-
 	uint32 channelCount = input.fFormat.u.raw_audio.channel_count;
-	size_t sampleSize = input.fFormat.u.raw_audio.format
-		& media_raw_audio_format::B_AUDIO_SIZE_MASK;
+	uint32 format = input.fFormat.u.raw_audio.format;
+	size_t sampleSize = format & media_raw_audio_format::B_AUDIO_SIZE_MASK;
 	size_t frameBytes = sampleSize * channelCount;
 	uint32 bufferFrames = fDevice->BufferList().return_playback_buffer_size;
-	uint64 mask = input.fRingFrames - 1;
-	uint8 silence = silence_byte(input.fFormat.u.raw_audio.format);
+	uint8 silence = silence_byte(format);
 
+	for (uint32 channel = 0; channel < channelCount; channel++) {
+		int32 id = input.fChannelId + channel;
+		if (id < 0 || id >= MAX_CHANNELS)
+			continue;
+		bool mix = fed[id];
+		fed[id] = true;
+
+		size_t stride = _PlaybackStride(input.fBufferCycle, id);
+		char* dst = _PlaybackBuffer(input.fBufferCycle, id);
+
+		if (input.fRing == NULL) {
+			// nothing to play: silence, unless another input played here
+			if (mix)
+				continue;
+			for (uint32 i = 0; i < bufferFrames; i++) {
+				memset(dst, silence, sampleSize);
+				dst += stride;
+			}
+			continue;
+		}
+
+		uint64 mask = input.fRingFrames - 1;
+		for (uint32 done = 0; done < bufferFrames;) {
+			uint32 index = (uint32)((uint64)(slotFrame + done) & mask);
+			uint32 count = min_c(bufferFrames - done,
+				input.fRingFrames - index);
+			const uint8* sample = input.fRing + index * frameBytes
+				+ channel * sampleSize;
+
+			if (mix) {
+				mix_samples(dst, stride, sample, frameBytes, count, format);
+				dst += count * stride;
+			} else {
+				for (uint32 i = 0; i < count; i++) {
+					memcpy(dst, sample, sampleSize);
+					dst += stride;
+					sample += frameBytes;
+				}
+			}
+			done += count;
+		}
+	}
+
+	if (input.fRing == NULL)
+		return;
+
+	uint64 mask = input.fRingFrames - 1;
 	for (uint32 done = 0; done < bufferFrames;) {
 		uint32 index = (uint32)((uint64)(slotFrame + done) & mask);
 		uint32 count = min_c(bufferFrames - done, input.fRingFrames - index);
-		uint8* ring = input.fRing + index * frameBytes;
-
-		for (uint32 channel = 0; channel < channelCount; channel++) {
-			size_t stride = _PlaybackStride(input.fBufferCycle,
-				input.fChannelId + channel);
-			char* dst = _PlaybackBuffer(input.fBufferCycle,
-				input.fChannelId + channel) + done * stride;
-			const uint8* sample = ring + channel * sampleSize;
-			for (uint32 i = 0; i < count; i++) {
-				memcpy(dst, sample, sampleSize);
-				dst += stride;
-				sample += frameBytes;
-			}
-		}
-		memset(ring, silence, count * frameBytes);
+		memset(input.fRing + index * frameBytes, silence, count * frameBytes);
 		done += count;
 	}
 }
@@ -2925,6 +3118,250 @@ MultiAudioNode::_FindInput(int32 destinationId)
 }
 
 
+void
+MultiAudioNode::_AddPort(channel_port* ports, int32 capacity, int32& count,
+	int32 channelId, int32 channelCount, const char* name)
+{
+	if (count >= capacity)
+		return;
+
+	channel_port& port = ports[count++];
+	port.channelId = channelId;
+	port.channelCount = channelCount;
+	strlcpy(port.name, name, sizeof(port.name));
+}
+
+
+/*!	A new jack of input port \a portIndex, not yet in fInputs. Its buffers
+	carry the port's channels only (see playback_buffer_bytes()).
+*/
+node_input*
+MultiAudioNode::_AddInput(int32 portIndex, int32 id)
+{
+	const channel_port& port = fInputPorts[portIndex];
+
+	media_input input;
+	input.format = fOutputPreferredFormat;
+	input.destination.port = ControlPort();
+	input.destination.id = id;
+	input.node = Node();
+	strlcpy(input.name, port.name, sizeof(input.name));
+
+	node_input* jack = new(std::nothrow) node_input(input,
+		fOutputPreferredFormat);
+	if (jack == NULL)
+		return NULL;
+
+	jack->fChannelId = port.channelId;
+	jack->fPort = portIndex;
+	jack->fPreferredFormat.u.raw_audio.channel_count = port.channelCount;
+	jack->fPreferredFormat.u.raw_audio.buffer_size = playback_buffer_bytes(
+		fDevice->BufferList().return_playback_buffer_size,
+		jack->fPreferredFormat);
+	jack->fFormat = jack->fPreferredFormat;
+	jack->fInput.format = jack->fPreferredFormat;
+	jack->fInput.format.u.raw_audio.format
+		= media_raw_audio_format::wildcard.format;
+
+	jack->fResampler = new(std::nothrow) Resampler(
+		jack->fPreferredFormat.AudioFormat(),
+		fOutputPreferredFormat.AudioFormat());
+	if (jack->fResampler == NULL) {
+		delete jack;
+		return NULL;
+	}
+	return jack;
+}
+
+
+/*!	A new jack of output port \a portIndex, not yet in fOutputs. */
+node_output*
+MultiAudioNode::_AddOutput(int32 portIndex, int32 id)
+{
+	const channel_port& port = fOutputPorts[portIndex];
+
+	media_output output;
+	output.format = fInputPreferredFormat;
+	output.destination = media_destination::null;
+	output.source.port = ControlPort();
+	output.source.id = id;
+	output.node = Node();
+	strlcpy(output.name, port.name, sizeof(output.name));
+
+	node_output* jack = new(std::nothrow) node_output(output,
+		fInputPreferredFormat);
+	if (jack == NULL)
+		return NULL;
+
+	jack->fChannelId = port.channelId;
+	jack->fPort = portIndex;
+	jack->fPreferredFormat.u.raw_audio.channel_count = port.channelCount;
+	jack->fPreferredFormat.u.raw_audio.buffer_size = record_buffer_bytes(
+		fDevice->BufferList().return_record_buffer_size,
+		jack->fPreferredFormat);
+	jack->fOutput.format = jack->fPreferredFormat;
+
+	jack->fResampler = new(std::nothrow) Resampler(
+		fInputPreferredFormat.AudioFormat(),
+		jack->fPreferredFormat.AudioFormat());
+	if (jack->fResampler == NULL) {
+		delete jack;
+		return NULL;
+	}
+	return jack;
+}
+
+
+/*!	A Media Kit input takes one connection. So that an input port takes any
+	number, it keeps exactly one free jack: one is added when its last free
+	jack is connected, and the extra ones go again when connections end. The
+	port's first jack is never removed, its id is fixed. All the jacks of a
+	port play into the same channels; _PlayFromRing() adds them up.
+
+	Called from the control thread, which is the only one that changes the
+	jack lists; the buffer lock keeps the output thread out meanwhile.
+*/
+void
+MultiAudioNode::_KeepOneFreeInput(int32 port)
+{
+	BAutolock locker(fBufferLock);
+
+	int32 freeJacks = 0;
+	int32 last = -1;
+	for (int32 i = 0; node_input* input = (node_input*)fInputs.ItemAt(i);
+			i++) {
+		if (input->fPort != port)
+			continue;
+		last = i;
+		if (input->fInput.source == media_source::null)
+			freeJacks++;
+	}
+	if (last < 0)
+		return;
+
+	if (freeJacks == 0) {
+		node_input* input = _AddInput(port, fNextInputId);
+		if (input == NULL || !fInputs.AddItem(input, last + 1)) {
+			fprintf(stderr, "multi_audio: no memory for another %s jack\n",
+				fInputPorts[port].name);
+			delete input;
+			return;
+		}
+		fNextInputId++;
+		return;
+	}
+
+	for (int32 i = fInputs.CountItems() - 1; i >= 0 && freeJacks > 1; i--) {
+		node_input* input = (node_input*)fInputs.ItemAt(i);
+		if (input->fPort != port || input->fInput.destination.id == port
+			|| input->fInput.source != media_source::null)
+			continue;
+
+		fInputs.RemoveItem(i);
+		// Buffers that arrived before its connection ended are still queued:
+		// the output thread only empties the queues of connected jacks.
+		int32 queueHead = atomic_get(&input->fQueueHead);
+		int32 queueTail = atomic_get(&input->fQueueTail);
+		for (; queueTail - queueHead > 0; queueHead++) {
+			BBuffer* queued = input->fQueue[queueHead % kInputQueueDepth];
+			if (queued != NULL)
+				queued->Recycle();
+		}
+		delete input;
+		freeJacks--;
+	}
+}
+
+
+/*!	The same for an output port: every jack of it sends the same channels,
+	each to its own consumer.
+*/
+void
+MultiAudioNode::_KeepOneFreeOutput(int32 port)
+{
+	BAutolock locker(fBufferLock);
+
+	int32 freeJacks = 0;
+	int32 last = -1;
+	for (int32 i = 0; node_output* output = (node_output*)fOutputs.ItemAt(i);
+			i++) {
+		if (output->fPort != port)
+			continue;
+		last = i;
+		if (output->fOutput.destination == media_destination::null)
+			freeJacks++;
+	}
+	if (last < 0)
+		return;
+
+	if (freeJacks == 0) {
+		node_output* output = _AddOutput(port, fNextOutputId);
+		if (output == NULL || !fOutputs.AddItem(output, last + 1)) {
+			fprintf(stderr, "multi_audio: no memory for another %s jack\n",
+				fOutputPorts[port].name);
+			delete output;
+			return;
+		}
+		fNextOutputId++;
+		return;
+	}
+
+	for (int32 i = fOutputs.CountItems() - 1; i >= 0 && freeJacks > 1;
+			i--) {
+		node_output* output = (node_output*)fOutputs.ItemAt(i);
+		if (output->fPort != port || output->fOutput.source.id == port
+			|| output->fOutput.destination != media_destination::null)
+			continue;
+
+		fOutputs.RemoveItem(i);
+		delete output->fBufferGroup;
+		delete output;
+		freeJacks--;
+	}
+}
+
+
+/*!	Whether a connected input other than \a except plays into \a channel. */
+bool
+MultiAudioNode::_ChannelFed(int32 channel, const node_input* except)
+{
+	for (int32 i = 0; node_input* input = (node_input*)fInputs.ItemAt(i);
+			i++) {
+		if (input == except || input->fInput.source == media_source::null)
+			continue;
+		if (channel >= input->fChannelId && channel < input->fChannelId
+				+ (int32)input->fFormat.u.raw_audio.channel_count)
+			return true;
+	}
+	return false;
+}
+
+
+/*!	Silences \a channel in every playback buffer. Called with fBufferLock
+	held, for a channel nothing plays into any more: the output thread only
+	writes the channels of connected inputs.
+*/
+void
+MultiAudioNode::_SilenceChannel(int32 channel)
+{
+	const multi_buffer_list& list = fDevice->BufferList();
+	uint32 format = fOutputPreferredFormat.u.raw_audio.format;
+	size_t sampleSize = format & media_raw_audio_format::B_AUDIO_SIZE_MASK;
+	uint8 silence = silence_byte(format);
+
+	for (int32 cycle = 0; cycle < list.return_playback_buffers; cycle++) {
+		char* dst = _PlaybackBuffer(cycle, channel);
+		if (dst == NULL)
+			continue;
+		size_t stride = _PlaybackStride(cycle, channel);
+		for (uint32 i = 0; i < list.return_playback_buffer_size; i++) {
+			memset(dst, silence, sampleSize);
+			dst += stride;
+		}
+	}
+}
+
+
 /*static*/ status_t
 MultiAudioNode::_OutputThreadEntry(void* data)
 {
@@ -2965,17 +3402,17 @@ MultiAudioNode::_SetNodeInputFrameRate(float frameRate)
 
 	for (int32 i = 0; node_input* channel = (node_input*)fInputs.ItemAt(i);
 			i++) {
+		size_t size = playback_buffer_bytes(
+			fDevice->BufferList().return_playback_buffer_size,
+			channel->fPreferredFormat);
 		channel->fPreferredFormat.u.raw_audio.frame_rate = frameRate;
-		channel->fPreferredFormat.u.raw_audio.buffer_size
-			= fOutputPreferredFormat.u.raw_audio.buffer_size;
+		channel->fPreferredFormat.u.raw_audio.buffer_size = size;
 
 		channel->fFormat.u.raw_audio.frame_rate = frameRate;
-		channel->fFormat.u.raw_audio.buffer_size
-			= fOutputPreferredFormat.u.raw_audio.buffer_size;
+		channel->fFormat.u.raw_audio.buffer_size = size;
 
 		channel->fInput.format.u.raw_audio.frame_rate = frameRate;
-		channel->fInput.format.u.raw_audio.buffer_size
-			= fOutputPreferredFormat.u.raw_audio.buffer_size;
+		channel->fInput.format.u.raw_audio.buffer_size = size;
 
 		// ring positions are frames at the old rate
 		_AllocateRing(*channel);
@@ -3080,7 +3517,8 @@ MultiAudioNode::_SetNodeBufferFrames(uint32 frames)
 
 		for (int32 i = 0; node_input* channel = (node_input*)fInputs.ItemAt(i);
 				i++) {
-			size_t size = fOutputPreferredFormat.u.raw_audio.buffer_size;
+			size_t size = playback_buffer_bytes(
+				list.return_playback_buffer_size, channel->fPreferredFormat);
 			channel->fPreferredFormat.u.raw_audio.buffer_size = size;
 			channel->fFormat.u.raw_audio.buffer_size = size;
 			channel->fInput.format.u.raw_audio.buffer_size = size;
@@ -3124,6 +3562,11 @@ MultiAudioNode::_SetNodeBufferFrames(uint32 frames)
 				channel->fBufferGroup = NULL;
 				_AllocateBuffers(*channel);
 			}
+
+			// Our own playback took the new length above; asking our own
+			// port from here would wait for ourselves.
+			if (channel->fOutput.destination.port == ControlPort())
+				continue;
 
 			media_format format = channel->fOutput.format;
 			error = ChangeFormat(channel->fOutput.source,
