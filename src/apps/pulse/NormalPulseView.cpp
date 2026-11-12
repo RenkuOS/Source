@@ -261,10 +261,26 @@ NormalPulseView::Draw(BRect rect)
 			9 + (fChipRect.Width() - fBrandLogo->Bounds().Width()) / 2,
 			fChipRect.top + 6));
 	} else {
+		// no logo for this vendor: its name in the logo's place, as large as
+		// fits, centered in the same 48 x 48 square
+		BFont font(be_bold_font);
+		font.SetSize(18);
+		float width = font.StringWidth(fVendor);
+		float maxWidth = fChipRect.Width() - 16;
+		if (width > maxWidth) {
+			font.SetSize(std::max(8.0f, 18 * maxWidth / width));
+			width = font.StringWidth(fVendor);
+		}
+		font_height fontHeight;
+		font.GetHeight(&fontHeight);
+
+		PushState();
+		SetFont(&font);
 		SetHighColor(240, 240, 240);
-		float width = StringWidth(fVendor);
-		MovePenTo(10 + (fChipRect.Width() - width) / 2, fChipRect.top + 20);
+		MovePenTo(10 + (fChipRect.Width() - width) / 2,
+			fChipRect.top + 6 + (48 + fontHeight.ascent) / 2);
 		DrawString(fVendor);
+		PopState();
 	}
 
 	// Draw processor type and speed
