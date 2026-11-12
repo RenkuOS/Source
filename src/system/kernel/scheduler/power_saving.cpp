@@ -218,11 +218,12 @@ pack_irqs()
 		assign_io_interrupt_to_cpu(irq->irq, newCPU);
 
 		// The architecture may keep an interrupt where it is (one that
-		// belongs to this CPU, or none moved at all): it is still the first
-		// one then, and trying again would never end.
-		locker.Lock();
-		if (cpu->irqs.First() == irq)
+		// belongs to this CPU, or any when it cannot route them): it is back
+		// in this CPU's list then, and trying again would never end.
+		if (irq->cpu == cpu->cpu_num)
 			return;
+
+		locker.Lock();
 	}
 }
 
