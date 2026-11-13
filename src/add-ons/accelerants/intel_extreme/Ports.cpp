@@ -2220,6 +2220,14 @@ EmbeddedDisplayPort::IsConnected()
 // #pragma mark - Digital Display Port
 
 
+// Gen12 combo PHY DDI A..C
+// DPCLKA_CFGCR0: 2-bit DPLL select at bit 2 * phy plus a clock-off bit per port
+// (Linux ICL_DPCLKA_CFGCR0_DDI_CLK_SEL_SHIFT / _DDI_CLK_OFF)
+static const uint32 kComboPhyClockOff[] = { TGL_DPCLKA_DDIA_CLOCK_OFF, TGL_DPCLKA_DDIB_CLOCK_OFF,
+	TGL_DPCLKA_DDIC_CLOCK_OFF };
+static const addr_t kComboPhyBufferControl[] = { DDI_BUF_CTL_A, DDI_BUF_CTL_B, DDI_BUF_CTL_C };
+
+
 DigitalDisplayInterface::DigitalDisplayInterface(port_index index,
 		const char* baseName)
 	:
@@ -2763,45 +2771,28 @@ DigitalDisplayInterface::SetDisplayMode(display_mode* target, uint32 colorMode)
 		// Tiger Lake
 		// See volume 12, page 180, "HDMI Mode Combo PHY Programming"
 		int p, q, k;
-		float dco;
+		uint32 dco;
 		uint32 mode = fPipe->TranscoderMode();
 		if ((mode == PIPE_DDI_MODE_DVI || mode == PIPE_DDI_MODE_HDMI)
 			&& ComputeHdmiDpll(hardwareTarget.pixel_clock, &p, &q, &k, &dco)) {
-			TRACE("PLL settings: DCO=%f, P,Q,K=%d,%d,%d\n", dco, p, q, k);
+			TRACE("PLL settings: DCO=%" B_PRIu32 "kHz, P,Q,K=%d,%d,%d\n", dco, p, q, k);
 		} else if ((mode == PIPE_DDI_MODE_DP_SST || mode == PIPE_DDI_MODE_DP_MST)
 			&& ComputeDisplayPortDpll(hardwareTarget.pixel_clock, &p, &q, &k, &dco)) {
-			TRACE("PLL settings: DCO=%f, P,Q,K=%d,%d,%d\n", dco, p, q, k);
+			TRACE("PLL settings: DCO=%" B_PRIu32 "kHz, P,Q,K=%d,%d,%d\n", dco, p, q, k);
 		} else {
 			ERROR("%s: Could not find a matching PLL setting\n", __func__);
 			return B_ERROR;
 		}
 
-		// TODO write a proper way to assign PLLs to pipes and ports.
-		int chosenPLL = 0;
-		if (PortIndex() == 7)
-			chosenPLL = 1;
-		TRACE("Using DPLL %d for port %d. PLL settings: DCO=%f, P,Q,K=%d,%d,%d\n", chosenPLL,
-			PortIndex(), dco, p, q, k);
-		ProgramPLL(chosenPLL, p, q, k, dco);
-
-		// Configure DPLL mapping to port then turn on DPLL clock
-		uint32 config = read32(TGL_DPCLKA_CFGCR0);
-		TRACE("PLL configuration before changes: %" B_PRIx32 "\n", config);
-		if (chosenPLL == 0) {
-			config |= TGL_DPCLKA_DDIA_CLOCK_OFF;
-			config &= TGL_DPCLKA_DDIA_CLOCK_SELECT;
-			write32(TGL_DPCLKA_CFGCR0, config);
-			config &= ~TGL_DPCLKA_DDIA_CLOCK_OFF;
-			write32(TGL_DPCLKA_CFGCR0, config);
+		const uint32 phy = PortIndex() - INTEL_PORT_A;
+		if (phy >= B_COUNT_OF(kComboPhyClockOff)) {
+			// shortcut: Type-C ports use other PLLs, not supported; keep what the BIOS set up
+			ERROR("%s: %s: no combo PHY, keeping BIOS clock setup\n", __func__, PortName());
 		} else {
-			config |= TGL_DPCLKA_DDIB_CLOCK_OFF;
-			config &= TGL_DPCLKA_DDIB_CLOCK_SELECT;
-			config |= 1 << TGL_DPCLKA_DDIB_CLOCK_SELECT_SHIFT;
-			write32(TGL_DPCLKA_CFGCR0, config);
-			config &= ~TGL_DPCLKA_DDIB_CLOCK_OFF;
-			write32(TGL_DPCLKA_CFGCR0, config);
+			status_t status = _ProgramComboPll(p, q, k, dco);
+			if (status != B_OK)
+				return status;
 		}
-		TRACE("PLL configuration after changes: %" B_PRIx32 "\n", config);
 	}
 
 	// Program target display mode
@@ -2811,5 +2802,60 @@ DigitalDisplayInterface::SetDisplayMode(display_mode* target, uint32 colorMode)
 	// Set fCurrentMode to our set display mode
 	memcpy(&fCurrentMode, target, sizeof(display_mode));
 
+	return B_OK;
+}
+
+
+// #pragma mark - Gen12 combo PHY port setup
+
+
+status_t
+DigitalDisplayInterface::_ProgramComboPll(int p, int q, int k, uint32 dco)
+{
+	const uint32 phy = PortIndex() - INTEL_PORT_A;
+	uint32 config = read32(TGL_DPCLKA_CFGCR0);
+	TRACE("PLL configuration before changes: %" B_PRIx32 "\n", config);
+	const uint32 selectShift = 2 * phy;
+	const uint32 clockOff = kComboPhyClockOff[phy];
+
+	// shortcut: a PLL shared by two lit ports is reprogrammed for both.
+	int chosenPLL;
+	if ((read32(kComboPhyBufferControl[phy]) & DDI_BUF_CTL_ENABLE) != 0
+		&& (config & clockOff) == 0 && ((config >> selectShift) & 3) <= 1) {
+		chosenPLL = (config >> selectShift) & 3;
+	} else {
+		bool used[2] = { false, false };
+		for (uint32 other = 0; other < B_COUNT_OF(kComboPhyClockOff); other++) {
+			uint32 select = (config >> (2 * other)) & 3;
+			if (other != phy && select <= 1 && (config & kComboPhyClockOff[other]) == 0
+				&& (read32(kComboPhyBufferControl[other]) & DDI_BUF_CTL_ENABLE) != 0)
+				used[select] = true;
+		}
+		if (used[0] && used[1]) {
+			ERROR("%s: %s: no free DPLL\n", __func__, PortName());
+			return B_BUSY;
+		}
+		chosenPLL = used[0] ? 1 : 0;
+	}
+	TRACE("Using DPLL %d for port %d. PLL settings: DCO=%" B_PRIu32 "kHz, P,Q,K=%d,%d,%d\n",
+		chosenPLL, PortIndex(), dco, p, q, k);
+	status_t status = ProgramPLL(chosenPLL, p, q, k, dco, clockOff);
+	if (status != B_OK) {
+		ERROR("%s: programming DPLL %d failed: %s\n", __func__, chosenPLL, strerror(status));
+		return status;
+	}
+
+	// Route the DPLL to the port, then turn its clock on: separate writes, and the
+	// select may only change while the clock is off (Linux _icl_ddi_enable_clock)
+	config = read32(TGL_DPCLKA_CFGCR0);
+	if (((config >> selectShift) & 3) != (uint32)chosenPLL) {
+		config |= clockOff;
+		write32(TGL_DPCLKA_CFGCR0, config);
+		config = (config & ~(3 << selectShift)) | ((uint32)chosenPLL << selectShift);
+		write32(TGL_DPCLKA_CFGCR0, config);
+	}
+	config &= ~clockOff;
+	write32(TGL_DPCLKA_CFGCR0, config);
+	TRACE("PLL configuration after changes: %" B_PRIx32 "\n", read32(TGL_DPCLKA_CFGCR0));
 	return B_OK;
 }
