@@ -495,9 +495,15 @@ Job::Run()
 {
 	status_t status = BJob::Run();
 
-	// Jobs can be relaunched at any time
-	if (!IsService())
+	// Jobs can be relaunched at any time, and so can a service that isn't
+	// running: one that failed to start, as when it was already running
+	// from another launch, would otherwise be refused from then on.
+	if (!IsService() || !IsRunning())
 		SetState(B_JOB_STATE_WAITING_TO_RUN);
+
+	// BJob::Run() refuses without calling Execute(), which clears this; left
+	// set, the job would count as launching forever.
+	fLaunching = false;
 
 	return status;
 }
