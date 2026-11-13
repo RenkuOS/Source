@@ -357,6 +357,14 @@ STATIC_FUNCTION(intr_bottom_user):
 	// them after.
 	sti
 	call	thread_at_kernel_exit
+	// The thread was interrupted in userland, not in a syscall: there is
+	// nothing to restart. handle_signals() still asks for it when it takes
+	// the thread for one in sigsuspend() (it may be just before restarting
+	// it), and a flag left behind rewinds whatever comes next, the next
+	// syscall (run twice) or a signal frame's instruction pointer (two bytes
+	// into the instruction before it).
+	lock
+	andl	$~THREAD_FLAGS_RESTART_SYSCALL, THREAD_flags(%r12)
 	jmp		.Lkernel_exit_work_done
 FUNCTION_END(intr_bottom_user)
 
@@ -570,6 +578,12 @@ FUNCTION(x86_64_syscall_entry):
 	// On this return path it is possible that the frame has been modified,
 	// for example to execute a signal handler. In this case it is safer to
 	// return via IRET.
+	// Back from a signal handler, the interrupted code gets the FPU state
+	// arch_restore_signal_frame() restored, as on the fast path, also when
+	// there was more to do on the way out: cleared registers would be lost
+	// ones when the signal had interrupted it rather than a syscall.
+	cmpq	$SYSCALL_RESTORE_SIGNAL_FRAME, %r14
+	je		.Lrestore_fpu
 	CLEAR_FPU_STATE()
 	jmp .Liret
 
