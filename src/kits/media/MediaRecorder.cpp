@@ -265,10 +265,13 @@ BMediaRecorder::Start(bool force)
 	// start node here
 	status_t err = B_OK;
 
-	if ((fOutputNode.kind & B_TIME_SOURCE) != 0)
+	if ((fOutputNode.kind & B_TIME_SOURCE) != 0) {
 		err = BMediaRoster::CurrentRoster()->StartTimeSource(
 			fOutputNode, BTimeSource::RealTime());
-	else
+		if (err == B_OK)
+			err = BMediaRoster::CurrentRoster()->StartNode(fOutputNode,
+				fNode->TimeSource()->Now());
+	} else
 		err = BMediaRoster::CurrentRoster()->StartNode(
 			fOutputNode, fNode->TimeSource()->Now());
 
@@ -302,6 +305,9 @@ BMediaRecorder::Stop(bool force)
 
 	fRunning = false;
 
+	// The output node is not stopped: a time source producer is a hardware
+	// node such as multi_audio, which also plays the system mixer's output.
+	// Stopping it stops playback as well (HD Audio stops both streams).
 	return BMediaRoster::CurrentRoster()->StopNode(fNode->Node(), 0);
 }
 
