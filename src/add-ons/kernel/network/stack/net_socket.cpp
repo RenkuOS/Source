@@ -55,6 +55,8 @@ struct net_socket_private : net_socket,
 	~net_socket_private();
 
 	void RemoveFromParent();
+	BReference<net_socket_private> GetParent();
+	bool IsChildOf(net_socket_private* parent);
 
 	BWeakReference<net_socket_private> parent;
 	team_id						owner;
@@ -79,6 +81,9 @@ ssize_t socket_read_avail(net_socket* socket);
 
 static SocketList sSocketList;
 static mutex sSocketLock;
+static mutex sParentLock;
+	// guards net_socket_private::parent for readers that do not hold the
+	// parent's lock; nothing else is locked while it is held
 
 
 net_socket_private::net_socket_private()
@@ -147,7 +152,9 @@ net_socket_private::RemoveFromParent()
 {
 	ASSERT(!is_in_socket_list && parent != NULL);
 
+	mutex_lock(&sParentLock);
 	parent = NULL;
+	mutex_unlock(&sParentLock);
 
 	mutex_lock(&sSocketLock);
 	sSocketList.Add(this);
@@ -156,6 +163,33 @@ net_socket_private::RemoveFromParent()
 	is_in_socket_list = true;
 
 	ReleaseReference();
+}
+
+
+/*!	The parent link is set and cleared with the parent's lock and sParentLock
+	held. Without the parent's lock, this is the way to read it.
+	sParentLock is a leaf lock: the protocols call this with their endpoint
+	locks held, so it must never be held while another lock is taken.
+*/
+BReference<net_socket_private>
+net_socket_private::GetParent()
+{
+	MutexLocker _(sParentLock);
+	return parent.GetReference();
+}
+
+
+/*!	Whether this socket is still a child of \a parent, whose lock the caller
+	holds: while the caller was waiting for that lock, the socket may have been
+	accepted or dropped from the backlog. Its links are on another list then,
+	and the parent's reference to it is gone.
+*/
+bool
+net_socket_private::IsChildOf(net_socket_private* parent)
+{
+	// the link only changes with the parent's lock held, which the caller
+	// holds, so it can be read without sParentLock
+	return this->parent.GetReference().Get() == parent;
 }
 
 
@@ -664,7 +698,9 @@ socket_spawn_pending(net_socket* _parent, net_socket** _socket)
 
 	// add to the parent's list of pending connections
 	parent->pending_children.Add(socket);
+	mutex_lock(&sParentLock);
 	socket->parent = parent;
+	mutex_unlock(&sParentLock);
 	parent->child_count++;
 
 	*_socket = socket;
@@ -746,6 +782,7 @@ bool
 socket_has_parent(net_socket* _socket)
 {
 	net_socket_private* socket = (net_socket_private*)_socket;
+	MutexLocker _(sParentLock);
 	return socket->parent != NULL;
 }
 
@@ -760,16 +797,21 @@ socket_connected(net_socket* _socket)
 
 	TRACE("socket_connected(%p)\n", socket);
 
-	if (socket->parent == NULL) {
+	if (!socket_has_parent(socket)) {
 		socket->is_connected = true;
 		return B_OK;
 	}
 
-	BReference<net_socket_private> parent = socket->parent.GetReference();
+	BReference<net_socket_private> parent = socket->GetParent();
 	if (!parent.IsSet())
 		return B_BAD_VALUE;
 
 	MutexLocker _(parent->lock);
+
+	if (!socket->IsChildOf(parent.Get())) {
+		socket->is_connected = true;
+		return B_OK;
+	}
 
 	parent->pending_children.Remove(socket);
 	parent->connected_children.Add(socket);
@@ -793,7 +835,7 @@ socket_aborted(net_socket* _socket)
 
 	TRACE("socket_aborted(%p)\n", socket);
 
-	BReference<net_socket_private> parent = socket->parent.GetReference();
+	BReference<net_socket_private> parent = socket->GetParent();
 	if (!parent.IsSet())
 		return B_BAD_VALUE;
 
@@ -805,7 +847,7 @@ socket_aborted(net_socket* _socket)
 	// or by socket_dequeue_connected() handing it to accept() -- and it must
 	// then not be taken out of the child lists, nor the parent's reference to
 	// it released, a second time.
-	if (socket->parent.GetReference() != parent)
+	if (!socket->IsChildOf(parent.Get()))
 		return B_BAD_VALUE;
 
 	if (socket->is_connected)
@@ -1017,7 +1059,7 @@ socket_getpeername(net_socket* _socket, struct sockaddr* address,
 	socklen_t* _addressLength)
 {
 	net_socket_private* socket = (net_socket_private*)_socket;
-	BReference<net_socket_private> parent = socket->parent.GetReference();
+	BReference<net_socket_private> parent = socket->GetParent();
 
 	if ((!parent.IsSet() && !socket->is_connected) || socket->peer.ss_len == 0
 		|| socket->peer.ss_family == AF_UNSPEC) {
@@ -1681,6 +1723,7 @@ socket_std_ops(int32 op, ...)
 		{
 			new (&sSocketList) SocketList;
 			mutex_init(&sSocketLock, "socket list");
+			mutex_init(&sParentLock, "socket parent");
 
 #if ENABLE_DEBUGGER_COMMANDS
 			add_debugger_command("sockets", dump_sockets, "lists all sockets");
@@ -1691,6 +1734,7 @@ socket_std_ops(int32 op, ...)
 		case B_MODULE_UNINIT:
 			ASSERT(sSocketList.IsEmpty());
 			mutex_destroy(&sSocketLock);
+			mutex_destroy(&sParentLock);
 
 #if ENABLE_DEBUGGER_COMMANDS
 			remove_debugger_command("socket", dump_socket);
