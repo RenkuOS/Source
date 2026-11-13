@@ -429,56 +429,62 @@ virtio_gpu_set_display_mode(virtio_gpu_driver_info* info, display_mode *mode)
 		return B_BAD_VALUE;
 	}
 
-	int newResourceId = info->displayResourceId + 1;
+	// Switch without ever leaving the display without a valid resource: set
+	// up the new resource and show it first, and only then release the old
+	// one. Until the new resource is on screen any failure only undoes the
+	// new one, so the current mode stays exactly as it was.
+	const int oldResourceId = info->displayResourceId;
+	const int newResourceId = oldResourceId + 1;
+	const uint32 width = mode->virtual_width;
+	const uint32 height = mode->virtual_height;
 
-	// create framebuffer area
-	TRACE("virtio_gpu_set_display_mode %" B_PRIu16 " %" B_PRIu16 "\n", mode->virtual_width,
-		mode->virtual_height);
+	TRACE("virtio_gpu_set_display_mode %" B_PRIu32 " %" B_PRIu32 "\n", width,
+		height);
 
-	status_t status = virtio_gpu_create_2d(info, newResourceId, mode->virtual_width, mode->virtual_height);
+	status_t status = virtio_gpu_create_2d(info, newResourceId, width, height);
 	if (status != B_OK)
 		return status;
 
 	status = virtio_gpu_attach_backing(info, newResourceId);
 	if (status != B_OK)
-		return status;
+		goto err1;
 
-	status = virtio_gpu_unref(info, info->displayResourceId);
+	// the new resource's content, before it is shown
+	status = virtio_gpu_transfer_to_host_2d(info, newResourceId, width, height);
 	if (status != B_OK)
-		return status;
+		goto err2;
 
+	status = virtio_gpu_set_scanout(info, 0, newResourceId, width, height);
+	if (status != B_OK)
+		goto err2;
+
+	// the new mode is on screen: from here on there is no going back
 	info->displayResourceId = newResourceId;
-	info->displayWidth = mode->virtual_width;
-	info->displayHeight = mode->virtual_height;
-
-	status = virtio_gpu_set_scanout(info, 0, 0, 0, 0);
-	if (status != B_OK)
-		return status;
-
-	status = virtio_gpu_set_scanout(info, 0, info->displayResourceId, info->displayWidth, info->displayHeight);
-	if (status != B_OK)
-		return status;
-
-	status = virtio_gpu_transfer_to_host_2d(info, info->displayResourceId, info->displayWidth, info->displayHeight);
-	if (status != B_OK)
-		return status;
-
-	status = virtio_gpu_flush_resource(info, info->displayResourceId, info->displayWidth, info->displayHeight);
-	if (status != B_OK)
-		return status;
-
+	info->displayWidth = width;
+	info->displayHeight = height;
 	{
 		virtio_gpu_shared_info& sharedInfo = *info->sharedInfo;
 		sharedInfo.frame_buffer_area = info->framebufferArea;
 		sharedInfo.frame_buffer = (uint8*)info->framebuffer;
-		sharedInfo.bytes_per_row = info->displayWidth * 4;
-		sharedInfo.current_mode.virtual_width = info->displayWidth;
-		sharedInfo.current_mode.virtual_height = info->displayHeight;
+		sharedInfo.bytes_per_row = width * 4;
+		sharedInfo.current_mode.virtual_width = width;
+		sharedInfo.current_mode.virtual_height = height;
 		sharedInfo.current_mode.space = B_RGB32;
 		sharedInfo.current_mode.timing = mode->timing;
 	}
 
+	// failures below only cost host memory or a frame; the update thread
+	// flushes again shortly
+	virtio_gpu_flush_resource(info, newResourceId, width, height);
+	virtio_gpu_detach_backing(info, oldResourceId);
+	virtio_gpu_unref(info, oldResourceId);
 	return B_OK;
+
+err2:
+	virtio_gpu_detach_backing(info, newResourceId);
+err1:
+	virtio_gpu_unref(info, newResourceId);
+	return status;
 }
 
 
