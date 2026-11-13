@@ -59,6 +59,8 @@ SimpleTest select_close_test : select_close_test.cpp ;
 
 SimpleTest sem_acquire_test1 : sem_acquire_test1.cpp : be ;
 
+SimpleTest setrlimit_core_test : setrlimit_core_test.cpp ;
+
 SimpleTest spinlock_contention : spinlock_contention.cpp ;
 
 SimpleTest syscall_filter_test : syscall_filter_test.cpp : network ;
