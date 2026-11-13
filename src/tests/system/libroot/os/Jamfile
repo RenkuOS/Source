@@ -28,6 +28,12 @@ SimpleTest get_cpu_num_test :
 	get_cpu_num_test.cpp
 ;
 
+UsePrivateHeaders shared ;
+
+SimpleTest rw_lock_signal_test :
+	rw_lock_signal_test.cpp
+;
+
 
 CCFLAGS += -fstack-protector ;
 local architectureObject ;
