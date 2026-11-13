@@ -55,6 +55,14 @@ public:
 
 			bool				RemoveInput(int32 inputID);
 			bool				RemoveOutput(const media_source& source);
+
+	// When the first output is disconnected while others stay, it is kept
+	// without a connection, so the mix goes on with its time source, format,
+	// master gain and mute; it gets no buffers. The next first output takes
+	// its place (ReplaceFirstOutput()).
+			void				DetachFirstOutput();
+			bool				FirstOutputDetached();
+			void				ReplaceFirstOutput(MixerOutput* output);
 			int32				CreateInputID();
 			int32				CreateOutputID();
 			int32				CountInputs() { return fInputs->CountItems(); }
