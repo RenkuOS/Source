@@ -46,6 +46,9 @@ PanelFitter::PanelFitter(pipe_index pipeIndex)
 	if (pipeIndex == INTEL_PIPE_C) {
 		fRegisterBase += 2 * PCH_PANEL_FITTER_PIPE_OFFSET;
 	}
+	if (pipeIndex == INTEL_PIPE_D) {
+		fRegisterBase += 3 * PCH_PANEL_FITTER_PIPE_OFFSET;
+	}
 	TRACE("%s: requested fitter #%d\n", __func__, (int)pipeIndex);
 
 	uint32 fitCtl = read32(fRegisterBase + PCH_PANEL_FITTER_CONTROL);

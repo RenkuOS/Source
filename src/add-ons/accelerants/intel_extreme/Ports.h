@@ -249,6 +249,7 @@ private:
 
 		status_t					_SetPortLinkGen8(const display_timing& timing,
 										uint32 pllSel);
+		bool						_IsInternalPanel();
 };
 
 

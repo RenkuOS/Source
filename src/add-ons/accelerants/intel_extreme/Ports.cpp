@@ -293,6 +293,38 @@ Port::GetPLLLimits(pll_limits& limits)
 }
 
 
+//! TRANS_DDI_FUNC_CTL register of transcoder 0..3 (A, B, C, eDP or D)
+static addr_t
+ddi_func_ctl_register(uint32 transcoder)
+{
+	switch (transcoder) {
+		case 0:
+			return PIPE_DDI_FUNC_CTL_A;
+		case 1:
+			return PIPE_DDI_FUNC_CTL_B;
+		case 2:
+			return PIPE_DDI_FUNC_CTL_C;
+		default:
+			// Gen12 has a regular transcoder D instead of the eDP transcoder
+			if (gInfo->shared_info->device_type.Generation() >= 12)
+				return PIPE_DDI_FUNC_CTL_A + 0x3000;
+			return PIPE_DDI_FUNC_CTL_EDP;
+	}
+}
+
+
+//! The port_index a TRANS_DDI_FUNC_CTL value selects (INTEL_PORT_ANY: none on Gen12)
+static uint32
+ddi_func_ctl_port(uint32 funcCtl)
+{
+	if (gInfo->shared_info->device_type.Generation() >= 12) {
+		// 4-bit field, 0 = none, 1 = DDI A, ...
+		return (funcCtl & TGL_PIPE_DDI_SELECT_MASK) >> TGL_PIPE_DDI_SELECT_SHIFT;
+	}
+	return ((funcCtl & PIPE_DDI_SELECT_MASK) >> PIPE_DDI_SELECT_SHIFT) + 1;
+}
+
+
 pipe_index
 Port::PipePreference()
 {
@@ -326,25 +358,9 @@ Port::PipePreference()
 
 	if (gInfo->shared_info->device_type.HasDDI()) {
 		// scan all our pipes to find the one connected to the current port
-		uint32 pipeState = 0;
 		for (uint32 pipeCnt = 0; pipeCnt < 4; pipeCnt++) {
-			switch (pipeCnt) {
-				case 0:
-					pipeState = read32(PIPE_DDI_FUNC_CTL_A);
-					break;
-				case 1:
-					pipeState = read32(PIPE_DDI_FUNC_CTL_B);
-					break;
-				case 2:
-					pipeState = read32(PIPE_DDI_FUNC_CTL_C);
-					break;
-				default:
-					pipeState = read32(PIPE_DDI_FUNC_CTL_EDP);
-					break;
-			}
-
-			if ((((pipeState & PIPE_DDI_SELECT_MASK) >> PIPE_DDI_SELECT_SHIFT) + 1)
-				== (uint32)PortIndex()) {
+			uint32 pipeState = read32(ddi_func_ctl_register(pipeCnt));
+			if (ddi_func_ctl_port(pipeState) == (uint32)PortIndex()) {
 				switch (pipeCnt) {
 					case 0:
 						return INTEL_PIPE_A;
@@ -508,25 +524,46 @@ Port::_DDCPin()
 		return 0;
 	child_device_config& config = gInfo->shared_info->device_configs[foundIndex];
 	if (gInfo->shared_info->pch_info >= INTEL_PCH_ICP) {
+		// VBT pin -> GMBUS pin -> GPIO register as in Linux (intel_bios.c
+		// icp/adlp_ddc_pin_map, intel_gmbus.c gmbus_pins_icp): GPIO 0 is unused.
+		if (gInfo->shared_info->device_type.InGroup(INTEL_GROUP_ALD)) {
+			// Alder Lake-P/N: combo DDI A/B, then TC1-TC4
+			switch (config.ddc_pin) {
+				case 1:
+					return INTEL_I2C_IO_B;
+				case 2:
+					return INTEL_I2C_IO_C;
+				case 3:
+					return INTEL_I2C_IO_J;
+				case 4:
+					return INTEL_I2C_IO_K;
+				case 5:
+					return INTEL_I2C_IO_L;
+				case 6:
+					return INTEL_I2C_IO_M;
+				default:
+					return 0;
+			}
+		}
 		switch (config.ddc_pin) {
 			case 1:
-				return INTEL_I2C_IO_A;
-			case 2:
 				return INTEL_I2C_IO_B;
-			case 3:
+			case 2:
 				return INTEL_I2C_IO_C;
+			case 3:
+				return INTEL_I2C_IO_D;
 			case 4:
-				return INTEL_I2C_IO_I;
-			case 5:
 				return INTEL_I2C_IO_J;
-			case 6:
+			case 5:
 				return INTEL_I2C_IO_K;
-			case 7:
+			case 6:
 				return INTEL_I2C_IO_L;
-			case 8:
+			case 7:
 				return INTEL_I2C_IO_M;
-			case 9:
+			case 8:
 				return INTEL_I2C_IO_N;
+			case 9:
+				return INTEL_I2C_IO_O;
 			default:
 				return 0;
 		}
@@ -599,12 +636,14 @@ Port::_SetupDpAuxI2c(i2c_bus *bus)
 	bus->send_receive = &_DpAuxSendReceiveHook;
 
 	if (gInfo->shared_info->device_type.Generation() >= 11) {
+		// the AUX power well index equals the AUX channel (ICL_PW_CTL_IDX_AUX_A..)
+		uint32 channel = _DpAuxChannel();
 		uint32 value = read32(ICL_PWR_WELL_CTL_AUX2);
-		if ((value & HSW_PWR_WELL_CTL_STATE(0)) != 0)
+		if ((value & HSW_PWR_WELL_CTL_STATE(channel)) != 0)
 			return B_OK;
 
-		write32(ICL_PWR_WELL_CTL_AUX2, value | HSW_PWR_WELL_CTL_REQ(0));
-		if (!wait_for_set(ICL_PWR_WELL_CTL_AUX2, HSW_PWR_WELL_CTL_STATE(0), 1000))
+		write32(ICL_PWR_WELL_CTL_AUX2, value | HSW_PWR_WELL_CTL_REQ(channel));
+		if (!wait_for_set(ICL_PWR_WELL_CTL_AUX2, HSW_PWR_WELL_CTL_STATE(channel), 1000))
 			ERROR("%s: %s AUX didn't power on within 1000us!\n", __func__, PortName());
 	}
 	return B_OK;
@@ -2320,6 +2359,22 @@ DigitalDisplayInterface::SetupI2cFallback(i2c_bus *bus)
 
 
 bool
+DigitalDisplayInterface::_IsInternalPanel()
+{
+	if (PortIndex() != INTEL_PORT_A)
+		return false;
+
+	// Like Linux (intel_bios_encoder_supports_edp), trust the VBT: only a DP child with the
+	// internal connector flag is an eDP panel. Being a mobile GPU says nothing about DDI A.
+	if (gInfo->shared_info->device_type.Generation() >= 9
+		&& gInfo->shared_info->device_config_count > 0)
+		return _IsEDPPort();
+
+	return gInfo->shared_info->device_type.IsMobile() || _IsEDPPort();
+}
+
+
+bool
 DigitalDisplayInterface::IsConnected()
 {
 	addr_t portRegister = _PortRegister();
@@ -2383,8 +2438,7 @@ DigitalDisplayInterface::IsConnected()
 
 	// On laptops we always have an internal panel.. (on the eDP port on DDI systems, fixed on eDP pipe)
 	uint32 pipeState = 0;
-	if ((gInfo->shared_info->device_type.IsMobile() || _IsEDPPort())
-		&& (PortIndex() == INTEL_PORT_A)) {
+	if (_IsInternalPanel()) {
 		if (gInfo->shared_info->device_type.Generation() < 12) {
 			// TODO: the pipe state isn't reliable after gen11
 			pipeState = read32(PIPE_DDI_FUNC_CTL_EDP);
@@ -2415,19 +2469,12 @@ DigitalDisplayInterface::IsConnected()
 	}
 
 	// scan all our non-eDP pipes to find the one connected to the current port and check it's enabled
-	for (uint32 pipeCnt = 0; pipeCnt < 3; pipeCnt++) {
-		switch (pipeCnt) {
-			case 1:
-				pipeState = read32(PIPE_DDI_FUNC_CTL_B);
-				break;
-			case 2:
-				pipeState = read32(PIPE_DDI_FUNC_CTL_C);
-				break;
-			default:
-				pipeState = read32(PIPE_DDI_FUNC_CTL_A);
-				break;
-		}
-		if ((((pipeState & PIPE_DDI_SELECT_MASK) >> PIPE_DDI_SELECT_SHIFT) + 1) == (uint32)PortIndex()) {
+	// (Gen12 has no eDP transcoder, its 4th one is a regular transcoder D)
+	const uint32 transcoderCount
+		= gInfo->shared_info->device_type.Generation() >= 12 ? 4 : 3;
+	for (uint32 pipeCnt = 0; pipeCnt < transcoderCount; pipeCnt++) {
+		pipeState = read32(ddi_func_ctl_register(pipeCnt));
+		if (ddi_func_ctl_port(pipeState) == (uint32)PortIndex()) {
 			TRACE("%s: PIPE_DDI_FUNC_CTL nr %" B_PRIx32 ": 0x%" B_PRIx32 "\n", __func__, pipeCnt + 1, pipeState);
 			// See if the BIOS enabled our output as it indicates it's in use
 			if (pipeState & PIPE_DDI_FUNC_CTL_ENABLE) {
@@ -2516,7 +2563,8 @@ DigitalDisplayInterface::_SetPortLinkGen8(const display_timing& timing, uint32 p
 			fPipeOffset = 0x2000;
 			break;
 		case INTEL_PIPE_D:
-			fPipeOffset = 0xf000;
+			// pipe D only exists on Gen12, where it is a regular transcoder
+			fPipeOffset = 0x3000;
 			break;
 		default:
 			break;
@@ -2616,8 +2664,7 @@ DigitalDisplayInterface::SetDisplayMode(display_mode* target, uint32 colorMode)
 
 	display_timing hardwareTarget = target->timing;
 	bool needsScaling = false;
-	if ((PortIndex() == INTEL_PORT_A)
-		&& (gInfo->shared_info->device_type.IsMobile() || _IsEDPPort())) {
+	if (_IsInternalPanel()) {
 		// For internal panels, we may need to set the timings according to the panel
 		// native video mode, and let the panel fitter do the scaling.
 

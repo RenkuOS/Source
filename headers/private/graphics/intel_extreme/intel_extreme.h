@@ -1150,7 +1150,7 @@ struct intel_brightness_legacy {
 #define PIPE_DDI_SELECT_PORT(x)			((x) << PIPE_DDI_SELECT_SHIFT)
 #define TGL_PIPE_DDI_SELECT_PORT(x)		((x) << TGL_PIPE_DDI_SELECT_SHIFT)
 #define PIPE_DDI_SELECT_MASK			(7 << PIPE_DDI_SELECT_SHIFT)
-#define TGL_PIPE_DDI_SELECT_MASK		(7 << TGL_PIPE_DDI_SELECT_SHIFT)
+#define TGL_PIPE_DDI_SELECT_MASK		(0xf << TGL_PIPE_DDI_SELECT_SHIFT)
 #define PIPE_DDI_PORT_NONE				0
 #define PIPE_DDI_PORT_B					1
 #define PIPE_DDI_PORT_C					2
@@ -1413,6 +1413,7 @@ struct intel_brightness_legacy {
 #define INTEL_I2C_IO_L					(0x503c | REGS_SOUTH_SHARED)
 #define INTEL_I2C_IO_M					(0x5040 | REGS_SOUTH_SHARED)
 #define INTEL_I2C_IO_N					(0x5044 | REGS_SOUTH_SHARED)
+#define INTEL_I2C_IO_O					(0x5048 | REGS_SOUTH_SHARED)
 // i2c hardware controller
 #define INTEL_GMBUS0					(0x5100 | REGS_SOUTH_SHARED)
 #define INTEL_GMBUS4					(0x5110 | REGS_SOUTH_SHARED)

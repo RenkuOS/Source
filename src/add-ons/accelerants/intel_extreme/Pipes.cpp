@@ -80,9 +80,10 @@ Pipe::Pipe(pipe_index pipeIndex)
 			fPlaneOffset = INTEL_PLANE_OFFSET * 2;
 			break;
 		case INTEL_PIPE_D:
+			// pipe D only exists on Gen12: a regular pipe, no longer the eDP transcoder
 			TRACE("Pipe D.\n");
-			fPipeOffset = 0xf000;
-			//no fPlaneOffset..
+			fPipeOffset = 0x3000;
+			fPlaneOffset = INTEL_PLANE_OFFSET * 3;
 			break;
 		default:
 			TRACE("Pipe A.\n");
