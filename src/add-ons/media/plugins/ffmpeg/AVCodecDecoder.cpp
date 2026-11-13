@@ -148,7 +148,8 @@ AVCodecDecoder::~AVCodecDecoder()
 
 	av_frame_free(&fPostProcessedDecodedPicture);
 	av_frame_free(&fRawDecodedPicture);
-	av_free(fRawDecodedAudio->opaque);
+	if (fRawDecodedAudio != NULL)
+		av_free(fRawDecodedAudio->opaque);
 	av_frame_free(&fRawDecodedAudio);
 	if (fCodecContext != NULL) {
 		fCodecContext->extradata = NULL;
@@ -187,6 +188,11 @@ AVCodecDecoder::Setup(media_format* ioEncodedFormat, const void* infoBuffer,
 	if (ioEncodedFormat->type != B_MEDIA_ENCODED_AUDIO
 		&& ioEncodedFormat->type != B_MEDIA_ENCODED_VIDEO)
 		return B_ERROR;
+
+	// Frames are allocated in the constructor, which can't report errors.
+	if (fPostProcessedDecodedPicture == NULL || fRawDecodedPicture == NULL
+			|| fRawDecodedAudio == NULL || fDecodedDataBuffer == NULL)
+	return B_NO_MEMORY;
 
 	fIsAudio = (ioEncodedFormat->type == B_MEDIA_ENCODED_AUDIO);
 	TRACE("[%c] AVCodecDecoder::Setup()\n", fIsAudio ? 'a' : 'v');
@@ -304,8 +310,10 @@ AVCodecDecoder::NegotiateOutputFormat(media_format* inOutFormat)
 		avcodec_free_context(&fCodecContext);
 	}
 
-	fCodecContext = avcodec_alloc_context3(fCodec);
 	fCodecInitDone = false;
+	fCodecContext = avcodec_alloc_context3(fCodec);
+	if (fCodecContext == NULL)
+		return B_NO_MEMORY;
 
 	system_info info;
 	get_system_info(&info);
@@ -440,8 +448,9 @@ AVCodecDecoder::_NegotiateAudioOutputFormat(media_format* inOutFormat)
 	if (fRawDecodedAudio->opaque == NULL)
 		return B_NO_MEMORY;
 
+	// sets the passed pointer to NULL
+	swr_free(&fResampleContext);
 	if (av_sample_fmt_is_planar(fCodecContext->sample_fmt)) {
-		fResampleContext = NULL;
 		swr_alloc_set_opts2(&fResampleContext,
 			&fCodecContext->ch_layout,
 			fCodecContext->request_sample_fmt,
@@ -1677,8 +1686,11 @@ AVCodecDecoder::_DeinterlaceAndColorConvertVideoFrame()
 		posix_memalign(reinterpret_cast<void**>(&fDecodedData),
 			kOptimalAlignmentForColorConversion, fDecodedDataSizeInBytes + 63);
 	}
-	if (fDecodedData == NULL)
+	if (fDecodedData == NULL) {
+		if (useDeinterlacedPicture)
+			av_freep(&deinterlacedPicture.data[0]);
 		return B_NO_MEMORY;
+	}
 
 	fPostProcessedDecodedPicture->data[0] = fDecodedData;
 	fPostProcessedDecodedPicture->linesize[0]

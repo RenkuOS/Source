@@ -954,11 +954,11 @@ BContainerWindow::SwitchDirectory(const entry_ref* ref)
 	WindowStateNodeOpener opener(this, false);
 	opener.SetTo(&entry, false);
 
-	// Redraw the background image or erase it
-	UpdateBackgroundImage();
-
 	// Update pose view and set directory type
 	PoseView()->SwitchDir(ref, opener.StreamNode());
+
+	// Redraw the background image or erase it
+	UpdateBackgroundImage();
 
 	if (wasInTrash ^ (TargetModel()->IsTrash() || TargetModel()->InTrash())
 		|| wasRoot != TargetModel()->IsRoot() || wasVolume != TargetModel()->IsVolume()) {
@@ -1035,6 +1035,10 @@ BContainerWindow::UpdateBackgroundImage()
 		// The default image will still work though.
 		fBackgroundImage = BackgroundImage::Refresh(fBackgroundImage, opener.Node(),
 			isDesktop, PoseView());
+	} else if (fBackgroundImage != NULL) {
+		fBackgroundImage->Remove();
+		delete fBackgroundImage;
+		fBackgroundImage = NULL;
 	}
 
 	// look for default background image info
