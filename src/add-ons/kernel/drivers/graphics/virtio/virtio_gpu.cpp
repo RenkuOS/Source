@@ -5,6 +5,7 @@
 
 
 #include <new>
+#include <stddef.h>
 
 #include <graphic_driver.h>
 
@@ -53,6 +54,12 @@ typedef struct {
 
 	area_id					sharedArea;
 	virtio_gpu_shared_info* sharedInfo;
+
+	// The display is set up on the first open and torn down after the last
+	// handle is freed; app_server and any accelerant clones share it.
+	mutex					openLock;
+	int32					openCount;
+	char					deviceName[64];	// as published, for clones
 } virtio_gpu_driver_info;
 
 
@@ -155,8 +162,12 @@ virtio_gpu_send_cmd(virtio_gpu_driver_info* info, void *cmd, size_t cmdSize, voi
 }
 
 
+/*!	Asks the host for the configuration of scanout 0. Called with the
+	commandLock held.
+*/
 status_t
-virtio_gpu_get_display_info(virtio_gpu_driver_info* info)
+virtio_gpu_get_display_info(virtio_gpu_driver_info* info, uint32& width,
+	uint32& height, bool& enabled)
 {
 	CALLED();
 	struct virtio_gpu_ctrl_hdr hdr = {};
@@ -171,15 +182,11 @@ virtio_gpu_get_display_info(virtio_gpu_driver_info* info)
 		return B_ERROR;
 	}
 
-	if (!displayInfo.pmodes[0].enabled) {
-		ERROR("pmodes[0] is not enabled\n");
-		return B_BAD_VALUE;
-	}
-
-	info->displayWidth = displayInfo.pmodes[0].r.width;
-	info->displayHeight = displayInfo.pmodes[0].r.height;
-	TRACE("virtio_gpu_get_display_info width %" B_PRIu32 " height %" B_PRIu32 "\n",
-		info->displayWidth, info->displayHeight);
+	enabled = displayInfo.pmodes[0].enabled != 0;
+	width = displayInfo.pmodes[0].r.width;
+	height = displayInfo.pmodes[0].r.height;
+	TRACE("virtio_gpu_get_display_info width %" B_PRIu32 " height %" B_PRIu32
+		" enabled %d\n", width, height, enabled);
 
 	return B_OK;
 }
@@ -512,27 +519,44 @@ virtio_gpu_init_device(void* _info, void** _cookie)
 	info->commandPhysAddr = entry.address;
 	mutex_init(&info->commandLock, "virtiogpu command lock");
 
+	// Released by the control queue interrupt. It belongs to the device,
+	// not to an open handle: any handle's commands (and the update thread's)
+	// wait on it.
+	info->commandDone = create_sem(1, "virtio_gpu_command");
+	if (info->commandDone < B_OK) {
+		status = info->commandDone;
+		goto err3;
+	}
+
 	// Setup interrupt
 	status = info->virtio->setup_interrupt(info->virtio_device, NULL, info);
 	if (status != B_OK) {
 		ERROR("interrupt setup failed (%s)\n", strerror(status));
-		goto err3;
+		goto err4;
 	}
 
 	status = info->virtio->queue_setup_interrupt(info->controlQueue,
 		virtio_gpu_vqwait, info);
 	if (status != B_OK) {
 		ERROR("queue interrupt setup failed (%s)\n", strerror(status));
-		goto err3;
+		goto err5;
 	}
 
 	*_cookie = info;
 	return B_OK;
 
+err5:
+	info->virtio->free_interrupts(info->virtio_device);
+err4:
+	delete_sem(info->commandDone);
+	info->commandDone = -1;
 err3:
+	mutex_destroy(&info->commandLock);
 err2:
 	delete_area(info->commandArea);
+	info->commandArea = -1;
 err1:
+	info->virtio->free_queues(info->virtio_device);
 	return status;
 }
 
@@ -545,6 +569,8 @@ virtio_gpu_uninit_device(void* _cookie)
 
 	info->virtio->free_interrupts(info->virtio_device);
 
+	delete_sem(info->commandDone);
+	info->commandDone = -1;
 	mutex_destroy(&info->commandLock);
 
 	delete_area(info->commandArea);
@@ -553,72 +579,104 @@ virtio_gpu_uninit_device(void* _cookie)
 }
 
 
-static status_t
-virtio_gpu_open(void* _info, const char* path, int openMode, void** _cookie)
+/*!	Undoes virtio_gpu_setup_display(), also a partial one. Called with the
+	openLock held, when the last handle goes away (or the first open fails).
+*/
+static void
+virtio_gpu_teardown_display(virtio_gpu_driver_info* info)
 {
 	CALLED();
-	virtio_gpu_driver_info* info = (virtio_gpu_driver_info*)_info;
-	status_t status;
-	size_t sharedSize = (sizeof(virtio_gpu_shared_info) + 7) & ~7;
-	MutexLocker commandLocker;
 
-	virtio_gpu_handle* handle = (virtio_gpu_handle*)malloc(
-		sizeof(virtio_gpu_handle));
-	if (handle == NULL)
-		return B_NO_MEMORY;
+	// stop the update thread first: it uses the resource and the framebuffer
+	if (info->updateThread >= 0) {
+		info->updateThreadRunning = false;
+		status_t result;
+		wait_for_thread(info->updateThread, &result);
+		info->updateThread = -1;
+	}
 
-	info->sharedArea = -1;
+	if (info->displayResourceId > 0) {
+		MutexLocker commandLocker(&info->commandLock);
+		virtio_gpu_set_scanout(info, 0, 0, 0, 0);
+		virtio_gpu_detach_backing(info, info->displayResourceId);
+		virtio_gpu_unref(info, info->displayResourceId);
+		info->displayResourceId = 0;
+	}
+	virtio_gpu_drain_queues(info);
+
+	delete_area(info->framebufferArea);
 	info->framebufferArea = -1;
+	info->framebuffer = 0;
+	delete_area(info->sharedArea);
+	info->sharedArea = -1;
+	info->sharedInfo = NULL;
+}
 
-	info->commandDone = create_sem(1, "virtio_gpu_command");
-	if (info->commandDone < B_OK)
-		goto error;
+
+/*!	Sets up the display for the first open: the area shared with the
+	accelerant, the framebuffer, the host resource and scanout, and the update
+	thread. Called with the openLock held.
+*/
+static status_t
+virtio_gpu_setup_display(virtio_gpu_driver_info* info)
+{
+	CALLED();
+	size_t sharedSize = (sizeof(virtio_gpu_shared_info) + 7) & ~7;
+	status_t status;
+	bool enabled;
 
 	info->sharedArea = create_area("virtio_gpu shared info",
 		(void**)&info->sharedInfo, B_ANY_KERNEL_ADDRESS,
 		ROUND_TO_PAGE_SIZE(sharedSize), B_FULL_LOCK,
 		B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA | B_CLONEABLE_AREA);
 	if (info->sharedArea < 0)
-		goto error;
+		return info->sharedArea;
 	memset(info->sharedInfo, 0, sizeof(virtio_gpu_shared_info));
 
-	commandLocker.SetTo(&info->commandLock, false, true);
+	{
+		MutexLocker commandLocker(&info->commandLock);
 
-	status = virtio_gpu_get_display_info(info);
-	if (status != B_OK)
-		goto error;
+		status = virtio_gpu_get_display_info(info, info->displayWidth,
+			info->displayHeight, enabled);
+		if (status == B_OK && !enabled) {
+			ERROR("pmodes[0] is not enabled\n");
+			status = B_BAD_VALUE;
+		}
+		if (status != B_OK)
+			goto error;
 
-	if ((info->features & VIRTIO_GPU_F_EDID) != 0)
-		virtio_gpu_get_edids(info, 0);
+		if ((info->features & VIRTIO_GPU_F_EDID) != 0)
+			virtio_gpu_get_edids(info, 0);
 
-	// so we can fit every mode
-	info->framebufferWidth = 3840;
-	info->framebufferHeight = 2160;
+		// so we can fit every mode
+		info->framebufferWidth = 3840;
+		info->framebufferHeight = 2160;
 
-	// create framebuffer area
-	info->framebufferSize = 4 * info->framebufferWidth * info->framebufferHeight;
-	info->framebufferArea = create_area("virtio_gpu framebuffer", (void**)&info->framebuffer,
-		B_ANY_KERNEL_ADDRESS, info->framebufferSize,
-		B_FULL_LOCK | B_CONTIGUOUS, B_READ_AREA | B_WRITE_AREA);
-	if (info->framebufferArea < B_OK) {
-		status = info->framebufferArea;
-		goto error;
+		// create framebuffer area
+		info->framebufferSize = 4 * info->framebufferWidth * info->framebufferHeight;
+		info->framebufferArea = create_area("virtio_gpu framebuffer",
+			(void**)&info->framebuffer, B_ANY_KERNEL_ADDRESS, info->framebufferSize,
+			B_FULL_LOCK | B_CONTIGUOUS, B_READ_AREA | B_WRITE_AREA);
+		if (info->framebufferArea < B_OK) {
+			status = info->framebufferArea;
+			goto error;
+		}
+
+		status = virtio_gpu_create_2d(info, 1, info->displayWidth,
+			info->displayHeight);
+		if (status != B_OK)
+			goto error;
+		info->displayResourceId = 1;
+
+		status = virtio_gpu_attach_backing(info, info->displayResourceId);
+		if (status != B_OK)
+			goto error;
+
+		status = virtio_gpu_set_scanout(info, 0, info->displayResourceId,
+			info->displayWidth, info->displayHeight);
+		if (status != B_OK)
+			goto error;
 	}
-
-	info->displayResourceId = 1;
-	status = virtio_gpu_create_2d(info, info->displayResourceId, info->displayWidth,
-		info->displayHeight);
-	if (status != B_OK)
-		goto error;
-
-	status = virtio_gpu_attach_backing(info, info->displayResourceId);
-	if (status != B_OK)
-		goto error;
-
-	status = virtio_gpu_set_scanout(info, 0, info->displayResourceId, info->displayWidth,
-		info->displayHeight);
-	if (status != B_OK)
-		goto error;
 
 	{
 		virtio_gpu_shared_info& sharedInfo = *info->sharedInfo;
@@ -629,41 +687,60 @@ virtio_gpu_open(void* _info, const char* path, int openMode, void** _cookie)
 		sharedInfo.current_mode.virtual_height = info->displayHeight;
 		sharedInfo.current_mode.space = B_RGB32;
 	}
+
 	info->updateThreadRunning = true;
-	info->updateThread = spawn_kernel_thread(virtio_update_thread, "virtio_gpu update",
-		B_DISPLAY_PRIORITY, info);
-	if (info->updateThread < B_OK)
+	info->updateThread = spawn_kernel_thread(virtio_update_thread,
+		"virtio_gpu update", B_DISPLAY_PRIORITY, info);
+	if (info->updateThread < B_OK) {
+		status = info->updateThread;
+		info->updateThread = -1;
 		goto error;
+	}
 	resume_thread(info->updateThread);
-
-	handle->info = info;
-
-	*_cookie = handle;
 	return B_OK;
 
 error:
-	delete_area(info->framebufferArea);
-	info->framebufferArea = -1;
-	delete_area(info->sharedArea);
-	info->sharedArea = -1;
-	delete_sem(info->commandDone);
-	info->commandDone = -1;
-	free(handle);
-	return B_ERROR;
+	virtio_gpu_teardown_display(info);
+	return status;
+}
+
+
+static status_t
+virtio_gpu_open(void* _info, const char* path, int openMode, void** _cookie)
+{
+	CALLED();
+	virtio_gpu_driver_info* info = (virtio_gpu_driver_info*)_info;
+
+	virtio_gpu_handle* handle = (virtio_gpu_handle*)malloc(
+		sizeof(virtio_gpu_handle));
+	if (handle == NULL)
+		return B_NO_MEMORY;
+	handle->info = info;
+
+	// app_server opens the device once; accelerant clones (BWindowScreen)
+	// open it again and must share the display, not set up a new one
+	MutexLocker openLocker(&info->openLock);
+	if (info->openCount == 0) {
+		status_t status = virtio_gpu_setup_display(info);
+		if (status != B_OK) {
+			ERROR("open: display setup failed: %s\n", strerror(status));
+			free(handle);
+			return status;
+		}
+	}
+	info->openCount++;
+
+	*_cookie = handle;
+	return B_OK;
 }
 
 
 static status_t
 virtio_gpu_close(void* cookie)
 {
-	virtio_gpu_handle* handle = (virtio_gpu_handle*)cookie;
 	CALLED();
-
-	virtio_gpu_driver_info* info = handle->info;
-	info->updateThreadRunning = false;
-	delete_sem(info->commandDone);
-	info->commandDone  = -1;
-
+	// nothing to do per handle: the display is shared and torn down in free
+	// once the last handle is gone
 	return B_OK;
 }
 
@@ -673,20 +750,15 @@ virtio_gpu_free(void* cookie)
 {
 	CALLED();
 	virtio_gpu_handle* handle = (virtio_gpu_handle*)cookie;
-
 	virtio_gpu_driver_info* info = handle->info;
-	int32 result;
-	wait_for_thread(info->updateThread, &result);
-	info->updateThread = -1;
-	virtio_gpu_drain_queues(info);
-	delete_area(info->framebufferArea);
-	info->framebufferArea = -1;
-	delete_area(info->sharedArea);
-	info->sharedArea = -1;
+
+	MutexLocker openLocker(&info->openLock);
+	if (--info->openCount == 0)
+		virtio_gpu_teardown_display(info);
+
 	free(handle);
 	return B_OK;
 }
-
 
 static void
 virtio_gpu_vqwait(void* driverCookie, void* cookie)
@@ -736,6 +808,14 @@ virtio_gpu_ioctl(void* cookie, uint32 op, void* buffer, size_t length)
 		// needed to share data between kernel and accelerant
 		case VIRTIO_GPU_GET_PRIVATE_DATA:
 			return user_memcpy(buffer, &info->sharedArea, sizeof(area_id));
+
+		// the accelerant's clone info: the device path below /dev, which
+		// a clone opens to share this display
+		case VIRTIO_GPU_GET_DEVICE_NAME:
+			if (user_strlcpy((char*)buffer, info->deviceName,
+					B_PATH_NAME_LENGTH) < B_OK)
+				return B_BAD_ADDRESS;
+			return B_OK;
 
 		case VIRTIO_GPU_SET_DISPLAY_MODE:
 		{
@@ -817,6 +897,10 @@ virtio_gpu_init_driver(device_node* node, void** cookie)
 
 	info->framebufferArea = -1;
 	info->sharedArea = -1;
+	info->commandArea = -1;
+	info->commandDone = -1;
+	info->updateThread = -1;
+	mutex_init(&info->openLock, "virtio_gpu open lock");
 
 	info->node = node;
 
@@ -830,6 +914,7 @@ virtio_gpu_uninit_driver(void* _cookie)
 {
 	CALLED();
 	virtio_gpu_driver_info* info = (virtio_gpu_driver_info*)_cookie;
+	mutex_destroy(&info->openLock);
 	free(info);
 }
 
@@ -845,12 +930,15 @@ virtio_gpu_register_child_devices(void* _cookie)
 	if (id < 0)
 		return id;
 
-	char name[64];
-	snprintf(name, sizeof(name), "graphics/virtio/%" B_PRId32,
-		id);
+	snprintf(info->deviceName, sizeof(info->deviceName),
+		"graphics/virtio/%" B_PRId32, id);
 
-	status = sDeviceManager->publish_device(info->node, name,
+	status = sDeviceManager->publish_device(info->node, info->deviceName,
 		VIRTIO_GPU_DEVICE_MODULE_NAME);
+	if (status != B_OK) {
+		sDeviceManager->free_id(VIRTIO_GPU_DEVICE_ID_GENERATOR, id);
+		info->deviceName[0] = '\0';
+	}
 
 	return status;
 }
