@@ -21,6 +21,7 @@
 
 #include <string.h>
 #include <strings.h>
+#include <sys/stat.h>
 #include <syslog.h>
 
 #include <safemode_defs.h>
@@ -152,7 +153,8 @@ DecorManager::DecorManager()
 	fCurrentDecor(&fDefaultDecor),
 	fPreviewDecor(NULL),
 	fPreviewWindow(NULL),
-	fCurrentDecorPath("Default")
+	fCurrentDecorPath("Default"),
+	fGeneration(0)
 {
 	_LoadSettingsFromDisk();
 }
@@ -211,10 +213,7 @@ DecorManager::CleanupForWindow(Window* window)
 	// Given window is being deleted, do any cleanup needed
 	if (fPreviewWindow == window && window != NULL){
 		fPreviewWindow = NULL;
-
-		if (fPreviewDecor != NULL)
-			unload_add_on(fPreviewDecor->ImageID());
-
+		// the add-on stays loaded, as all of them do (see _LoadDecor())
 		fPreviewDecor = NULL;
 	}
 }
@@ -233,8 +232,6 @@ DecorManager::PreviewDecorator(BString path, Window* window)
 	if (window == NULL)
 		return B_BAD_VALUE;
 
-	// We have to jump some hoops because the window must be able to
-	// delete its decorator before we unload the add-on
 	status_t error = B_OK;
 	DecorAddOn* decorPtr = _LoadDecor(path, error);
 	if (decorPtr == NULL)
@@ -243,7 +240,6 @@ DecorManager::PreviewDecorator(BString path, Window* window)
 	BRegion border;
 	window->GetBorderRegion(&border);
 
-	DecorAddOn* oldDecor = fPreviewDecor;
 	fPreviewDecor = decorPtr;
 	fPreviewWindow = window;
 	// After this call, the window has deleted its decorator.
@@ -254,9 +250,6 @@ DecorManager::PreviewDecorator(BString path, Window* window)
 
 	border.Include(&newBorder);
 	window->Desktop()->RebuildAndRedrawAfterWindowChange(window, border);
-
-	if (oldDecor != NULL)
-		unload_add_on(oldDecor->ImageID());
 
 	return B_OK;
 }
@@ -287,15 +280,15 @@ DecorManager::SetDecorator(BString path, Desktop* desktop)
 	DecorAddOn* oldDecor = fCurrentDecor;
 
 	BString oldPath = fCurrentDecorPath;
-	image_id oldImage = fCurrentDecor->ImageID();
 
 	fCurrentDecor = newDecor;
 	fCurrentDecorPath = path.String();
+	atomic_add((int32*)&fGeneration, 1);
 
 	if (desktop->ReloadDecor(oldDecor)) {
-		// now safe to unload all old decorator data
-		// saves us from deleting oldDecor...
-		unload_add_on(oldImage);
+		// The old add-on stays loaded: a window that was being made, not
+		// yet among the desktop's windows, may still be drawn by it until
+		// it is added and given the new one.
 		_SaveSettingsToDisk();
 		return B_OK;
 	}
@@ -308,6 +301,7 @@ DecorManager::SetDecorator(BString path, Desktop* desktop)
 
 	fCurrentDecor = oldDecor;
 	fCurrentDecorPath = oldPath;
+	atomic_add((int32*)&fGeneration, 1);
 	return B_ERROR;
 }
 
@@ -335,6 +329,16 @@ DecorManager::_LoadDecor(BString _path, status_t& error )
 		return NULL;
 	}
 
+	// Loaded before, and the file hasn't changed since. Add-ons are never
+	// unloaded: a window that was being made while the decorator changed may
+	// still be drawn by the old one until it's added to the desktop.
+	const BString key = _LoadedKey(_path);
+	std::map<BString, DecorAddOn*>::iterator loaded = fLoaded.find(key);
+	if (!key.IsEmpty() && loaded != fLoaded.end()) {
+		error = B_OK;
+		return loaded->second;
+	}
+
 	image_id image = load_add_on(path.Path());
 	if (image < 0) {
 		error = B_BAD_IMAGE_ID;
@@ -358,7 +362,23 @@ DecorManager::_LoadDecor(BString _path, status_t& error )
 		return NULL;
 	}
 
+	if (!key.IsEmpty())
+		fLoaded[key] = newDecor;
 	return newDecor;
+}
+
+
+//!	The add-on at \a path, as the file is now: its node and when it changed.
+BString
+DecorManager::_LoadedKey(const BString& path) const
+{
+	struct stat st;
+	if (stat(path.String(), &st) != 0)
+		return BString();
+	BString key;
+	key.SetToFormat("%" B_PRIdDEV ":%" B_PRIdINO ":%" B_PRIdTIME ":%s",
+		st.st_dev, st.st_ino, st.st_mtime, path.String());
+	return key;
 }
 
 
