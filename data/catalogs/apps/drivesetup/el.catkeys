@@ -111,3 +111,13 @@ The partition %s is already mounted.	MainWindow		Η κατάτμηση %s είν
 Size	PartitionList		Μέγεθος
 Creation of the partition has failed.	MainWindow		Η δημιουργία της κατάτμησης έχει αποτύχει.
 Mount	MainWindow		Προσάρτηση
+Register disk image…	MainWindow		Καταχώριση εικόνας δίσκου…
+Unregister disk image	MainWindow		Κατάργηση καταχώρισης εικόνας δίσκου
+Write image…	MainWindow		Εγγραφή εικόνας…
+%appname%: Register disk image	MainWindow		%appname%: Καταχώριση εικόνας δίσκου
+%appname%: Select disk image	MainWindow		%appname%: Επιλογή εικόνας δίσκου
+%appname%: Save disk image	MainWindow		%appname%: Αποθήκευση εικόνας δίσκου
+Disk image has been added.	MainWindow		Η εικόνα δίσκου προστέθηκε.
+Disk image has been removed.	MainWindow		Η εικόνα δίσκου αφαιρέθηκε.
+Disk image successfully created.	MainWindow		Η εικόνα δίσκου δημιουργήθηκε με επιτυχία.
+Disk image successfully written to the target.	MainWindow		Η εικόνα δίσκου εγγράφηκε με επιτυχία στον προορισμό.

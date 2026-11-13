@@ -106,3 +106,16 @@ The partition %s is already mounted.	MainWindow		Diskafsnittet %s er allerede mo
 Size	PartitionList		Størrelse
 Creation of the partition has failed.	MainWindow		Det var ikke muligt at oprette diskafsnittet.
 Mount	MainWindow		Montér
+Disk image	MainWindow		Diskbillede
+Register disk image…	MainWindow		Registrér diskbillede…
+Unregister disk image	MainWindow		Afregistrér diskbillede
+Save image…	MainWindow		Gem billede…
+Write image…	MainWindow		Skriv billede…
+%appname%: Register disk image	MainWindow		%appname%: Registrér diskbillede
+%appname%: Select disk image	MainWindow		%appname%: Vælg diskbillede
+%appname%: Save disk image	MainWindow		%appname%: Gem diskbillede
+Disk image has been added.	MainWindow		Diskbilledet er blevet tilføjet.
+Disk image has been removed.	MainWindow		Diskbilledet er blevet fjernet.
+Creating disk image	MainWindow		Opretter diskbillede
+Disk image successfully created.	MainWindow		Diskbilledet blev oprettet.
+Disk image successfully written to the target.	MainWindow		Diskbilledet blev skrevet til målet.

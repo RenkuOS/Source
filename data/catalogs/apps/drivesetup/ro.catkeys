@@ -110,3 +110,16 @@ The partition %s is already mounted.	MainWindow		Partiția %s este deja montată
 Size	PartitionList		Dimensiune
 Creation of the partition has failed.	MainWindow		Crearea partiției a eșuat.
 Mount	MainWindow		Montează
+Disk image	MainWindow		Imagine de disc
+Register disk image…	MainWindow		Înregistrează imaginea de disc…
+Unregister disk image	MainWindow		Anulează înregistrarea imaginii de disc
+Save image…	MainWindow		Salvează imaginea…
+Write image…	MainWindow		Scrie imaginea…
+%appname%: Register disk image	MainWindow		%appname%: Înregistrează imaginea de disc
+%appname%: Select disk image	MainWindow		%appname%: Selectează imaginea de disc
+%appname%: Save disk image	MainWindow		%appname%: Salvează imaginea de disc
+Disk image has been added.	MainWindow		Imaginea de disc a fost adăugată.
+Disk image has been removed.	MainWindow		Imaginea de disc a fost eliminată.
+Creating disk image	MainWindow		Se creează imaginea de disc
+Disk image successfully created.	MainWindow		Imaginea de disc a fost creată cu succes.
+Disk image successfully written to the target.	MainWindow		Imaginea de disc a fost scrisă cu succes pe destinație.

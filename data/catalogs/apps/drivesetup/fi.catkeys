@@ -140,3 +140,4 @@ The partition %s is already mounted.	MainWindow		Osio %s on jo liitetty.
 Size	PartitionList		Koko
 Creation of the partition has failed.	MainWindow		Osion luominen epäonnistui.
 Mount	MainWindow		Liitä
+%appname%: Register disk image	MainWindow		%appname%: Rekisteröi levykuva
