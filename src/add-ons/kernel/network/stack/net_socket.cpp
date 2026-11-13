@@ -614,11 +614,13 @@ socket_acquire(net_socket* _socket)
 	// endpoint protocol. We need to make sure the endpoint cannot acquire the
 	// socket anymore -- while not obvious, the endpoint protocol is responsible
 	// for the proper locking here.
-	if (socket->CountReferences() == 0)
-		return false;
-
-	socket->AcquireReference();
-	return true;
+	// The last reference can go at any moment, as that doesn't take the
+	// endpoint manager's lock, so the check and the increment must be one step:
+	// a count brought back from zero has the socket destroyed a second time.
+	BPrivate::WeakPointer* pointer = socket->GetWeakPointer();
+	const bool acquired = pointer->Get() != NULL;
+	pointer->ReleaseReference();
+	return acquired;
 }
 
 
