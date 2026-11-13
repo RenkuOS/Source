@@ -2220,21 +2220,269 @@ EmbeddedDisplayPort::IsConnected()
 // #pragma mark - Digital Display Port
 
 
-// Gen12 combo PHY DDI A..C
+// Gen12 combo PHY DDI A..C. Sequences, tables and register values follow the MIT licensed Linux
+// i915 driver (intel_ddi.c, intel_ddi_buf_trans.c, intel_dp_link_training.c, intel_dpll_mgr.c,
+// intel_combo_phy.c, skl_watermark.c) and drm_dp_dual_mode_helper.c.
+
+static const addr_t kComboPhyBase[] = { ICL_COMBOPHY_A, ICL_COMBOPHY_B, ICL_COMBOPHY_C };
 // DPCLKA_CFGCR0: 2-bit DPLL select at bit 2 * phy plus a clock-off bit per port
 // (Linux ICL_DPCLKA_CFGCR0_DDI_CLK_SEL_SHIFT / _DDI_CLK_OFF)
 static const uint32 kComboPhyClockOff[] = { TGL_DPCLKA_DDIA_CLOCK_OFF, TGL_DPCLKA_DDIB_CLOCK_OFF,
 	TGL_DPCLKA_DDIC_CLOCK_OFF };
 static const addr_t kComboPhyBufferControl[] = { DDI_BUF_CTL_A, DDI_BUF_CTL_B, DDI_BUF_CTL_C };
 
+struct combo_phy_buf_trans {
+	uint8	swingSelect;
+	uint8	nScalar;
+	uint8	cursorCoefficient;
+	uint8	postCursor2;
+	uint8	postCursor1;
+};
+
+// Linux _adlp_combo_phy_trans_dp_hbr, indexed like index_to_dp_signal_levels
+static const combo_phy_buf_trans kAdlpDpHbr[] = {
+	{ 0xa, 0x35, 0x3f, 0x00, 0x00 },
+	{ 0xa, 0x4f, 0x37, 0x00, 0x08 },
+	{ 0xc, 0x71, 0x31, 0x00, 0x0e },
+	{ 0x6, 0x7f, 0x2c, 0x00, 0x13 },
+	{ 0xa, 0x4c, 0x3f, 0x00, 0x00 },
+	{ 0xc, 0x73, 0x34, 0x00, 0x0b },
+	{ 0x6, 0x7f, 0x2f, 0x00, 0x10 },
+	{ 0xc, 0x7c, 0x3c, 0x00, 0x03 },
+	{ 0x6, 0x7f, 0x35, 0x00, 0x0a },
+	{ 0x6, 0x7f, 0x3f, 0x00, 0x00 },
+};
+
+// Linux _adlp_combo_phy_trans_dp_hbr2_hbr3
+static const combo_phy_buf_trans kAdlpDpHbr2Hbr3[] = {
+	{ 0xa, 0x35, 0x3f, 0x00, 0x00 },
+	{ 0xa, 0x4f, 0x37, 0x00, 0x08 },
+	{ 0xc, 0x71, 0x30, 0x00, 0x0f },
+	{ 0x6, 0x7f, 0x2b, 0x00, 0x14 },
+	{ 0xa, 0x4c, 0x3f, 0x00, 0x00 },
+	{ 0xc, 0x73, 0x34, 0x00, 0x0b },
+	{ 0x6, 0x7f, 0x30, 0x00, 0x0f },
+	{ 0xc, 0x63, 0x3f, 0x00, 0x00 },
+	{ 0x6, 0x7f, 0x38, 0x00, 0x07 },
+	{ 0x6, 0x7f, 0x3f, 0x00, 0x00 },
+};
+
+// Linux _icl_combo_phy_trans_hdmi, default entry is the last one
+static const combo_phy_buf_trans kIclHdmi[] = {
+	{ 0xa, 0x60, 0x3f, 0x00, 0x00 },
+	{ 0xb, 0x73, 0x36, 0x00, 0x09 },
+	{ 0x6, 0x7f, 0x31, 0x00, 0x0e },
+	{ 0xb, 0x73, 0x3f, 0x00, 0x00 },
+	{ 0x6, 0x7f, 0x37, 0x00, 0x08 },
+	{ 0x6, 0x7f, 0x3f, 0x00, 0x00 },
+	{ 0x6, 0x7f, 0x35, 0x00, 0x0a },
+};
+
+// DP link rates with their combo PLL dividers: Linux icl_dp_combo_pll_19_2MHz_values and
+// _24MHz_values both use an 8100 MHz DCO for these rates (Q = 1)
+struct dp_link_config {
+	uint32	rate;		// kHz, Linux port_clock
+	uint8	linkBw;		// DPCD LINK_BW_SET
+	uint8	p;
+	uint8	k;
+};
+
+static const dp_link_config kDpLinkConfigs[] = {
+	{ 162000, 0x06, 5, 2 },
+	{ 270000, 0x0a, 3, 2 },
+	{ 540000, 0x14, 3, 1 },
+	{ 810000, 0x1e, 2, 1 },
+};
+static const uint32 kDpPllDco = 8100000;
+// shortcut: Linux caps ADL-P at HBR3 and then by the VBT dp_max_link_rate, which Haiku's
+// child_device_config doesn't carry (one byte short); stay at HBR2 until it is parsed.
+static const uint32 kDpSourceMaxRate = 540000;
+
+// DPCD bits not in dp_raw.h
+#define DPCD_TPS3_SUPPORTED				(1 << 6)	// DP_MAX_LANE_COUNT
+#define DPCD_TPS4_SUPPORTED				(1 << 7)	// DP_MAX_DOWNSPREAD
+#define DPCD_TRAINING_AUX_RD_INTERVAL	0x000e
+#define DPCD_EXTENDED_CAPS_PRESENT		(1 << 7)
+#define DPCD_EXTENDED_CAPS				0x2200
+#define DPCD_ANSI_8B10B					(1 << 0)
+#define DPCD_TRAINING_PATTERN_4			7
+#define DPCD_SCRAMBLING_DISABLE			(1 << 5)
+#define DPCD_MAX_SWING_REACHED			(1 << 2)
+#define DPCD_MAX_PRE_EMPHASIS_REACHED	(1 << 5)
+
+// DP++ dual mode adaptor registers (I2C address 0x40 on DDC)
+#define DP_DUAL_MODE_ADDRESS			0x40
+#define DP_DUAL_MODE_ADAPTOR_ID			0x10
+#define DP_DUAL_MODE_MAX_TMDS_CLOCK		0x1d
+#define DP_DUAL_MODE_TMDS_OEN			0x20
+#define DP_DUAL_MODE_TYPE2				0xa0
+#define DP_DUAL_MODE_LSPCON				0xa8
+
+enum {
+	kDualModeNone = 0,
+	kDualModeType1,
+	kDualModeType2,
+	kDualModeLspcon
+};
+
+
+//! Highest link rate (kHz) both sides support, 0 if the sink's rate is unknown
+static uint32
+dp_max_link_rate(const uint8* dpcd)
+{
+	uint32 rate = 0;
+	for (uint32 i = 0; i < B_COUNT_OF(kDpLinkConfigs); i++) {
+		if (kDpLinkConfigs[i].linkBw == dpcd[DP_MAX_LINK_RATE])
+			rate = kDpLinkConfigs[i].rate;
+	}
+	return min_c(rate, kDpSourceMaxRate);
+}
+
+
+//! DP vswing/pre-emphasis training value -> buffer table index (Linux translate_signal_level)
+static uint32
+dp_signal_level(uint8 trainSet)
+{
+	static const uint8 kFirstOfSwing[] = { 0, 4, 7, 9 };
+	uint32 index = kFirstOfSwing[trainSet & 3] + ((trainSet >> 3) & 3);
+	return min_c(index, 9u);
+}
+
+
+static uint8
+dp_lane_status(const uint8* linkStatus, uint32 lane)
+{
+	return (linkStatus[lane / 2] >> (4 * (lane & 1))) & 0xf;
+}
+
+
+static bool
+dp_clock_recovery_ok(const uint8* linkStatus, uint32 laneCount)
+{
+	for (uint32 lane = 0; lane < laneCount; lane++) {
+		if ((dp_lane_status(linkStatus, lane) & DP_LANE_STATUS_CR_DONE_A) == 0)
+			return false;
+	}
+	return true;
+}
+
+
+static bool
+dp_channel_eq_ok(const uint8* linkStatus, uint32 laneCount)
+{
+	if ((linkStatus[DP_LANE_ALIGN_STATUS_UPDATED - DP_LANE_STATUS_0_1]
+			& DP_INTERLANE_ALIGN_DONE) == 0)
+		return false;
+	for (uint32 lane = 0; lane < laneCount; lane++) {
+		if ((dp_lane_status(linkStatus, lane) & DP_LANE_STATUS_EQUALIZED_A)
+				!= DP_LANE_STATUS_EQUALIZED_A)
+			return false;
+	}
+	return true;
+}
+
+
+//! The sink's per lane adjust request (bits 1:0 swing, 3:2 pre-emphasis)
+static uint8
+dp_adjust_request(const uint8* linkStatus, uint32 lane)
+{
+	return (linkStatus[DP_ADJ_REQUEST_0_1 - DP_LANE_STATUS_0_1 + lane / 2] >> (4 * (lane & 1)))
+		& 0xf;
+}
+
+
+/*!	Apply the sink's adjust requests to trainSet (Linux intel_dp_get_adjust_train, per lane
+	levels; 4 swing and 4 pre-emphasis levels, swing + pre-emphasis <= 3).
+*/
+static void
+dp_adjust_train_set(const uint8* linkStatus, uint32 laneCount, uint8* trainSet)
+{
+	for (uint32 lane = 0; lane < 4; lane++) {
+		uint8 request = dp_adjust_request(linkStatus, min_c(lane, laneCount - 1));
+		uint8 swing = request & 3;
+		uint8 preEmphasis = (request >> 2) & 3;
+		uint8 value = preEmphasis << 3;
+		if (preEmphasis == 3)
+			value |= DPCD_MAX_PRE_EMPHASIS_REACHED;
+		swing = min_c(swing, 3 - preEmphasis);
+		value |= swing;
+		if (swing == 3)
+			value |= DPCD_MAX_SWING_REACHED;
+		trainSet[lane] = value;
+	}
+}
+
+
+//! All lanes at their maximum swing with maximum pre-emphasis (Linux intel_dp_link_max_vswing_reached)
+static bool
+dp_max_swing_reached(const uint8* trainSet, uint32 laneCount)
+{
+	for (uint32 lane = 0; lane < laneCount; lane++) {
+		if ((trainSet[lane] & DPCD_MAX_SWING_REACHED) == 0
+			|| (trainSet[lane] & 3) + ((trainSet[lane] >> 3) & 3) != 3)
+			return false;
+	}
+	return true;
+}
+
+
+/*!	Make sure the pipe can scan out: its power well, its share of the display buffer and its
+	plane watermarks (Gen12 Alder Lake only).
+*/
+static bool
+setup_pipe_for_port(uint32 pipe)
+{
+	const uint32 well = XELPD_PW_CTL_IDX_PW_A + pipe;
+	if ((read32(HSW_PWR_WELL_CTL2) & HSW_PWR_WELL_CTL_STATE(well)) == 0) {
+		write32(HSW_PWR_WELL_CTL2, read32(HSW_PWR_WELL_CTL2) | HSW_PWR_WELL_CTL_REQ(well));
+		if (!wait_for_set(HSW_PWR_WELL_CTL2, HSW_PWR_WELL_CTL_STATE(well), 1000)) {
+			ERROR("%s: power well of pipe %c didn't come up\n", __func__, (char)('A' + pipe));
+			return false;
+		}
+	}
+
+	const addr_t pipeOffset = 0x1000 * pipe;
+	if (read32(SKL_PLANE1_BUF_CFG_A + pipeOffset) != 0)
+		return true;
+
+	// shortcut: only pipe B next to a BIOS-lit pipe A, using Linux' ADL-P split of the four
+	// DBUF slices (adlp_allowed_dbufs: pipe A S1+S2 = blocks 0-2047, pipe B S3+S4 = 2048-4095).
+	// Pipes C/D or a joined MBus need the real watermark/DBUF code.
+	if (pipe != 1 || (read32(ADLP_MBUS_CTL) & ADLP_MBUS_JOIN) != 0
+		|| (read32(ADLP_DBUF_CTL_S3) & ADLP_DBUF_POWER_STATE) == 0
+		|| (read32(ADLP_DBUF_CTL_S4) & ADLP_DBUF_POWER_STATE) == 0
+		|| ((read32(SKL_PLANE1_BUF_CFG_A) >> 16) & 0x1fff) >= 2048
+		|| (read32(SKL_PLANE1_WM_0_A) & SKL_PLANE_WM_EN) == 0) {
+		ERROR("%s: no display buffer setup for pipe %c\n", __func__, (char)('A' + pipe));
+		return false;
+	}
+
+	TRACE("%s: giving pipe B DBUF blocks 2048-4095 and pipe A's watermarks\n", __func__);
+	write32(SKL_PLANE1_BUF_CFG_A + pipeOffset, (4095 << 16) | 2048);
+	// Haiku drives all pipes with the same mode, so pipe A's watermarks fit
+	for (addr_t reg = SKL_PLANE1_WM_0_A; reg <= SKL_PLANE1_WM_SAGV_TRANS_A; reg += 4)
+		write32(reg + pipeOffset, read32(reg));
+	write32(SKL_PLANE1_WM_TRANS_A + pipeOffset, read32(SKL_PLANE1_WM_TRANS_A));
+	return true;
+}
+
 
 DigitalDisplayInterface::DigitalDisplayInterface(port_index index,
 		const char* baseName)
 	:
-	Port(index, baseName)
+	Port(index, baseName),
+	fMaxLanes(4),
+	fSinkProbed(false),
+	fDisplayPortSink(false),
+	fDualModeType(0),
+	fMaxTmdsClock(0),
+	fLinkRate(0),
+	fLaneCount(0)
 {
 	// As of Haswell, Intel decided to change eDP ports to a "DDI" bus...
 	// on a dare because the hardware engineers were drunk one night.
+	memset(fDpcd, 0, sizeof(fDpcd));
+	memset(fTrainSet, 0, sizeof(fTrainSet));
 }
 
 
@@ -2287,6 +2535,12 @@ DigitalDisplayInterface::Power(bool enabled)
 	TRACE("%s: %s DDI enabled: %s\n", __func__, PortName(),
 		enabled ? "true" : "false");
 
+	// Never run a transcoder without a port clock behind it (a port we failed to light)
+	if (enabled && _IsComboPhyPort() && !_IsPortLit(fPipe->Index() - INTEL_PIPE_A)) {
+		ERROR("%s: %s is not lit, keeping its pipe off\n", __func__, PortName());
+		return B_ERROR;
+	}
+
 	fPipe->Enable(enabled);
 
 	//nogo currently.. (kills output forever)
@@ -2318,10 +2572,21 @@ DigitalDisplayInterface::SetPipe(Pipe* pipe)
 		return B_ERROR;
 	}
 
-	// all DDI ports pipe selections works differently than on the old port types (indirect).
-	// fixme: implement..
-	TRACE("%s: Assuming pipe %d is assigned by BIOS to port %d (fixme)\n", __PRETTY_FUNCTION__,
-		pipe->Index(), PortIndex());
+	// DDI ports are selected in the TRANS_DDI_FUNC_CTL of the pipe's transcoder (pipe N uses
+	// transcoder N). PipePreference() picked the transcoder the BIOS routed to us, if any;
+	// on Gen12 combo PHYs SetDisplayMode() routes an unrouted one itself.
+	const uint32 transcoder = pipe->Index() - INTEL_PIPE_A;
+	uint32 funcCtl = read32(ddi_func_ctl_register(transcoder));
+	if (ddi_func_ctl_port(funcCtl) == (uint32)PortIndex()) {
+		TRACE("%s: %s: transcoder %c is routed to it by the BIOS\n", __func__, PortName(),
+			(char)('A' + transcoder));
+	} else if (_IsComboPhyPort()) {
+		TRACE("%s: %s: transcoder %c not routed yet, will be set up at mode set\n", __func__,
+			PortName(), (char)('A' + transcoder));
+	} else {
+		TRACE("%s: Assuming pipe %d is assigned by BIOS to port %d (fixme)\n", __func__,
+			pipe->Index(), PortIndex());
+	}
 
 	fPipe = pipe;
 
@@ -2443,6 +2708,8 @@ DigitalDisplayInterface::IsConnected()
 
 	// fetch EDID but determine 'in use' later (below) so we also catch screens that fail EDID
 	bool edidDetected = HasEDID();
+	if (edidDetected)
+		_ProbeSink();
 
 	// On laptops we always have an internal panel.. (on the eDP port on DDI systems, fixed on eDP pipe)
 	uint32 pipeState = 0;
@@ -2492,28 +2759,13 @@ DigitalDisplayInterface::IsConnected()
 		}
 	}
 
+	// A screen on a port the BIOS left dark: Gen12 combo PHYs can be lit at mode set
 	if (edidDetected) {
-		for (uint32 pipeCnt = 0; pipeCnt < 3; pipeCnt++) {
-			uint32 pipeReg = 0;
-			switch (pipeCnt) {
-				case 1:
-					pipeReg = PIPE_DDI_FUNC_CTL_B;
-					break;
-				case 2:
-					pipeReg = PIPE_DDI_FUNC_CTL_C;
-					break;
-				default:
-					pipeReg = PIPE_DDI_FUNC_CTL_A;
-					break;
-			}
-			pipeState = read32(pipeReg);
-			if ((pipeState & PIPE_DDI_FUNC_CTL_ENABLE) == 0) {
-				TRACE("%s: Connected but port down\n", __func__);
-				return false;
-			}
+		if (_CanLightPort()) {
+			TRACE("%s: Connected, port is dark and will be enabled at mode set\n", __func__);
 			return true;
 		}
-		TRACE("%s: No pipe available, ignoring connected screen\n", __func__);
+		TRACE("%s: Connected but port down\n", __func__);
 	}
 
 	TRACE("%s: Not connected\n", __func__);
@@ -2527,8 +2779,13 @@ DigitalDisplayInterface::_SetPortLinkGen8(const display_timing& timing, uint32 p
 	uint32 linkBandwidth = 270000; //khz
 
 	if (gInfo->shared_info->device_type.Generation() >= 11) {
-		ERROR("%s: DDI PLL selection not implemented for Gen11, "
-			"assuming default DP-link reference\n", __func__);
+		if (fLinkRate != 0) {
+			// the DP link we trained or read back from the sink
+			linkBandwidth = fLinkRate;
+		} else {
+			ERROR("%s: DDI PLL selection not implemented for Gen11, "
+				"assuming default DP-link reference\n", __func__);
+		}
 	} else if (gInfo->shared_info->device_type.Generation() >= 9) {
 		if (pllSel != 0xff) {
 			linkBandwidth = (read32(SKL_DPLL_CTRL1) >> (1 + 6 * pllSel)) & SKL_DPLL_DP_LINKRATE_MASK;
@@ -2738,6 +2995,39 @@ DigitalDisplayInterface::SetDisplayMode(display_mode* target, uint32 colorMode)
 		}
 	}
 
+	// Gen12 combo PHY: keep what the BIOS lit when possible (a TMDS port only gets a new pixel
+	// clock below, a DP link is kept if the mode fits it), else bring the port up ourselves.
+	const uint32 transcoder = fPipe->Index() - INTEL_PIPE_A;
+	bool enablePort = false;
+	bool keepLink = false;
+	if (_IsComboPhyPort()) {
+		bool lit = _IsPortLit(transcoder);
+		if (!lit) {
+			if (!_CanLightPort()) {
+				ERROR("%s: %s is dark and can't be enabled\n", __func__, PortName());
+				return B_ERROR;
+			}
+			enablePort = true;
+		} else if (fPipe->TranscoderMode() == PIPE_DDI_MODE_DP_SST) {
+			uint32 funcCtl = read32(ddi_func_ctl_register(transcoder));
+			uint32 lanes = ((funcCtl & PIPE_DDI_DP_WIDTH_MASK) >> PIPE_DDI_DP_WIDTH_SHIFT) + 1;
+			if (_ReadLiveLink() && lanes == fLaneCount
+				&& (uint64)hardwareTarget.pixel_clock * 3 <= (uint64)fLinkRate * fLaneCount) {
+				TRACE("%s: %s: keeping the DP link (%" B_PRIu32 " kHz x %" B_PRIu32 ")\n",
+					__func__, PortName(), fLinkRate, fLaneCount);
+				keepLink = true;
+			} else if (fDisplayPortSink) {
+				TRACE("%s: %s: mode needs a new DP link, retraining\n", __func__, PortName());
+				enablePort = true;
+				_DisablePort(transcoder);
+			} else {
+				ERROR("%s: %s: unknown DP link and no usable DPCD, keeping the BIOS mode\n",
+					__func__, PortName());
+				return B_ERROR;
+			}
+		}
+	}
+
 	// Setup PanelFitter
 	PanelFitter* fitter = fPipe->PFT();
 	if (fitter != NULL)
@@ -2767,6 +3057,14 @@ DigitalDisplayInterface::SetDisplayMode(display_mode* target, uint32 colorMode)
 			hardwareTarget.pixel_clock,
 			PortIndex(),
 			&pllSel);
+	} else if (enablePort) {
+		status_t status = _EnablePort(hardwareTarget, transcoder);
+		if (status != B_OK) {
+			ERROR("%s: enabling %s failed: %s\n", __func__, PortName(), strerror(status));
+			return status;
+		}
+	} else if (keepLink) {
+		// the DP link clock is fixed, the pixel clock is only expressed through M/N
 	} else {
 		// Tiger Lake
 		// See volume 12, page 180, "HDMI Mode Combo PHY Programming"
@@ -2798,6 +3096,8 @@ DigitalDisplayInterface::SetDisplayMode(display_mode* target, uint32 colorMode)
 	// Program target display mode
 	fPipe->ConfigureTimings(target, !needsScaling);
 	_SetPortLinkGen8(hardwareTarget, pllSel);
+	if (enablePort)
+		_FinishEnablePort(transcoder);
 
 	// Set fCurrentMode to our set display mode
 	memcpy(&fCurrentMode, target, sizeof(display_mode));
@@ -2806,9 +3106,228 @@ DigitalDisplayInterface::SetDisplayMode(display_mode* target, uint32 colorMode)
 }
 
 
+uint32
+DigitalDisplayInterface::MaxPixelClock()
+{
+	if (fDisplayPortSink) {
+		// 24 bpp over the fastest link, 8b/10b carries one byte per lane and link clock
+		uint32 lanes = min_c(fDpcd[DP_MAX_LANE_COUNT] & DP_MAX_LANE_COUNT_MASK, 4);
+		return dp_max_link_rate(fDpcd) * lanes / 3;
+	}
+	return fMaxTmdsClock;
+}
+
+
 // #pragma mark - Gen12 combo PHY port setup
 
 
+bool
+DigitalDisplayInterface::_IsComboPhyPort()
+{
+	// shortcut: only the Alder Lake-P/N buffer tables are implemented (Tiger Lake's depend on the
+	// SKU); everything else keeps relying on the BIOS setup
+	return gInfo->shared_info->device_type.InGroup(INTEL_GROUP_ALD)
+		&& PortIndex() >= INTEL_PORT_A && PortIndex() <= INTEL_PORT_C;
+}
+
+
+//! Whether this port can be lit by us: a BIOS-initialized combo PHY and a sink we can drive.
+bool
+DigitalDisplayInterface::_CanLightPort()
+{
+	if (!_IsComboPhyPort() || fDualModeType == kDualModeLspcon)
+		return false;
+
+	// Linux icl_combo_phy_enabled(): the PHY must be calibrated and powered (by the BIOS)
+	const uint32 phy = PortIndex() - INTEL_PORT_A;
+	if ((read32(kComboPhyBase[phy] + ICL_PORT_COMP_DW0) & ICL_PORT_COMP_INIT) == 0
+		|| (read32(ICL_PHY_MISC_A + 4 * phy) & ICL_PHY_MISC_DE_IO_COMP_PWR_DOWN) != 0) {
+		TRACE("%s: %s: combo PHY not initialized\n", __func__, PortName());
+		return false;
+	}
+
+	return fDisplayPortSink || _IsHdmiInVBT();
+}
+
+
+//! The DDI buffer is on and the given transcoder is enabled and routed to this port.
+bool
+DigitalDisplayInterface::_IsPortLit(uint32 transcoder)
+{
+	if ((read32(_PortRegister()) & DDI_BUF_CTL_ENABLE) == 0)
+		return false;
+
+	uint32 funcCtl = read32(ddi_func_ctl_register(transcoder));
+	return (funcCtl & PIPE_DDI_FUNC_CTL_ENABLE) != 0
+		&& ddi_func_ctl_port(funcCtl) == (uint32)PortIndex();
+}
+
+
+status_t
+DigitalDisplayInterface::_DpcdRead(uint32 address, uint8* buffer, size_t size)
+{
+	dp_aux_msg message;
+	memset(&message, 0, sizeof(message));
+	message.address = address;
+	message.request = DP_AUX_NATIVE_READ;
+	message.buffer = buffer;
+	message.size = size;
+	ssize_t result = _DpAuxTransfer(&message);
+	return result < 0 ? (status_t)result : B_OK;
+}
+
+
+status_t
+DigitalDisplayInterface::_DpcdWrite(uint32 address, const uint8* buffer, size_t size)
+{
+	dp_aux_msg message;
+	memset(&message, 0, sizeof(message));
+	message.address = address;
+	message.request = DP_AUX_NATIVE_WRITE;
+	message.buffer = (void*)buffer;
+	message.size = size;
+	ssize_t result = _DpAuxTransfer(&message);
+	return result < 0 ? (status_t)result : B_OK;
+}
+
+
+/*!	Find out what is behind a combo PHY port: a native DP sink only if its DPCD answers with sane
+	capabilities; on a DP++ port a dual mode adaptor (TMDS) is looked for as well.
+*/
+void
+DigitalDisplayInterface::_ProbeSink()
+{
+	if (fSinkProbed)
+		return;
+	fSinkProbed = true;
+
+	if (!_IsComboPhyPort())
+		return;
+
+	if (_IsDisplayPortInVBT()) {
+		i2c_bus bus;
+		_SetupDpAuxI2c(&bus);
+			// powers up the AUX channel
+
+		uint8 dpcd[16];
+		memset(dpcd, 0, sizeof(dpcd));
+		status_t status = _DpcdRead(DP_DPCD_REV, dpcd, sizeof(dpcd));
+		if (status == B_OK
+			&& (dpcd[DPCD_TRAINING_AUX_RD_INTERVAL] & DPCD_EXTENDED_CAPS_PRESENT) != 0) {
+			// DPCD 1.4+: the real capabilities (HBR3, TPS4) are in the extended field
+			uint8 extended[16];
+			if (_DpcdRead(DPCD_EXTENDED_CAPS, extended, sizeof(extended)) == B_OK
+				&& extended[DP_DPCD_REV] >= dpcd[DP_DPCD_REV])
+				memcpy(dpcd, extended, sizeof(dpcd));
+		}
+
+		// AUX replies are not proof of a DP sink (DP++ converters answer too): require sane caps
+		uint8 lanes = dpcd[DP_MAX_LANE_COUNT] & DP_MAX_LANE_COUNT_MASK;
+		bool rateKnown = false;
+		for (uint32 i = 0; i < B_COUNT_OF(kDpLinkConfigs); i++)
+			rateKnown |= kDpLinkConfigs[i].linkBw == dpcd[DP_MAX_LINK_RATE];
+		if (status == B_OK && dpcd[DP_DPCD_REV] >= 0x10 && dpcd[DP_DPCD_REV] <= 0x14
+			&& rateKnown && (lanes == 1 || lanes == 2 || lanes == 4)) {
+			memcpy(fDpcd, dpcd, sizeof(fDpcd));
+			fDisplayPortSink = true;
+			TRACE("%s: %s: DP sink, DPCD rev 0x%02x, max link bw 0x%02x, %u lanes%s%s%s\n",
+				__func__, PortName(), dpcd[DP_DPCD_REV], dpcd[DP_MAX_LINK_RATE], lanes,
+				(dpcd[DP_MAX_LANE_COUNT] & DP_ENHANCED_FRAME_CAP) != 0 ? ", enhanced framing" : "",
+				(dpcd[DP_MAX_LANE_COUNT] & DPCD_TPS3_SUPPORTED) != 0 ? ", TPS3" : "",
+				(dpcd[DP_MAX_DOWNSPREAD] & DPCD_TPS4_SUPPORTED) != 0 ? ", TPS4" : "");
+		} else {
+			TRACE("%s: %s: no native DP sink (DPCD read: %s, rev 0x%02x, link bw 0x%02x, "
+				"lanes 0x%02x)\n", __func__, PortName(), strerror(status), dpcd[DP_DPCD_REV],
+				dpcd[DP_MAX_LINK_RATE], dpcd[DP_MAX_LANE_COUNT]);
+		}
+	}
+
+	if (_IsDisplayPortInVBT() && _IsHdmiInVBT())
+		_DetectDualMode();
+
+	if (!fDisplayPortSink && _IsHdmiInVBT())
+		TRACE("%s: %s: TMDS (HDMI/DVI) sink\n", __func__, PortName());
+}
+
+
+//! DP++ dual mode adaptor detection over DDC (Linux drm_dp_dual_mode_detect, _max_tmds_clock)
+void
+DigitalDisplayInterface::_DetectDualMode()
+{
+	if (_DDCRegister() == 0)
+		return;
+
+	i2c_bus bus;
+	if (Port::SetupI2c(&bus) != B_OK)
+		return;
+
+	// Always read from offset 0, not all adaptors support sub-addressing
+	uint8 offset = 0;
+	uint8 registers[0x20];
+	if (i2c_send_receive_callback(&bus, DP_DUAL_MODE_ADDRESS, &offset, 1, registers,
+			sizeof(registers)) != B_OK) {
+		// Type 1 DVI adaptors need not implement any registers (Linux then assumes one from
+		// the VBT and limits it to 165 MHz; we keep the modes that work through passive cables)
+		TRACE("%s: %s: DP++ port, no dual mode adaptor registers\n", __func__, PortName());
+		return;
+	}
+
+	static const char kHdmiAdaptorId[] = "DP-HDMI ADAPTOR\x04";
+	bool hdmiAdaptor = memcmp(registers, kHdmiAdaptorId, 16) == 0;
+	uint8 adaptorId = registers[DP_DUAL_MODE_ADAPTOR_ID];
+	if (hdmiAdaptor && adaptorId == DP_DUAL_MODE_LSPCON) {
+		fDualModeType = kDualModeLspcon;
+		fMaxTmdsClock = 0;
+	} else if (adaptorId == DP_DUAL_MODE_TYPE2) {
+		fDualModeType = kDualModeType2;
+		uint8 maxClock = registers[DP_DUAL_MODE_MAX_TMDS_CLOCK];
+		fMaxTmdsClock = (maxClock == 0 || maxClock == 0xff) ? 165000 : maxClock * 5000 / 2;
+	} else {
+		fDualModeType = kDualModeType1;
+		fMaxTmdsClock = 165000;
+	}
+
+	// an adaptor means TMDS signaling, whatever the AUX channel answered
+	fDisplayPortSink = false;
+	TRACE("%s: %s: DP++ dual mode adaptor %s (id 0x%02x)%s, max TMDS clock %" B_PRIu32 " kHz\n",
+		__func__, PortName(), fDualModeType == kDualModeLspcon ? "LSPCON"
+			: fDualModeType == kDualModeType2 ? "type 2" : "type 1", adaptorId,
+		hdmiAdaptor ? " HDMI" : " DVI", fMaxTmdsClock);
+}
+
+
+//! Bits of DDI_BUF_CTL to keep: VBT lane reversal, and DDI A's 4 lane strap as set up before.
+uint32
+DigitalDisplayInterface::_BufferControlBits()
+{
+	uint32 bits = read32(_PortRegister()) & DDI_A_4_LANES;
+	uint32 foundIndex = 0;
+	if (_IsPortInVBT(&foundIndex)
+		&& gInfo->shared_info->device_configs[foundIndex].lane_reversal)
+		bits |= DDI_BUF_PORT_REVERSAL;
+	return bits;
+}
+
+
+//! Combo PHY static power down of unused lanes (Linux intel_combo_phy_power_up_lanes)
+void
+DigitalDisplayInterface::_PowerUpLanes(uint32 laneCount)
+{
+	bool reversed = (_BufferControlBits() & DDI_BUF_PORT_REVERSAL) != 0;
+	uint32 powerDown = 0;
+	if (laneCount == 1)
+		powerDown = reversed ? 0x7 : 0xe;
+	else if (laneCount == 2)
+		powerDown = reversed ? 0x3 : 0xc;
+
+	const addr_t reg = kComboPhyBase[PortIndex() - INTEL_PORT_A] + ICL_PORT_CL_DW10;
+	write32(reg, (read32(reg) & ~ICL_PORT_CL_PWR_DOWN_LN_MASK) | (powerDown << 4));
+}
+
+
+/*!	Program a DPLL and route it to this port (DPCLKA_CFGCR0). A lit port keeps the DPLL0/1 the
+	BIOS feeds it from, otherwise one no lit port uses is taken.
+*/
 status_t
 DigitalDisplayInterface::_ProgramComboPll(int p, int q, int k, uint32 dco)
 {
@@ -2858,4 +3377,423 @@ DigitalDisplayInterface::_ProgramComboPll(int p, int q, int k, uint32 dco)
 	write32(TGL_DPCLKA_CFGCR0, config);
 	TRACE("PLL configuration after changes: %" B_PRIx32 "\n", read32(TGL_DPCLKA_CFGCR0));
 	return B_OK;
+}
+
+
+/*!	Combo PHY voltage swing / pre-emphasis (Linux icl_combo_phy_set_signal_levels and
+	icl_ddi_combo_vswing_program): HDMI uses the VBT level, DP the per lane fTrainSet.
+*/
+void
+DigitalDisplayInterface::_SetSignalLevels(bool hdmi)
+{
+	const addr_t base = kComboPhyBase[PortIndex() - INTEL_PORT_A];
+	const combo_phy_buf_trans* table = hdmi ? kIclHdmi
+		: fLinkRate > 270000 ? kAdlpDpHbr2Hbr3 : kAdlpDpHbr;
+	const uint32 laneCount = hdmi ? 4 : fLaneCount;
+
+	uint32 hdmiLevel = B_COUNT_OF(kIclHdmi) - 1;
+	uint32 foundIndex = 0;
+	if (hdmi && _IsPortInVBT(&foundIndex)) {
+		// child device hdmi_level_shifter_value (VBT 158+), byte 3 of the device_id union
+		uint32 level = gInfo->shared_info->device_configs[foundIndex].device_id[3] & 0x1f;
+		hdmiLevel = min_c(level, B_COUNT_OF(kIclHdmi) - 1);
+	}
+
+	// 1. common keeper for DP, not for HDMI
+	uint32 value = read32(base + ICL_PORT_PCS_DW1_LN(0));
+	if (hdmi)
+		value &= ~ICL_PORT_PCS_COMMON_KEEPER_EN;
+	else
+		value |= ICL_PORT_PCS_COMMON_KEEPER_EN;
+	write32(base + ICL_PORT_PCS_DW1_GRP, value);
+
+	// 2. loadgen select: up to 6 GHz lanes 1-3 with 4 lanes, else lanes 1-2 (TMDS counts as 4)
+	for (uint32 lane = 0; lane < 4; lane++) {
+		bool loadgen = fLinkRate <= 600000
+			&& (laneCount == 4 ? lane >= 1 : (lane == 1 || lane == 2));
+		addr_t reg = base + ICL_PORT_TX_DW4_LN(lane);
+		write32(reg, (read32(reg) & ~ICL_PORT_TX_DW4_LOADGEN_SELECT)
+			| (loadgen ? ICL_PORT_TX_DW4_LOADGEN_SELECT : 0));
+	}
+
+	// 3. SUS clock config
+	write32(base + ICL_PORT_CL_DW5, read32(base + ICL_PORT_CL_DW5) | ICL_PORT_CL_SUS_CLOCK_CONFIG);
+
+	// 4. clear training enable to change swing values
+	value = read32(base + ICL_PORT_TX_DW5_LN(0)) & ~ICL_PORT_TX_DW5_TRAINING_EN;
+	write32(base + ICL_PORT_TX_DW5_GRP, value);
+
+	// 5. swing and de-emphasis
+	value &= ~(ICL_PORT_TX_DW5_SCALING_MODE_MASK | ICL_PORT_TX_DW5_RTERM_MASK
+		| ICL_PORT_TX_DW5_COEFF_POLARITY | ICL_PORT_TX_DW5_CURSOR_PROGRAM
+		| ICL_PORT_TX_DW5_TAP2_DISABLE | ICL_PORT_TX_DW5_TAP3_DISABLE);
+	value |= ICL_PORT_TX_DW5_SCALING_MODE_SEL(2) | ICL_PORT_TX_DW5_RTERM_SELECT(6)
+		| ICL_PORT_TX_DW5_TAP3_DISABLE;
+	write32(base + ICL_PORT_TX_DW5_GRP, value);
+
+	for (uint32 lane = 0; lane < 4; lane++) {
+		const combo_phy_buf_trans& entry = table[hdmi ? hdmiLevel
+			: dp_signal_level(fTrainSet[min_c(lane, laneCount - 1)])];
+		addr_t reg = base + ICL_PORT_TX_DW2_LN(lane);
+		write32(reg, (read32(reg) & ~(ICL_PORT_TX_DW2_SWING_SEL_MASK | ICL_PORT_TX_DW2_RCOMP_MASK))
+			| ICL_PORT_TX_DW2_SWING_SEL(entry.swingSelect) | ICL_PORT_TX_DW2_RCOMP_SCALAR(0x98));
+		// per lane only: the group register would overwrite each lane's loadgen select
+		reg = base + ICL_PORT_TX_DW4_LN(lane);
+		write32(reg, (read32(reg) & ~ICL_PORT_TX_DW4_COEFF_MASK)
+			| ICL_PORT_TX_DW4_COEFF(entry.postCursor1, entry.postCursor2,
+				entry.cursorCoefficient));
+		reg = base + ICL_PORT_TX_DW7_LN(lane);
+		write32(reg, (read32(reg) & ~ICL_PORT_TX_DW7_N_SCALAR_MASK)
+			| ICL_PORT_TX_DW7_N_SCALAR(entry.nScalar));
+	}
+
+	// 6. set training enable to trigger the update
+	value = read32(base + ICL_PORT_TX_DW5_LN(0)) | ICL_PORT_TX_DW5_TRAINING_EN;
+	write32(base + ICL_PORT_TX_DW5_GRP, value);
+}
+
+
+//! Read back the DP link the BIOS trained from the sink (LINK_BW_SET, LANE_COUNT_SET).
+bool
+DigitalDisplayInterface::_ReadLiveLink()
+{
+	uint8 link[2];
+	if (!fDisplayPortSink || _DpcdRead(DP_LINK_RATE, link, sizeof(link)) != B_OK)
+		return false;
+
+	uint32 lanes = link[1] & DP_LANE_COUNT_MASK;
+	for (uint32 i = 0; i < B_COUNT_OF(kDpLinkConfigs); i++) {
+		if (kDpLinkConfigs[i].linkBw == link[0] && (lanes == 1 || lanes == 2 || lanes == 4)) {
+			fLinkRate = kDpLinkConfigs[i].rate;
+			fLaneCount = lanes;
+			return true;
+		}
+	}
+	return false;
+}
+
+
+/*!	Turn a lit port and its transcoder off before the link is set up again
+	(Linux hsw_crtc_disable, intel_ddi_post_disable_dp).
+*/
+void
+DigitalDisplayInterface::_DisablePort(uint32 transcoder)
+{
+	TRACE("%s: %s, transcoder %c\n", __func__, PortName(), (char)('A' + transcoder));
+	const addr_t transConf = INTEL_DISPLAY_A_PIPE_CONTROL + 0x1000 * transcoder;
+	const addr_t funcCtl = ddi_func_ctl_register(transcoder);
+	const addr_t bufCtl = _PortRegister();
+
+	write32(transConf, read32(transConf) & ~INTEL_PIPE_ENABLED);
+	if (!wait_for_clear(transConf, INTEL_PIPE_STATE, 100000))
+		ERROR("%s: transcoder %c didn't turn off\n", __func__, (char)('A' + transcoder));
+	write32(funcCtl, read32(funcCtl)
+		& ~(PIPE_DDI_FUNC_CTL_ENABLE | TGL_PIPE_DDI_SELECT_MASK | PIPE_DDI_MODESEL_MASK));
+
+	if (fDisplayPortSink) {
+		// power the sink down first, else it complains about the lost link
+		uint8 power = DP_SET_POWER_D3;
+		_DpcdWrite(DP_SET_POWER, &power, 1);
+	}
+
+	write32(bufCtl, read32(bufCtl) & ~DDI_BUF_CTL_ENABLE);
+	write32(TGL_DP_TP_CTL(transcoder), read32(TGL_DP_TP_CTL(transcoder)) & ~DP_TP_CTL_ENABLE);
+	if (!wait_for_set(bufCtl, DDI_BUF_IS_IDLE, 10000))
+		ERROR("%s: %s buffer didn't become idle\n", __func__, PortName());
+
+	write32(TGL_TRANS_CLK_SEL(transcoder), TGL_TRANS_CLK_SEL_DISABLED);
+	write32(TGL_DPCLKA_CFGCR0,
+		read32(TGL_DPCLKA_CFGCR0) | kComboPhyClockOff[PortIndex() - INTEL_PORT_A]);
+}
+
+
+/*!	First half of bringing a port up, before the pipe timings: power, clocks, transcoder routing
+	and, for DP, link training (Linux tgl_ddi_pre_enable_dp, intel_ddi_pre_enable_hdmi).
+	Nothing is changed if the pipe can't be set up.
+*/
+status_t
+DigitalDisplayInterface::_EnablePort(const display_timing& timing, uint32 transcoder)
+{
+	const uint32 phy = PortIndex() - INTEL_PORT_A;
+	TRACE("%s: %s: enabling %s on transcoder %c\n", __func__, PortName(),
+		fDisplayPortSink ? "DisplayPort" : "TMDS", (char)('A' + transcoder));
+
+	if (!setup_pipe_for_port(transcoder))
+		return B_NOT_SUPPORTED;
+
+	// DDI IO power well (Linux ddi_io_power_domain, ICL_PW_CTL_IDX_DDI_A + phy)
+	if ((read32(ICL_PWR_WELL_CTL_DDI2) & HSW_PWR_WELL_CTL_STATE(phy)) == 0) {
+		write32(ICL_PWR_WELL_CTL_DDI2,
+			read32(ICL_PWR_WELL_CTL_DDI2) | HSW_PWR_WELL_CTL_REQ(phy));
+		if (!wait_for_set(ICL_PWR_WELL_CTL_DDI2, HSW_PWR_WELL_CTL_STATE(phy), 1000)) {
+			ERROR("%s: %s IO didn't power on\n", __func__, PortName());
+			return B_TIMED_OUT;
+		}
+	}
+
+	const addr_t funcCtlRegister = ddi_func_ctl_register(transcoder);
+	uint32 funcCtl = TGL_PIPE_DDI_SELECT_PORT(phy + 1) | PIPE_DDI_BPC(PIPE_DDI_8BPC);
+	if ((timing.flags & B_POSITIVE_HSYNC) != 0)
+		funcCtl |= PIPE_DDI_PHSYNC;
+	if ((timing.flags & B_POSITIVE_VSYNC) != 0)
+		funcCtl |= PIPE_DDI_PVSYNC;
+
+	if (!fDisplayPortSink) {
+		int p, q, k;
+		uint32 dco;
+		if (!ComputeHdmiDpll(timing.pixel_clock, &p, &q, &k, &dco))
+			return B_ERROR;
+		status_t status = _ProgramComboPll(p, q, k, dco);
+		if (status != B_OK)
+			return status;
+		fLinkRate = 0;
+		fLaneCount = 4;
+
+		write32(TGL_TRANS_CLK_SEL(transcoder), TGL_TRANS_CLK_SEL_PORT(phy));
+		// We send no infoframes, so DVI signaling, which every TMDS sink accepts
+		write32(funcCtlRegister, funcCtl | PIPE_DDI_MODESEL_MODE(PIPE_DDI_MODE_DVI));
+
+		if (fDualModeType == kDualModeType2) {
+			// type 2 adaptors gate their TMDS output (Linux drm_dp_dual_mode_set_tmds_output)
+			i2c_bus bus;
+			uint8 enable[2] = { DP_DUAL_MODE_TMDS_OEN, 0 };
+			if (Port::SetupI2c(&bus) != B_OK || i2c_send_receive_callback(&bus,
+					DP_DUAL_MODE_ADDRESS, enable, sizeof(enable), NULL, 0) != B_OK)
+				ERROR("%s: %s: couldn't enable the adaptor's TMDS output\n", __func__,
+					PortName());
+		}
+		return B_OK;
+	}
+
+	// DisplayPort: most lanes first, then the slowest rate that carries the mode; any other
+	// fitting combination is the fallback when training fails (like Linux reduce_link_params)
+	const uint32 maxRate = dp_max_link_rate(fDpcd);
+	const uint32 sinkLanes = fDpcd[DP_MAX_LANE_COUNT] & DP_MAX_LANE_COUNT_MASK;
+	for (uint32 lanes = min_c(sinkLanes, 4u); lanes >= 1; lanes /= 2) {
+		for (uint32 i = 0; i < B_COUNT_OF(kDpLinkConfigs); i++) {
+			const dp_link_config& link = kDpLinkConfigs[i];
+			if (link.rate > maxRate
+				|| (uint64)timing.pixel_clock * 3 > (uint64)link.rate * lanes)
+				continue;
+
+			fLinkRate = link.rate;
+			fLaneCount = lanes;
+			status_t status = _ProgramComboPll(link.p, 1, link.k, kDpPllDco);
+			if (status != B_OK)
+				return status;
+			write32(TGL_TRANS_CLK_SEL(transcoder), TGL_TRANS_CLK_SEL_PORT(phy));
+			write32(funcCtlRegister, funcCtl | PIPE_DDI_MODESEL_MODE(PIPE_DDI_MODE_DP_SST)
+				| PIPE_DDI_DP_WIDTH_SEL(lanes - 1));
+
+			if (_TrainLink(transcoder))
+				return B_OK;
+
+			// undo the buffer enable before trying something else
+			const addr_t bufCtl = _PortRegister();
+			write32(bufCtl, read32(bufCtl) & ~DDI_BUF_CTL_ENABLE);
+			write32(TGL_DP_TP_CTL(transcoder), 0);
+			wait_for_set(bufCtl, DDI_BUF_IS_IDLE, 10000);
+		}
+	}
+
+	ERROR("%s: %s: DP link training failed for every link configuration\n", __func__,
+		PortName());
+	write32(TGL_TRANS_CLK_SEL(transcoder), TGL_TRANS_CLK_SEL_DISABLED);
+	write32(funcCtlRegister, 0);
+	write32(TGL_DPCLKA_CFGCR0, read32(TGL_DPCLKA_CFGCR0) | kComboPhyClockOff[phy]);
+	fLinkRate = 0;
+	return B_ERROR;
+}
+
+
+/*!	DP link training at fLinkRate x fLaneCount, clock recovery then channel equalization
+	(Linux intel_dp_start_link_train, intel_ddi_prepare_link_retrain). Leaves DP_TP_CTL in
+	normal mode on success. shortcut: LTTPRs are left in transparent mode.
+*/
+bool
+DigitalDisplayInterface::_TrainLink(uint32 transcoder)
+{
+	const addr_t bufCtl = _PortRegister();
+	const addr_t tpCtl = TGL_DP_TP_CTL(transcoder);
+	const uint32 lanes = fLaneCount;
+	uint8 linkBw = 0;
+	for (uint32 i = 0; i < B_COUNT_OF(kDpLinkConfigs); i++) {
+		if (kDpLinkConfigs[i].rate == fLinkRate)
+			linkBw = kDpLinkConfigs[i].linkBw;
+	}
+	TRACE("%s: %s: training %" B_PRIu32 " kHz x %" B_PRIu32 "\n", __func__, PortName(),
+		fLinkRate, lanes);
+
+	// lowest levels first, power up the lanes we use
+	memset(fTrainSet, 0, sizeof(fTrainSet));
+	_SetSignalLevels(false);
+	_PowerUpLanes(lanes);
+
+	// sink to D0, retrying for 1ms while it wakes up (Linux intel_dp_set_power)
+	if (fDpcd[DP_DPCD_REV] >= 0x11) {
+		uint8 power = DP_SET_POWER_D0;
+		for (int i = 0; i < 3; i++) {
+			if (_DpcdWrite(DP_SET_POWER, &power, 1) == B_OK)
+				break;
+			snooze(1000);
+		}
+	}
+
+	bool enhancedFraming = (fDpcd[DP_MAX_LANE_COUNT] & DP_ENHANCED_FRAME_CAP) != 0;
+	uint8 config[2] = { 0, DPCD_ANSI_8B10B };
+	_DpcdWrite(DP_DOWNSPREAD_CTRL, config, sizeof(config));
+	config[0] = linkBw;
+	config[1] = lanes | (enhancedFraming ? DP_ENHANCED_FRAME_EN : 0);
+	if (_DpcdWrite(DP_LINK_RATE, config, sizeof(config)) != B_OK) {
+		ERROR("%s: %s: couldn't set the sink's link configuration\n", __func__, PortName());
+		return false;
+	}
+
+	// DP_TP_CTL with pattern 1, then the DDI buffer
+	write32(tpCtl, DP_TP_CTL_ENABLE | DP_TP_CTL_MODE_SST | DP_TP_CTL_LINK_TRAIN_PAT1
+		| (enhancedFraming ? DP_TP_CTL_ENHANCED_FRAME_ENABLE : 0));
+	read32(tpCtl);
+	write32(bufCtl, _BufferControlBits() | DDI_BUF_CTL_ENABLE | DDI_PORT_WIDTH(lanes)
+		| DDI_BUF_TRANS_SELECT(0));
+	read32(bufCtl);
+	if (!wait_for_clear(bufCtl, DDI_BUF_IS_IDLE, 10000))
+		ERROR("%s: %s buffer didn't become active\n", __func__, PortName());
+
+	// TRAINING_AUX_RD_INTERVAL: 0 means 100us for clock recovery and 400us for equalization;
+	// DPCD 1.4 sinks use it for equalization only
+	uint32 interval = min_c(fDpcd[DPCD_TRAINING_AUX_RD_INTERVAL] & 0x7f, 4);
+	bigtime_t crDelay = (interval == 0 || fDpcd[DP_DPCD_REV] >= 0x14) ? 100 : interval * 4000;
+	bigtime_t eqDelay = interval == 0 ? 400 : interval * 4000;
+
+	uint8 buffer[5];
+	uint8 status[DP_LINK_STATUS_SIZE];
+
+	// clock recovery, TPS1 without scrambling
+	buffer[0] = DP_TRAINING_PATTERN_1 | DPCD_SCRAMBLING_DISABLE;
+	memcpy(buffer + 1, fTrainSet, lanes);
+	bool success = _DpcdWrite(DP_TRAINING_PATTERN_SET, buffer, 1 + lanes) == B_OK;
+	if (success) {
+		success = false;
+		const int maxTries = fDpcd[DP_DPCD_REV] >= 0x14 ? 10 : 80;
+		const uint8 adjustMask[2] = { (uint8)(lanes >= 2 ? 0xff : 0x0f),
+			(uint8)(lanes == 4 ? 0xff : 0) };
+		uint8 oldAdjust[2] = { 0, 0 };
+		int voltageTries = 1;
+		bool maxSwing = false;
+		for (int tries = 0; tries < maxTries; tries++) {
+			snooze(crDelay);
+			if (_DpcdRead(DP_LANE_STATUS_0_1, status, sizeof(status)) != B_OK)
+				break;
+			if (dp_clock_recovery_ok(status, lanes)) {
+				success = true;
+				break;
+			}
+			if (voltageTries == 5 || maxSwing)
+				break;
+
+			dp_adjust_train_set(status, lanes, fTrainSet);
+			_SetSignalLevels(false);
+			if (_DpcdWrite(DP_TRAINING_LANE0_SET, fTrainSet, lanes) != B_OK)
+				break;
+
+			uint8 adjust[2] = { (uint8)(status[4] & adjustMask[0]),
+				(uint8)(status[5] & adjustMask[1]) };
+			if (adjust[0] == oldAdjust[0] && adjust[1] == oldAdjust[1])
+				voltageTries++;
+			else
+				voltageTries = 1;
+			memcpy(oldAdjust, adjust, sizeof(oldAdjust));
+			maxSwing = dp_max_swing_reached(fTrainSet, lanes);
+		}
+		if (!success) {
+			TRACE("%s: clock recovery failed (lane status 0x%02x 0x%02x)\n", __func__,
+				status[0], status[1]);
+		}
+	}
+
+	if (success) {
+		// channel equalization with the best pattern both sides support; TPS4 is scrambled
+		uint8 pattern = DP_TRAINING_PATTERN_2 | DPCD_SCRAMBLING_DISABLE;
+		uint32 sourcePattern = DP_TP_CTL_LINK_TRAIN_PAT2;
+		if ((fDpcd[DP_MAX_DOWNSPREAD] & DPCD_TPS4_SUPPORTED) != 0) {
+			pattern = DPCD_TRAINING_PATTERN_4;
+			sourcePattern = DP_TP_CTL_LINK_TRAIN_PAT4;
+		} else if ((fDpcd[DP_MAX_LANE_COUNT] & DPCD_TPS3_SUPPORTED) != 0) {
+			pattern = DP_TRAINING_PATTERN_3 | DPCD_SCRAMBLING_DISABLE;
+			sourcePattern = DP_TP_CTL_LINK_TRAIN_PAT3;
+		}
+		write32(tpCtl, (read32(tpCtl) & ~DP_TP_CTL_LINK_TRAIN_MASK) | sourcePattern);
+		buffer[0] = pattern;
+		memcpy(buffer + 1, fTrainSet, lanes);
+		success = _DpcdWrite(DP_TRAINING_PATTERN_SET, buffer, 1 + lanes) == B_OK;
+
+		bool equalized = false;
+		for (int tries = 0; success && tries < 5; tries++) {
+			snooze(eqDelay);
+			if (_DpcdRead(DP_LANE_STATUS_0_1, status, sizeof(status)) != B_OK
+				|| !dp_clock_recovery_ok(status, lanes))
+				break;
+			if (dp_channel_eq_ok(status, lanes)) {
+				equalized = true;
+				break;
+			}
+			dp_adjust_train_set(status, lanes, fTrainSet);
+			_SetSignalLevels(false);
+			if (_DpcdWrite(DP_TRAINING_LANE0_SET, fTrainSet, lanes) != B_OK)
+				break;
+		}
+		if (!equalized) {
+			TRACE("%s: channel equalization failed (lane status 0x%02x 0x%02x align 0x%02x)\n",
+				__func__, status[0], status[1], status[2]);
+		}
+		success = equalized;
+	}
+
+	// training pattern off at the sink, idle then normal at the source
+	uint8 off = DP_TRAINING_PATTERN_DISABLE;
+	_DpcdWrite(DP_TRAINING_PATTERN_SET, &off, 1);
+	write32(tpCtl, (read32(tpCtl) & ~DP_TP_CTL_LINK_TRAIN_MASK) | DP_TP_CTL_LINK_TRAIN_IDLE);
+	if (!wait_for_set(TGL_DP_TP_STATUS(transcoder), DP_TP_STATUS_IDLE_DONE, 2000))
+		ERROR("%s: timed out waiting for DP idle patterns\n", __func__);
+	if (!success)
+		return false;
+
+	write32(tpCtl, (read32(tpCtl) & ~DP_TP_CTL_LINK_TRAIN_MASK) | DP_TP_CTL_LINK_TRAIN_NORMAL);
+	TRACE("%s: %s: link training passed at %" B_PRIu32 " kHz x %" B_PRIu32 "\n", __func__,
+		PortName(), fLinkRate, lanes);
+	return true;
+}
+
+
+/*!	Second half of bringing a port up, after the timings and M/N are programmed: transcoder on,
+	and for TMDS the buffer (Linux intel_ddi_enable, intel_ddi_enable_hdmi).
+*/
+void
+DigitalDisplayInterface::_FinishEnablePort(uint32 transcoder)
+{
+	// 8 bpc like TRANS_DDI_FUNC_CTL (pipe B resets to 12 bpc on ADL-P)
+	const addr_t pipeMisc = INTEL_PIPE_MISC_A + 0x1000 * transcoder;
+	write32(pipeMisc, read32(pipeMisc) & ~INTEL_PIPE_MISC_BPC_MASK);
+	if (fDisplayPortSink) {
+		// Linux intel_ddi_set_dp_msa: synchronous clock, 8 bpc
+		write32(0x60410 + 0x1000 * transcoder, (1 << 0) | (1 << 5));
+	}
+
+	const addr_t funcCtl = ddi_func_ctl_register(transcoder);
+	write32(funcCtl, read32(funcCtl) | PIPE_DDI_FUNC_CTL_ENABLE);
+	const addr_t transConf = INTEL_DISPLAY_A_PIPE_CONTROL + 0x1000 * transcoder;
+	write32(transConf, read32(transConf) | INTEL_PIPE_ENABLED);
+
+	if (!fDisplayPortSink) {
+		_SetSignalLevels(true);
+		_PowerUpLanes(4);
+		const addr_t bufCtl = _PortRegister();
+		write32(bufCtl, _BufferControlBits() | DDI_BUF_CTL_ENABLE);
+		read32(bufCtl);
+		if (!wait_for_clear(bufCtl, DDI_BUF_IS_IDLE, 10000))
+			ERROR("%s: %s buffer didn't become active\n", __func__, PortName());
+	}
+	TRACE("%s: %s lit on transcoder %c: DDI_BUF_CTL 0x%" B_PRIx32 ", TRANS_DDI_FUNC_CTL 0x%"
+		B_PRIx32 ", TRANSCONF 0x%" B_PRIx32 "\n", __func__, PortName(), (char)('A' + transcoder),
+		read32(_PortRegister()), read32(funcCtl), read32(transConf));
 }

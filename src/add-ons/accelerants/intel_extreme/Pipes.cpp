@@ -148,7 +148,9 @@ Pipe::Configure(display_mode* mode)
 	write32(INTEL_DISPLAY_A_PIPE_CONTROL + fPipeOffset, pipeControl);
 	read32(INTEL_DISPLAY_A_PIPE_CONTROL + fPipeOffset);
 
-	if (gInfo->shared_info->device_type.Generation() >= 6) {
+	// Gen12: the transcoder may only run once its DDI clock is set up, the DDI code enables it
+	if (gInfo->shared_info->device_type.Generation() >= 6
+		&& gInfo->shared_info->device_type.Generation() < 12) {
 		// According to SandyBridge modesetting sequence, pipe must be enabled
 		// before PLL are configured.
 		addr_t pipeReg = INTEL_DISPLAY_A_PIPE_CONTROL + fPipeOffset;

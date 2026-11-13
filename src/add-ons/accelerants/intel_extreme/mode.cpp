@@ -196,6 +196,28 @@ limit_modes_for_gen3_lvds(display_mode* mode)
 	return true;
 }
 
+
+//! Lowest pixel clock limit (kHz) of the connected ports' sink paths, 0 if none
+static uint32
+max_port_pixel_clock()
+{
+	uint32 limit = 0;
+	for (uint32 i = 0; i < gInfo->port_count; i++) {
+		uint32 portLimit = gInfo->ports[i] != NULL ? gInfo->ports[i]->MaxPixelClock() : 0;
+		if (portLimit != 0 && (limit == 0 || portLimit < limit))
+			limit = portLimit;
+	}
+	return limit;
+}
+
+
+static bool
+limit_modes_for_ports(display_mode* mode)
+{
+	uint32 limit = max_port_pixel_clock();
+	return limit == 0 || mode->timing.pixel_clock <= limit;
+}
+
 /*!	Creates the initial mode list of the primary accelerant.
 	It's called from intel_init_accelerant().
 */
@@ -266,7 +288,8 @@ create_mode_list(void)
 		// Otherwise return the 'real' list of modes
 		gInfo->mode_list_area = create_display_modes("intel extreme modes",
 			gInfo->has_edid ? &gInfo->edid_info : NULL, NULL, 0,
-			supportedSpaces, colorSpaceCount, NULL, &list, &count);
+			supportedSpaces, colorSpaceCount,
+			max_port_pixel_clock() != 0 ? limit_modes_for_ports : NULL, &list, &count);
 	}
 
 	if (gInfo->mode_list_area < B_OK)
@@ -337,6 +360,14 @@ intel_propose_display_mode(display_mode* target, const display_mode* low,
 	// (most) modeflags are outputs from us (the driver). So we should
 	// set them depending on the mode and the current hardware config
 	target->flags |= B_SCROLL;
+
+	// e.g. a DP++ adaptor's TMDS clock limit or a DP link's bandwidth
+	uint32 maxPixelClock = max_port_pixel_clock();
+	if (maxPixelClock != 0 && target->timing.pixel_clock > maxPixelClock) {
+		TRACE("%s: pixel clock %" B_PRIu32 " kHz above the port limit of %" B_PRIu32 " kHz\n",
+			__func__, target->timing.pixel_clock, maxPixelClock);
+		return B_BAD_VALUE;
+	}
 
 	return is_display_mode_within_bounds(*target, *low, *high)
 		? B_OK : B_BAD_VALUE;

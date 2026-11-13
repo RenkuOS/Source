@@ -69,6 +69,9 @@ virtual status_t					SetDisplayMode(display_mode* mode,
 
 virtual pipe_index					PipePreference();
 
+								// highest pixel clock (kHz) the sink path allows, 0 = no limit
+virtual	uint32						MaxPixelClock() { return 0; }
+
 protected:
 		void						_SetName(const char* name);
 
@@ -241,18 +244,48 @@ virtual	bool						IsConnected();
 virtual status_t					SetDisplayMode(display_mode* mode,
 										uint32 colorMode);
 
+virtual	uint32						MaxPixelClock();
+
 protected:
 virtual	addr_t						_DDCRegister();
 virtual addr_t						_PortRegister();
 private:
 		uint8						fMaxLanes;
 
+		// Gen12 combo PHY (Alder Lake DDI A..C) sink and link state
+		bool						fSinkProbed;
+		bool						fDisplayPortSink;
+		uint8						fDpcd[16];
+		uint8						fDualModeType;
+		uint32						fMaxTmdsClock;
+		uint32						fLinkRate;
+		uint32						fLaneCount;
+		uint8						fTrainSet[4];
+
 		status_t					_SetPortLinkGen8(const display_timing& timing,
 										uint32 pllSel);
 		bool						_IsInternalPanel();
 
+		bool						_IsComboPhyPort();
+		bool						_CanLightPort();
+		bool						_IsPortLit(uint32 transcoder);
+		void						_ProbeSink();
+		void						_DetectDualMode();
+		status_t					_DpcdRead(uint32 address, uint8* buffer,
+										size_t size);
+		status_t					_DpcdWrite(uint32 address, const uint8* buffer,
+										size_t size);
 		status_t					_ProgramComboPll(int p, int q, int k,
 										uint32 dco);
+		void						_SetSignalLevels(bool hdmi);
+		uint32						_BufferControlBits();
+		void						_PowerUpLanes(uint32 laneCount);
+		bool						_ReadLiveLink();
+		void						_DisablePort(uint32 transcoder);
+		status_t					_EnablePort(const display_timing& timing,
+										uint32 transcoder);
+		void						_FinishEnablePort(uint32 transcoder);
+		bool						_TrainLink(uint32 transcoder);
 };
 
 
