@@ -418,6 +418,17 @@ virtio_gpu_set_display_mode(virtio_gpu_driver_info* info, display_mode *mode)
 {
 	CALLED();
 
+	// every resource is backed by the one framebuffer area, so a mode must
+	// fit into it (the host would otherwise read past its end)
+	if (mode->virtual_width == 0 || mode->virtual_height == 0
+		|| mode->virtual_width > info->framebufferWidth
+		|| mode->virtual_height > info->framebufferHeight) {
+		ERROR("set_display_mode: %" B_PRIu16 " x %" B_PRIu16 " does not fit the "
+			"%" B_PRIu32 " x %" B_PRIu32 " framebuffer\n", mode->virtual_width,
+			mode->virtual_height, info->framebufferWidth, info->framebufferHeight);
+		return B_BAD_VALUE;
+	}
+
 	int newResourceId = info->displayResourceId + 1;
 
 	// create framebuffer area
