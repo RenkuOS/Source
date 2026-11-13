@@ -17,6 +17,7 @@
 
 #include <Debug.h>
 
+#include <accelerant_ext.h>
 #include <create_display_modes.h>
 #include <ddc.h>
 #include <edid.h>
@@ -127,8 +128,9 @@ sanitize_display_mode(display_mode& mode)
 // #pragma mark -
 
 
+//! hStart: first frame buffer column the plane scans (the half it shows in combine mode)
 static void
-set_frame_buffer_registers(uint32 offset)
+set_frame_buffer_registers(uint32 offset, uint32 hStart)
 {
 	intel_shared_info &sharedInfo = *gInfo->shared_info;
 	display_mode &mode = sharedInfo.current_mode;
@@ -140,21 +142,22 @@ set_frame_buffer_registers(uint32 offset)
 		|| sharedInfo.device_type.InFamily(INTEL_FAMILY_SER5)
 		|| sharedInfo.device_type.InFamily(INTEL_FAMILY_LAKE)
 		|| sharedInfo.device_type.InFamily(INTEL_FAMILY_SOC0)) {
+		// Alder Lake's PLANE_OFFSET is the same x/y register (PLANE_SURF needs 4K alignment)
 		if (sharedInfo.device_type.InGroup(INTEL_GROUP_HAS)
 			|| sharedInfo.device_type.InGroup(INTEL_GROUP_VLV)
-			|| sharedInfo.device_type.InGroup(INTEL_GROUP_CHV)) {
-//			|| sharedInfo.device_type.InGroup(INTEL_GROUP_SKY)) {
-			uint32 offsetValue = ((uint32)mode.v_display_start << 16)
-				| (uint32)mode.h_display_start;
+			|| sharedInfo.device_type.InGroup(INTEL_GROUP_CHV)
+//			|| sharedInfo.device_type.InGroup(INTEL_GROUP_SKY)
+			|| sharedInfo.device_type.InGroup(INTEL_GROUP_ALD)) {
+			uint32 offsetValue = ((uint32)mode.v_display_start << 16) | hStart;
 			TRACE("%s: writing OFFSET_HAS-style register at +0x%" B_PRIx32
 				": 0x%08" B_PRIx32 " (v_display_start=%d, "
-				"h_display_start=%d)\n", __func__, offset, offsetValue,
-				mode.v_display_start, mode.h_display_start);
+				"hStart=%" B_PRIu32 ")\n", __func__, offset, offsetValue,
+				mode.v_display_start, hStart);
 			write32(INTEL_DISPLAY_A_OFFSET_HAS + offset, offsetValue);
 			read32(INTEL_DISPLAY_A_OFFSET_HAS + offset);
 		} else {
 			uint32 baseValue = mode.v_display_start * sharedInfo.bytes_per_row
-				+ mode.h_display_start * bytes_per_pixel;
+				+ hStart * bytes_per_pixel;
 			TRACE("%s: writing legacy BASE-style register at +0x%" B_PRIx32
 				": 0x%08" B_PRIx32 "\n", __func__, offset, baseValue);
 			write32(INTEL_DISPLAY_A_BASE + offset, baseValue);
@@ -165,7 +168,7 @@ set_frame_buffer_registers(uint32 offset)
 	} else {
 		write32(INTEL_DISPLAY_A_BASE + offset, sharedInfo.frame_buffer_offset
 			+ mode.v_display_start * sharedInfo.bytes_per_row
-			+ mode.h_display_start * bytes_per_pixel);
+			+ hStart * bytes_per_pixel);
 		read32(INTEL_DISPLAY_A_BASE + offset);
 	}
 }
@@ -174,10 +177,52 @@ set_frame_buffer_registers(uint32 offset)
 void
 set_frame_buffer_base()
 {
-	// TODO we always set both displays to the same address. When we support
-	// multiple framebuffers, they should get different addresses here.
-	set_frame_buffer_registers(0);
-	set_frame_buffer_registers(INTEL_DISPLAY_OFFSET);
+	// In combine mode each pipe scans its half of the frame buffer, otherwise both clone it
+	const uint16 hStart = gInfo->shared_info->current_mode.h_display_start;
+	set_frame_buffer_registers(0, hStart + pipe_x_offset(0));
+	set_frame_buffer_registers(INTEL_DISPLAY_OFFSET, hStart + pipe_x_offset(1));
+}
+
+
+//! The connected port driven by the given pipe, if any
+static Port*
+port_on_pipe(pipe_index pipe)
+{
+	for (uint32 i = 0; i < gInfo->port_count; i++) {
+		Port* port = gInfo->ports[i];
+		if (port != NULL && port->GetPipe() != NULL && port->GetPipe()->Index() == pipe)
+			return port;
+	}
+	return NULL;
+}
+
+
+//! Two screens on pipes A and B that can show the two halves of a twice as wide frame buffer
+static bool
+combine_capable()
+{
+	// shortcut: only Alder Lake's pipes A+B are set up for this (Phase B DBUF split)
+	return gInfo->shared_info->device_type.InGroup(INTEL_GROUP_ALD)
+		&& port_on_pipe(INTEL_PIPE_A) != NULL && port_on_pipe(INTEL_PIPE_B) != NULL;
+}
+
+
+//! Horizontal combine of the Screen preferences: the desktop spans both screens side by side
+bool
+is_combine_mode(const display_mode& mode)
+{
+	return mode.virtual_width == 2 * mode.timing.h_display && combine_capable();
+}
+
+
+//! First frame buffer column pipe A (0) or B (1) shows, relative to the display start
+uint16
+pipe_x_offset(uint32 pipe)
+{
+	const display_mode& mode = gInfo->shared_info->current_mode;
+	if (!is_combine_mode(mode))
+		return 0;
+	return (pipe == 1) != gInfo->swap_heads ? mode.timing.h_display : 0;
 }
 
 
@@ -295,6 +340,29 @@ create_mode_list(void)
 	if (gInfo->mode_list_area < B_OK)
 		return gInfo->mode_list_area;
 
+	if (combine_capable()) {
+		// Offer every mode a second time with both screens side by side (same timing on both).
+		// shortcut: the list is built from the first screen's EDID only, like clone mode
+		size_t size = (2 * count * sizeof(display_mode) + B_PAGE_SIZE - 1) & ~(B_PAGE_SIZE - 1);
+		display_mode* combined;
+		area_id area = create_area("intel extreme modes", (void**)&combined, B_ANY_ADDRESS,
+			size, B_NO_LOCK, B_READ_AREA | B_WRITE_AREA | B_CLONEABLE_AREA);
+		if (area >= B_OK) {
+			memcpy(combined, list, count * sizeof(display_mode));
+			for (uint32 i = 0; i < count; i++) {
+				combined[count + i] = list[i];
+				combined[count + i].virtual_width = 2 * list[i].timing.h_display;
+				combined[count + i].flags |= B_SCROLL;
+			}
+			delete_area(gInfo->mode_list_area);
+			gInfo->mode_list_area = area;
+			list = combined;
+			TRACE("%s: added %" B_PRIu32 " combine modes\n", __func__, count);
+			count *= 2;
+		} else
+			ERROR("%s: no memory for the combine modes\n", __func__);
+	}
+
 	gInfo->mode_list = list;
 	gInfo->shared_info->mode_list_area = gInfo->mode_list_area;
 	gInfo->shared_info->mode_count = count;
@@ -336,11 +404,65 @@ intel_get_mode_list(display_mode* modeList)
 }
 
 
+/*!	The Screen preferences' multi-monitor settings tunnel (preferences/screen/multimon.cpp),
+	as in the nvidia accelerant. Returns false if this is a normal mode proposal.
+*/
+static bool
+handle_multimon_tunnel(display_mode* target, const display_mode* low,
+	const display_mode* high, status_t& result)
+{
+	// TestMultiMonSupport(): only answered with two screens, which shows the combine options
+	if ((target->timing.flags & RADEON_MODE_MULTIMON_REQUEST) != 0
+		&& (target->timing.flags & RADEON_MODE_MULTIMON_REPLY) == 0) {
+		if (!combine_capable())
+			return false;
+		target->timing.flags &= ~RADEON_MODE_MULTIMON_REQUEST;
+		target->timing.flags |= RADEON_MODE_MULTIMON_REPLY;
+		result = B_OK;
+		return true;
+	}
+
+	if (target->space != 0 || low->space != 0 || high->space != 0
+		|| low->virtual_width != 0xffff || low->virtual_height != 0xffff
+		|| high->virtual_width != 0 || high->virtual_height != 0
+		|| target->timing.pixel_clock != 0
+		|| low->timing.pixel_clock != 'TKTK' || high->timing.pixel_clock != 'KTKT')
+		return false;
+
+	result = B_ERROR;
+	if (!combine_capable() || target->h_display_start != ms_swap)
+		return true;
+		// ms_use_laptop_panel and ms_tv_standard make no sense here
+
+	switch (target->v_display_start) {
+		case 0:
+			target->timing.flags = gInfo->swap_heads ? 1 : 0;
+			result = B_OK;
+			break;
+		case 1:
+		{
+			gInfo->swap_heads = target->timing.flags != 0;
+			TRACE("%s: swap displays: %d\n", __func__, gInfo->swap_heads);
+			// only which half each pipe scans changes; the mode and frame buffer stay
+			Autolock locker(gInfo->shared_info->accelerant_lock);
+			set_frame_buffer_base();
+			result = B_OK;
+			break;
+		}
+	}
+	return true;
+}
+
+
 status_t
 intel_propose_display_mode(display_mode* target, const display_mode* low,
 	const display_mode* high)
 {
 	CALLED();
+
+	status_t tunnelResult;
+	if (handle_multimon_tunnel(target, low, high, tunnelResult))
+		return tunnelResult;
 
 	display_mode mode = *target;
 
@@ -360,6 +482,17 @@ intel_propose_display_mode(display_mode* target, const display_mode* low,
 	// (most) modeflags are outputs from us (the driver). So we should
 	// set them depending on the mode and the current hardware config
 	target->flags |= B_SCROLL;
+
+	if (gInfo->shared_info->device_type.InGroup(INTEL_GROUP_ALD)
+		&& target->virtual_width == 2 * target->timing.h_display && !is_combine_mode(*target)) {
+		TRACE("%s: combine mode needs screens on pipes A and B\n", __func__);
+		return B_BAD_VALUE;
+	}
+	if (target->virtual_height == 2 * target->timing.v_display
+		&& target->virtual_width == target->timing.h_display && combine_capable()) {
+		TRACE("%s: vertical combine is not supported\n", __func__);
+		return B_BAD_VALUE;
+	}
 
 	// e.g. a DP++ adaptor's TMDS clock limit or a DP link's bandwidth
 	uint32 maxPixelClock = max_port_pixel_clock();
@@ -822,8 +955,10 @@ intel_move_display(uint16 horizontalStart, uint16 verticalStart)
 	Autolock locker(sharedInfo.accelerant_lock);
 
 	display_mode &mode = sharedInfo.current_mode;
+	const uint32 width = is_combine_mode(mode) ? 2 * mode.timing.h_display
+		: mode.timing.h_display;
 
-	if (horizontalStart + mode.timing.h_display > mode.virtual_width
+	if (horizontalStart + width > mode.virtual_width
 		|| verticalStart + mode.timing.v_display > mode.virtual_height)
 		return B_BAD_VALUE;
 

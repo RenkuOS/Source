@@ -13,6 +13,22 @@
 #include <string.h>
 
 
+//! Alder Lake mirrors the cursor on pipe B (TGL_CURSOR_OFFSETS: pipe B at +0x1000)
+static uint32
+cursor_pipe_count()
+{
+	return gInfo->shared_info->device_type.InGroup(INTEL_GROUP_ALD) ? 2 : 1;
+}
+
+
+static void
+write_cursor_register(uint32 reg, uint32 value)
+{
+	for (uint32 pipe = 0; pipe < cursor_pipe_count(); pipe++)
+		write32(reg + pipe * INTEL_DISPLAY_OFFSET, value);
+}
+
+
 status_t
 intel_set_cursor_shape(uint16 width, uint16 height, uint16 hotX, uint16 hotY,
 	uint8* andMask, uint8* xorMask)
@@ -20,7 +36,7 @@ intel_set_cursor_shape(uint16 width, uint16 height, uint16 hotX, uint16 hotY,
 	if (width > 64 || height > 64)
 		return B_BAD_VALUE;
 
-	write32(INTEL_CURSOR_CONTROL, 0);
+	write_cursor_register(INTEL_CURSOR_CONTROL, 0);
 		// disable cursor
 
 	// In two-color mode, the data is ordered as follows (always 64 bit per
@@ -45,16 +61,16 @@ intel_set_cursor_shape(uint16 width, uint16 height, uint16 hotX, uint16 hotY,
 	}
 
 	// set palette entries to white/black
-	write32(INTEL_CURSOR_PALETTE + 0, 0x00ffffff);
-	write32(INTEL_CURSOR_PALETTE + 4, 0);
+	write_cursor_register(INTEL_CURSOR_PALETTE + 0, 0x00ffffff);
+	write_cursor_register(INTEL_CURSOR_PALETTE + 4, 0);
 
 	gInfo->shared_info->cursor_format = CURSOR_FORMAT_2_COLORS;
 
-	write32(INTEL_CURSOR_CONTROL,
+	write_cursor_register(INTEL_CURSOR_CONTROL,
 		CURSOR_ENABLED | gInfo->shared_info->cursor_format);
-	write32(INTEL_CURSOR_SIZE, height << 12 | width);
+	write_cursor_register(INTEL_CURSOR_SIZE, height << 12 | width);
 
-	write32(INTEL_CURSOR_BASE,
+	write_cursor_register(INTEL_CURSOR_BASE,
 		(uint32)gInfo->shared_info->physical_graphics_memory
 		+ gInfo->shared_info->cursor_buffer_offset);
 
@@ -71,7 +87,7 @@ intel_set_cursor_shape(uint16 width, uint16 height, uint16 hotX, uint16 hotY,
 		if (y & CURSOR_POSITION_NEGATIVE)
 			y = -(y & CURSOR_POSITION_MASK);
 
-		x += gInfo->shared_info->cursor_hot_x;
+		x += gInfo->shared_info->cursor_hot_x + pipe_x_offset(0);
 		y += gInfo->shared_info->cursor_hot_y;
 
 		gInfo->shared_info->cursor_hot_x = hotX;
@@ -87,15 +103,24 @@ intel_set_cursor_shape(uint16 width, uint16 height, uint16 hotX, uint16 hotY,
 void
 intel_move_cursor(uint16 _x, uint16 _y)
 {
-	int32 x = (int32)_x - gInfo->shared_info->cursor_hot_x;
-	int32 y = (int32)_y - gInfo->shared_info->cursor_hot_x;
+	// in combine mode each pipe gets the position relative to its half; the hardware clips
+	// the cursor at the screen edges, so a straddling one shows partly on both
+	for (uint32 pipe = 0; pipe < cursor_pipe_count(); pipe++) {
+		int32 x = (int32)_x - gInfo->shared_info->cursor_hot_x - pipe_x_offset(pipe);
+		int32 y = (int32)_y - gInfo->shared_info->cursor_hot_y;
 
-	if (x < 0)
-		x = -x | CURSOR_POSITION_NEGATIVE;
-	if (y < 0)
-		y = -y | CURSOR_POSITION_NEGATIVE;
+		if (x < 0)
+			x = -x | CURSOR_POSITION_NEGATIVE;
+		if (y < 0)
+			y = -y | CURSOR_POSITION_NEGATIVE;
 
-	write32(INTEL_CURSOR_POSITION, (y << 16) | x);
+		const uint32 offset = pipe * INTEL_DISPLAY_OFFSET;
+		write32(INTEL_CURSOR_POSITION + offset, (y << 16) | x);
+		if (cursor_pipe_count() > 1) {
+			// CURBASE arms the position update (Linux i9xx_cursor_update_arm())
+			write32(INTEL_CURSOR_BASE + offset, read32(INTEL_CURSOR_BASE + offset));
+		}
+	}
 }
 
 
@@ -105,9 +130,9 @@ intel_show_cursor(bool isVisible)
 	if (gInfo->shared_info->cursor_visible == isVisible)
 		return;
 
-	write32(INTEL_CURSOR_CONTROL, (isVisible ? CURSOR_ENABLED : 0)
+	write_cursor_register(INTEL_CURSOR_CONTROL, (isVisible ? CURSOR_ENABLED : 0)
 		| gInfo->shared_info->cursor_format);
-	write32(INTEL_CURSOR_BASE,
+	write_cursor_register(INTEL_CURSOR_BASE,
 		(uint32)gInfo->shared_info->physical_graphics_memory
 		+ gInfo->shared_info->cursor_buffer_offset);
 
