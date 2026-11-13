@@ -107,6 +107,9 @@ public:
 									{ return fWindow->EventTarget(); }
 
 			bool				ReloadDecor();
+			// gDecorManager's generation when its decorator was made
+			uint32				DecoratorGeneration() const
+									{ return fDecoratorGeneration; }
 
 			void				SetScreen(const ::Screen* screen);
 			const ::Screen*		Screen() const;
@@ -431,6 +434,7 @@ protected:
 
 			window_look			fLook;
 			window_feel			fFeel;
+			uint32				fDecoratorGeneration;
 			uint32				fOriginalFlags;
 			uint32				fFlags;
 			uint32				fWorkspaces;
