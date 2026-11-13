@@ -543,7 +543,7 @@ parse_vbt_from_bios(struct intel_shared_info* info)
 						min_c(sizeof(child_device_config), childDeviceSize));
 					TRACE((DEVICE_NAME ": found child device type: 0x%x\n", config->device_type));
 					info->device_config_count++;
-					if (info->device_config_count > 10)
+					if (info->device_config_count >= B_COUNT_OF(info->device_configs))
 						break;
 				}
 				break;
