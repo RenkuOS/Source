@@ -21,6 +21,7 @@
 #include <dirent.h>
 #include <edid.h>
 #include <driver_settings.h>
+#include <fcntl.h>
 #include <graphic_driver.h>
 #include <image.h>
 #include <safemode_defs.h>
@@ -266,18 +267,21 @@ AccelerantHWInterface::_OpenGraphicsDevice(int deviceNumber)
 	int count = 0;
 	if (!use_fail_safe_video_mode()) {
 		char path[PATH_MAX];
+		// close-on-exec: app_server launches input_server, which would
+		// otherwise inherit the device and keep it open after app_server
+		// is gone
 		if (_RecursiveScan("/dev/graphics/", deviceNumber, count, path))
-			device = open(path, B_READ_WRITE);
+			device = open(path, B_READ_WRITE | O_CLOEXEC);
 	}
 
 	// Open VESA or Framebuffer driver if we were not able to get a better one.
 	if (device == -1 && count < deviceNumber) {
-		device = open("/dev/graphics/vesa", B_READ_WRITE);
+		device = open("/dev/graphics/vesa", B_READ_WRITE | O_CLOEXEC);
 		if (device > 0) {
 			// store the device, so that we can access the planar blitter
 			fVGADevice = device;
 		} else {
-			device = open("/dev/graphics/framebuffer", B_READ_WRITE);
+			device = open("/dev/graphics/framebuffer", B_READ_WRITE | O_CLOEXEC);
 		}
 
 		if (device < 0)
