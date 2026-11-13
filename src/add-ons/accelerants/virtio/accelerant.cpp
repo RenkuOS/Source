@@ -153,7 +153,9 @@ virtio_gpu_clone_accelerant(void *info)
 	return B_OK;
 
 err2:
+	// closes fd as well, since this is a clone
 	uninit_common();
+	return status;
 err1:
 	close(fd);
 	return status;
