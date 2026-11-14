@@ -358,7 +358,7 @@ pass_to_handler:
 		}
 		if (data == 0x00 && dev->history[1].data == 0xaa
 			&& (dev->history[0].time - dev->history[1].time) < 50000
-			&& !synaptics_hot_plug_is_pt_payload(dev)) {
+			&& !synaptics_hot_plug_is_packet_data(dev)) {
 			INFO("ps2: hot plugin of %s\n", dev->name);
 			if (dev->active) {
 				INFO("ps2: device %s still active, republishing...\n",

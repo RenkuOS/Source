@@ -275,7 +275,9 @@ static status_t
 set_touchpad_mode(ps2_dev *dev, uint8 mode)
 {
 	uint8 sample_rate = SYN_CHANGE_MODE;
-	send_touchpad_arg(dev, mode);
+	status_t status = send_touchpad_arg(dev, mode);
+	if (status != B_OK)
+		return status;
 	return ps2_dev_command(dev, PS2_CMD_SET_SAMPLE_RATE, &sample_rate, 1,
 		NULL, 0);
 }
@@ -301,13 +303,18 @@ get_information_query(ps2_dev *dev, uint8 extendedQueries, uint8 query,
 }
 
 
+// Larger position steps between two packets (about 12 ms apart) come
+// from the pad switching to another finger, not from a moving finger.
+static const int32 kFingerJump = 800;
+
+
 static status_t
 get_synaptics_movment(synaptics_cookie *cookie, touchpad_movement *_event, bigtime_t timeout)
 {
 	status_t status;
 	touchpad_movement event = {};
 	uint8 event_buffer[PS2_MAX_PACKET_SIZE];
-	uint8 wValue0, wValue1, wValue2, wValue3, wValue;
+	uint8 wValue0, wValue1, wValue2, wValue3, wValue, vValue;
 	uint32 val32;
 	uint32 xTwelfBit, yTwelfBit;
 
@@ -353,16 +360,14 @@ get_synaptics_movment(synaptics_cookie *cookie, touchpad_movement *_event, bigti
 			// Multiple fingers detected, report the finger count.
 			event.fingers = (1 << (2 + wValue)) - 1;
 
-			// There is a separate "v" value indicating the finger width
-			wValue0 = event_buffer[3] >> 1 & 1;
-			wValue1 = event_buffer[4] >> 1 & 1;
-			wValue2 = event_buffer[2] >> 0 & 1;
+			// There is a separate "v" value indicating the finger width.
+			// Keep it apart from W: W is tested below, and a V of 2 would
+			// make this packet look like an extended W packet.
+			vValue = (event_buffer[3] >> 1 & 1)
+				| (event_buffer[4] >> 1 & 1) << 1
+				| (event_buffer[2] & 1) << 2;
 
-			wValue = wValue0;
-			wValue = wValue | (wValue1 << 1);
-			wValue = wValue | (wValue2 << 2);
-
-			event.fingerWidth = wValue * 2;
+			event.fingerWidth = vValue * 2;
 		} else if (wValue >= 4) {
 			// wValue = 4 to 15 corresponds to a finger width report for a single finger
 			event.fingerWidth = wValue;
@@ -407,15 +412,11 @@ get_synaptics_movment(synaptics_cookie *cookie, touchpad_movement *_event, bigti
 				event.zPressure += event_buffer[3] & 0x30;
 
 				// There is a separate "v" value indicating the finger width
-				wValue0 = event_buffer[1] >> 0 & 1;
-				wValue1 = event_buffer[2] >> 0 & 1;
-				wValue2 = event_buffer[5] >> 0 & 1;
+				vValue = (event_buffer[1] & 1)
+					| (event_buffer[2] & 1) << 1
+					| (event_buffer[5] & 1) << 2;
 
-				wValue = wValue0;
-				wValue = wValue | (wValue1 << 1);
-				wValue = wValue | (wValue2 << 2);
-
-				event.fingerWidth = wValue * 2;
+				event.fingerWidth = vValue * 2;
 			}
 
 			// Extended W = 2 - Finger state info
@@ -427,19 +428,38 @@ get_synaptics_movment(synaptics_cookie *cookie, touchpad_movement *_event, bigti
 
 			// Other values are reserved for other uses (usually enabled with special commands)
 
+			if (extendedWValue != 0) {
+				// The secondary finger and finger state packets describe
+				// fingers besides the primary one. Reported as an event of
+				// their own, the secondary finger position was taken for the
+				// primary finger: the pointer jumped, for example to the
+				// thumb resting on the clickpad button area while clicking.
+				// The finger count also comes with the primary packets
+				// (W 0 or 1), so these packets are not reported.
+				return B_ENTRY_NOT_FOUND;
+			}
+
+			// Extended W packets do not report the buttons. Repeat the last
+			// reported state, so that a held button (a clickpad click while
+			// a second finger moves, for example) is not seen as released.
+			event.buttons = cookie->buttons;
 
 			*_event = event;
 
 			return status;
 		}
 
-		// Clickpad pretends that all clicks on the touchpad are middle clicks.
-		// Pass them to userspace as left clicks instead.
+		// A one-button clickpad reports its click like a middle button
+		// (byte 1 bit 0 XOR byte 4 bit 0). It is the primary button: report
+		// it as the left button, and only as that, even when the pad also
+		// claims a middle button (as on a ThinkPad X270); otherwise every
+		// click on the pad arrives as left plus middle. Linux handles
+		// clickpads the same way.
+		uint8 clickBit = (event_buffer[0] ^ event_buffer[3]) & 0x01;
 		if (sTouchpadInfo.capClickPadButtonCount == 1)
-			event.buttons |= ((event_buffer[0] ^ event_buffer[3]) & 0x01);
-
-		if (sTouchpadInfo.capMiddleButton || sTouchpadInfo.capFourButtons)
-			event.buttons |= ((event_buffer[0] ^ event_buffer[3]) & 0x01) << 2;
+			event.buttons = (event.buttons & ~1) | clickBit;
+		else if (sTouchpadInfo.capMiddleButton || sTouchpadInfo.capFourButtons)
+			event.buttons |= clickBit << 2;
 
 		if (sTouchpadInfo.nExtendedButtons > 0 && !ext_buttons_use_guest()) {
 			// The state is tracked in synaptics_ext_buttons_changed(); when
@@ -457,6 +477,8 @@ get_synaptics_movment(synaptics_cookie *cookie, touchpad_movement *_event, bigti
  		event.gesture = event_buffer[0] >> 2 & 1;
  	}
 
+	cookie->buttons = event.buttons;
+
 	if (!isExtended) {
 		event.xPosition = event_buffer[4];
 		event.yPosition = event_buffer[5];
@@ -470,6 +492,34 @@ get_synaptics_movment(synaptics_cookie *cookie, touchpad_movement *_event, bigti
 		event.xPosition += xTwelfBit << 12;
 		yTwelfBit = event_buffer[3] >> 5 & 1;
 		event.yPosition += yTwelfBit << 12;
+
+		// The pad reports one position. When the finger it follows changes,
+		// for example when the finger that moved the pointer lifts while a
+		// thumb presses the clickpad, the position jumps to the other
+		// finger. movement_maker would turn that into a pointer jump (on a
+		// ThinkPad X270 down and to the left after each click). Report the
+		// packet as a lift instead: tracking starts again at the new
+		// position with the next packet. The button state is kept.
+		bool contact = event.zPressure >= MIN_PRESSURE
+			&& (event.xPosition != 0 || event.yPosition != 0);
+		if (contact && cookie->had_contact
+			&& (abs((int32)event.xPosition - (int32)cookie->last_x)
+					> kFingerJump
+				|| abs((int32)event.yPosition - (int32)cookie->last_y)
+					> kFingerJump)) {
+			cookie->last_x = event.xPosition;
+			cookie->last_y = event.yPosition;
+			event.xPosition = 0;
+			event.yPosition = 0;
+			event.zPressure = 0;
+			event.fingers = 0;
+			event.fingerWidth = 4;
+			contact = false;
+		} else if (contact) {
+			cookie->last_x = event.xPosition;
+			cookie->last_y = event.yPosition;
+		}
+		cookie->had_contact = contact;
 	}
 
 	*_event = event;
@@ -621,20 +671,21 @@ synaptics_guest_standard_fallback(ps2_dev *dev)
 
 
 bool
-synaptics_hot_plug_is_pt_payload(ps2_dev *dev)
+synaptics_hot_plug_is_packet_data(ps2_dev *dev)
 {
-	// An aa, 00 byte pair on the pad can be the payload of a pass-through
-	// packet carrying the guest's self-test announce, not a reset announce
-	// of the pad itself. It is payload only when the aa sits at position 1
-	// of a pass-through packet and the 00 is about to be stored at
-	// position 2; a genuine pad reset announce elsewhere mid-packet still
-	// triggers the hot-plug recovery.
+	// An aa, 00 byte pair is a reset announce of the pad only if the aa
+	// started a new packet. Bytes 2, 3, 5 and 6 of an absolute packet can
+	// hold any value: aa, 00 there is ordinary data (for example the low X
+	// and Y bytes), or the payload of a pass-through packet carrying the
+	// guest's self-test announce. An aa that starts a packet fails the sync
+	// check in synaptics_handle_int() (bit 3 set), which leaves the packet
+	// index at 0, as does an aa at byte 4 (bits 7:6 not 11). A partial
+	// packet followed by a pause is dropped there too, so an announce after
+	// the pad reset in the middle of a packet still counts.
 	if (dev->handle_int != &synaptics_handle_int || dev->cookie == NULL)
 		return false;
 	synaptics_cookie *cookie = (synaptics_cookie*)dev->cookie;
-	return cookie->packet_index == 2
-		&& (cookie->buffer[0] & 0xFC) == 0x84
-		&& cookie->buffer[1] == PS2_CMD_TEST_PASSED;
+	return cookie->packet_index != 0;
 }
 
 
@@ -880,6 +931,86 @@ probe_synaptics(ps2_dev *dev)
 //	#pragma mark - Device functions
 
 
+// Bytes that do not fit the absolute packet format, without a complete
+// packet in between, after which the pad is assumed to have lost its mode.
+// A relative packet (3 bytes, bit 3 set in the first) is rejected as one or
+// two bytes, so this is about ten such packets.
+static const int32 kResyncBadBytes = 16;
+// Do not restore the pad more often than this: if it does not help, the
+// log should show it rather than the driver looping.
+static const bigtime_t kResyncInterval = 3000000;
+static bigtime_t sLastResync;
+static int32 sResyncCount;
+
+
+static void
+synaptics_count_bad_byte(synaptics_cookie *cookie)
+{
+	// interrupt context
+	if (++cookie->bad_bytes < kResyncBadBytes)
+		return;
+	if (atomic_test_and_set(&cookie->resync_pending, 1, 0) == 0)
+		ps2_service_notify_synaptics_resync(cookie->dev);
+}
+
+
+/*!	Restores the touchpad after it stopped sending absolute packets.
+	Both PS/2 Reset and Set Defaults clear the Absolute bit of the mode byte
+	(Synaptics TouchPad Interfacing Guide, 2.5), after which the pad sends
+	relative mouse packets; Linux psmouse likewise re-initializes a device
+	that keeps sending data it cannot parse. Sets the mode byte again,
+	re-enables the TrackPoint behind the pass-through port and the pad.
+	Runs in the PS/2 service thread.
+*/
+void
+synaptics_resync(ps2_dev *dev)
+{
+	synaptics_cookie *cookie = (synaptics_cookie*)dev->cookie;
+	if ((atomic_get(&dev->flags) & PS2_FLAG_OPEN) == 0 || cookie == NULL)
+		return;
+
+	bigtime_t now = system_time();
+	if (now - sLastResync < kResyncInterval) {
+		atomic_set(&cookie->resync_pending, 0);
+		return;
+	}
+	sLastResync = now;
+	sResyncCount++;
+
+	INFO("SYNAPTICS: pad lost its mode (%" B_PRId32 " bad bytes), restoring "
+		"(%" B_PRId32 ")\n", cookie->bad_bytes, sResyncCount);
+
+	// No pass-through command may run between the bytes of the mode
+	// setting sequence.
+	mutex_lock(&sGuestCommandLock);
+	ps2_dev_command_timeout(dev, PS2_CMD_DISABLE, NULL, 0, NULL, 0, 150000);
+	snooze(30000);
+	cookie->packet_index = 0;
+
+	status_t status = set_touchpad_mode(dev, cookie->mode);
+	mutex_unlock(&sGuestCommandLock);
+	if (status != B_OK)
+		INFO("SYNAPTICS: resync: setting mode failed: %s\n", strerror(status));
+
+	if (sTouchpadInfo.capPassThrough && sPassthroughDevice->active) {
+		// This wraps the command in pad disable/enable.
+		status = passthrough_command(sPassthroughDevice, PS2_CMD_ENABLE, NULL,
+			0, NULL, 0, 500000);
+		if (status != B_OK) {
+			INFO("SYNAPTICS: resync: enabling the TrackPoint failed: %s\n",
+				strerror(status));
+		}
+	}
+
+	status = ps2_dev_command_timeout(dev, PS2_CMD_ENABLE, NULL, 0, NULL, 0,
+		150000);
+	INFO("SYNAPTICS: resync done: %s\n", strerror(status));
+
+	cookie->bad_bytes = 0;
+	atomic_set(&cookie->resync_pending, 0);
+}
+
+
 status_t
 synaptics_open(const char *name, uint32 flags, void **_cookie)
 {
@@ -1013,6 +1144,7 @@ synaptics_close(void *_cookie)
 	// Reset the touchpad so it generate standard ps2 packets instead of
 	// extended ones. If not, BeOS is confused with such packets when rebooting
 	// without a complete shutdown.
+	INFO("SYNAPTICS: close, resetting the pad\n");
 	status = ps2_reset_mouse(cookie->dev);
 	if (status != B_OK) {
 		INFO("ps2_synaptics: reset failed\n");
@@ -1066,14 +1198,34 @@ synaptics_ioctl(void *_cookie, uint32 op, void *buffer, size_t length)
 			return user_memcpy(buffer, &gHardwareSpecs, sizeof(gHardwareSpecs));
 
 		case MS_READ_TOUCHPAD:
+		{
 			TRACE("SYNAPTICS: MS_READ get event\n");
 			if (user_memcpy(&read.timeout, &(((touchpad_read*)buffer)->timeout),
 					sizeof(bigtime_t)) != B_OK)
 				return B_BAD_ADDRESS;
-			if ((status = get_synaptics_movment(cookie, &read.u.touchpad, read.timeout)) != B_OK)
+
+			// Packets that are not reported (B_ENTRY_NOT_FOUND) do not end
+			// the wait; the timeout still counts from the start.
+			bigtime_t timeout = read.timeout;
+			bigtime_t deadline = 0;
+			if (timeout != B_INFINITE_TIMEOUT)
+				deadline = system_time() + timeout;
+			while (true) {
+				status = get_synaptics_movment(cookie, &read.u.touchpad,
+					timeout);
+				if (status != B_ENTRY_NOT_FOUND)
+					break;
+				if (deadline != 0) {
+					timeout = deadline - system_time();
+					if (timeout <= 0)
+						return B_TIMED_OUT;
+				}
+			}
+			if (status != B_OK)
 				return status;
 			read.event = MS_READ_TOUCHPAD;
 			return user_memcpy(buffer, &read, sizeof(read));
+		}
 
 		default:
 			TRACE("SYNAPTICS: unknown opcode: %" B_PRIu32 "\n", op);
@@ -1090,18 +1242,34 @@ synaptics_handle_int(ps2_dev *dev)
 
 	val = cookie->dev->history[0].data;
 
+	// The bytes of one packet follow each other within a few milliseconds.
+	// After a long pause, a partial packet will not be completed (the pad
+	// reset, or bytes were lost): start over.
+	bigtime_t time = cookie->dev->history[0].time;
+	if (cookie->packet_index != 0
+		&& time - cookie->last_byte_time > SYN_PACKET_TIMEOUT) {
+		INFO("SYNAPTICS: dropping %" B_PRIuSIZE " byte partial packet after %"
+			B_PRIdBIGTIME " us\n", cookie->packet_index,
+			time - cookie->last_byte_time);
+		cookie->packet_index = 0;
+	}
+	cookie->last_byte_time = time;
+
 	if ((cookie->packet_index == 0 || cookie->packet_index == 3) && (val & 8) != 0) {
 		INFO("SYNAPTICS: bad mouse data %#02x, trying resync\n", val);
 		cookie->packet_index = 0;
+		synaptics_count_bad_byte(cookie);
 		return B_UNHANDLED_INTERRUPT;
 	}
 	if (cookie->packet_index == 0 && val >> 6 != 0x02) {
 		TRACE("SYNAPTICS: first package %#02x begins not with bit 1, 0\n", val);
+		synaptics_count_bad_byte(cookie);
 		return B_UNHANDLED_INTERRUPT;
 	}
 	if (cookie->packet_index == 3 && val >> 6 != 0x03) {
 		TRACE("SYNAPTICS: third package %#02x begins not with bit 1, 1\n", val);
 		cookie->packet_index = 0;
+		synaptics_count_bad_byte(cookie);
 		return B_UNHANDLED_INTERRUPT;
 	}
 	if (cookie->packet_index == 0)
@@ -1111,6 +1279,7 @@ synaptics_handle_int(ps2_dev *dev)
 	cookie->packet_index++;
 	if (cookie->packet_index >= 6) {
 		cookie->packet_index = 0;
+		cookie->bad_bytes = 0;
 		check_stall();
 
 		if (IS_SYN_PT_PACKAGE(cookie->buffer)) {

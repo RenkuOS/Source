@@ -26,6 +26,7 @@ void		ps2_service_notify_device_added(ps2_dev *dev);
 void		ps2_service_notify_device_republish(ps2_dev *dev);
 void		ps2_service_notify_device_removed(ps2_dev *dev);
 void		ps2_service_notify_stall_probe(ps2_dev *dev);
+void		ps2_service_notify_synaptics_resync(ps2_dev *dev);
 
 #ifdef __cplusplus
 }

@@ -40,6 +40,7 @@ enum {
 	PS2_SERVICE_NOTIFY_DEVICE_REPUBLISH,
 	PS2_SERVICE_NOTIFY_DEVICE_REMOVED,
 	PS2_SERVICE_STALL_PROBE,
+	PS2_SERVICE_SYNAPTICS_RESYNC,
 };
 
 
@@ -114,6 +115,19 @@ ps2_service_notify_stall_probe(ps2_dev *dev)
 }
 
 
+void
+ps2_service_notify_synaptics_resync(ps2_dev *dev)
+{
+	ps2_service_cmd cmd;
+
+	cmd.id = PS2_SERVICE_SYNAPTICS_RESYNC;
+	cmd.dev = dev;
+
+	packet_buffer_write(sServiceCmdBuffer, (const uint8 *)&cmd, sizeof(cmd));
+	release_sem_etc(sServiceSem, 1, B_DO_NOT_RESCHEDULE);
+}
+
+
 static int32
 ps2_service_thread(void *arg)
 {
@@ -149,6 +163,10 @@ ps2_service_thread(void *arg)
 
 				case PS2_SERVICE_STALL_PROBE:
 					synaptics_stall_probe(cmd.dev);
+					break;
+
+				case PS2_SERVICE_SYNAPTICS_RESYNC:
+					synaptics_resync(cmd.dev);
 					break;
 
 				default:
