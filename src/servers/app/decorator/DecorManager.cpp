@@ -19,7 +19,12 @@
 #include <Path.h>
 #include <Rect.h>
 
+#include <string.h>
+#include <strings.h>
 #include <syslog.h>
+
+#include <safemode_defs.h>
+#include <syscalls.h>
 
 #include "AppServer.h"
 #include "Desktop.h"
@@ -30,6 +35,40 @@
 
 typedef float get_version(void);
 typedef DecorAddOn* create_decor_addon(image_id id, const char* name);
+
+
+/*!	Whether safe mode's "Disable user add-ons" is on, so that only the
+	system's own decorators may be loaded.
+*/
+static bool
+user_add_ons_disabled()
+{
+	char parameter[32];
+	size_t parameterLength = sizeof(parameter);
+	if (_kern_get_safemode_option(B_SAFEMODE_DISABLE_USER_ADD_ONS, parameter,
+			&parameterLength) != B_OK) {
+		return false;
+	}
+
+	return !strcasecmp(parameter, "enabled") || !strcasecmp(parameter, "on")
+		|| !strcasecmp(parameter, "true") || !strcasecmp(parameter, "yes")
+		|| !strcasecmp(parameter, "enable") || !strcmp(parameter, "1");
+}
+
+
+//!	Whether \a path is in the system's add-ons folder.
+static bool
+is_system_add_on(const char* path)
+{
+	BPath systemPath;
+	if (find_directory(B_SYSTEM_ADDONS_DIRECTORY, &systemPath) != B_OK)
+		return false;
+
+	const size_t length = strlen(systemPath.Path());
+	return strncmp(path, systemPath.Path(), length) == 0
+		&& path[length] == '/';
+}
+
 
 // Globals
 DecorManager gDecorManager;
@@ -288,6 +327,14 @@ DecorManager::_LoadDecor(BString _path, status_t& error )
 	}
 
 	BPath path(&entry);
+	if (user_add_ons_disabled() && !is_system_add_on(path.Path())) {
+		// a decorator can keep app_server from starting
+		syslog(LOG_NOTICE, "app_server: safe mode: not loading decorator "
+			"\"%s\"\n", path.Path());
+		error = B_NOT_ALLOWED;
+		return NULL;
+	}
+
 	image_id image = load_add_on(path.Path());
 	if (image < 0) {
 		error = B_BAD_IMAGE_ID;
