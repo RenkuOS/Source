@@ -21,6 +21,7 @@
 
 #include "AntialiasingSettingsView.h"
 #include "ColorsView.h"
+#include "CompositorSettingsView.h"
 #include "FontView.h"
 #include "LookAndFeelSettingsView.h"
 
@@ -58,10 +59,14 @@ AppearanceWindow::AppearanceWindow(BRect frame)
 	fAntialiasingSettings = new AntialiasingSettingsView(
 		B_TRANSLATE("Antialiasing"));
 
+	fCompositorSettings = new CompositorSettingsView(
+		B_TRANSLATE("Compositor"));
+
 	tabView->AddTab(fFontSettings);
 	tabView->AddTab(fColorsView);
 	tabView->AddTab(fLookAndFeelSettings);
 	tabView->AddTab(fAntialiasingSettings);
+	tabView->AddTab(fCompositorSettings);
 	tabView->SetBorder(B_NO_BORDER);
 
 	_UpdateButtons();
@@ -92,6 +97,7 @@ AppearanceWindow::MessageReceived(BMessage *message)
 			fColorsView->SetDefaults();
 			fLookAndFeelSettings->SetDefaults();
 			fAntialiasingSettings->SetDefaults();
+			fCompositorSettings->SetDefaults();
 
 			_UpdateButtons();
 			break;
@@ -101,6 +107,7 @@ AppearanceWindow::MessageReceived(BMessage *message)
 			fColorsView->Revert();
 			fLookAndFeelSettings->Revert();
 			fAntialiasingSettings->Revert();
+			fCompositorSettings->Revert();
 
 			_UpdateButtons();
 			break;
@@ -130,7 +137,8 @@ AppearanceWindow::_IsDefaultable() const
 	return fFontSettings->IsDefaultable()
 		|| fColorsView->IsDefaultable()
 		|| fLookAndFeelSettings->IsDefaultable()
-		|| fAntialiasingSettings->IsDefaultable();
+		|| fAntialiasingSettings->IsDefaultable()
+		|| fCompositorSettings->IsDefaultable();
 }
 
 
@@ -144,5 +152,6 @@ AppearanceWindow::_IsRevertable() const
 	return fFontSettings->IsRevertable()
 		|| fColorsView->IsRevertable()
 		|| fLookAndFeelSettings->IsRevertable()
-		|| fAntialiasingSettings->IsRevertable();
+		|| fAntialiasingSettings->IsRevertable()
+		|| fCompositorSettings->IsRevertable();
 }

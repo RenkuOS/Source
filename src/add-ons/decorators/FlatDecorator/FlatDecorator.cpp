@@ -52,6 +52,8 @@
 
 
 static const float kBorderResizeLength = 22.0;
+static const int32 kFrameCornerRadius = 6;
+static const int32 kTabCornerRadius = 5;
 
 
 FlatDecorAddOn::FlatDecorAddOn(image_id id, const char* name)
@@ -520,6 +522,60 @@ FlatDecorator::_DrawFrame(BRect rect)
 				break;
 		}
 	}
+
+	_DrawFrameCorners();
+}
+
+
+void
+FlatDecorator::GetRoundedShape(std::vector<ShapeRect>& shape) const
+{
+	GetShape(shape);
+	RoundedDecorator::RoundShape(shape, fTopTab->look, kFrameCornerRadius,
+		kTabCornerRadius);
+}
+
+
+//! The compositor cuts off the corners, the border follows them.
+void
+FlatDecorator::_DrawFrameCorners()
+{
+	if (!RoundedDecorator::IsActive(GetDesktop()))
+		return;
+
+	std::vector<ShapeRect> shape;
+	GetRoundedShape(shape);
+	const ShapeRect& frame = shape[0];
+	const BRect& border = frame.rect;
+
+	ComponentColors top;
+	_GetComponentColors(COMPONENT_TOP_BORDER, top, fTopTab);
+	ComponentColors left;
+	_GetComponentColors(COMPONENT_LEFT_BORDER, left, fTopTab);
+	ComponentColors bottom;
+	_GetComponentColors(COMPONENT_BOTTOM_BORDER, bottom, fTopTab);
+
+	// The frame around a floating window is thinner, and colored differently.
+	const bool thin = fTopTab->look == B_FLOATING_WINDOW_LOOK
+		|| fTopTab->look == kLeftTitledWindowLook;
+
+	const int32 leftTop = (int32)frame.leftTop;
+	const int32 rightTop = (int32)frame.rightTop;
+	const int32 leftBottom = (int32)frame.leftBottom;
+	const int32 rightBottom = (int32)frame.rightBottom;
+
+	RoundedDecorator::StrokeCorner(fDrawingEngine, border.LeftTop(), leftTop,
+		WindowShape::LEFT_TOP, thin ? left[0] : top[0]);
+	RoundedDecorator::StrokeCorner(fDrawingEngine,
+		BPoint(border.right - rightTop + 1, border.top), rightTop,
+		WindowShape::RIGHT_TOP, thin ? bottom[5] : top[0]);
+	RoundedDecorator::StrokeCorner(fDrawingEngine,
+		BPoint(border.left, border.bottom - leftBottom + 1), leftBottom,
+		WindowShape::LEFT_BOTTOM, thin ? bottom[5] : bottom[0]);
+	RoundedDecorator::StrokeCorner(fDrawingEngine,
+		BPoint(border.right - rightBottom + 1,
+			border.bottom - rightBottom + 1), rightBottom,
+		WindowShape::RIGHT_BOTTOM, thin ? bottom[5] : bottom[0]);
 }
 
 
@@ -604,9 +660,11 @@ FlatDecorator::_DrawTab(Decorator::Tab* tab, BRect invalid)
 	if (tab && tab->buttonFocus) {
 		gradient.AddColor(tint_color(colors[COLOR_TAB], 0.6), 0);
 		gradient.AddColor(tint_color(colors[COLOR_TAB], 1.0), 200);
+		gradient.AddColor(tint_color(colors[COLOR_TAB], 1.0), 255);
 	} else {
 		gradient.AddColor(tint_color(colors[COLOR_TAB], 0.9), 0);
 		gradient.AddColor(tint_color(colors[COLOR_TAB], 1.0), 150);
+		gradient.AddColor(tint_color(colors[COLOR_TAB], 1.0), 255);
 	}
 
 	if (tab->look != kLeftTitledWindowLook) {
@@ -617,6 +675,24 @@ FlatDecorator::_DrawTab(Decorator::Tab* tab, BRect invalid)
 		gradient.SetEnd(tabRect.RightTop());
 		fDrawingEngine->FillRect(BRect(tabRect.left + 2, tabRect.top + 2,
 			tabRect.right, tabRect.bottom - 2), gradient);
+	}
+
+	// The compositor cuts off the corners, the border follows them.
+	if (RoundedDecorator::IsActive(GetDesktop())) {
+		RoundedDecorator::StrokeCorner(fDrawingEngine, tabRect.LeftTop(),
+			kTabCornerRadius, WindowShape::LEFT_TOP,
+			colors[COLOR_TAB_FRAME_DARK]);
+		if (tab->look != kLeftTitledWindowLook) {
+			RoundedDecorator::StrokeCorner(fDrawingEngine,
+				BPoint(tabRect.right - kTabCornerRadius + 1, tabRect.top),
+				kTabCornerRadius, WindowShape::RIGHT_TOP,
+				colors[COLOR_TAB_FRAME_DARK]);
+		} else {
+			RoundedDecorator::StrokeCorner(fDrawingEngine,
+				BPoint(tabRect.left, tabRect.bottom - kTabCornerRadius + 1),
+				kTabCornerRadius, WindowShape::LEFT_BOTTOM,
+				colors[COLOR_TAB_FRAME_DARK]);
+		}
 	}
 
 	_DrawTitle(tab, tabRect);
@@ -797,6 +873,7 @@ FlatDecorator::_DrawBlendedRect(DrawingEngine* engine, const BRect rect,
 	gradient.SetEnd(fillRect.LeftTop());
 	gradient.AddColor(startColor, 0);
 	gradient.AddColor(endColor, 250);
+	gradient.AddColor(endColor, 255);
 
 	engine->FillRect(fillRect, gradient);
 

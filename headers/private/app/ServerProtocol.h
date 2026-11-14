@@ -368,6 +368,16 @@ enum {
 	AS_VIEW_CLIP_TO_RECT,
 	AS_VIEW_CLIP_TO_SHAPE,
 
+	// Composited desktop, applies from the next start of app_server
+	AS_SET_COMPOSITED_DESKTOP,
+	AS_GET_COMPOSITED_DESKTOP,
+
+	// What the compositor adds to windows, applies right away
+	AS_SET_COMPOSITED_SHADOWS,
+	AS_GET_COMPOSITED_SHADOWS,
+	AS_SET_COMPOSITED_ROUNDED_CORNERS,
+	AS_GET_COMPOSITED_ROUNDED_CORNERS,
+
 	AS_LAST_CODE
 };
 
