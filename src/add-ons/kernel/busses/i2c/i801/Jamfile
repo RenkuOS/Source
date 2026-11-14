@@ -1,0 +1,10 @@
+SubDir HAIKU_TOP src add-ons kernel busses i2c i801 ;
+
+SubDirC++Flags -fno-rtti ;
+
+UsePrivateHeaders i2c ;
+UsePrivateKernelHeaders ;
+
+KernelAddon i801_smbus :
+	i801_smbus.cpp
+;

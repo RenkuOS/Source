@@ -47,6 +47,7 @@ AddFilesToPackage add-ons kernel busses ata :
 	;
 
 AddFilesToPackage add-ons kernel busses i2c :
+	i801_smbus@x86,x86_64
 	pch_i2c@x86,x86_64
 	;
 AddFilesToPackage add-ons kernel busses mmc :
