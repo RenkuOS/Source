@@ -35,25 +35,35 @@ extern "C" void _sPrintf(const char* format, ...);
 #define ERROR(x...) _sPrintf("radeon_hd: " x)
 
 
+/*!	The colour depth the display on \a connectorIndex takes, from its EDID,
+	or 8 bits when the EDID doesn't say, as in Linux. Many laptop panels take
+	only 6 bits, and decode 8 as noise.
+*/
 static uint32
-encoder_get_bpc()
+encoder_get_bpc(uint32 connectorIndex)
 {
-	/*
-	switch (8) {
-		case 0:
-			return PANEL_BPC_UNDEFINE;
-		case 6:
-			return PANEL_6BIT_PER_COLOR;
-		case 8:
-			return PANEL_8BIT_PER_COLOR;
-		case 10:
-			return PANEL_10BIT_PER_COLOR;
-		case 12:
-			return PANEL_12BIT_PER_COLOR;
-		case 16:
-			return PANEL_16BIT_PER_COLOR;
+	for (uint32 id = 0; id < MAX_DISPLAY; id++) {
+		if (gDisplay[id] == NULL || !gDisplay[id]->attached
+			|| gDisplay[id]->connectorIndex != connectorIndex)
+			continue;
+
+		const edid1_display& display = gDisplay[id]->edidData.display;
+		if (display.input_type != 1)
+			break;
+
+		switch (display.digital_params.bit_depth) {
+			case 6:
+				return PANEL_6BIT_PER_COLOR;
+			case 10:
+				return PANEL_10BIT_PER_COLOR;
+			case 12:
+				return PANEL_12BIT_PER_COLOR;
+			case 16:
+				return PANEL_16BIT_PER_COLOR;
+		}
+		break;
 	}
-	*/
+
 	return PANEL_8BIT_PER_COLOR;
 }
 
@@ -234,7 +244,7 @@ encoder_assign_crtc(uint8 crtcID)
 					// TODO: Better bridge logic
 					args.v2.ucEncodeMode
 						= display_get_encoder_mode(connectorIndex);
-					args.v3.ucDstBpc = encoder_get_bpc();
+					args.v3.ucDstBpc = encoder_get_bpc(connectorIndex);
 					switch (encoderID) {
 						case ENCODER_OBJECT_ID_INTERNAL_UNIPHY:
 						case ENCODER_OBJECT_ID_INTERNAL_UNIPHY1:
@@ -816,7 +826,7 @@ encoder_dig_setup(uint32 connectorIndex, uint32 pixelClock, int command)
 			}
 
 			args.v3.acConfig.ucDigSel = encoder_pick_dig(connectorIndex);
-			args.v3.ucBitPerColor = encoder_get_bpc();
+			args.v3.ucBitPerColor = encoder_get_bpc(connectorIndex);
 			break;
 		case 4:
 			args.v4.ucAction = command;
@@ -845,7 +855,7 @@ encoder_dig_setup(uint32 connectorIndex, uint32 pixelClock, int command)
 				args.v4.ucLaneNum = 4;
 			}
 			args.v4.acConfig.ucDigSel = digEncoderID;
-			args.v4.ucBitPerColor = encoder_get_bpc();
+			args.v4.ucBitPerColor = encoder_get_bpc(connectorIndex);
 
 			if (hpdID == 0xff)
 				args.v4.ucHPD_ID = 0;
@@ -872,7 +882,8 @@ encoder_dig_setup(uint32 connectorIndex, uint32 pixelClock, int command)
 						args.v5.asStreamParam.ucLaneNum = 4;
 					args.v5.asStreamParam.ulPixelClock
 						= B_HOST_TO_LENDIAN_INT16(pixelClock / 10);
-					args.v5.asStreamParam.ucBitPerColor = encoder_get_bpc();
+					args.v5.asStreamParam.ucBitPerColor
+						= encoder_get_bpc(connectorIndex);
 					args.v5.asStreamParam.ucLinkRateIn270Mhz = dpClock / 27000;
 					break;
 				case ATOM_ENCODER_CMD_DP_LINK_TRAINING_START:
