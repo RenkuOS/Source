@@ -800,7 +800,7 @@ connector_probe()
 							== encoderObjectRaw) {
 							ATOM_COMMON_RECORD_HEADER* record
 								= (ATOM_COMMON_RECORD_HEADER*)
-								((uint16*)gAtomContext->bios + tableOffset
+								(gAtomContext->bios + tableOffset
 								+ B_LENDIAN_TO_HOST_INT16(
 								encoderObject->asObjects[k].usRecordOffset));
 							ATOM_ENCODER_CAP_RECORD* capRecord;
@@ -868,7 +868,7 @@ connector_probe()
 							= B_LENDIAN_TO_HOST_INT16(routerObject->asObjects[k].usObjectID);
 						if (B_LENDIAN_TO_HOST_INT16(path->usGraphicObjIds[j]) == routerObjectID) {
 							ATOM_COMMON_RECORD_HEADER* record = (ATOM_COMMON_RECORD_HEADER*)
-								((uint16*)gAtomContext->bios + tableOffset
+								(gAtomContext->bios + tableOffset
 								+ B_LENDIAN_TO_HOST_INT16(
 								routerObject->asObjects[k].usRecordOffset));
 							ATOM_I2C_RECORD* i2cRecord;
@@ -877,7 +877,7 @@ connector_probe()
 							ATOM_ROUTER_DATA_CLOCK_PATH_SELECT_RECORD* cdPath;
 							ATOM_SRC_DST_TABLE_FOR_ONE_OBJECT* routerConnTable
 								= (ATOM_SRC_DST_TABLE_FOR_ONE_OBJECT *)
-								((uint16*)gAtomContext->bios + tableOffset
+								(gAtomContext->bios + tableOffset
 								+ B_LENDIAN_TO_HOST_INT16(
 								routerObject->asObjects[k].usSrcDstTableOffset));
 							uint8* destObjCount = (uint8*)((uint8*)routerConnTable + 1

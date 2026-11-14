@@ -176,7 +176,7 @@ pll_ppll_ss_probe(pll_info* pll, uint32 ssID)
 	}
 
 	struct _ATOM_SPREAD_SPECTRUM_INFO *ss_info
-		= (struct _ATOM_SPREAD_SPECTRUM_INFO*)((uint16*)gAtomContext->bios
+		= (struct _ATOM_SPREAD_SPECTRUM_INFO*)(gAtomContext->bios
 		+ headerOffset);
 
 	int indices = (headerSize - sizeof(ATOM_COMMON_TABLE_HEADER))
@@ -226,7 +226,7 @@ pll_asic_ss_probe(pll_info* pll, uint32 ssID)
 	};
 
 	union asicSSInfo *ss_info
-		= (union asicSSInfo*)((uint16*)gAtomContext->bios + headerOffset);
+		= (union asicSSInfo*)(gAtomContext->bios + headerOffset);
 
 	int i;
 	int indices;
