@@ -44,7 +44,7 @@ if [ FIsBuildFeatureEnabled fontconfig ] {
 	ClientMemoryAllocator.cpp Desktop.cpp DesktopSettings.cpp
 	DrawState.cpp DrawingEngine.cpp Layer.cpp PictureBoundingBoxPlayer.cpp
 	ServerApp.cpp ServerBitmap.cpp ServerCursor.cpp ServerFont.cpp
-	ServerPicture.cpp ServerWindow.cpp View.cpp Window.cpp WorkspacesView.cpp
+	ServerPicture.cpp ServerWindow.cpp View.cpp Window.cpp WindowShape.cpp WorkspacesView.cpp
 	$(decorator_src) $(font_src) ]
 	: [ BuildFeatureAttribute freetype : headers ]
 	  [ BuildFeatureAttribute fontconfig : headers ] ;
@@ -53,7 +53,7 @@ if [ FIsBuildFeatureEnabled fontconfig ] {
 	ClientMemoryAllocator.cpp Desktop.cpp DesktopSettings.cpp
 	DrawState.cpp DrawingEngine.cpp Layer.cpp PictureBoundingBoxPlayer.cpp
 	ServerApp.cpp ServerBitmap.cpp ServerCursor.cpp ServerFont.cpp
-	ServerPicture.cpp ServerWindow.cpp View.cpp Window.cpp WorkspacesView.cpp
+	ServerPicture.cpp ServerWindow.cpp View.cpp Window.cpp WindowShape.cpp WorkspacesView.cpp
 	$(decorator_src) $(font_src) ]
 	: [ BuildFeatureAttribute freetype : headers ] ;
 }
@@ -101,6 +101,7 @@ Application app_server :
 	VirtualScreen.cpp
 	Window.cpp
 	WindowList.cpp
+	WindowShape.cpp
 	Workspace.cpp
 	WorkspacesView.cpp
 
