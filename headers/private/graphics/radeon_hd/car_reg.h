@@ -41,4 +41,9 @@
 #define CAR_GRPH_CONTROL__GRPH_ARRAY_MODE__SHIFT                                   0x14
 #define CAR_ARRAY_LINEAR_ALIGNED                                                   0x1
 
+/* Memory power of the display pipe's front end (not in DCE 8) */
+#define CAR_mmDCFE_MEM_PWR_CTRL                                                     0x1b03
+#define CAR_DCFE_MEM_PWR_CTRL__DCP_LUT_MEM_PWR_FORCE_MASK                           0x3
+#define CAR_DCFE_MEM_PWR_CTRL__DCP_LUT_MEM_PWR_DIS_MASK                             0x4
+
 #endif /* DCE_11_0_D_H */
