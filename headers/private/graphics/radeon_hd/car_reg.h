@@ -29,4 +29,9 @@
 
 #define CAR_mmDC_GPIO_HPD_A                                                         0x488d
 
+/* Line buffer, DCP0 (dword offsets; the same in DCE 8). At 0x1ac1, where
+ * Evergreen had DESKTOP_HEIGHT, DCE 8 and later have LB_MEMORY_CTRL. */
+#define CAR_mmLB_MEMORY_CTRL                                                        0x1ac1
+#define CAR_mmLB_DESKTOP_HEIGHT                                                     0x1ac3
+
 #endif /* DCE_11_0_D_H */
