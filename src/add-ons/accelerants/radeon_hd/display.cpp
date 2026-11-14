@@ -104,7 +104,12 @@ init_registers(register_info* regs, uint8 crtcID)
 		regs->grphYStart = EVERGREEN_GRPH_Y_START + offset;
 		regs->grphXEnd = EVERGREEN_GRPH_X_END + offset;
 		regs->grphYEnd = EVERGREEN_GRPH_Y_END + offset;
-		regs->modeDesktopHeight = EVERGREEN_DESKTOP_HEIGHT + offset;
+		// From DCE 8 on, the line buffer's memory control is where
+		// Evergreen's desktop height was, and the height is further on.
+		if (info.dceMajor >= 8)
+			regs->modeDesktopHeight = (CAR_mmLB_DESKTOP_HEIGHT << 2) + offset;
+		else
+			regs->modeDesktopHeight = EVERGREEN_DESKTOP_HEIGHT + offset;
 		regs->modeDataFormat = EVERGREEN_DATA_FORMAT + offset;
 		regs->viewportStart = EVERGREEN_VIEWPORT_START + offset;
 		regs->viewportSize = EVERGREEN_VIEWPORT_SIZE + offset;
