@@ -583,6 +583,8 @@ display_crtc_dpms(uint8 crtcID, int mode)
 			TRACE("%s: crtc %" B_PRIu8 " dpms powerup\n", __func__, crtcID);
 			if (gDisplay[crtcID]->attached == false)
 				return;
+			if (info.dceMajor >= 6)
+				display_crtc_powergate(crtcID, ATOM_DISABLE);
 			display_crtc_power(crtcID, ATOM_ENABLE);
 			gDisplay[crtcID]->powered = true;
 			if (info.dceMajor >= 3 && info.dceMajor < 6)
@@ -1151,6 +1153,27 @@ display_crtc_power(uint8 crtcID, int command)
 	memset(&args, 0, sizeof(args));
 
 	args.ucCRTC = crtcID;
+	args.ucEnable = command;
+
+	atom_execute_table(gAtomContext, index, (uint32*)&args);
+}
+
+
+/*!	From DCE 6 on, a display pipe's memories can be power gated while its
+	CRTC is off. ATOM_DISABLE turns the gating off, so that the pipe can
+	fetch and buffer the frame buffer again; ATOM_ENABLE allows it.
+*/
+void
+display_crtc_powergate(uint8 crtcID, int command)
+{
+	TRACE("%s: crtc %" B_PRIu8 ", gating %s\n", __func__, crtcID,
+		command == ATOM_ENABLE ? "on" : "off");
+	int index = GetIndexIntoMasterTable(COMMAND, EnableDispPowerGating);
+	ENABLE_DISP_POWER_GATING_PARAMETERS_V2_1 args;
+
+	memset(&args, 0, sizeof(args));
+
+	args.ucDispPipeId = crtcID;
 	args.ucEnable = command;
 
 	atom_execute_table(gAtomContext, index, (uint32*)&args);
