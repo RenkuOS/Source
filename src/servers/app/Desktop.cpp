@@ -45,6 +45,7 @@
 
 #include "AppServer.h"
 #include "ClickTarget.h"
+#include "Compositor.h"
 #include "DecorManager.h"
 #include "DesktopSettingsPrivate.h"
 #include "DrawingEngine.h"
@@ -3600,6 +3601,13 @@ Desktop::RebuildAndRedrawAfterWindowChange(Window* changedWindow,
 	_WindowChanged(changedWindow);
 
 	_TriggerWindowRedrawing(dirty, dirty);
+}
+
+
+rgb_color
+Desktop::CurrentBackgroundColor()
+{
+	return fWorkspaces[fCurrentWorkspace].Color();
 }
 
 
