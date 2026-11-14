@@ -816,13 +816,16 @@ display_crtc_fb_set(uint8 crtcID, display_mode* mode)
 	TRACE("%s: Framebuffer at: 0x%" B_PRIX64 "\n", __func__, fbAddress);
 
 	if (info.chipsetID >= RADEON_RV770) {
+		// The high address is 4 bits wide before DCE 8, and 8 bits from then
+		// on, where an APU's frame buffer can be above 64 GB.
+		uint32 highMask = info.dceMajor >= 8 ? 0xff : 0xf;
 		TRACE("%s: Set SurfaceAddress High: 0x%" B_PRIX32 "\n",
-			__func__, (fbAddress >> 32) & 0xf);
+			__func__, (uint32)(fbAddress >> 32) & highMask);
 
 		Write32(OUT, regs->grphPrimarySurfaceAddrHigh,
-			(fbAddress >> 32) & 0xf);
+			(fbAddress >> 32) & highMask);
 		Write32(OUT, regs->grphSecondarySurfaceAddrHigh,
-			(fbAddress >> 32) & 0xf);
+			(fbAddress >> 32) & highMask);
 	}
 
 	TRACE("%s: Set SurfaceAddress: 0x%" B_PRIX64 "\n",
