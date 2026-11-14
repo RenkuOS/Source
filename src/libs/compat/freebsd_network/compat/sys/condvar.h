@@ -15,7 +15,10 @@ __BEGIN_DECLS
 
 struct cv {
 	// We cannot include <condition_variable.h> here as it is C++-only.
-	char condition[roundup((sizeof(void*) * 5) + sizeof(spinlock) + sizeof(int32), sizeof(void*))];
+	// aligned as the ConditionVariable it holds: ARM faults on its
+	// multiple-register stores to an unaligned address
+	char condition[roundup((sizeof(void*) * 5) + sizeof(spinlock) + sizeof(int32), sizeof(void*))]
+		__attribute__((__aligned__(sizeof(void*))));
 };
 
 #ifdef __cplusplus
