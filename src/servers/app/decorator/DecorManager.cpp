@@ -19,6 +19,7 @@
 #include <Path.h>
 #include <Rect.h>
 
+#include <new>
 #include <syslog.h>
 
 #include "AppServer.h"
@@ -26,6 +27,7 @@
 #include "DesktopSettings.h"
 #include "ServerConfig.h"
 #include "SATDecorator.h"
+#include "StyleDecorator.h"
 #include "Window.h"
 
 typedef float get_version(void);
@@ -294,17 +296,24 @@ DecorManager::_LoadDecor(BString _path, status_t& error )
 		return NULL;
 	}
 
-	create_decor_addon*	createFunc;
-	if (get_image_symbol(image, "instantiate_decor_addon", B_SYMBOL_TYPE_TEXT,
-			(void**)&createFunc) != B_OK) {
-		unload_add_on(image);
-		error = B_MISSING_SYMBOL;
-		return NULL;
-	}
-
 	char name[B_FILE_NAME_LENGTH];
 	entry.GetName(name);
-	DecorAddOn* newDecor = createFunc(image, name);
+
+	DecorAddOn* newDecor;
+	create_decor_addon*	createFunc;
+	if (get_image_symbol(image, "instantiate_decor_addon", B_SYMBOL_TYPE_TEXT,
+			(void**)&createFunc) == B_OK) {
+		newDecor = createFunc(image, name);
+	} else {
+		// a style, which app_server's own engine draws through
+		const decor_style* style = StyleDecorAddOn::StyleOf(image);
+		if (style == NULL) {
+			unload_add_on(image);
+			error = B_MISSING_SYMBOL;
+			return NULL;
+		}
+		newDecor = new(std::nothrow) StyleDecorAddOn(image, name, style);
+	}
 	if (newDecor == NULL || newDecor->InitCheck() != B_OK) {
 		unload_add_on(image);
 		error = B_ERROR;
