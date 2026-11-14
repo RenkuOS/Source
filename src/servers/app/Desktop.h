@@ -50,6 +50,7 @@ class BMessage;
 
 class DecorAddOn;
 class DrawingEngine;
+class Compositor;
 class HWInterface;
 class ServerApp;
 class Window;
@@ -136,6 +137,8 @@ public:
 
 			status_t			LockDirectScreen(team_id team);
 			status_t			UnlockDirectScreen(team_id team);
+			bool				IsDirectScreenLocked() const
+									{ return fDirectScreenTeam != -1; }
 
 			const ::VirtualScreen& VirtualScreen() const
 									{ return fVirtualScreen; }
@@ -143,6 +146,11 @@ public:
 									{ return fVirtualScreen.DrawingEngine(); }
 			::HWInterface*		HWInterface() const
 									{ return fVirtualScreen.HWInterface(); }
+
+			// NULL if windows draw directly to the screen.
+			Compositor*			GetCompositor() const
+									{ return fCompositor.Get(); }
+			rgb_color			CurrentBackgroundColor();
 
 			void				RebuildAndRedrawAfterWindowChange(
 									Window* window, BRegion& dirty);
@@ -246,6 +254,7 @@ public:
 									{ return MarkDirty(region, region); }
 			void				Redraw();
 			void				RedrawBackground();
+			void				WindowShapesChanged();
 
 			bool				ReloadDecor(DecorAddOn* oldDecor);
 
@@ -317,6 +326,7 @@ private:
 			void				_TriggerWindowRedrawing(
 									BRegion& dirtyRegion, BRegion& exposeRegion);
 			void				_SetBackground(BRegion& background);
+			bool				_IsSafeMode() const;
 
 			status_t			_ActivateApp(team_id team);
 
@@ -386,6 +396,9 @@ private:
 			StackAndTile		fStackAndTile;
 
 			BMessage			fPendingColors;
+
+			ObjectDeleter<Compositor>
+								fCompositor;
 };
 
 #endif	// DESKTOP_H
