@@ -20,6 +20,7 @@
 #include <driver_settings.h>
 #include <Entry.h>
 #include <File.h>
+#include <MessageRunner.h>
 #include <ObjectList.h>
 #include <Path.h>
 #include <PathFinder.h>
@@ -587,8 +588,26 @@ LaunchDaemon::MessageReceived(BMessage* message)
 					status_t status = rosterPrivate.IsShutDownInProgress(
 						&inProgress);
 					if (status != B_OK || !inProgress) {
-						// TODO: take restart throttle into account
-						_LaunchJob(job);
+						// Services that exit again right after being
+						// launched (for example because something they
+						// depend on, like a network link, isn't ready yet)
+						// must not be relaunched as fast as the system can
+						// manage: with no minimum interval between
+						// attempts, a service stuck failing on every
+						// launch starves the rest of the system of CPU
+						// time in a tight respawn loop instead of a few
+						// retries a second.
+						static const bigtime_t kMinRestartInterval = 1000000;
+						bigtime_t elapsed
+							= system_time() - job->LastLaunchTime();
+						if (elapsed >= kMinRestartInterval) {
+							_LaunchJob(job);
+						} else {
+							BMessage restart(kMsgRestartJob);
+							restart.AddString("name", job->Name());
+							BMessageRunner::StartSending(BMessenger(this),
+								&restart, kMinRestartInterval - elapsed, 1);
+						}
 					}
 				}
 			}
@@ -686,6 +705,20 @@ LaunchDaemon::MessageReceived(BMessage* message)
 		case B_GET_LAUNCH_LOG:
 			_HandleGetLaunchLog(message);
 			break;
+
+		case kMsgRestartJob:
+		{
+			// A throttled service restart (see B_SYSTEM_OBJECT_UPDATE
+			// above) is now due.
+			const char* name = message->GetString("name");
+			if (name == NULL)
+				break;
+
+			Job* job = FindJob(name);
+			if (job != NULL && !job->IsRunning())
+				_LaunchJob(job);
+			break;
+		}
 
 		case kMsgEventTriggered:
 		{
