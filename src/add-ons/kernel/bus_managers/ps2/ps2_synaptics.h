@@ -65,6 +65,7 @@ status_t synaptics_pass_through_set_packet_size(ps2_dev *dev, uint8 size);
 status_t passthrough_command(ps2_dev *dev, uint8 cmd, const uint8 *out,
 	int out_count, uint8 *in, int in_count, bigtime_t timeout);
 status_t probe_synaptics(ps2_dev *dev);
+bool synaptics_handed_over(ps2_dev *dev);
 void synaptics_stall_probe(ps2_dev *guest);
 
 status_t synaptics_open(const char *name, uint32 flags, void **_cookie);
