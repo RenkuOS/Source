@@ -1,4 +1,4 @@
-SubDir HAIKU_TOP src tests kits app bapplication testapps ;
+SubDir HAIKU_TOP src tests kits app testapps ;
 
 AddSubDirSupportedPlatforms libbe_test ;
 

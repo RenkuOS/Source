@@ -1,8 +1,12 @@
+/*
+ * Copyright 2002-2026, Haiku, Inc. All rights reserved.
+ * Distributed under the terms of the MIT License.
+ */
+
 #include <TestSuite.h>
 #include <TestSuiteAddon.h>
 
 // ##### Include headers for your tests here #####
-#include "bapplication/ApplicationTest.h"
 #include "bclipboard/ClipboardTest.h"
 #include "bcursor/CursorTest.h"
 #include "bhandler/HandlerTest.h"
@@ -15,11 +19,10 @@
 #include "broster/RosterTest.h"
 #include "RegistrarThreadManagerTest.h"
 
-BTestSuite* getTestSuite2() {
+BTestSuite* getTestSuite() {
 	BTestSuite *suite = new BTestSuite("App");
 
 	// ##### Add test suites here #####
-//	suite->addTest("BApplication", ApplicationTestSuite());
 	suite->addTest("BClipboard", ClipboardTestSuite());
 //	suite->addTest("BCursor", CursorTestSuite());
 	suite->addTest("BHandler", HandlerTestSuite());
@@ -34,4 +37,10 @@ BTestSuite* getTestSuite2() {
 	//suite->addTest("RegistrarThreadManager", RegistrarThreadManagerTest::Suite());
 	
 	return suite;
+}
+
+const char*
+getTestSuiteName()
+{
+	return "AppKit";
 }

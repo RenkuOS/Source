@@ -6,7 +6,6 @@ UsePrivateHeaders app ;
 UseHeaders [ FDirName $(HAIKU_TOP) src servers registrar mime ] ;
 
 # Let Jam know where to find some of our source files
-SEARCH_SOURCE += [ FDirName $(SUBDIR) bapplication ] ;
 SEARCH_SOURCE += [ FDirName $(SUBDIR) bclipboard ] ;
 SEARCH_SOURCE += [ FDirName $(SUBDIR) bcursor ] ;
 SEARCH_SOURCE += [ FDirName $(SUBDIR) bhandler ] ;
@@ -38,11 +37,10 @@ UnitTestLib libapptest.so
 	: AppKitTestAddon.cpp
 
 		# BApplication
-		ApplicationTest.cpp
-		AppQuitRequestedTester.cpp
-		AppQuitTester.cpp
-		AppRunTester.cpp
-		BApplicationTester.cpp
+		ApplicationConstructorTest.cpp
+		ApplicationQuitRequestedTest.cpp
+		ApplicationQuitTest.cpp
+		ApplicationRunTest.cpp
 
 		# BClipboard
 		BClipboardTester.cpp
@@ -159,11 +157,6 @@ UnitTestLib libapptest.so
 	: be [ TargetLibstdc++ ]
 ;
 
-UnitTestLib libappteststub.so
-	: AppKitTestStub.cpp
-	: libapptest.so [ TargetLibstdc++ ]
-;
-
 SimpleTest DanoMessageTest :
 	DanoMessageTest.cpp
 	dano_message.cpp
@@ -178,7 +171,6 @@ SEARCH on [ FGristFiles
 		RegistrarThreadManager.cpp
 	] = [ FDirName $(HAIKU_TOP) src servers registrar mime ] ;
 
-SubInclude HAIKU_TOP src tests kits app bapplication ;
 SubInclude HAIKU_TOP src tests kits app bclipboard ;
 SubInclude HAIKU_TOP src tests kits app bcursor ;
 #SubInclude HAIKU_TOP src tests kits app bhandler ;
@@ -189,3 +181,4 @@ SubInclude HAIKU_TOP src tests kits app bmessenger ;
 SubInclude HAIKU_TOP src tests kits app broster ;
 SubInclude HAIKU_TOP src tests kits app common ;
 SubInclude HAIKU_TOP src tests kits app messaging ;
+SubInclude HAIKU_TOP src tests kits app testapps ;
