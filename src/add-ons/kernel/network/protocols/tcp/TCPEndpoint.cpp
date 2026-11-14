@@ -328,9 +328,10 @@ enum {
 	FLAG_SEND_ERROR_REPORTED	= 0x800,
 		// a send() has reported the error that closed the connection; later
 		// ones fail with EPIPE (see _ClosedSendStatus())
-	FLAG_WAS_ESTABLISHED		= 0x1000
+	FLAG_WAS_ESTABLISHED		= 0x1000,
 		// this connection reached ESTABLISHED; only then does a send() once
 		// it is CLOSED fail with the pending error or EPIPE, not ENOTCONN
+	FLAG_DELETING				= 0x2000
 };
 
 
@@ -490,13 +491,22 @@ TCPEndpoint::~TCPEndpoint()
 		put_endpoint_manager(fManager);
 	}
 
-	mutex_destroy(&fLock);
+	// A hook the timer thread has already taken off its list is not stopped
+	// by cancel_timer(): it is about to lock fLock. Destroying the lock first
+	// left it locking a destroyed mutex, which a KDEBUG kernel panics on
+	// ("using uninitialized lock" in _RetransmitTimer). Mark the endpoint
+	// (the hooks return without re-arming anything), let any such hook run,
+	// and only then destroy the lock. Nothing else can reach the endpoint
+	// any more: it is unbound and its socket is gone.
+	fFlags |= FLAG_DELETING;
+	mutex_unlock(&fLock);
 
-	// we need to wait for all timers to return
 	gStackModule->wait_for_timer(&fRetransmitTimer);
 	gStackModule->wait_for_timer(&fPersistTimer);
 	gStackModule->wait_for_timer(&fDelayedAcknowledgeTimer);
 	gStackModule->wait_for_timer(&fTimeWaitTimer);
+
+	mutex_destroy(&fLock);
 
 	gDatalinkModule->put_route(Domain(), fRoute);
 }
@@ -2924,7 +2934,8 @@ TCPEndpoint::_RetransmitTimer(net_timer* timer, void* _endpoint)
 	T(TimerTriggered(endpoint, "retransmit"));
 
 	MutexLocker locker(endpoint->fLock);
-	if (!locker.IsLocked() || gStackModule->is_timer_active(timer))
+	if (!locker.IsLocked() || gStackModule->is_timer_active(timer)
+		|| (endpoint->fFlags & FLAG_DELETING) != 0)
 		return;
 
 	if (!endpoint->_Retransmit())
@@ -2954,7 +2965,8 @@ TCPEndpoint::_PersistTimer(net_timer* timer, void* _endpoint)
 		return;
 
 	// the timer might not have been canceled early enough
-	if (endpoint->State() == CLOSED)
+	if (endpoint->State() == CLOSED
+		|| (endpoint->fFlags & FLAG_DELETING) != 0)
 		return;
 
 	endpoint->_SendQueued(true);
@@ -2972,7 +2984,8 @@ TCPEndpoint::_DelayedAcknowledgeTimer(net_timer* timer, void* _endpoint)
 		return;
 
 	// the timer might not have been canceled early enough
-	if (endpoint->State() == CLOSED)
+	if (endpoint->State() == CLOSED
+		|| (endpoint->fFlags & FLAG_DELETING) != 0)
 		return;
 
 	endpoint->_SendAcknowledge();
@@ -2986,7 +2999,7 @@ TCPEndpoint::_TimeWaitTimer(net_timer* timer, void* _endpoint)
 	T(TimerTriggered(endpoint, "time-wait"));
 
 	MutexLocker locker(endpoint->fLock);
-	if (!locker.IsLocked())
+	if (!locker.IsLocked() || (endpoint->fFlags & FLAG_DELETING) != 0)
 		return;
 
 	if ((endpoint->fFlags & FLAG_CLOSED) == 0) {
