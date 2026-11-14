@@ -721,16 +721,22 @@ usb_raw_ioctl(void *cookie, uint32 op, void *buffer, size_t length)
 			if (length < sizeof(command.control))
 				return B_BUFFER_OVERFLOW;
 
-			void *controlData = malloc(command.control.length);
-			if (controlData == NULL)
-				return B_NO_MEMORY;
+			// requests without a data stage may come without a buffer
+			void *controlData = NULL;
+			if (command.control.length > 0) {
+				controlData = malloc(command.control.length);
+				if (controlData == NULL)
+					return B_NO_MEMORY;
+			}
 			MemoryDeleter dataDeleter(controlData);
 
 			bool inTransfer = (command.control.request_type
 				& USB_ENDPOINT_ADDR_DIR_IN) != 0;
-			if (!IS_USER_ADDRESS(command.control.data)
-				|| (!inTransfer && user_memcpy(controlData,
-					command.control.data, command.control.length) != B_OK)) {
+			if (command.control.length > 0
+				&& (!IS_USER_ADDRESS(command.control.data)
+					|| (!inTransfer && user_memcpy(controlData,
+						command.control.data, command.control.length)
+							!= B_OK))) {
 				return B_BAD_ADDRESS;
 			}
 
@@ -758,8 +764,9 @@ usb_raw_ioctl(void *cookie, uint32 op, void *buffer, size_t length)
 
 			if (command.control.status == B_OK)
 				status = B_OK;
-			if (inTransfer && user_memcpy(command.control.data, controlData,
-				command.control.length) != B_OK) {
+			if (inTransfer && command.control.length > 0
+				&& user_memcpy(command.control.data, controlData,
+					command.control.length) != B_OK) {
 				status = B_BAD_ADDRESS;
 			}
 			break;
