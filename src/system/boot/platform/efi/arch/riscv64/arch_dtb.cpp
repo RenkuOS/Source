@@ -17,6 +17,7 @@ extern "C" {
 }
 
 #include "dtb.h"
+#include "efi_platform.h"
 
 
 uint32 gBootHart = 0;
@@ -33,7 +34,21 @@ arch_handle_fdt(const void* fdt, int node)
 		"device_type", NULL);
 
 	const char* name = fdt_get_name(fdt, node, NULL);
-	if (strcmp(name, "chosen") == 0) {
+	if (node == 0) {
+		// root node
+		int compatibleLen;
+		const char* compatible = (const char*)fdt_getprop(fdt, node,
+			"compatible", &compatibleLen);
+		if (compatible != NULL
+			&& dtb_has_fdt_string(compatible, compatibleLen, "starfive,jh7110")) {
+			// The JH7110 display controller reads memory behind the L2
+			// cache: draw through the uncached "system port" view of the DDR
+			// (0x4_4000_0000, the memory port at 0x4000_0000 plus this
+			// offset, JH7110 TRM table 2-4).
+			gFrameBufferAliasOffset = 0x400000000ULL;
+			dprintf("JH7110: frame buffer through the uncached DDR port\n");
+		}
+	} else if (strcmp(name, "chosen") == 0) {
 		if (uint32* prop = (uint32*)fdt_getprop(fdt, node, "boot-hartid", NULL))
 			gBootHart = fdt32_to_cpu(*prop);
 	} else if (strcmp(name, "cpus") == 0) {

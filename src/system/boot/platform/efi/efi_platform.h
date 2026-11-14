@@ -55,4 +55,9 @@ extern efi_handle kImage;
 // True when a 32-bit loader starts a 64-bit kernel (x86 only).
 extern bool gIsHybridPlatform;
 
+// Added to the GOP frame buffer address handed to the kernel and used for
+// drawing, for SoCs whose display controller does not see the CPU caches and
+// that have an uncached alias of the memory (set from the device tree).
+extern uint64_t gFrameBufferAliasOffset;
+
 #endif	/* EFI_PLATFORM_H */
