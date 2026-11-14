@@ -24,6 +24,7 @@
 
 
 static const float kBorderResizeLength = 22;
+static const float kResizeKnobSize = 18;
 
 
 static inline BRect
@@ -116,11 +117,14 @@ StyleDecorator::Tab::Tab()
 StyleDecorator::StyleDecorator(DesktopSettings& settings, BRect frame,
 	Desktop* desktop, const decor_style* style)
 	:
-	Decorator(settings, frame, desktop),
+	TabDecorator(settings, frame, desktop),
 	fStyle(style),
 	fCanvas(NULL),
 	fWindowCreated(false)
 {
+	fBorderResizeLength = kBorderResizeLength;
+	fResizeKnobSize = kResizeKnobSize;
+
 	memset(&fWindow, 0, sizeof(fWindow));
 	fWindow.size = sizeof(fWindow);
 
@@ -150,21 +154,15 @@ StyleDecorator::Draw(BRect updateRect)
 	if (!_HasStyle() || fTabList.CountItems() == 0)
 		return;
 
-	fDrawingEngine->SetDrawState(&fDrawState);
-
 	if (_StyleHas(offsetof(decor_style, draw) + sizeof(fStyle->draw))
 		&& fStyle->draw != NULL) {
+		fDrawingEngine->SetDrawState(&fDrawState);
 		_SyncIn();
 		fStyle->draw(&fWindow, fCanvas, to_decor_rect(updateRect));
 		return;
 	}
 
-	_DrawFrame(updateRect & fBorderRect);
-
-	if (IsOutlineResizing())
-		_DrawOutlineFrame(updateRect & fOutlineBorderRect);
-
-	_DrawTabs(updateRect & fTitleBarRect);
+	TabDecorator::Draw(updateRect);
 }
 
 
@@ -222,48 +220,13 @@ StyleDecorator::RegionAt(BPoint where, int32& tabIndex) const
 	if (region != REGION_NONE)
 		return region;
 
+	// a style may give any window a resize corner
 	if (fResizeRect.IsValid() && fResizeRect.Contains(where)
 		&& (fTopTab->flags & B_NOT_RESIZABLE) == 0)
 		return REGION_RIGHT_BOTTOM_CORNER;
 
-	if (fLeftBorder.Contains(where))
-		return REGION_LEFT_BORDER;
-	if (fTopBorder.Contains(where))
-		return REGION_TOP_BORDER;
-
-	if (fRightBorder.Contains(where))
-		region = REGION_RIGHT_BORDER;
-	else if (fBottomBorder.Contains(where))
-		region = REGION_BOTTOM_BORDER;
-	else
-		return REGION_NONE;
-
-	// the bottom right corner resizes, as on app_server's own decorators
-	if ((fTopTab->flags & B_NOT_RESIZABLE) == 0
-		&& (fTopTab->look == B_TITLED_WINDOW_LOOK
-			|| fTopTab->look == B_FLOATING_WINDOW_LOOK
-			|| fTopTab->look == B_MODAL_WINDOW_LOOK
-			|| fTopTab->look == kLeftTitledWindowLook)) {
-		BRect resizeRect(BPoint(fBottomBorder.right - kBorderResizeLength,
-			fBottomBorder.bottom - kBorderResizeLength),
-			fBottomBorder.RightBottom());
-		if (resizeRect.Contains(where))
-			return REGION_RIGHT_BOTTOM_CORNER;
-	}
-
-	return region;
-}
-
-
-bool
-StyleDecorator::SetRegionHighlight(Region region, uint8 highlight,
-	BRegion* dirty, int32 tabIndex)
-{
-	Decorator::Tab* tab = _TabAt(tabIndex);
-	if (tab != NULL)
-		tab->isHighlighted = highlight != 0;
-
-	return Decorator::SetRegionHighlight(region, highlight, dirty, tabIndex);
+	// the borders, and the end of the bottom one that resizes
+	return TabDecorator::RegionAt(where, tabIndex);
 }
 
 
@@ -343,27 +306,6 @@ StyleDecorator::_DoLayout()
 	fStyle->layout(&fWindow, fCanvas);
 
 	_SyncOut();
-}
-
-
-void
-StyleDecorator::_DoOutlineLayout()
-{
-	fOutlineBorderWidth = 1;
-
-	fLeftOutlineBorder.Set(fFrame.left - fOutlineBorderWidth, fFrame.top,
-		fFrame.left - 1, fFrame.bottom);
-	fRightOutlineBorder.Set(fFrame.right + 1, fFrame.top,
-		fFrame.right + fOutlineBorderWidth, fFrame.bottom);
-	fTopOutlineBorder.Set(fFrame.left - fOutlineBorderWidth,
-		fFrame.top - fOutlineBorderWidth, fFrame.right + fOutlineBorderWidth,
-		fFrame.top - 1);
-	fBottomOutlineBorder.Set(fFrame.left - fOutlineBorderWidth,
-		fFrame.bottom + 1, fFrame.right + fOutlineBorderWidth,
-		fFrame.bottom + fOutlineBorderWidth);
-
-	fOutlineBorderRect = BRect(fTopOutlineBorder.LeftTop(),
-		fBottomOutlineBorder.RightBottom());
 }
 
 
@@ -553,23 +495,16 @@ StyleDecorator::_UpdateFont(DesktopSettings& settings)
 		return;
 	}
 
-	ServerFont font;
-	settings.GetDefaultBoldFont(font);
-	font.SetFlags(B_FORCE_ANTIALIASING);
-	font.SetSpacing(B_STRING_SPACING);
-	fDrawState.SetFont(font);
+	TabDecorator::_UpdateFont(settings);
 }
 
 
 void
 StyleDecorator::_MoveBy(BPoint offset)
 {
-	Decorator::_MoveBy(offset);
-
-	fLeftBorder.OffsetBy(offset);
-	fRightBorder.OffsetBy(offset);
-	fTopBorder.OffsetBy(offset);
-	fBottomBorder.OffsetBy(offset);
+	TabDecorator::_MoveBy(offset);
+	for (int32 i = 0; i < fTabList.CountItems(); i++)
+		fTabList.ItemAt(i)->minimizeRect.OffsetBy(offset);
 
 	if (_HasStyle() && _StyleHas(offsetof(decor_style, moved)
 			+ sizeof(fStyle->moved))
@@ -608,13 +543,7 @@ StyleDecorator::_AddTab(DesktopSettings& settings, int32 index,
 	if (updateRegion != NULL && fTitleBarRect.IsValid())
 		updateRegion->Include(fTitleBarRect);
 
-	_UpdateFont(settings);
-	_DoLayout();
-	_DoOutlineLayout();
-
-	if (updateRegion != NULL)
-		updateRegion->Include(fTitleBarRect);
-	return true;
+	return TabDecorator::_AddTab(settings, index, updateRegion);
 }
 
 
@@ -624,12 +553,7 @@ StyleDecorator::_RemoveTab(int32 index, BRegion* updateRegion)
 	if (updateRegion != NULL)
 		updateRegion->Include(fTitleBarRect);
 
-	_DoLayout();
-	_DoOutlineLayout();
-
-	if (updateRegion != NULL)
-		updateRegion->Include(fTitleBarRect);
-	return true;
+	return TabDecorator::_RemoveTab(index, updateRegion);
 }
 
 
