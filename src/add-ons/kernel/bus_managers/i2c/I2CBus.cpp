@@ -12,9 +12,13 @@ I2CBus::I2CBus(device_node *node, uint8 id)
 	fNode(node),
 	fID(id),
 	fController(NULL),
-	fCookie(NULL)
+	fCookie(NULL),
+	fHostNotifyEnabled(false)
 {
 	CALLED();
+	B_INITIALIZE_SPINLOCK(&fHostNotifyLock);
+	memset(fHostNotify, 0, sizeof(fHostNotify));
+
 	device_node *parent = gDeviceManager->get_parent_node(node);
 	status_t status = gDeviceManager->get_driver(parent,
 		(driver_module_info **)&fController, &fCookie);
@@ -30,6 +34,8 @@ I2CBus::I2CBus(device_node *node, uint8 id)
 
 I2CBus::~I2CBus()
 {
+	if (fHostNotifyEnabled && fController->set_host_notify_hook != NULL)
+		fController->set_host_notify_hook(fCookie, NULL, NULL);
 }
 
 
@@ -107,6 +113,91 @@ I2CBus::ReleaseBus()
 	CALLED();
 	if (fController->release_bus != NULL)
 		fController->release_bus(fCookie);
+}
+
+
+// interrupt context
+/*static*/ void
+I2CBus::_HostNotify(void* cookie, i2c_addr address, uint16 data)
+{
+	I2CBus* bus = (I2CBus*)cookie;
+	i2c_host_notify_hook hook = NULL;
+	void* hookCookie = NULL;
+
+	SpinLocker locker(bus->fHostNotifyLock);
+	for (int i = 0; i < kMaxHostNotify; i++) {
+		if (bus->fHostNotify[i].hook != NULL
+			&& bus->fHostNotify[i].address == address) {
+			hook = bus->fHostNotify[i].hook;
+			hookCookie = bus->fHostNotify[i].cookie;
+			break;
+		}
+	}
+	// Call the hook with the lock held, so that UninstallHostNotify()
+	// cannot return while the hook runs.
+	if (hook != NULL)
+		hook(hookCookie, address, data);
+	else
+		TRACE("host notify from unclaimed address 0x%x\n", address);
+}
+
+
+status_t
+I2CBus::InstallHostNotify(i2c_addr slaveAddress, i2c_host_notify_hook hook,
+	void* cookie)
+{
+	CALLED();
+	if (hook == NULL)
+		return B_BAD_VALUE;
+	if (fController->set_host_notify_hook == NULL)
+		return B_NOT_SUPPORTED;
+
+	status_t status = B_NO_MEMORY;
+	{
+		InterruptsSpinLocker locker(fHostNotifyLock);
+		for (int i = 0; i < kMaxHostNotify; i++) {
+			if (fHostNotify[i].hook != NULL
+				&& fHostNotify[i].address == slaveAddress)
+				return B_BUSY;
+		}
+		for (int i = 0; i < kMaxHostNotify; i++) {
+			if (fHostNotify[i].hook == NULL) {
+				fHostNotify[i].address = slaveAddress;
+				fHostNotify[i].cookie = cookie;
+				fHostNotify[i].hook = hook;
+				status = B_OK;
+				break;
+			}
+		}
+	}
+	if (status != B_OK)
+		return status;
+
+	if (!fHostNotifyEnabled) {
+		status = fController->set_host_notify_hook(fCookie, &_HostNotify,
+			this);
+		if (status != B_OK) {
+			UninstallHostNotify(slaveAddress);
+			return status;
+		}
+		fHostNotifyEnabled = true;
+	}
+	return B_OK;
+}
+
+
+void
+I2CBus::UninstallHostNotify(i2c_addr slaveAddress)
+{
+	CALLED();
+	InterruptsSpinLocker locker(fHostNotifyLock);
+	for (int i = 0; i < kMaxHostNotify; i++) {
+		if (fHostNotify[i].hook != NULL
+			&& fHostNotify[i].address == slaveAddress) {
+			fHostNotify[i].hook = NULL;
+			fHostNotify[i].cookie = NULL;
+		}
+	}
 }
 
 

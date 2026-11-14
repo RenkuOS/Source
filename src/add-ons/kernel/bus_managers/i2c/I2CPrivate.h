@@ -53,6 +53,9 @@ public:
 									size_t dataLength);
 			status_t			AcquireBus();
 			void				ReleaseBus();
+			status_t			InstallHostNotify(i2c_host_notify_hook hook,
+									void* cookie);
+			void				UninstallHostNotify();
 
 private:
 			device_node*		fNode;
@@ -78,11 +81,29 @@ public:
 			status_t			AcquireBus();
 			void				ReleaseBus();
 
+			status_t			InstallHostNotify(i2c_addr slaveAddress,
+									i2c_host_notify_hook hook, void* cookie);
+			void				UninstallHostNotify(i2c_addr slaveAddress);
+
 private:
+	static	void				_HostNotify(void* cookie, i2c_addr address,
+									uint16 data);
+
+			struct host_notify_entry {
+				i2c_addr				address;
+				i2c_host_notify_hook	hook;
+				void*					cookie;
+			};
+	enum { kMaxHostNotify = 8 };
+
 			device_node*		fNode;
 			uint8				fID;
 			i2c_sim_interface*	fController;
 			void*				fCookie;
+
+			spinlock			fHostNotifyLock;
+			host_notify_entry	fHostNotify[kMaxHostNotify];
+			bool				fHostNotifyEnabled;
 };
 
 
