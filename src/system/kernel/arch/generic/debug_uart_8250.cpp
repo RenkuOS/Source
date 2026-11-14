@@ -91,6 +91,13 @@ DebugUART8250::~DebugUART8250()
 void
 DebugUART8250::InitPort(uint32 baud)
 {
+	if (Clock() < 16 * (int64)baud) {
+		// The input clock is unknown (the device tree may only reference it
+		// through "clocks", as on the StarFive JH7110): a divisor computed
+		// from it would stop the port, so keep what the firmware set up.
+		return;
+	}
+
 	Disable();
 
 	uint16 baudDivisor = Clock() / (16 * baud);
