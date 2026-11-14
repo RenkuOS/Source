@@ -211,6 +211,10 @@ radeon_set_display_mode(display_mode* mode)
 	}
 
 	// *** crtc and encoder prep
+	// From DCE 6 on, the pipe may be power gated; it has to be on to be set
+	// up, as in Linux's atombios_crtc_prepare().
+	if (gInfo->shared_info->dceMajor >= 6)
+		display_crtc_powergate(crtcID, ATOM_DISABLE);
 	encoder_output_lock(true);
 	display_crtc_lock(crtcID, ATOM_ENABLE);
 	radeon_dpms_set(crtcID, B_DPMS_OFF);
