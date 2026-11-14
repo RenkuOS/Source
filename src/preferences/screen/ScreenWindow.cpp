@@ -17,6 +17,7 @@
 
 #include "ScreenWindow.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <strings.h>
@@ -422,7 +423,9 @@ ScreenWindow::ScreenWindow(ScreenSettings* settings)
 
 	if (min == max) {
 		// This is a special case for drivers that only support a single
-		// frequency, like the VESA driver
+		// frequency, like the VESA driver. Round it as the refresh rate of
+		// the selected mode is, or that one would not be found in the menu.
+		min = rint(10 * min) / 10;
 		BString name;
 		refresh_rate_to_string(min, name);
 		BMessage *message = new BMessage(POP_REFRESH_MSG);
