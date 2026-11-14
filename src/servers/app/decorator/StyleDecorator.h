@@ -11,7 +11,7 @@
 #include <decorator/DecorStyle.h>
 
 #include "DecorManager.h"
-#include "Decorator.h"
+#include "TabDecorator.h"
 
 
 /*!	Loads decorator styles: add-ons exporting instantiate_decor_style(),
@@ -38,9 +38,10 @@ private:
 
 /*!	A decorator that a style describes: the style lays the frame out and
 	draws it, through the plain structures of DecorStyle.h, and this does
-	the rest, as app_server's own decorators do.
+	the rest, as app_server's own decorators do. What doesn't depend on how
+	the frame is laid out comes from TabDecorator.
 */
-class StyleDecorator : public Decorator {
+class StyleDecorator : public TabDecorator {
 public:
 								StyleDecorator(DesktopSettings& settings,
 									BRect frame, Desktop* desktop,
@@ -53,9 +54,6 @@ public:
 	virtual	void				DrawMinimize(int32 tab);
 
 	virtual	Region				RegionAt(BPoint where, int32& tab) const;
-	virtual	bool				SetRegionHighlight(Region region,
-									uint8 highlight, BRegion* dirty,
-									int32 tab = -1);
 
 	virtual	void				UpdateColors(DesktopSettings& settings);
 
@@ -73,7 +71,6 @@ protected:
 	virtual	Decorator::Tab*		_AllocateNewTab();
 
 	virtual	void				_DoLayout();
-	virtual	void				_DoOutlineLayout();
 
 	virtual	void				_DrawFrame(BRect rect);
 	virtual	void				_DrawOutlineFrame(BRect rect);
