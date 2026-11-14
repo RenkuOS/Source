@@ -104,7 +104,7 @@ arch_cpu_sync_icache(void *address, size_t len)
 	uint64_t ctr_el0 = 0;
 	asm volatile ("mrs\t%0, ctr_el0":"=r" (ctr_el0));
 
-	uint64_t icache_line_size = 4 << (ctr_el0 << 0xF);
+	uint64_t icache_line_size = 4 << (ctr_el0 & 0xF);
 	uint64_t dcache_line_size = 4 << ((ctr_el0 >> 16) & 0xF);
 	uint64_t addr = (uint64_t)address;
 	uint64_t end = addr + len;
