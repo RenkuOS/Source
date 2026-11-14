@@ -353,9 +353,11 @@ jobs:
           case "${ISO}" in
             *.img.zst)
               # The setup that reached the arm64 desktop locally: the EDK2
-              # firmware, a virtio disk, and ramfb for the boot loader.
+              # firmware, a virtio disk, and ramfb for the boot loader. The
+              # runner's EDK2 2025.11 hangs before its boot manager with
+              # -cpu max, so name a CPU model.
               zstd -q -d "${ISO}" -o disk.img
-              ${{ matrix.qemu }} -M virt -cpu max -smp 4 -m 2048 \
+              ${{ matrix.qemu }} -M virt -cpu cortex-a72 -smp 4 -m 2048 \
                 -bios /usr/share/qemu-efi-aarch64/QEMU_EFI.fd \
                 -drive file=disk.img,format=raw,if=none,id=d0 -device virtio-blk-device,drive=d0 \
                 -device ramfb -display none -serial file:serial.log -no-reboot & ;;
