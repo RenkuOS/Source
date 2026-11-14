@@ -17,20 +17,38 @@ UrlPlaylistItem::UrlPlaylistItem(BUrl url)
 	fUrl(url),
 	fDuration(-1)
 {
+	_PrepareUrlString();
 }
 
 
 UrlPlaylistItem::UrlPlaylistItem(const UrlPlaylistItem& item)
+	:
+	fUrl(item.Url()),
+	fDuration(-1)
 {
-	fUrl = BUrl(item.Url());
+	_PrepareUrlString();
 }
 
 
 UrlPlaylistItem::UrlPlaylistItem(const BMessage* archive)
+	:
+	fDuration(-1)
 {
 	const char* url = NULL;
 	if (archive->FindString("mediaplayer:url", &url) == B_OK)
 		fUrl = BUrl(url, true);
+	_PrepareUrlString();
+}
+
+
+void
+UrlPlaylistItem::_PrepareUrlString()
+{
+	// BUrl::UrlString() builds the string the first time it is asked for.
+	// The playlist window and the playback ask for it at the same time, and
+	// both would write it: build it now, before the item is shared, so that
+	// they only read it.
+	fUrl.UrlString();
 }
 
 

@@ -58,6 +58,8 @@ protected:
 	virtual	TrackSupplier*		_CreateTrackSupplier() const;
 
 private:
+			void				_PrepareUrlString();
+
 			BUrl				fUrl;
 			bigtime_t			fDuration;
 };
