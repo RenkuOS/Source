@@ -49,7 +49,11 @@ GICv2InterruptController::GICv2InterruptController(phys_addr_t gicd_addr, phys_a
 	// how many registers cover all IRQs?
 	uint32 typer = fGicdRegs[GICD_REG_TYPER];
 	uint32 lineRegs = (typer & 0x1f) + 1;
-	reserve_io_interrupt_vectors(32 * lineRegs, 0, INTERRUPT_TYPE_IRQ);
+	// SGIs and PPIs (0 - 31) belong to each CPU, as the private timers do: they
+	// cannot be routed, so the scheduler must not try to move them, as on x86
+	// the local APIC timer. Only the SPIs are I/O interrupts.
+	reserve_io_interrupt_vectors(32, 0, INTERRUPT_TYPE_LOCAL_IRQ);
+	reserve_io_interrupt_vectors(32 * (lineRegs - 1), 32, INTERRUPT_TYPE_IRQ);
 
 	for (uint32 i = 1; i < lineRegs; i++) { // 1 bit per IRQ
 		// mask and clear state before enabling
