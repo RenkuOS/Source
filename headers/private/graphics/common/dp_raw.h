@@ -136,6 +136,9 @@
 #define DP_TRAIN_PRE_EMPHASIS_6				(2 << 3)	// Value
 #define DP_TRAIN_PRE_EMPHASIS_9_5			(3 << 3)	// Value
 #define DP_TRAIN_MAX_EMPHASIS_EN			(1 << 5)	// Bool
+// eDP Configuration Capability (0x000d), eDP 1.2+
+#define DP_EDP_CONFIGURATION_CAP			0x000d		// Reg
+#define DP_EDP_ALTERNATE_SCRAMBLER_RESET_CAP	(1 << 0)	// Bool
 // DP Down-spread Control (0x0107)
 #define DP_DOWNSPREAD_CTRL					0x0107		// Reg
 #define DP_DOWNSPREAD_CTRL_FREQ_MASK		(1 << 0)	// Int
@@ -143,6 +146,9 @@
 // DP Main Link Channel Coding (0x0108)
 #define DP_MAIN_CHAN_CODE					0x0108		// Reg
 #define DP_MAIN_CHAN_CODE_ANSIX3_EN			(1 << 0)	// Bool
+// eDP Configuration Set (0x010a), eDP 1.2+
+#define DP_EDP_CONFIGURATION_SET			0x010a		// Reg
+#define DP_EDP_ALTERNATE_SCRAMBLER_RESET_ENABLE	(1 << 0)	// Bool
 
 /* *** DPCD Link / Sink Status Field (0x0200)         *** */
 /* *** VESA DisplayPort Standard, rev 1.1, p120       *** */

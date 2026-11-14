@@ -721,18 +721,17 @@ encoder_dig_setup(uint32 connectorIndex, uint32 pixelClock, int command)
 			} else {
 				panelMode = DP_PANEL_MODE_INTERNAL_DP2_MODE;
 			}
+		} else if (connector->type == VIDEO_CONNECTOR_EDP
+			&& (dpcd_reg_read(connectorIndex, DP_EDP_CONFIGURATION_CAP)
+				& DP_EDP_ALTERNATE_SCRAMBLER_RESET_CAP) != 0) {
+			// An eDP panel that uses the alternate scrambler seed reset
+			// needs the source to use it too; the link trains either way,
+			// as training patterns aren't scrambled, but the picture is
+			// lost. As in Linux's radeon_dp_get_panel_mode().
+			panelMode = DP_PANEL_MODE_INTERNAL_DP2_MODE;
 		} else
 			panelMode = DP_PANEL_MODE_EXTERNAL_DP_MODE;
 	}
-
-	#if 0
-	uint32 encoderID = gConnector[connectorIndex]->encoder.objectID;
-	if (gConnector[connectorIndex]->type == VIDEO_CONNECTOR_EDP) {
-		uint8 temp = dpcd_read_reg(hwPin, DP_EDP_CONFIGURATION_CAP);
-		if ((temp & 1) != 0)
-			panelMode = DP_PANEL_MODE_INTERNAL_DP2_MODE;
-	}
-	#endif
 
 	TRACE("%s: table %" B_PRIu8 ".%" B_PRIu8 "\n", __func__,
 		tableMajor, tableMinor);
@@ -908,12 +907,17 @@ encoder_dig_setup(uint32 connectorIndex, uint32 pixelClock, int command)
 
 	status_t result = atom_execute_table(gAtomContext, index, (uint32*)&args);
 
-	#if 0
-	if (gConnector[connectorIndex]->type == VIDEO_CONNECTOR_EDP
-		&& panelMode == DP_PANEL_MODE_INTERNAL_DP2_MODE) {
-		dpcd_write_reg(hwPin, DP_EDP_CONFIGURATION_SET, 1);
+	// The panel has to be told to use the alternate scrambler seed reset
+	// as well, as in Linux's radeon_dp_set_panel_mode().
+	if (command == ATOM_ENCODER_CMD_SETUP_PANEL_MODE
+		&& connector->type == VIDEO_CONNECTOR_EDP) {
+		TRACE("%s: eDP panel mode %s\n", __func__,
+			panelMode == DP_PANEL_MODE_INTERNAL_DP2_MODE
+				? "internal DP2 (ASSR)" : "external DP");
+		dpcd_reg_write(connectorIndex, DP_EDP_CONFIGURATION_SET,
+			panelMode == DP_PANEL_MODE_INTERNAL_DP2_MODE
+				? DP_EDP_ALTERNATE_SCRAMBLER_RESET_ENABLE : 0);
 	}
-	#endif
 
 	return result;
 }
