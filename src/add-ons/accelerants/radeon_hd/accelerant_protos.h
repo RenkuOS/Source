@@ -24,6 +24,9 @@ void spin(bigtime_t delay);
 
 // general
 status_t radeon_init_accelerant(int fd);
+sem_id radeon_accelerant_retrace_semaphore(void);
+void radeon_retrace_init(void);
+void radeon_retrace_uninit(void);
 void radeon_uninit_accelerant(void);
 status_t radeon_get_accelerant_device_info(accelerant_device_info* di);
 
