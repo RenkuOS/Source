@@ -30,6 +30,7 @@ Job::Job(const char* name)
 	fLaunching(false),
 	fInitStatus(B_NO_INIT),
 	fTeam(-1),
+	fLastLaunchTime(0),
 	fDefaultPort(-1),
 	fToken((uint32)B_PREFERRED_TOKEN),
 	fLaunchStatus(B_NO_INIT),
@@ -50,6 +51,7 @@ Job::Job(const Job& other)
 	fLaunching(other.IsLaunching()),
 	fInitStatus(B_NO_INIT),
 	fTeam(-1),
+	fLastLaunchTime(0),
 	fDefaultPort(-1),
 	fToken((uint32)B_PREFERRED_TOKEN),
 	fLaunchStatus(B_NO_INIT),
@@ -306,6 +308,13 @@ Job::Team() const
 }
 
 
+bigtime_t
+Job::LastLaunchTime() const
+{
+	return fLastLaunchTime;
+}
+
+
 const PortMap&
 Job::Ports() const
 {
@@ -351,6 +360,8 @@ Job::SetDefaultPort(port_id port)
 status_t
 Job::Launch()
 {
+	fLastLaunchTime = system_time();
+
 	// Build environment
 
 	std::vector<const char*> environment;
