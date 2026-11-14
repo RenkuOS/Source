@@ -18,7 +18,7 @@ on:
   workflow_call:
     inputs:
       arches:
-        description: 'Space-separated list of arches to build: x86_64 x86_gcc2h'
+        description: 'Space-separated list of arches to build: x86_64 x86_gcc2h arm64'
         type: string
         default: 'x86_64 x86_gcc2h'
       build_prefix:
@@ -52,23 +52,43 @@ jobs:
           #   packaging  the primary packaging architecture: object directories,
           #              the HaikuPorts definition, and the repository path
           #   secondary  the secondary architecture of a hybrid, or empty
+          #   target     the jam build profile
+          #   image      the file jam writes, and ext the extension of the published one
+          #   apt        the QEMU packages the boot check installs
+          #   banner     seconds the boot check waits for the boot banner
+          #   settle     seconds the guest must then run without failing
+          #
+          # arm64 builds from our own packages (the RenkuOSPorts arm64-packages
+          # release), with --no-downloads. It is Tier 2: a failure does not stop
+          # the other arches from publishing. Emulated arm64 is slower, and
+          # first-boot package processing runs after the banner, so its boot
+          # check gets longer to fail in.
           all='[
             {"arch":"x86_64","packaging":"x86_64","triple":"x86_64-unknown-haiku",
-             "secondary":"","secondary_triple":"","qemu":"qemu-system-x86_64"},
+             "secondary":"","secondary_triple":"",
+             "target":"@nightly-anyboot","image":"*anyboot*.iso","ext":"iso",
+             "qemu":"qemu-system-x86_64","apt":"qemu-system-x86","banner":120,"settle":60},
             {"arch":"x86_gcc2h","packaging":"x86_gcc2","triple":"i586-pc-haiku",
-             "secondary":"x86","secondary_triple":"i586-pc-haiku","qemu":"qemu-system-i386"}
+             "secondary":"x86","secondary_triple":"i586-pc-haiku",
+             "target":"@nightly-anyboot","image":"*anyboot*.iso","ext":"iso",
+             "qemu":"qemu-system-i386","apt":"qemu-system-x86","banner":120,"settle":60},
+            {"arch":"arm64","packaging":"arm64","triple":"aarch64-unknown-haiku",
+             "secondary":"","secondary_triple":"",
+             "target":"@nightly-mmc","image":"haiku-mmc.image","ext":"img.zst",
+             "qemu":"qemu-system-aarch64","apt":"qemu-system-arm qemu-efi-aarch64",
+             "banner":300,"settle":180}
           ]'
           want="$(printf '%s\n' ${ARCHES} | jq -R . | jq -sc .)"
           unknown="$(jq -nc --argjson all "${all}" --argjson want "${want}" \
             '$want - [$all[].arch]')"
           if [ "${unknown}" != "[]" ] || [ "${want}" = "[]" ]; then
-            echo "::error::arches must be one or more of: x86_64 x86_gcc2h (got '${ARCHES}')"
+            echo "::error::arches must be one or more of: x86_64 x86_gcc2h arm64 (got '${ARCHES}')"
             exit 1
           fi
           sel="$(jq -c --argjson want "${want}" \
             '[.[] | select(.arch as $a | $want | index($a))]' <<<"${all}")"
-          echo "build=$(jq -c '{include: [.[] | del(.qemu)]}' <<<"${sel}")" >> "$GITHUB_OUTPUT"
-          echo "boot=$(jq -c '{include: [.[] | {arch, qemu}]}' <<<"${sel}")" >> "$GITHUB_OUTPUT"
+          echo "build=$(jq -c '{include: [.[] | del(.qemu, .apt, .banner, .settle)]}' <<<"${sel}")" >> "$GITHUB_OUTPUT"
+          echo "boot=$(jq -c '{include: [.[] | {arch, qemu, apt, banner, settle}]}' <<<"${sel}")" >> "$GITHUB_OUTPUT"
           echo "arches: $(jq -r '[.[].arch] | join(" ")' <<<"${sel}")"
 
   build:
@@ -107,6 +127,7 @@ jobs:
       # difference. After the first run this removes the dependency on
       # eu.hpkg.haiku-os.org being up.
       - name: Cache dependency packages
+        if: matrix.arch != 'arm64'
         uses: actions/cache@v4
         with:
           path: generated.${{ matrix.arch }}/download
@@ -149,6 +170,36 @@ jobs:
           echo "Build ${BUILD}, revision ${REV}"
           cat build/jam/UserBuildConfig
 
+      # arm64 packages come from our own repository, which keeps only the
+      # newest revision of each package. jam pins exact versions, so the pins
+      # are written from the release, and jam builds with --no-downloads
+      # from the packages put in its download directory. This runs after the
+      # branding, so the revision does not pick up "+dirty".
+      - name: Fetch the arm64 packages
+        if: matrix.arch == 'arm64'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          DL="generated.${{ matrix.arch }}/download"
+          mkdir -p "${DL}" pkgs
+          gh release download arm64-packages --repo RenkuOS/RenkuOSPorts \
+            --pattern 'renkuosports-arm64-repo.tar*' --dir pkgs
+          ( cd pkgs && sha256sum -c renkuosports-arm64-repo.tar.sha256 )
+          tar -xf pkgs/renkuosports-arm64-repo.tar -C pkgs packages
+          mv pkgs/packages/*.hpkg "${DL}/"
+          rm -rf pkgs
+          # --no-downloads also stops jam fetching the MediaTek firmware, and
+          # jam checks its pinned SHA-256 only when it downloads it.
+          FW="$(grep -o 'https://[^ ]*\.tgz' build/jam/packages/MediatekWifiFirmwares | head -1)"
+          SUM="$(grep -oE '[0-9a-f]{64}' build/jam/packages/MediatekWifiFirmwares | head -1)"
+          curl -fsSL --retry 5 -o "${DL}/${FW##*/}" "${FW}"
+          echo "${SUM}  ${DL}/${FW##*/}" | sha256sum -c -
+          .github/scripts/arm64-pins.sh "${DL}" > build/jam/repositories/HaikuPorts/arm64
+          echo "packages: $(ls "${DL}" | grep -c '\.hpkg$')"
+          echo "pins changed from the tree's snapshot:"
+          git diff --stat -- build/jam/repositories/HaikuPorts/arm64
+
       - name: Configure and build
         env:
           IMAGE: ${{ steps.img.outputs.image }}
@@ -157,10 +208,13 @@ jobs:
           TRIPLE: ${{ matrix.triple }}
           SECONDARY: ${{ matrix.secondary }}
           SECONDARY_TRIPLE: ${{ matrix.secondary_triple }}
+          TARGET: ${{ matrix.target }}
+          NO_DOWNLOADS: ${{ matrix.arch == 'arm64' && '--no-downloads' || '' }}
         run: |
           set -euo pipefail
           docker run --rm -v "${PWD}:/src" -w /src \
             -e ARCH -e PACKAGING -e TRIPLE -e SECONDARY -e SECONDARY_TRIPLE \
+            -e TARGET -e NO_DOWNLOADS \
             -e HOME=/tmp -e TERM=dumb \
             -e HAIKU_REVISION -e HAIKU_IMAGE_LABEL -e RENKUOS_BUILD \
             "${IMAGE}" \
@@ -184,8 +238,8 @@ jobs:
                 set -- "$@" --cross-tools-prefix \
                   "/tools/cross-tools-${SECONDARY}/bin/${SECONDARY_TRIPLE}-"
               fi
-              ../configure "$@" --distro-compatibility default
-              jam -q -j"$(nproc)" @nightly-anyboot
+              ../configure "$@" --distro-compatibility default ${NO_DOWNLOADS}
+              jam -q -j"$(nproc)" "${TARGET}"
               # The package repository: repo, repo.info, repo.sha256 and the
               # system hpkgs. This is what pkgman and HaikuDepot would update
               # from, as opposed to the ISO which is for installing. Built as
@@ -201,10 +255,14 @@ jobs:
         id: iso
         run: |
           set -euo pipefail
-          SRC="$(find "generated.${{ matrix.arch }}" -maxdepth 1 -name '*anyboot*.iso' | head -1)"
-          NAME="RenkuOS-${{ matrix.arch }}-${{ steps.brand.outputs.date }}-${{ steps.brand.outputs.build }}.iso"
+          SRC="$(find "generated.${{ matrix.arch }}" -maxdepth 1 -name '${{ matrix.image }}' | head -1)"
+          NAME="RenkuOS-${{ matrix.arch }}-${{ steps.brand.outputs.date }}-${{ steps.brand.outputs.build }}.${{ matrix.ext }}"
           mkdir -p out
-          mv "${SRC}" "out/${NAME}"
+          # The arm64 disk image is mostly empty space, so it ships compressed.
+          case "${NAME}" in
+            *.zst) zstd -q -T0 -10 --rm "${SRC}" -o "out/${NAME}" ;;
+            *) mv "${SRC}" "out/${NAME}" ;;
+          esac
           ( cd out && sha256sum "${NAME}" > "${NAME}.sha256" )
           echo "name=${NAME}" >> "$GITHUB_OUTPUT"
           echo "size=$(du -h "out/${NAME}" | cut -f1)" >> "$GITHUB_OUTPUT"
@@ -279,22 +337,33 @@ jobs:
       - name: Install QEMU
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq qemu-system-x86
+          sudo apt-get install -y -qq ${{ matrix.apt }}
 
       - name: Boot and watch the serial console
         env:
-          BANNER_TIMEOUT: 120
-          SETTLE_SECONDS: 60
+          BANNER_TIMEOUT: ${{ matrix.banner }}
+          SETTLE_SECONDS: ${{ matrix.settle }}
         run: |
           set -uo pipefail
-          ISO="$(find . -maxdepth 2 -name 'RenkuOS-*.iso' | head -1)"
+          ISO="$(find . -maxdepth 2 -name 'RenkuOS-*' ! -name '*.sha256' | head -1)"
           if [ -z "${ISO}" ]; then
             echo "::error::No RenkuOS image in the artifact."; find . -maxdepth 2 -type f | head; exit 1
           fi
           : > serial.log
-          ${{ matrix.qemu }} -machine pc -accel tcg,thread=multi -smp "$(nproc)" \
-            -m 2048 -cdrom "${ISO}" -boot d -display none \
-            -serial file:serial.log -no-reboot &
+          case "${ISO}" in
+            *.img.zst)
+              # The setup that reached the arm64 desktop locally: the EDK2
+              # firmware, a virtio disk, and ramfb for the boot loader.
+              zstd -q -d "${ISO}" -o disk.img
+              ${{ matrix.qemu }} -M virt -cpu max -smp 4 -m 2048 \
+                -bios /usr/share/qemu-efi-aarch64/QEMU_EFI.fd \
+                -drive file=disk.img,format=raw,if=none,id=d0 -device virtio-blk-device,drive=d0 \
+                -device ramfb -display none -serial file:serial.log -no-reboot & ;;
+            *)
+              ${{ matrix.qemu }} -machine pc -accel tcg,thread=multi -smp "$(nproc)" \
+                -m 2048 -cdrom "${ISO}" -boot d -display none \
+                -serial file:serial.log -no-reboot & ;;
+          esac
           QEMU=$!
           # shellcheck disable=SC2064
           trap "kill ${QEMU} 2>/dev/null || true" EXIT

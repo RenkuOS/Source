@@ -39,7 +39,7 @@ jobs:
   image:
     uses: ./.github/workflows/image.yml
     with:
-      arches: 'x86_64 x86_gcc2h'
+      arches: 'x86_64 x86_gcc2h arm64'
       build_prefix: build
 
   publish:
@@ -57,7 +57,7 @@ jobs:
           set -uo pipefail
           mkdir -p staging
           published=""
-          for arch in x86_64 x86_gcc2h; do
+          for arch in x86_64 x86_gcc2h arm64; do
             if gh run download "${{ github.run_id }}" --repo "${{ github.repository }}" \
                  --name "boot-pass-${arch}" --dir "/tmp/pass-${arch}" 2>/dev/null; then
               gh run download "${{ github.run_id }}" --repo "${{ github.repository }}" \
@@ -99,6 +99,10 @@ jobs:
             echo "\`x86_gcc2h\` is the 32-bit image: gcc2 for the system, GCC 13 for x86"
             echo "secondary packages."
             echo ""
+            echo "\`arm64\` is a disk image for QEMU's \`virt\` machine with EDK2 firmware,"
+            echo "built from the RenkuOSPorts arm64 packages. Decompress it with \`zstd -d\`."
+            echo "It is Tier 2: it ships when it boots, and it has no clock driver yet."
+            echo ""
             echo "Every image here booted under emulation without entering the kernel"
             echo "debugger. That is the extent of the automated testing so far — it is"
             echo "not evidence that anything else works."
@@ -124,5 +128,5 @@ jobs:
             echo ""
             echo "https://github.com/${{ github.repository }}/releases/tag/nightly"
             echo ""
-            for f in staging/*.iso; do echo "- \`$(basename "$f")\` ($(du -h "$f" | cut -f1))"; done
+            for f in staging/*.iso staging/*.zst; do [ -e "$f" ] || continue; echo "- \`$(basename "$f")\` ($(du -h "$f" | cut -f1))"; done
           } >> "$GITHUB_STEP_SUMMARY"
