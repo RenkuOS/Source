@@ -111,6 +111,10 @@ arch_debug_console_init(kernel_args *args)
 		sizeof(args->arch_args.uart.kind)) == 0) {
 		sArchDebugUART = arch_get_uart_8250(args->arch_args.uart.regs.start,
 			args->arch_args.uart.clock);
+		if (args->arch_args.uart.reg_io_width != 0) {
+			sArchDebugUART->SetRegisterLayout(args->arch_args.uart.reg_shift,
+				args->arch_args.uart.reg_io_width);
+		}
 	}
 
 	// As a last try, lets assume qemu's pl011 at a sane address

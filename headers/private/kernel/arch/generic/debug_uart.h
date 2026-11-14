@@ -16,9 +16,17 @@
 
 class DebugUART {
 public:
+#if defined(__ARM__) || defined(__aarch64__)
+	static const uint8		kDefaultRegShift = 2;
+#else
+	static const uint8		kDefaultRegShift = 0;
+#endif
+
 							DebugUART(addr_t base, int64 clock)
 								: fBase(base),
 								fClock(clock),
+								fRegShift(kDefaultRegShift),
+								fRegIOWidth(1),
 								fEnabled(true) {};
 							~DebugUART() {};
 
@@ -38,6 +46,10 @@ public:
 			void			SetBase(addr_t base) { fBase = base; }
 			addr_t			Base() const { return fBase; }
 			int64			Clock() const { return fClock; }
+			void			SetRegisterLayout(uint8 regShift,
+								uint8 regIOWidth);
+			uint8			RegShift() const { return fRegShift; }
+			uint8			RegIOWidth() const { return fRegIOWidth; }
 			bool			Enabled() const { return fEnabled; }
 
 protected:
@@ -48,6 +60,8 @@ protected:
 private:
 			addr_t			fBase;
 			int64			fClock;
+			uint8			fRegShift;
+			uint8			fRegIOWidth;
 			bool			fEnabled;
 };
 
