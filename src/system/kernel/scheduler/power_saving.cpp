@@ -212,9 +212,16 @@ pack_irqs()
 		locker.Unlock();
 
 		int32 newCPU = smallTaskCore->CPUHeap()->PeekRoot()->ID();
+		if (newCPU == cpu->cpu_num)
+			return;
 
-		if (newCPU != cpu->cpu_num)
-			assign_io_interrupt_to_cpu(irq->irq, newCPU);
+		assign_io_interrupt_to_cpu(irq->irq, newCPU);
+
+		// The architecture may keep an interrupt where it is (one that
+		// belongs to this CPU, or any when it cannot route them): it is back
+		// in this CPU's list then, and trying again would never end.
+		if (irq->cpu == cpu->cpu_num)
+			return;
 
 		locker.Lock();
 	}
