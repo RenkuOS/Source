@@ -1,0 +1,18 @@
+SubDir HAIKU_TOP src tests kits interface look ;
+
+UsePrivateHeaders interface ;
+
+SimpleTest LookTest :
+	Look.cpp
+	: be tracker libcolumnlistview.a [ TargetLibsupc++ ]
+	;	
+
+SimpleTest ControlLookSwitchTest :
+	ControlLookSwitch.cpp
+	: be [ TargetLibsupc++ ]
+	;
+
+SimpleTest SystemFontSwitchTest :
+	SystemFontSwitch.cpp
+	: be [ TargetLibsupc++ ]
+	;

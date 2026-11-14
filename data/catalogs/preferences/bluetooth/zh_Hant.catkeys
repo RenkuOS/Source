@@ -1,0 +1,44 @@
+1	english	x-vnd.Haiku-BluetoothPrefs	305903693
+Laptop	Settings view		筆記型電腦
+Only from trusted devices	Settings view		僅來自受信任的設備
+15 secs	Settings view		15 秒
+Quit	main		退出
+Manufacturer: 	Device View		製造商:
+Desktop	Settings view		桌面
+Server	Window		伺服器
+Identify host as:	Settings view		將主機識別為:
+Local devices found on system:	Settings view		在系統上找到的本機設備:
+Service classes: 	Device View		服務等級:
+Remote devices	Window		遠端設備
+Settings	Window		設定
+Stop bluetooth services…	Window		停止藍牙服務…
+61 secs	Settings view		61 秒
+Add…	Remote devices		添加…
+Revert	Window		恢復
+Refresh local devices…	Window		刷新本地設備
+Disconnect	Remote devices		斷開連接
+Defaults	Window		默認值
+From all devices	Settings view		從所有設備
+Start bluetooth services…	Window		啟動藍牙服務…
+Launch now	main		立即啟動
+Bluetooth	System name		蓝牙
+Remove	Remote devices		移除
+Pick device…	Settings view		拾取裝置…
+Always ask	Settings view		總是詢問
+With support of:\n - Mika Lindqvist\n - Adrien Destugues\n - Maksym Yevmenkin\n\nThanks to the individuals who helped…\n\nShipping/donating hardware:\n - Henry Jair Abril Florez (el Colombian)\n\t& Stefanie Bartolich\n - Edwin Erik Amsler\n - Dennis d'Entremont\n - Luroh\n - Pieter Panman\n\nEconomically:\n - Karl vom Dorff, Andrea Bernardi (OSDrawer),\n - Matt M, Doug F, Hubert H,\n - Sebastian B, Andrew M, Jared E,\n - Frederik H, Tom S, Ferry B,\n - Greg G, David F, Richard S, Martin W:\n\nWith patches:\n - Michael Weirauch\n - Fredrik Ekdahl\n - Raynald Lesieur\n - Andreas Färber\n - Joerg Meyer\nTesting:\n - Petter H. Juliussen\nWho gave me all the knowledge:\n - the yellowTAB team	main		支援人員：\n- Mika Lindqvist\n- Adrien Destugues\n- Maksym Yevmenkin\n\n感謝那些提供幫助的人...\n\n運輸/捐贈硬體：\n- Henry Jair Abril Florez（el Colombian）\n\t& Stefanie Bartolich\n- Edwin Erik Amsler\n- Dennis d'Entremont\n- Luroh\n- Pieter Panman\n\n經濟方面：\n- Karl vom Dorff, Andrea Bernardi (OSDrawer),\n- Matt M, Doug F, Hubert H,\n- Sebastian B, Andrew M, Jared E,\n- Frederik H, Tom S, Ferry B,\n- Greg G, David F, Richard S, Martin W:\n\n補丁支援：\n- Michael Weirauch\n- Fredrik Ekdahl\n- Raynald Lesieur\n- Andreas Färber\n- Joerg Meyer\n測試：\n- Petter H. Juliussen\n提供給我所有知識：\n- the yellowTAB team
+Help	Window		幫助
+Pair…	Remote devices		配對…
+Incoming connections policy:	Settings view		傳入連線策略:
+Retrieving names…	Inquiry panel		檢索名稱…
+Show name	Extended local device view		顯示名稱
+Add device to list	Inquiry panel		將設備新增至列表
+The Bluetooth services are not currently running on this system.	main		藍牙服務目前未在此系統上運作。
+Discoverable	Extended local device view		可發現的
+Authenticate	Extended local device view		認證
+Smart phone	Settings view		智慧型手機
+Default inquiry time:	Settings view		默認査詢時間：
+Server	Settings view		伺服器
+Handheld	Settings view		手持式
+ packets: 	Device View		數據包:
+About Bluetooth…	Window		關於藍牙…
+Starting scan…	Inquiry panel		開始掃描…

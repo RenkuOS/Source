@@ -1,0 +1,71 @@
+1	polish	x-vnd.Haiku-Devices	1374585159
+ACPI bus	DevicesView		Magistrala ACPI
+USB bus	DevicesView		Szyna USB
+Class info	DevicePCI		Informacja klasy
+USB bus	Device		Szyna USB
+Communications	DeviceSCSI		Komunikacja
+Mass storage controller	Device		Kontroler pamięci masowej
+Printer	DeviceSCSI		Drukarka
+Manufacturer	Device		Producent
+Memory controller	Device		Kontroler pamięci
+Unknown device	DevicesView		Nieznane urządzenie
+Name	PropertyList		Nazwa
+Manufacturer	DeviceSCSI		Producent
+Satellite communications controller	Device		Kontroler komunikacji satelitarnej
+PCI bus	DevicesView		Magistrala PCI
+Device	Device		Urządzenie
+Changer	DeviceSCSI		Zmieniarka
+Category	DevicesView		Kategoria
+Refresh devices	DevicesView		Odśwież urządzenia
+Device paths	Device		Ścieżki urządzeń
+Unknown device	Device		Nieznane urządzenie
+Value	PropertyList		Wartość
+Generic system peripheral	Device		Generyczne urządzenie peryferyjne
+Devices	DevicesView		Urządzenia
+Display controller	Device		Kontroler ekranu
+Device name	DevicePCI		Nazwa urządzenia
+Other	DeviceSCSI		Inne
+Order by:	DevicesView		Sortuj według:
+Intelligent controller	Device		Kontroler inteligentny
+Multimedia controller	Device		Kontroler multimediów
+Quit	DevicesView		Zakończ
+Processor	DeviceSCSI		Procesor
+Bridge	Device		Mostek
+Worm	DeviceSCSI		Worm
+CD-ROM	DeviceSCSI		CD-ROM
+Signal processing controller	Device		Kontroler przetwarzania sygnałów
+Docking station	Device		Stacja dokująca
+Unclassified device	Device		Niesklasyfikowane urządzenie
+ACPI controller	Device		Kontroler ACPI
+ACPI bus	Device		Magistrala ACPI
+Encryption controller	Device		Kontroler szyfrowania
+Devices	System name		Urządzenia
+Generate system information	DevicesView		Wygeneruj informacje systemowe
+Processor	Device		Procesor
+Computer	DevicesView		Komputer
+Connection	DevicesView		Połączenie
+Scanner	DeviceSCSI		Skaner
+ACPI node '%1'	DeviceACPI		Węzeł ACPI „%1”
+Device name	Device		Nazwa urządzenia
+Device class	DeviceSCSI		Klasa urządzenia
+Input device controller	Device		Kontroler urządzenia wejścia
+Serial bus controller	Device		Kontroler magistrali szeregowej
+RBC	DeviceSCSI		RBC
+Wireless controller	Device		Kontroler łączy bezprzewodowych
+Device name	DeviceACPI		Nazwa urządzenia
+ACPI <unknown>	DeviceACPI		ACPI <nieznany>
+Report compatibility	DevicesView		Raport zgodności
+Computer	Device		Komputer
+Enclosure	DeviceSCSI		Załącznik
+PCI bus	Device		Magistrala PCI
+ISA bus	Device		Magistrala ISA
+ISA bus	DevicesView		Magistrala ISA
+Manufacturer	DevicePCI		Producent
+Bridge	DeviceSCSI		Mostek
+Device name	DeviceSCSI		Nazwa urządzenia
+Array	DeviceSCSI		Macierz
+Manufacturer	DeviceACPI		Producent
+Network controller	Device		Kontroler sieci
+Driver used	Device		Użyty sterownik
+Communication controller	Device		Kontroler komunikacji
+unknown	Device		nieznane

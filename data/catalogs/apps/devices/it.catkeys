@@ -1,0 +1,88 @@
+1	italian	x-vnd.Haiku-Devices	757947742
+ACPI bus	DevicesView		Bus ACPI
+USB bus	DevicesView		Bus USB
+Class info	DevicePCI		Informazioni sulla classe
+USB bus	Device		Bus USB
+Communications	DeviceSCSI		Comunicazioni
+Mass storage controller	Device		Controller memorie di massa
+Printer	DeviceSCSI		Stampante
+Enable driver	DevicesView		Abilita driver
+Manufacturer	Device		Produttore
+Memory controller	Device		Controller della memoria
+Unknown device	DevicesView		Dispositivo sconosciuto
+Name	PropertyList		Nome
+Manufacturer	DeviceSCSI		Produttore
+unknown	DeviceACPI		sconosciuto
+Satellite communications controller	Device		Controller comunicazioni satellitari
+OK	DevicesView		OK
+PCI bus	DevicesView		Bus PCI
+Device	Device		Dispositivo
+Changer	DeviceSCSI		Modificatore
+Category	DevicesView		Categoria
+Refresh devices	DevicesView		Aggiorna dispositivi
+Device paths	Device		Percorsi del dispositivo
+Unknown device	Device		Dispositivo sconosciuto
+Value	PropertyList		Valore
+Generic system peripheral	Device		Periferica generica di sistema
+Devices	DevicesView		Dispositivi
+Optical drive	DeviceSCSI		Unità ottica
+Display controller	Device		Controller schermo
+Bus	DevicesView		Bus
+Device name	DevicePCI		Nome del dispositivo
+Other	DeviceSCSI		Altro
+Order by:	DevicesView		Ordina per:
+Intelligent controller	Device		Controller intelligente
+Multimedia controller	Device		Controller multimediale
+Quit	DevicesView		Esci
+Processor	DeviceSCSI		Processore
+Card reader	DeviceSCSI		Lettore di schede
+Bridge	Device		Interfaccia
+Attributes	PropertyList		Attributi
+Worm	DeviceSCSI		Worm
+CD-ROM	DeviceSCSI		CD-ROM
+ACPI system bus	DeviceACPI		Bus di sistema ACPI
+Signal processing controller	Device		Controller elaborazione segnali
+Docking station	Device		Docking station
+Unclassified device	Device		Dispositivo non classificato
+Error	DevicesView		Errore
+ACPI controller	Device		Controller ACPI
+ACPI bus	Device		Bus ACPI
+Encryption controller	Device		Controller di cifratura
+Devices	System name		Dispositivi
+Generate system information	DevicesView		Genera informazioni di sistema
+Processor	Device		Processore
+Disable driver	DevicesView		Disabilita driver
+Reboot needed	DevicesView		È necessario il riavvio
+Computer	DevicesView		Computer
+ACPI thermal zone	DeviceACPI		Zona termica ACPI
+Connection	DevicesView		Connessione
+Failed to write to the settings file.	DevicesView		Scrittura sul file di impostazioni fallita.
+Scanner	DeviceSCSI		Scanner
+ACPI node '%1'	DeviceACPI		Nodo ACPI '%1'
+Device name	Device		Nome del dispositivo
+Device class	DeviceSCSI		Classe dispositivo
+Input device controller	Device		Controller dispositivi di ingresso
+Restart computer	DevicesView		Riavvia il computer
+Serial bus controller	Device		Controller bus seriale
+RBC	DeviceSCSI		RBC
+Wireless controller	Device		Controller dispositivi wireless
+Device name	DeviceACPI		Nome del dispositivo
+unknown	DevicePCI		sconosciuto
+ACPI <unknown>	DeviceACPI		ACPI <sconosciuto>
+Report compatibility	DevicesView		Segnala compatibilità
+Computer	Device		Computer
+Tape drive	DeviceSCSI		Unità a nastro
+Enclosure	DeviceSCSI		Allegato
+PCI bus	Device		Bus PCI
+ISA bus	Device		Bus ISA
+ISA bus	DevicesView		Bus ISA
+Disk drive	DeviceSCSI		Unità disco
+Manufacturer	DevicePCI		Produttore
+Bridge	DeviceSCSI		Interfaccia
+Device name	DeviceSCSI		Nome del dispositivo
+Array	DeviceSCSI		Serie
+Manufacturer	DeviceACPI		Produttore
+Network controller	Device		Controller di rete
+Driver used	Device		Driver usato
+Communication controller	Device		Controller di comunicazione
+unknown	Device		sconosciuto

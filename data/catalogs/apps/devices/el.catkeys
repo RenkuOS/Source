@@ -1,0 +1,71 @@
+1	greek, modern (1453-)	x-vnd.Haiku-Devices	1374585159
+ACPI bus	DevicesView		Δίαυλος ACPI
+USB bus	DevicesView		Θύρα USB
+Class info	DevicePCI		Πληροφορίες κατηγορίας
+USB bus	Device		Θύρα USB
+Communications	DeviceSCSI		Επικοινωνίες
+Mass storage controller	Device		Ελεγκτής μαζικής αποθήκευσης
+Printer	DeviceSCSI		Εκτυπωτής
+Manufacturer	Device		Κατασκευαστής
+Memory controller	Device		Ελεγκτής μνήμης
+Unknown device	DevicesView		Άγνωστη συσκευή
+Name	PropertyList		Όνομα
+Manufacturer	DeviceSCSI		Κατασκευαστής
+Satellite communications controller	Device		Ελεγκτής επικοινωνιών δορυφόρου
+PCI bus	DevicesView		Δίαυλος PCI
+Device	Device		Συσκευή
+Changer	DeviceSCSI		Αλλαγή
+Category	DevicesView		Κατηγορία
+Refresh devices	DevicesView		Ανανέωση συσκευών
+Device paths	Device		Διαδρομές συσκευών
+Unknown device	Device		Άγνωστη συσκευή
+Value	PropertyList		Τιμή
+Generic system peripheral	Device		Τυπική περιφερειακή συσκευή συστήματος
+Devices	DevicesView		Συσκευές
+Display controller	Device		Ελεγκτής γραφικών
+Device name	DevicePCI		Όνομα συσκευής
+Other	DeviceSCSI		Άλλο
+Order by:	DevicesView		Κατανομή κατά:
+Intelligent controller	Device		Έξυπνος ελεγκτής
+Multimedia controller	Device		Ελεγκτής πολυμέσων
+Quit	DevicesView		Έξοδος
+Processor	DeviceSCSI		Επεξεργαστής
+Bridge	Device		Γέφυρα
+Worm	DeviceSCSI		Σκώληκας
+CD-ROM	DeviceSCSI		CD-ROM
+Signal processing controller	Device		Ελεγκτής επεξεργασίας σημάτων
+Docking station	Device		Σταθμός σύνδεσης
+Unclassified device	Device		Απροσδιόριστη συσκευή
+ACPI controller	Device		Ελεγκτής ACPI
+ACPI bus	Device		Δίαυλος ACPI
+Encryption controller	Device		Ελεγκτής κρυπτογράφησης
+Devices	System name		Συσκευές
+Generate system information	DevicesView		Πληροφορίες συστήματος
+Processor	Device		Επεξεργαστής
+Computer	DevicesView		Υπολογιστής
+Connection	DevicesView		Σύνδεση
+Scanner	DeviceSCSI		Σαρωτής
+ACPI node '%1'	DeviceACPI		Μονάδα ACPI '%1'
+Device name	Device		Όνομα συσκευής
+Device class	DeviceSCSI		Κατηγορία συσκευής
+Input device controller	Device		Ελεγκτής εισαγώμενης συσκευής
+Serial bus controller	Device		Ελεγκτής σειριακού διαύλου
+RBC	DeviceSCSI		RBC
+Wireless controller	Device		Ελεγκτής ασύρματων τηλεπικοινωνιών
+Device name	DeviceACPI		Όνομα συσκευής
+ACPI <unknown>	DeviceACPI		ACPI <άγνωστο>
+Report compatibility	DevicesView		Αναφορά συμβατότητας
+Computer	Device		Υπολογιστής
+Enclosure	DeviceSCSI		Περίβλημα δίσκου
+PCI bus	Device		Δίαυλος PCI
+ISA bus	Device		Δίαυλος ISA
+ISA bus	DevicesView		Δίαυλος ISA
+Manufacturer	DevicePCI		Κατασκευαστής
+Bridge	DeviceSCSI		Γέφυρα
+Device name	DeviceSCSI		Όνομα συσκευής
+Array	DeviceSCSI		Συστοιχία δίσκων
+Manufacturer	DeviceACPI		Κατασκευαστής
+Network controller	Device		Ελεγκτής δικτύου
+Driver used	Device		Χρησιμοποιημένος οδηγός
+Communication controller	Device		Ελεγκτής επικοινωνιών
+unknown	Device		άγνωστο

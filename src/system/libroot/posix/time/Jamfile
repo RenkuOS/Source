@@ -1,0 +1,38 @@
+SubDir HAIKU_TOP src system libroot posix time ;
+
+UsePrivateHeaders
+	libroot
+	[ FDirName libroot locale ]
+	[ FDirName libroot time ]
+	shared
+	;
+SubDirSysHdrs [ FDirName $(SUBDIR) .. musl include ] ;
+SubDirHdrs [ FDirName $(SUBDIR) .. musl time ] ;
+
+
+local architectureObject ;
+for architectureObject in [ MultiArchSubDirSetup ] {
+	on $(architectureObject) {
+		local architecture = $(TARGET_PACKAGING_ARCH) ;
+		local ccFlags = ;
+		if $(HAIKU_CC_IS_LEGACY_GCC_$(architecture)) != 1 {
+			ccFlags += -Wno-error=incompatible-pointer-types ;
+		}
+		SubDirCcFlags $(ccFlags) ;
+
+		UsePrivateSystemHeaders ;
+
+		MergeObject <$(architecture)>posix_time.o :
+			clock.cpp
+			clock_support.cpp
+			ctime.c
+			localtime.cpp
+			localtime_fallback.c
+			nanosleep.c
+			stime.c
+			time.c
+			timer_support.cpp
+			timespec_get.cpp
+			;
+	}
+}

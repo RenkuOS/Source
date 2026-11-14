@@ -1,0 +1,71 @@
+1	romanian	x-vnd.Haiku-Devices	1374585159
+ACPI bus	DevicesView		Magistrală ACPI
+USB bus	DevicesView		Magistrală USB
+Class info	DevicePCI		Informații clasă
+USB bus	Device		Magistrală USB
+Communications	DeviceSCSI		Comunicații
+Mass storage controller	Device		Controlor de stocare în masă
+Printer	DeviceSCSI		Imprimantă
+Manufacturer	Device		Producător
+Memory controller	Device		Controlor de memorie
+Unknown device	DevicesView		Dispozitiv necunoscut
+Name	PropertyList		Nume
+Manufacturer	DeviceSCSI		Producător
+Satellite communications controller	Device		Controlor de comunicații prin satelit
+PCI bus	DevicesView		Magistrală PCI
+Device	Device		Dispozitiv
+Changer	DeviceSCSI		Schimbător
+Category	DevicesView		Categorie
+Refresh devices	DevicesView		Reîmprospătează dispozitivele
+Device paths	Device		Căi de dispozitiv
+Unknown device	Device		Dispozitiv necunoscut
+Value	PropertyList		Valoare
+Generic system peripheral	Device		Periferice generice de sistem
+Devices	DevicesView		Dispozitive
+Display controller	Device		Controlor de afișaj
+Device name	DevicePCI		Nume dispozitiv
+Other	DeviceSCSI		Altele
+Order by:	DevicesView		Ordonare după:
+Intelligent controller	Device		Controlor inteligent
+Multimedia controller	Device		Controlor multimedia
+Quit	DevicesView		Ieșire
+Processor	DeviceSCSI		Procesor
+Bridge	Device		Punte
+Worm	DeviceSCSI		Vierme
+CD-ROM	DeviceSCSI		CD-ROM
+Signal processing controller	Device		Controlor de procesare a semnalului
+Docking station	Device		Stație de andocare
+Unclassified device	Device		Dispozitiv neclasificat
+ACPI controller	Device		Controlor ACPI
+ACPI bus	Device		Magistrală ACPI
+Encryption controller	Device		Controlor de criptare
+Devices	System name		Dispozitive
+Generate system information	DevicesView		Generează informațiile de sistem
+Processor	Device		Procesor
+Computer	DevicesView		Calculator
+Connection	DevicesView		Conexiune
+Scanner	DeviceSCSI		Scanner
+ACPI node '%1'	DeviceACPI		Nod ACPI „%1”
+Device name	Device		Nume dispozitiv
+Device class	DeviceSCSI		Clasă de dispozitive
+Input device controller	Device		Controlor de dispozitiv de intrare
+Serial bus controller	Device		Controlor de magistrală serială
+RBC	DeviceSCSI		RBC
+Wireless controller	Device		Controlor fără fir
+Device name	DeviceACPI		Nume dispozitiv
+ACPI <unknown>	DeviceACPI		ACPI <unknown>
+Report compatibility	DevicesView		Raportează compatibilitatea
+Computer	Device		Calculator
+Enclosure	DeviceSCSI		Incintă
+PCI bus	Device		Magistrală PCI
+ISA bus	Device		Magistrală ISA
+ISA bus	DevicesView		Magistrală ISA
+Manufacturer	DevicePCI		Producător
+Bridge	DeviceSCSI		Punte
+Device name	DeviceSCSI		Nume dispozitiv
+Array	DeviceSCSI		Vector
+Manufacturer	DeviceACPI		Producător
+Network controller	Device		Controlor de rețea
+Driver used	Device		Driver utilizat
+Communication controller	Device		Controlor de comunicație
+unknown	Device		necunoscut
