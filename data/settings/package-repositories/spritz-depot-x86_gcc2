@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: MIT
+#
+# Spritz Depot, a third-party catalog of Haiku applications. It is configured
+# by default so that community packages can be found without hunting for a
+# repository URL; see RenkuOS/Source#95.
+#
+# The file is named after the repository's own name in its repo.info, which is
+# what "pkgman add-repo" would create, so re-adding it replaces this file
+# rather than duplicating it. The identifier must match the one in repo.info.
+#
+# The repository itself announces priority 1. It is lowered to 2 here, so a
+# package that Renku or HaikuPorts also provides is always taken from them:
+# Spritz adds packages, it never replaces system or HaikuPorts ones.
+
+cfgversion=2
+
+baseurl=https://spritzdepot.desktoponfire.com/repo/x86_gcc2/current
+
+identifier=1c1767e1-329e-43bd-9a05-bc8afe9719b9
+
+# a deprecated copy of the [identifier] key above for older os versions
+url=1c1767e1-329e-43bd-9a05-bc8afe9719b9
+
+priority=2

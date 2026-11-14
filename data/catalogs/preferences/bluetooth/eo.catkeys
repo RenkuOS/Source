@@ -1,0 +1,44 @@
+1	esperanto	x-vnd.Haiku-BluetoothPrefs	305903693
+Laptop	Settings view		Tekkomputilo
+Only from trusted devices	Settings view		Nur de fideblaj aparatoj
+15 secs	Settings view		15 sekundoj
+Quit	main		Ĉesi
+Manufacturer: 	Device View		Fabrikanto: 
+Desktop	Settings view		Labortabla
+Server	Window		Servilo
+Identify host as:	Settings view		Identigi la gastigon kiel:
+Local devices found on system:	Settings view		Lokaj aparatoj trovitaj en la sistemo:
+Service classes: 	Device View		Servaj klasoj: 
+Remote devices	Window		Foraj aparatoj
+Settings	Window		Agordo
+Stop bluetooth services…	Window		Ĉesigi servilojn de Bludento…
+61 secs	Settings view		61 sekundoj
+Add…	Remote devices		Aldoni…
+Revert	Window		Malfari
+Refresh local devices…	Window		Aktualigi lokajn aparatojn…
+Disconnect	Remote devices		Malkonekti
+Defaults	Window		Defaŭltoj
+From all devices	Settings view		De ĉiuj aparatoj
+Start bluetooth services…	Window		Ekruli servilojn de Bludento…
+Launch now	main		Ekruli nun
+Bluetooth	System name		Bludento
+Remove	Remote devices		Forigi
+Pick device…	Settings view		Elekti aparaton…
+Always ask	Settings view		Ĉiam demandi
+With support of:\n - Mika Lindqvist\n - Adrien Destugues\n - Maksym Yevmenkin\n\nThanks to the individuals who helped…\n\nShipping/donating hardware:\n - Henry Jair Abril Florez (el Colombian)\n\t& Stefanie Bartolich\n - Edwin Erik Amsler\n - Dennis d'Entremont\n - Luroh\n - Pieter Panman\n\nEconomically:\n - Karl vom Dorff, Andrea Bernardi (OSDrawer),\n - Matt M, Doug F, Hubert H,\n - Sebastian B, Andrew M, Jared E,\n - Frederik H, Tom S, Ferry B,\n - Greg G, David F, Richard S, Martin W:\n\nWith patches:\n - Michael Weirauch\n - Fredrik Ekdahl\n - Raynald Lesieur\n - Andreas Färber\n - Joerg Meyer\nTesting:\n - Petter H. Juliussen\nWho gave me all the knowledge:\n - the yellowTAB team	main		Per asisto de:\n- Mika Lindqvist\n- Adrien Destugues\n- Maksym Yevmenkin\n\nDankon al ĉiuj, kiuj helpis…\n\nSendado/Donacado de aparataron:\n- Henry Jair Abril Florez (el Colombian)\n\t& Stefanie Bartolich\n- Edwin Erik Amsler\n- Dennis d'Entremont\n- Luroh\n- Pieter Panman\n\nEkonomie:\n- Karl vom Dorff, Andrea Bernardi (OSDrawer),\n- Matt M, Doug F, Hubert H,\n- Sebastian B, Andrew M, Jared E,\n- Frederik H, Tom S, Ferry B,\n- Greg G, David F, Richard S, Martin W:\n\nPer flikaĵoj:\n- Michael Weirauch\n- Fredrik Ekdahl\n- Raynald Lesieur\n- Andreas Färber\n- Joerg Meyer\nPer testado:\n- Petter H. Juliussen\nKiu la tutan scion donis al mi:\n- la yellowTAB teamo
+Help	Window		Helpo
+Pair…	Remote devices		Pariĝi…
+Incoming connections policy:	Settings view		Reĝimo de envenaj konektoj:
+Retrieving names…	Inquiry panel		Ricevado de nomoj…
+Show name	Extended local device view		Montri nomon
+Add device to list	Inquiry panel		Aldoni aparaton al listo
+The Bluetooth services are not currently running on this system.	main		La Bludentaj serviloj nun ne rulas en ĉi sistemo.
+Discoverable	Extended local device view		Trovebla
+Authenticate	Extended local device view		Aŭtentigi
+Smart phone	Settings view		Saĝtelefono
+Default inquiry time:	Settings view		Defaŭlta informmenda periodo:
+Server	Settings view		Servilo
+Handheld	Settings view		Poŝkomputilo
+ packets: 	Device View		 paketoj: 
+About Bluetooth…	Window		Pri la Bludendo…
+Starting scan…	Inquiry panel		Komencas skanadon…

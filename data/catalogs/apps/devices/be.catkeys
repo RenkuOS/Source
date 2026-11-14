@@ -1,0 +1,67 @@
+1	belarusian	x-vnd.Haiku-Devices	1509979255
+ACPI bus	DevicesView		Шына ACPI
+Class info	DevicePCI		Інфа класа
+Communications	DeviceSCSI		Камунікацыі
+Mass storage controller	Device		Кантролер прылад захавання даных
+Printer	DeviceSCSI		Друкарка
+Manufacturer	Device		Вытворца
+Memory controller	Device		Кантролер памяці
+Unknown device	DevicesView		Невядомая прылада
+Name	PropertyList		Імя
+Manufacturer	DeviceSCSI		Вытворца
+Satellite communications controller	Device		Кантролер спадарожнікавай сувязі
+PCI bus	DevicesView		Шына PCI
+Device	Device		Прылада
+Changer	DeviceSCSI		Чэйнджэр
+Category	DevicesView		Катэгорыя
+Refresh devices	DevicesView		Абнавіць прылады
+Device paths	Device		Пуці прыладаў
+Unknown device	Device		Невядомая прылада
+Value	PropertyList		Велічыня
+Generic system peripheral	Device		Агульная перыферыя
+Devices	DevicesView		Прылады
+Display controller	Device		Кантролер экрану
+Device name	DevicePCI		Імя прылады
+Other	DeviceSCSI		Іншы(я)
+Order by:	DevicesView		Парадкаваць па:
+Intelligent controller	Device		Інтэлектуальны кантролер
+Multimedia controller	Device		Кантролер мультымедыя
+Quit	DevicesView		Выйсці
+Processor	DeviceSCSI		Працэсар
+Bridge	Device		Мост
+Worm	DeviceSCSI		Ворм
+CD-ROM	DeviceSCSI		CD-ROM
+Signal processing controller	Device		Кантролер апрацоўкі сігналаў
+Docking station	Device		Док-станцыя
+Unclassified device	Device		Невызначаная прылада
+ACPI controller	Device		Кантролер ACPI
+ACPI bus	Device		Шына ACPI
+Encryption controller	Device		Кантролер шыфравання
+Devices	System name		Прылады
+Generate system information	DevicesView		Сабраць інфармацыю аб сістэме
+Processor	Device		Працэсар
+Computer	DevicesView		Кампутар
+Connection	DevicesView		Спалучэнне
+Scanner	DeviceSCSI		Сканэр
+ACPI node '%1'	DeviceACPI		Вузел ACPI '%1'
+Device name	Device		Імя прылады
+Device class	DeviceSCSI		Клас прылады
+Input device controller	Device		Кантролер прылад уводу
+Serial bus controller	Device		Кантролер серыйнай шыны
+RBC	DeviceSCSI		RBC
+Wireless controller	Device		Бесшнуравы кантролер
+Device name	DeviceACPI		Імя прылады
+Report compatibility	DevicesView		Паведаміць аб сумяшчальнасці
+Computer	Device		Кампутар
+Enclosure	DeviceSCSI		Уключэнне
+PCI bus	Device		Шына PCI
+ISA bus	Device		Шына ISA
+ISA bus	DevicesView		Шына ISA
+Manufacturer	DevicePCI		Вытворца
+Bridge	DeviceSCSI		Мост
+Device name	DeviceSCSI		Імя прылады
+Array	DeviceSCSI		Массыў
+Network controller	Device		Сеткавы кантролер
+Driver used	Device		Ужыты драйвер
+Communication controller	Device		Кантролер камунікацый
+unknown	Device		невядома

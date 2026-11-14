@@ -1,0 +1,132 @@
+# Nightly images, published where anyone can download them.
+#
+# A TRUSTED workflow: schedule and manual dispatch only. It must never gain a
+# pull_request trigger — it holds contents: write and publishes releases, so a
+# fork must not be able to reach it. See ci-design.md 2.
+#
+# Deliberately does NOT run a stress suite yet. The boot check is the whole
+# verification here, and defining the stress suite is a separate exercise.
+name: nightly
+
+on:
+  schedule:
+    # 05:00 UTC daily. GitHub delays scheduled runs under load, and disables
+    # schedules on repos with no activity for 60 days — neither matters yet.
+    - cron: '0 5 * * *'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish to the nightly release (uncheck for a dry run)'
+        type: boolean
+        default: true
+
+permissions:
+  # contents: write to create and update the release.
+  # actions: read because the publish job downloads this run's artifacts via
+  # the Actions API. Declaring `permissions` at all replaces the default set,
+  # so anything omitted here is 'none' -- and the publish job would 403.
+  contents: write
+  actions: read
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+jobs:
+  # Build and boot-check the images. The jobs live in image.yml, shared with
+  # test-build.yml. Their artifacts land in this run, so publish downloads
+  # them by name as before.
+  image:
+    uses: ./.github/workflows/image.yml
+    with:
+      arches: 'x86_64 x86_gcc2h arm64'
+      build_prefix: build
+
+  publish:
+    name: publish
+    needs: image
+    # Runs even if one arch failed, so a good arch still ships.
+    if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || inputs.publish) }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Collect images that booted
+        id: collect
+        run: |
+          set -uo pipefail
+          mkdir -p staging
+          published=""
+          for arch in x86_64 x86_gcc2h arm64; do
+            if gh run download "${{ github.run_id }}" --repo "${{ github.repository }}" \
+                 --name "boot-pass-${arch}" --dir "/tmp/pass-${arch}" 2>/dev/null; then
+              gh run download "${{ github.run_id }}" --repo "${{ github.repository }}" \
+                 --name "image-${arch}" --dir "staging" 2>/dev/null || continue
+              published="${published} ${arch}"
+              echo "including ${arch}"
+            else
+              echo "::warning::${arch} did not pass the boot check; not publishing it."
+            fi
+          done
+          echo "arches=${published# }" >> "$GITHUB_OUTPUT"
+          ls -la staging || true
+          [ -n "$(ls -A staging 2>/dev/null)" ] || { echo "::error::Nothing passed; no release."; exit 1; }
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # A single rolling tag, so there is one obvious place to get the latest
+      # image. Old assets are removed first: filenames carry the date and build
+      # number, so uploading without clearing would accumulate for ever.
+      - name: Publish the nightly release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          SHA="$(git rev-parse --short=7 HEAD)"
+          BUILD="build$(printf '%05d' "${{ github.run_number }}")"
+
+          {
+            echo "Automated nightly build. **Not a release** — expect breakage."
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Build | \`${BUILD}\` |"
+            echo "| Revision | \`${BUILD}-g${SHA}\` |"
+            echo "| Commit | ${{ github.sha }} |"
+            echo "| Architectures | ${{ steps.collect.outputs.arches }} |"
+            echo "| Built | $(date -u '+%Y-%m-%d %H:%M UTC') |"
+            echo ""
+            echo "\`x86_gcc2h\` is the 32-bit image: gcc2 for the system, GCC 13 for x86"
+            echo "secondary packages."
+            echo ""
+            echo "\`arm64\` is a disk image for QEMU's \`virt\` machine with EDK2 firmware,"
+            echo "built from the RenkuOSPorts arm64 packages. Decompress it with \`zstd -d\`."
+            echo "It is Tier 2: it ships when it boots, and it has no clock driver yet."
+            echo ""
+            echo "Every image here booted under emulation without entering the kernel"
+            echo "debugger. That is the extent of the automated testing so far — it is"
+            echo "not evidence that anything else works."
+            echo ""
+            echo "Verify a download with the matching \`.sha256\` file."
+          } > notes.md
+
+          if gh release view nightly --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            for a in $(gh release view nightly --repo "${{ github.repository }}" \
+                        --json assets --jq '.assets[].name'); do
+              gh release delete-asset nightly "${a}" --repo "${{ github.repository }}" --yes
+            done
+            gh release edit nightly --repo "${{ github.repository }}" \
+              --notes-file notes.md --title "Nightly ${BUILD}" --prerelease
+          else
+            gh release create nightly --repo "${{ github.repository }}" \
+              --notes-file notes.md --title "Nightly ${BUILD}" --prerelease --latest=false
+          fi
+          gh release upload nightly staging/* --repo "${{ github.repository }}" --clobber
+
+          {
+            echo "### Published"
+            echo ""
+            echo "https://github.com/${{ github.repository }}/releases/tag/nightly"
+            echo ""
+            for f in staging/*.iso staging/*.zst; do [ -e "$f" ] || continue; echo "- \`$(basename "$f")\` ($(du -h "$f" | cut -f1))"; done
+          } >> "$GITHUB_STEP_SUMMARY"

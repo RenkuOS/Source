@@ -1,0 +1,43 @@
+SubDir HAIKU_TOP src kits midi ;
+
+UsePrivateHeaders midi ;
+
+
+local architectureObject ;
+for architectureObject in [ MultiArchSubDirSetup ] {
+	on $(architectureObject) {
+		# Without fluidlite, SoftSynth builds against FluidliteStub.h and the
+		# library has no synth. The rest of the Midi Kit still works.
+		local synthLibraries ;
+		if [ FIsBuildFeatureEnabled fluidlite ] {
+			SubDirC++Flags -DFLUIDLITE_ENABLED ;
+			UseBuildFeatureHeaders fluidlite ;
+			Includes [ FGristFiles MidiSynth.cpp MidiSynthFile.cpp
+				SoftSynth.cpp Synth.cpp ]
+				: [ BuildFeatureAttribute fluidlite : headers ] ;
+			synthLibraries =
+				[ BuildFeatureAttribute libvorbis : library ]
+				[ BuildFeatureAttribute fluidlite : library ] ;
+		}
+
+		SharedLibrary [ MultiArchDefaultGristFiles libmidi.so ] :
+			Midi.cpp
+			MidiGlue.cpp
+			MidiPort.cpp
+			MidiSettings.cpp
+			MidiStore.cpp
+			MidiSynth.cpp
+			MidiSynthFile.cpp
+			MidiText.cpp
+			Samples.cpp
+			SoftSynth.cpp
+			Synth.cpp
+			:
+			be
+			midi2
+			media
+			$(synthLibraries)
+			[ TargetLibsupc++ ]
+			;
+	}
+}

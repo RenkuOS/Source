@@ -1,0 +1,133 @@
+/*
+ * Copyright 2007 Oliver Ruiz Dorantes, oliver.ruiz.dorantes_at_gmail.com
+ * All rights reserved. Distributed under the terms of the MIT License.
+ */
+#ifndef _LOCALDEVICE_IMPL_H_
+#define _LOCALDEVICE_IMPL_H_
+
+#include <String.h>
+
+#include <bluetooth/bluetooth.h>
+#include <bluetooth/L2CAP/btL2CAP.h>
+#include <bluetoothserver_p.h>
+#include <bluetooth/RemoteDevice.h>
+#include <ObjectList.h>
+
+#include "LocalDeviceHandler.h"
+
+#include "HCIDelegate.h"
+#include "HCIControllerAccessor.h"
+#include "HCITransportAccessor.h"
+
+
+struct ServerRemoteDevice
+{
+	bdaddr_t			bdaddr;
+	BString     		friendly_name;
+	uint16				clock_offset;
+	uint8				pscan_rep_mode;
+	uint8				classOfDevice[3];
+	linkkey_t			link_key;
+	uint8				link_type;
+	uint8				encryption_enabled;
+
+	uint16				handle;
+	RemoteDevice::ConnectionState			conn_state;
+	BMessage			services;
+};
+
+typedef BObjectList<ServerRemoteDevice> RemoteDevicesList;
+
+class LocalDeviceImpl : public LocalDeviceHandler {
+
+private:
+	LocalDeviceImpl(HCIDelegate* hd);
+
+public:
+
+	// Factory methods
+	static LocalDeviceImpl* CreateControllerAccessor(BPath* path);
+	static LocalDeviceImpl* CreateTransportAccessor(BPath* path);
+	~LocalDeviceImpl();
+	void Unregister();
+
+	void HandleEvent(struct hci_event_header* event);
+
+	// Request handling
+	status_t 	ProcessSimpleRequest(BMessage* request);
+
+	// Connection
+	void CreateConnection(BMessage* message);
+	void CancelConnection(BMessage* message);
+	void Disconnect(BMessage* message);
+	void SetConnEncryption(uint16 handle, bool encryption_enabled);
+
+	ServerRemoteDevice*	RemoteDeviceByAddr(bdaddr_t bdaddr);
+	ServerRemoteDevice*	RemoteDeviceByHandle(uint16 handle);
+	void				AddRemoteDevice(ServerRemoteDevice* rd);
+	void				RemoveRemoteDevice(ServerRemoteDevice* rd);
+	RemoteDevicesList*	GetRemoteDevicesList();
+
+private:
+
+	RemoteDevicesList	fRemoteDevicesList;
+
+	void SaveRemoteDevices();
+	void LoadRemoteDevices();
+
+	void HandleUnexpectedEvent(struct hci_event_header* event);
+	void HandleExpectedRequest(struct hci_event_header* event,
+		BMessage* request);
+
+	// Events handling
+	void CommandComplete(struct hci_ev_cmd_complete* event, BMessage* request,
+		int32 index);
+	void CommandStatus(struct hci_ev_cmd_status* event, BMessage* request,
+		int32 index);
+
+	void NumberOfCompletedPackets(struct hci_ev_num_comp_pkts* event);
+
+	// Inquiry
+	void InquiryResult(uint8* numberOfResponses, BMessage* request);
+	void InquiryResultWithRSSI(uint8* numberOfResponses, BMessage* request);
+	void ExtendedInquiryResult(uint8* numberOfResponses, BMessage* request);
+	void ParseEIR(const uint8* eir, BMessage& reply);
+	void InquiryComplete(uint8* status, BMessage* request);
+	void RemoteNameRequestComplete(struct hci_ev_remote_name_request_complete_reply*
+		remotename, BMessage* request);
+
+	// Connection
+	void Authenticate(uint16 handle);
+	void ConnectionComplete(struct hci_ev_conn_complete* event);
+	void ConnectionRequest(struct hci_ev_conn_request* event, BMessage* request);
+	void DisconnectionComplete(struct hci_ev_disconnection_complete_reply* event);
+
+	// Pairing
+	void PinCodeRequest(struct hci_ev_pin_code_req* event, BMessage* request);
+	void RoleChange(struct hci_ev_role_change* event, BMessage* request);
+	void LinkKeyNotify(struct hci_ev_link_key_notify* event, BMessage* request);
+	void ReturnLinkKeys(struct hci_ev_return_link_keys* returnedKeys);
+
+	void LinkKeyRequested(struct hci_ev_link_key_req* keyReqyested,
+		BMessage* request);
+
+	void PageScanRepetitionModeChange(struct hci_ev_page_scan_rep_mode_change* event,
+		BMessage* request);
+	void MaxSlotChange(struct hci_ev_max_slot_change* event, BMessage* request);
+
+	void HardwareError(struct hci_ev_hardware_error* event);
+
+	// Simple Secure Pairing
+	void IOCapabilityRequest(struct hci_ev_io_capability_request* event,
+		BMessage* request);
+	void IOCapabilityResponse(struct hci_ev_io_capability_response* event,
+		BMessage* request);
+	void UserConfirmationRequest(struct hci_ev_user_confirmation_request* event, BMessage* request);
+	void SimplePairingComplete(struct hci_ev_simple_pairing_complete* event,
+		BMessage* request);
+	void AuthComplete(struct hci_ev_auth_complete* eventData, BMessage* request);
+
+	void EncryptChange(struct hci_ev_encrypt_change* eventData);
+};
+
+#endif

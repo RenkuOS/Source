@@ -1,0 +1,12 @@
+SubDir HAIKU_TOP src add-ons kernel file_systems fat ;
+
+local commonSource ;
+include [ FDirName $(HAIKU_TOP) src add-ons kernel file_systems fat JamCommon ] ;
+
+UsePrivateKernelHeaders ;
+UsePrivateHeaders shared storage file_systems ;
+UseHeaders [ FDirName $(HAIKU_TOP) headers compatibility bsd ] : true ;
+
+KernelAddon fat :
+	$(commonSource)
+	;

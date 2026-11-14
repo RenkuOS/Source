@@ -1,0 +1,45 @@
+1	russian	x-vnd.Haiku-BluetoothPrefs	420387731
+Laptop	Settings view		Ноутбук
+Only from trusted devices	Settings view		Только от доверенных устройств
+15 secs	Settings view		15 сек
+Quit	main		Выход
+Manufacturer: 	Device View		Производитель: 
+Desktop	Settings view		Рабочий стол
+Server	Window		Сервер
+Identify host as:	Settings view		Идентифицировать как:
+Local devices found on system:	Settings view		Локальные устройства, найденные в системе:
+Service classes: 	Device View		Служебные классы: 
+Remote devices	Window		Удалённые устройства
+Settings	Window		Настройки
+Stop bluetooth services…	Window		Остановить службу bluetooth…
+61 secs	Settings view		61 сек
+Add…	Remote devices		Добавить…
+Revert	Window		Откатить
+Refresh local devices…	Window		Обновить локальные устройства…
+Disconnect	Remote devices		Отключить
+Defaults	Window		По умолчанию
+From all devices	Settings view		От всех устройств
+Start bluetooth services…	Window		Запуск службы bluetooth…
+Cancel	Inquiry panel		Отменить
+Launch now	main		Запустить сейчас
+Bluetooth	System name		Bluetooth
+Remove	Remote devices		Удалить
+Pick device…	Settings view		Выбрать устройство…
+Always ask	Settings view		Всегда спрашивать
+With support of:\n - Mika Lindqvist\n - Adrien Destugues\n - Maksym Yevmenkin\n\nThanks to the individuals who helped…\n\nShipping/donating hardware:\n - Henry Jair Abril Florez (el Colombian)\n\t& Stefanie Bartolich\n - Edwin Erik Amsler\n - Dennis d'Entremont\n - Luroh\n - Pieter Panman\n\nEconomically:\n - Karl vom Dorff, Andrea Bernardi (OSDrawer),\n - Matt M, Doug F, Hubert H,\n - Sebastian B, Andrew M, Jared E,\n - Frederik H, Tom S, Ferry B,\n - Greg G, David F, Richard S, Martin W:\n\nWith patches:\n - Michael Weirauch\n - Fredrik Ekdahl\n - Raynald Lesieur\n - Andreas Färber\n - Joerg Meyer\nTesting:\n - Petter H. Juliussen\nWho gave me all the knowledge:\n - the yellowTAB team	main		При поддержке:\n - Mika Lindqvist\n - Adrien Destugues\n - Maksym Yevmenkin\n\nСпасибо людям, которые помогали…\n\nПредоставляли/дарили оборудование:\n - Henry Jair Abril Florez (el Colombian)\n\t& Stefanie Bartolich\n - Edwin Erik Amsler\n - Dennis d'Entremont\n - Luroh\n - Pieter Panman\n\nЭкономически:\n - Karl vom Dorff, Andrea Bernardi (OSDrawer),\n - Matt M, Doug F, Hubert H,\n - Sebastian B, Andrew M, Jared E,\n - Frederik H, Tom S, Ferry B,\n - Greg G, David F, Richard S, Martin W:\n\nС патчами:\n - Michael Weirauch\n - Fredrik Ekdahl\n - Raynald Lesieur\n - Andreas Färber\n - Joerg Meyer\nПроводили тестирование:\n - Petter H. Juliussen\nКто научил меня всему:\n - the yellowTAB team
+Help	Window		Помощь
+Pair…	Remote devices		Пара…
+Incoming connections policy:	Settings view		Политика входящих соединений:
+Retrieving names…	Inquiry panel		Получение названий…
+Show name	Extended local device view		Показывать название
+Add device to list	Inquiry panel		Добавить устройство в список
+The Bluetooth services are not currently running on this system.	main		Службы Bluetooth не запущены на этой системе.
+Discoverable	Extended local device view		Видимый
+Authenticate	Extended local device view		Аутентифицировать
+Smart phone	Settings view		Смартфон
+Default inquiry time:	Settings view		Время запроса по умолчанию:
+Server	Settings view		Сервер
+Handheld	Settings view		Переносной
+ packets: 	Device View		 пакетов: 
+About Bluetooth…	Window		О программе…
+Starting scan…	Inquiry panel		Запуск сканирования…

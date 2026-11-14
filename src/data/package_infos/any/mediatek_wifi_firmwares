@@ -1,0 +1,15 @@
+name			mediatek_wifi_firmwares
+version			20260309-1
+architecture	any
+summary			"Firmware for MediaTek MT7920 and MT7921 WiFi cards"
+description		"Firmware for the MediaTek MT7920 and MT7921 WiFi cards, used by the mediatekwifi driver. The files come from OpenBSD's mwx-firmware 20260309p0 package."
+
+packager		"The Haiku build system"
+vendor			"Haiku Project"
+
+copyrights		"MediaTek Inc."
+licenses		"MediaTek (firmware)"
+
+provides {
+	mediatek_wifi_firmwares = 20260309
+}

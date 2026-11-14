@@ -1,0 +1,197 @@
+# Builds the cross-compiler container images that every other build job consumes.
+#
+# Why this exists: building the cross-toolchain from buildtools is the dominant
+# cost of a from-scratch build and would likely blow the 6-hour job cap on a
+# 4-vCPU runner. We pay it here, on a schedule, and never in the hot path. The
+# resulting image carries /tools/cross-tools-<arch>, which the OS build then
+# consumes via `configure --cross-tools-prefix` instead of rebuilding it.
+#
+# The image is the upstream one from 3rdparty/docker/cross-compiler, unmodified.
+# See KNOWN LIMITATIONS at the bottom of this file.
+name: toolchain
+
+on:
+  workflow_dispatch:
+    inputs:
+      buildtools_rev:
+        description: 'buildtools branch or tag (blank = read .github/toolchain.pin)'
+        required: false
+        default: ''
+      haiku_rev:
+        description: 'haiku branch or tag (blank = read .github/toolchain.pin)'
+        required: false
+        default: ''
+      push:
+        description: 'Push to GHCR (uncheck to build only)'
+        type: boolean
+        default: true
+  schedule:
+    # Mondays, early. Minutes are unmetered on a public repo, so a slow
+    # weekly job costs nothing.
+    - cron: '17 4 * * 1'
+  push:
+    branches: [main]
+    paths:
+      - '3rdparty/docker/cross-compiler/**'
+      - '.github/toolchain.pin'
+      - '.github/workflows/toolchain.yml'
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: toolchain-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: ${{ matrix.tag }}
+    runs-on: ubuntu-latest
+    # Under the 6-hour hard cap with room to spare.
+    timeout-minutes: 330
+    strategy:
+      # INTERIM — 32-bit x86 is built as the x86_gcc2h hybrid, 2026-10-07.
+      #
+      # Pure x86 cannot build: Haiku fetches build dependencies from
+      #   <url>/build-packages/<sha256 of build/jam/repositories/HaikuPorts/x86>/repo
+      # (RepositoryRules:168), and upstream has not published a snapshot for
+      # that definition since 2018, so it 404s. Upstream does publish the
+      # x86_gcc2 snapshot, so the hybrid builds as is: gcc 2.95 for the
+      # primary architecture and GCC 13 for the x86 secondary.
+      #
+      # Whether to keep gcc2 or move to pure x86 is still open in D4. See
+      # x86-ci-research.md 11 for the cost of each.
+      fail-fast: false
+      matrix:
+        include:
+          - tag: x86_64
+            architecture: x86_64
+            secondary: ''
+          # Two compilers, so expect roughly twice the x86_64 time.
+          - tag: x86_gcc2h
+            architecture: x86_gcc2
+            secondary: x86
+          # aarch64-unknown-haiku. The kernel, EFI loader and userland carry
+          # arm64 support, but nothing in CI builds it yet, so this image comes
+          # first: pr-gate cannot add a build leg until the toolchain it pulls
+          # exists. Single architecture, no secondary.
+          - tag: arm64
+            architecture: arm64
+            secondary: ''
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Inlined rather than using a third-party disk-reclaim action on purpose:
+      # this job holds packages:write, so a compromised action here could push a
+      # poisoned toolchain that every later build silently trusts. Fewer moving
+      # parts in this workflow than in any other.
+      - name: Reclaim disk space
+        run: |
+          set -uo pipefail
+          echo "Before:"; df -h / | tail -1
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /usr/local/share/boost \
+            /usr/local/lib/node_modules \
+            /usr/share/swift \
+            "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}" || true
+          sudo docker image prune --all --force >/dev/null 2>&1 || true
+          sudo apt-get clean
+          echo "After:"; df -h / | tail -1
+
+      - name: Resolve revisions and image name
+        id: cfg
+        run: |
+          set -euo pipefail
+          BT="${{ inputs.buildtools_rev }}"
+          HR="${{ inputs.haiku_rev }}"
+          if [ -f .github/toolchain.pin ]; then
+            # shellcheck disable=SC1091
+            . .github/toolchain.pin
+          fi
+          BT="${BT:-${BUILDTOOLS_REV:-master}}"
+          HR="${HR:-${HAIKU_REV:-main}}"
+          HREPO="${HAIKU_REPO:-https://review.haiku-os.org/haiku}"
+          BREPO="${BUILDTOOLS_REPO:-https://review.haiku-os.org/buildtools}"
+
+          # GHCR requires a lowercase path.
+          OWNER="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
+          IMAGE="ghcr.io/${OWNER}/cross-compiler"
+
+          echo "buildtools_rev=${BT}"   >> "$GITHUB_OUTPUT"
+          echo "haiku_rev=${HR}"        >> "$GITHUB_OUTPUT"
+          echo "haiku_repo=${HREPO}"    >> "$GITHUB_OUTPUT"
+          echo "buildtools_repo=${BREPO}" >> "$GITHUB_OUTPUT"
+          echo "image=${IMAGE}"         >> "$GITHUB_OUTPUT"
+          echo "Building ${IMAGE}:${{ matrix.tag }}-${BT}"
+          echo "  haiku      ${HREPO} @ ${HR}"
+          echo "  buildtools ${BREPO} @ ${BT}"
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Skipped on a build-only run so the job needs no registry credentials.
+      - uses: docker/login-action@v3
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.push }}
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: 3rdparty/docker/cross-compiler
+          file: 3rdparty/docker/cross-compiler/Dockerfile
+          push: ${{ github.event_name != 'workflow_dispatch' || inputs.push }}
+          provenance: false
+          build-args: |
+            BUILDTOOLS_REV=${{ steps.cfg.outputs.buildtools_rev }}
+            HAIKU_REV=${{ steps.cfg.outputs.haiku_rev }}
+            ARCHITECTURE=${{ matrix.architecture }}
+            SECONDARY_ARCHITECTURE=${{ matrix.secondary }}
+            HAIKU_REPO=${{ steps.cfg.outputs.haiku_repo }}
+            BUILDTOOLS_REPO=${{ steps.cfg.outputs.buildtools_repo }}
+          tags: |
+            ${{ steps.cfg.outputs.image }}:${{ matrix.tag }}-${{ steps.cfg.outputs.buildtools_rev }}
+            ${{ steps.cfg.outputs.image }}:${{ matrix.tag }}-latest
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Toolchain image — ${{ matrix.tag }}"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Image | \`${{ steps.cfg.outputs.image }}:${{ matrix.tag }}-${{ steps.cfg.outputs.buildtools_rev }}\` |"
+            echo "| Architecture | \`${{ matrix.architecture }}\` |"
+            echo "| Secondary | \`${{ matrix.secondary || 'none' }}\` |"
+            echo "| buildtools | \`${{ steps.cfg.outputs.buildtools_rev }}\` |"
+            echo "| haiku | \`${{ steps.cfg.outputs.haiku_rev }}\` |"
+            echo "| Digest | \`${{ steps.build.outputs.digest || 'n/a' }}\` |"
+            echo "| Pushed | ${{ github.event_name != 'workflow_dispatch' || inputs.push }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+# ---------------------------------------------------------------------------
+# KNOWN LIMITATIONS
+#
+# 1. The docker/* actions are pinned to major version tags, not commit SHAs.
+#    In a workflow holding packages:write, SHA pinning is the correct hardening
+#    step: a compromised action here could push a poisoned toolchain that every
+#    later build silently trusts. Do it once the digests are recorded somewhere
+#    reviewable.
+#
+# 2. The image tag encodes only the buildtools revision. If the haiku pin moves
+#    while buildtools does not, the tag is unchanged and the old image is
+#    overwritten. Fine while both track a branch; revisit if either is ever
+#    pinned to a SHA.
+#
+# Previously listed here and now fixed: build-toolchain.sh took its repository
+# URLs from hardcoded Gerrit paths and could not accept a commit SHA. Both are
+# parameters as of the fork's own change to that script.
+# ---------------------------------------------------------------------------

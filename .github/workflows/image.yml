@@ -1,0 +1,410 @@
+# Builds and boot-checks RenkuOS images. Called by nightly.yml and
+# test-build.yml, which each publish the result in their own way.
+#
+# Moved out of nightly.yml unchanged apart from three things:
+#  - the arch matrix is chosen by the caller (`arches`) instead of fixed,
+#  - the build label prefix comes from the caller (`build_prefix`), so test
+#    builds are named test00012 and cannot be mistaken for nightly build00078,
+#  - jobs here only get `contents: read`, and the checkout does not keep the
+#    token. These jobs run the tree's own build scripts, and a test build may
+#    come from any branch; only the caller's publish job can write.
+#
+# Artifacts uploaded here belong to the caller's run, so the caller's publish
+# job downloads them by name: image-<arch>, boot-pass-<arch>, serial-<arch>,
+# package-repo-<arch>.
+name: image
+
+on:
+  workflow_call:
+    inputs:
+      arches:
+        description: 'Space-separated list of arches to build: x86_64 x86_gcc2h arm64'
+        type: string
+        default: 'x86_64 x86_gcc2h'
+      build_prefix:
+        description: 'Prefix of the build label, followed by the zero-padded run number'
+        type: string
+        default: 'build'
+
+permissions:
+  contents: read
+
+jobs:
+  # Turns `arches` into the build and boot matrices. GitHub's matrix `include`
+  # would add an entry for an arch that was not asked for, so filter here.
+  plan:
+    name: plan
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.m.outputs.build }}
+      boot: ${{ steps.m.outputs.boot }}
+    steps:
+      - id: m
+        env:
+          ARCHES: ${{ inputs.arches }}
+        run: |
+          set -euo pipefail
+          # INTERIM — 32-bit x86 is built as the x86_gcc2h hybrid, 2026-10-07.
+          # Pure x86 has no upstream package snapshot to build against; see the
+          # matrix comment in toolchain.yml and x86-ci-research.md 11.
+          #
+          #   arch       names the job, artifacts, ISO, and toolchain image tag
+          #   packaging  the primary packaging architecture: object directories,
+          #              the HaikuPorts definition, and the repository path
+          #   secondary  the secondary architecture of a hybrid, or empty
+          #   target     the jam build profile
+          #   image      the file jam writes, and ext the extension of the published one
+          #   apt        the QEMU packages the boot check installs
+          #   banner     seconds the boot check waits for the boot banner
+          #   settle     seconds the guest must then run without failing
+          #
+          # arm64 builds from our own packages (the RenkuOSPorts arm64-packages
+          # release), with --no-downloads. It is Tier 2: a failure does not stop
+          # the other arches from publishing. Emulated arm64 is slower, and
+          # first-boot package processing runs after the banner, so its boot
+          # check gets longer to fail in.
+          all='[
+            {"arch":"x86_64","packaging":"x86_64","triple":"x86_64-unknown-haiku",
+             "secondary":"","secondary_triple":"",
+             "target":"@nightly-anyboot","image":"*anyboot*.iso","ext":"iso",
+             "qemu":"qemu-system-x86_64","apt":"qemu-system-x86","banner":120,"settle":60},
+            {"arch":"x86_gcc2h","packaging":"x86_gcc2","triple":"i586-pc-haiku",
+             "secondary":"x86","secondary_triple":"i586-pc-haiku",
+             "target":"@nightly-anyboot","image":"*anyboot*.iso","ext":"iso",
+             "qemu":"qemu-system-i386","apt":"qemu-system-x86","banner":120,"settle":60},
+            {"arch":"arm64","packaging":"arm64","triple":"aarch64-unknown-haiku",
+             "secondary":"","secondary_triple":"",
+             "target":"@nightly-mmc","image":"haiku-mmc.image","ext":"img.zst",
+             "qemu":"qemu-system-aarch64","apt":"qemu-system-arm qemu-efi-aarch64",
+             "banner":300,"settle":180}
+          ]'
+          want="$(printf '%s\n' ${ARCHES} | jq -R . | jq -sc .)"
+          unknown="$(jq -nc --argjson all "${all}" --argjson want "${want}" \
+            '$want - [$all[].arch]')"
+          if [ "${unknown}" != "[]" ] || [ "${want}" = "[]" ]; then
+            echo "::error::arches must be one or more of: x86_64 x86_gcc2h arm64 (got '${ARCHES}')"
+            exit 1
+          fi
+          sel="$(jq -c --argjson want "${want}" \
+            '[.[] | select(.arch as $a | $want | index($a))]' <<<"${all}")"
+          echo "build=$(jq -c '{include: [.[] | del(.qemu, .apt, .banner, .settle)]}' <<<"${sel}")" >> "$GITHUB_OUTPUT"
+          echo "boot=$(jq -c '{include: [.[] | {arch, qemu, apt, banner, settle}]}' <<<"${sel}")" >> "$GITHUB_OUTPUT"
+          echo "arches: $(jq -r '[.[].arch] | join(" ")' <<<"${sel}")"
+
+  build:
+    name: build ${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.build) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history and tags: the revision comes from `git describe`
+          # against upstream's hrev tags, and the package version is built from
+          # it. Depth-1 leaves no tags and an unusable revision.
+          fetch-depth: 0
+          fetch-tags: true
+          # The build runs the checked-out tree's own scripts, so do not leave
+          # the token in .git/config for them to find.
+          persist-credentials: false
+
+      - name: Resolve toolchain image
+        id: img
+        run: |
+          set -euo pipefail
+          if [ -f .github/toolchain.pin ]; then . .github/toolchain.pin; fi
+          OWNER="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
+          echo "image=ghcr.io/${OWNER}/cross-compiler:${{ matrix.arch }}-${BUILDTOOLS_REV:-master}" >> "$GITHUB_OUTPUT"
+
+      # The package set is determined entirely by the repository definition
+      # file, and its sha256 is literally the snapshot URL, so hashing that file
+      # is a correct cache key by construction rather than by convention.
+      # restore-keys matters more than the exact key: when upstream bumps the
+      # package set, a partial cache still lands and jam fetches only the
+      # difference. After the first run this removes the dependency on
+      # eu.hpkg.haiku-os.org being up.
+      - name: Cache dependency packages
+        if: matrix.arch != 'arm64'
+        uses: actions/cache@v4
+        with:
+          path: generated.${{ matrix.arch }}/download
+          key: hpkg-${{ matrix.arch }}-${{ hashFiles(format('build/jam/repositories/HaikuPorts/{0}', matrix.packaging)) }}
+          restore-keys: |
+            hpkg-${{ matrix.arch }}-
+
+      - name: Brand the build
+        id: brand
+        env:
+          BUILD_PREFIX: ${{ inputs.build_prefix }}
+        run: |
+          set -euo pipefail
+          BUILD="${BUILD_PREFIX}$(printf '%05d' "${{ github.run_number }}")"
+          # Mirror determine_haiku_revision: strip the -g<sha> suffix and turn
+          # remaining hyphens into plus signs. HaikuPorts packages require
+          # haiku >= r1~beta6_hrev59866_5-1 and that version is built from this
+          # string, so it must be hrev-shaped. Temporary -- see ci-design.md
+          # 12.1 and DECISIONS.md D2.
+          REV="$(git describe --dirty --tags --match='hrev*' --abbrev=1 \
+                 | sed 's/-g[0-9a-z]\+//' | sed 's/-/+/g')"
+          if [ -z "${REV}" ]; then
+            echo "::error::no hrev tag reachable; checkout is missing tags"
+            exit 1
+          fi
+          cat > build/jam/UserBuildConfig <<EOF
+          HAIKU_IMAGE_LABEL = "RenkuOS" ;
+          HAIKU_REVISION = "${REV}" ;
+          RENKUOS_BUILD = "${BUILD}" ;
+          EOF
+          # Belt and braces. The UserBuildConfig above is the documented
+          # route, but it demonstrably did not reach jam, whereas exporting
+          # does -- build-toolchain.sh relies on the export and works.
+          echo "HAIKU_REVISION=${REV}" >> "$GITHUB_ENV"
+          echo "HAIKU_IMAGE_LABEL=RenkuOS" >> "$GITHUB_ENV"
+          echo "RENKUOS_BUILD=${BUILD}" >> "$GITHUB_ENV"
+          echo "build=${BUILD}" >> "$GITHUB_OUTPUT"
+          echo "revision=${REV}" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
+          echo "Build ${BUILD}, revision ${REV}"
+          cat build/jam/UserBuildConfig
+
+      # arm64 packages come from our own repository, which keeps only the
+      # newest revision of each package. jam pins exact versions, so the pins
+      # are written from the release, and jam builds with --no-downloads
+      # from the packages put in its download directory. This runs after the
+      # branding, so the revision does not pick up "+dirty".
+      - name: Fetch the arm64 packages
+        if: matrix.arch == 'arm64'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          DL="generated.${{ matrix.arch }}/download"
+          mkdir -p "${DL}" pkgs
+          gh release download arm64-packages --repo RenkuOS/RenkuOSPorts \
+            --pattern 'renkuosports-arm64-repo.tar*' --dir pkgs
+          ( cd pkgs && sha256sum -c renkuosports-arm64-repo.tar.sha256 )
+          tar -xf pkgs/renkuosports-arm64-repo.tar -C pkgs packages
+          mv pkgs/packages/*.hpkg "${DL}/"
+          rm -rf pkgs
+          # --no-downloads also stops jam fetching the MediaTek firmware, and
+          # jam checks its pinned SHA-256 only when it downloads it.
+          FW="$(grep -o 'https://[^ ]*\.tgz' build/jam/packages/MediatekWifiFirmwares | head -1)"
+          SUM="$(grep -oE '[0-9a-f]{64}' build/jam/packages/MediatekWifiFirmwares | head -1)"
+          curl -fsSL --retry 5 -o "${DL}/${FW##*/}" "${FW}"
+          echo "${SUM}  ${DL}/${FW##*/}" | sha256sum -c -
+          .github/scripts/arm64-pins.sh "${DL}" > build/jam/repositories/HaikuPorts/arm64
+          echo "packages: $(ls "${DL}" | grep -c '\.hpkg$')"
+          echo "pins changed from the tree's snapshot:"
+          git diff --stat -- build/jam/repositories/HaikuPorts/arm64
+
+      - name: Configure and build
+        env:
+          IMAGE: ${{ steps.img.outputs.image }}
+          ARCH: ${{ matrix.arch }}
+          PACKAGING: ${{ matrix.packaging }}
+          TRIPLE: ${{ matrix.triple }}
+          SECONDARY: ${{ matrix.secondary }}
+          SECONDARY_TRIPLE: ${{ matrix.secondary_triple }}
+          TARGET: ${{ matrix.target }}
+          NO_DOWNLOADS: ${{ matrix.arch == 'arm64' && '--no-downloads' || '' }}
+        run: |
+          set -euo pipefail
+          docker run --rm -v "${PWD}:/src" -w /src \
+            -e ARCH -e PACKAGING -e TRIPLE -e SECONDARY -e SECONDARY_TRIPLE \
+            -e TARGET -e NO_DOWNLOADS \
+            -e HOME=/tmp -e TERM=dumb \
+            -e HAIKU_REVISION -e HAIKU_IMAGE_LABEL -e RENKUOS_BUILD \
+            "${IMAGE}" \
+            bash -euo pipefail -c '
+              # The workspace is bind-mounted and owned by the runner user,
+              # while the container runs as root, so git refuses to touch it.
+              git config --global --add safe.directory /src
+              # Harden every download the build makes. The wget call belongs to
+              # the Haiku build and cannot be edited from here, and switching
+              # mirrors is not possible either: the mirror URL lives inside
+              # build/jam/repositories/HaikuPorts/<arch>, whose sha256 IS the
+              # snapshot key, so changing it gives a 404. But wget reads
+              # $HOME/.wgetrc, and HOME is /tmp in this container.
+              printf "tries = 10\nwaitretry = 5\ntimeout = 60\nretry_connrefused = on\n" > /tmp/.wgetrc
+              mkdir -p "generated.${ARCH}"
+              cd "generated.${ARCH}"
+              # The first prefix is the primary compiler. A hybrid adds a
+              # second one for its secondary architecture.
+              set -- --cross-tools-prefix "/tools/cross-tools-${PACKAGING}/bin/${TRIPLE}-"
+              if [ -n "${SECONDARY}" ]; then
+                set -- "$@" --cross-tools-prefix \
+                  "/tools/cross-tools-${SECONDARY}/bin/${SECONDARY_TRIPLE}-"
+              fi
+              ../configure "$@" --distro-compatibility default ${NO_DOWNLOADS}
+              jam -q -j"$(nproc)" "${TARGET}"
+              # The package repository: repo, repo.info, repo.sha256 and the
+              # system hpkgs. This is what pkgman and HaikuDepot would update
+              # from, as opposed to the ISO which is for installing. Built as
+              # an artifact only for now -- see DECISIONS.md D2 for hosting.
+              jam -q -j"$(nproc)" "<repository>Renku"
+            '
+
+      - name: Restore ownership
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" . || true
+
+      - name: Name and checksum the image
+        id: iso
+        run: |
+          set -euo pipefail
+          SRC="$(find "generated.${{ matrix.arch }}" -maxdepth 1 -name '${{ matrix.image }}' | head -1)"
+          NAME="RenkuOS-${{ matrix.arch }}-${{ steps.brand.outputs.date }}-${{ steps.brand.outputs.build }}.${{ matrix.ext }}"
+          mkdir -p out
+          # The arm64 disk image is mostly empty space, so it ships compressed.
+          case "${NAME}" in
+            *.zst) zstd -q -T0 -10 --rm "${SRC}" -o "out/${NAME}" ;;
+            *) mv "${SRC}" "out/${NAME}" ;;
+          esac
+          ( cd out && sha256sum "${NAME}" > "${NAME}.sha256" )
+          echo "name=${NAME}" >> "$GITHUB_OUTPUT"
+          echo "size=$(du -h "out/${NAME}" | cut -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Collect the package repository
+        id: repo
+        run: |
+          set -uo pipefail
+          SRC="generated.${{ matrix.arch }}/objects/haiku/${{ matrix.packaging }}/packaging/repositories/Renku"
+          if [ ! -d "${SRC}" ]; then
+            echo "::warning::no repository tree at ${SRC}"
+            exit 0
+          fi
+          mkdir -p repo-out
+          # Named for the packaging architecture, because that is what the
+          # baseurl in src/data/repository_infos/renku ends with.
+          cp -r "${SRC}" "repo-out/${{ matrix.packaging }}"
+          echo "size=$(du -sh repo-out | cut -f1)" >> "$GITHUB_OUTPUT"
+          echo "packages=$(find repo-out -name '*.hpkg' | wc -l)" >> "$GITHUB_OUTPUT"
+          echo "  tree:"; find repo-out -maxdepth 3 -not -name '*.hpkg' | sed 's/^/    /'
+          echo "  largest packages:"
+          find repo-out -name '*.hpkg' -printf '%s %p\n' | sort -rn | head -5 \
+            | awk '{ printf "    %6.1f MB  %s\n", $1/1048576, $2 }'
+
+      - uses: actions/upload-artifact@v4
+        if: steps.repo.outputs.packages != ''
+        with:
+          name: package-repo-${{ matrix.arch }}
+          path: repo-out/
+          retention-days: 7
+          compression-level: 0
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image-${{ matrix.arch }}
+          path: out/
+          retention-days: 3
+          compression-level: 0
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### build ${{ matrix.arch }}"
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Image | ${{ steps.iso.outputs.name || 'not produced' }} (${{ steps.iso.outputs.size || '-' }}) |"
+            echo "| Revision | \`${{ steps.brand.outputs.revision }}\` |"
+            echo "| Package repo | ${{ steps.repo.outputs.packages || '0' }} packages, ${{ steps.repo.outputs.size || '-' }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Same assertions as the pull request gate: the kernel comes up and does not
+  # die. Blocking here, unlike on a pull request, because an image that fails to
+  # boot must not reach the release page. A wrong timeout costs us a missed
+  # nightly, which is the safe direction to fail in.
+  boot:
+    name: boot ${{ matrix.arch }}
+    needs: [plan, build]
+    # needs: waits for every build leg. Without this, one failed arch would
+    # skip the boot of every other arch, and so stop its nightly.
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.boot) }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: image-${{ matrix.arch }}
+
+      - name: Install QEMU
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ${{ matrix.apt }}
+
+      - name: Boot and watch the serial console
+        env:
+          BANNER_TIMEOUT: ${{ matrix.banner }}
+          SETTLE_SECONDS: ${{ matrix.settle }}
+        run: |
+          set -uo pipefail
+          ISO="$(find . -maxdepth 2 -name 'RenkuOS-*' ! -name '*.sha256' | head -1)"
+          if [ -z "${ISO}" ]; then
+            echo "::error::No RenkuOS image in the artifact."; find . -maxdepth 2 -type f | head; exit 1
+          fi
+          : > serial.log
+          case "${ISO}" in
+            *.img.zst)
+              # The setup that reached the arm64 desktop locally: the EDK2
+              # firmware, a virtio disk, and ramfb for the boot loader. The
+              # runner's EDK2 2025.11 hangs before its boot manager with
+              # -cpu max, so name a CPU model.
+              zstd -q -d "${ISO}" -o disk.img
+              ${{ matrix.qemu }} -M virt -cpu cortex-a72 -smp 4 -m 2048 \
+                -bios /usr/share/qemu-efi-aarch64/QEMU_EFI.fd \
+                -drive file=disk.img,format=raw,if=none,id=d0 -device virtio-blk-device,drive=d0 \
+                -device ramfb -display none -serial file:serial.log -no-reboot & ;;
+            *)
+              ${{ matrix.qemu }} -machine pc -accel tcg,thread=multi -smp "$(nproc)" \
+                -m 2048 -cdrom "${ISO}" -boot d -display none \
+                -serial file:serial.log -no-reboot & ;;
+          esac
+          QEMU=$!
+          # shellcheck disable=SC2064
+          trap "kill ${QEMU} 2>/dev/null || true" EXIT
+          fail_re='Kernel Debugging Land|^PANIC:|error starting "|main2: find_directory\(\) failed'
+          seen=0; at=0; t=0
+          while :; do
+            if grep -qE "${fail_re}" serial.log 2>/dev/null; then
+              echo "::error::Guest failed:"; grep -nE "${fail_re}" serial.log | head -20; exit 1
+            fi
+            if [ "${seen}" -eq 0 ] && grep -qF 'Haiku revision:' serial.log 2>/dev/null; then
+              seen=1; at=${t}; echo "banner at ${at}s"
+            fi
+            if [ "${seen}" -eq 1 ] && [ $(( t - at )) -ge "${SETTLE_SECONDS}" ]; then
+              echo "booted cleanly"; exit 0
+            fi
+            if ! kill -0 "${QEMU}" 2>/dev/null; then
+              echo "::error::QEMU exited after ${t}s."; tail -40 serial.log; exit 1
+            fi
+            if [ "${seen}" -eq 0 ] && [ "${t}" -ge "${BANNER_TIMEOUT}" ]; then
+              echo "::error::No banner within ${BANNER_TIMEOUT}s."; tail -40 serial.log; exit 1
+            fi
+            sleep 5; t=$(( t + 5 ))
+          done
+
+      # A pass marker, so the publish job can ship the arches that booted
+      # without being blocked by one that did not. x86 is the unverified half
+      # of D4; x86_64 nightlies should not stop because of it.
+      - name: Mark pass
+        run: |
+          mkdir -p pass && echo ok > "pass/${{ matrix.arch }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: boot-pass-${{ matrix.arch }}
+          path: pass/
+          retention-days: 3
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: serial-${{ matrix.arch }}
+          path: serial.log
+          retention-days: 7

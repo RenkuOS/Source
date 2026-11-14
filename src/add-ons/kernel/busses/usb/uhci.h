@@ -1,0 +1,338 @@
+/*
+ * Copyright 2004-2011, Haiku Inc. All rights reserved.
+ * Distributed under the terms of the MIT License.
+ *
+ * Authors:
+ *		Michael Lotz <mmlr@mlotz.ch>
+ *		Niels S. Reedijk
+ *		Salvatore Benedetto <salvatore.benedetto@gmail.com>
+ */
+#ifndef UHCI_H
+#define UHCI_H
+
+#include "usb_private.h"
+#include "uhci_hardware.h"
+#include <lock.h>
+
+#define UHCI_INTERRUPT_QUEUE				0
+#define UHCI_LOW_SPEED_CONTROL_QUEUE		1
+#define UHCI_FULL_SPEED_CONTROL_QUEUE		2
+#define UHCI_BULK_QUEUE						3
+#define UHCI_BANDWIDTH_RECLAMATION_QUEUE	4
+#define UHCI_DEBUG_QUEUE					4
+
+struct pci_info;
+struct pci_device_module_info;
+struct pci_device;
+class UHCIRootHub;
+
+
+class Queue {
+public:
+									Queue(Stack *stack);
+									~Queue();
+
+		bool						Lock();
+		void						Unlock();
+
+		status_t					InitCheck();
+
+		status_t					LinkTo(Queue *other);
+		status_t					TerminateByStrayDescriptor();
+
+		status_t					AppendTransfer(uhci_qh *transfer,
+										bool lock = true);
+		status_t					RemoveTransfer(uhci_qh *transfer,
+										bool lock = true);
+
+		uint32						PhysicalAddress();
+
+		void						PrintToStream();
+
+		usb_id						USBID() { return 0; };
+		const char *				TypeName() { return "uhci"; };
+
+private:
+		status_t					fStatus;
+		Stack *						fStack;
+		uhci_qh *					fQueueHead;
+		uhci_td *					fStrayDescriptor;
+		uhci_qh *					fQueueTop;
+		mutex						fLock;
+};
+
+
+typedef struct transfer_data {
+	Transfer *		transfer;
+	Queue *			queue;
+	uhci_qh *		transfer_queue;
+	uhci_td *		first_descriptor;
+	uhci_td *		data_descriptor;
+	bool			incoming;
+	bool			canceled;
+	uint16			free_after_frame;
+	transfer_data *	link;
+} transfer_data;
+
+
+// This structure is used to create a list of
+// descriptors per isochronous transfer
+typedef struct isochronous_transfer_data {
+	Transfer *					transfer;
+	// The next field is used to keep track
+	// of every isochronous descriptor as they are NOT
+	// linked to each other in a queue like in every other
+	// transfer type
+	uhci_td **					descriptors;
+	uint16						last_to_process;
+	// Frame of descriptors[0]; descriptors[i] is linked in start_frame + i.
+	uint16						start_frame;
+	bool						incoming;
+	bool						is_active;
+	isochronous_transfer_data *	link;
+} isochronous_transfer_data;
+
+
+class UHCI : public BusManager {
+public:
+									UHCI(pci_info *info, pci_device_module_info* pci,
+										pci_device* device, Stack *stack, device_node* node);
+									~UHCI();
+
+		status_t					Start();
+virtual	status_t					SubmitTransfer(Transfer *transfer);
+
+virtual	status_t					StartDebugTransfer(Transfer *transfer);
+virtual	status_t					CheckDebugTransfer(Transfer *transfer);
+virtual	void						CancelDebugTransfer(Transfer *transfer);
+
+virtual	status_t					CancelQueuedTransfers(Pipe *pipe, bool force);
+		status_t					CancelQueuedIsochronousTransfers(Pipe *pipe, bool force);
+		status_t					SubmitRequest(Transfer *transfer);
+		status_t					SubmitIsochronous(Transfer *transfer);
+
+		// Port operations
+		status_t					GetPortStatus(uint8 index, usb_port_status *status);
+		status_t					SetPortFeature(uint8 index, uint16 feature);
+		status_t					ClearPortFeature(uint8 index, uint16 feature);
+
+		status_t					ResetPort(uint8 index);
+
+virtual	const char *				TypeName() const { return "uhci"; };
+
+private:
+		// Controller resets
+		void						GlobalReset();
+		status_t					ControllerReset();
+		void						RecoverFromHalt();
+
+		// Interrupt functions
+static	int32						InterruptHandler(void *data);
+		int32						Interrupt();
+
+		// Transfer functions
+		status_t					AddPendingTransfer(Transfer *transfer,
+										Queue *queue,
+										uhci_qh *transferQueue,
+										uhci_td *firstDescriptor,
+										uhci_td *dataDescriptor,
+										bool directionIn);
+		status_t					AddPendingIsochronousTransfer(
+										Transfer *transfer,
+										uhci_td **isoRequest,
+										bool directionIn,
+										uint16 startFrame);
+
+static	int32						FinishThread(void *data);
+		void						FinishTransfers();
+
+		void						AddToFreeList(transfer_data *transfer);
+static	int32						CleanupThread(void *data);
+		void						Cleanup();
+
+		status_t					CreateFilledTransfer(Transfer *transfer,
+										uhci_td **_firstDescriptor,
+										uhci_qh **_transferQueue);
+
+		// Isochronous transfer functions
+static int32						FinishIsochronousThread(void *data);
+		void						FinishIsochronousTransfers();
+		isochronous_transfer_data *	FindIsochronousTransfer(uhci_td *descriptor);
+
+		status_t					LinkIsochronousDescriptor(
+										uhci_td *descriptor,
+										uint16 frame);
+		uhci_td *					UnlinkIsochronousDescriptor(uint16 frame);
+		void						DetachIsochronousDescriptors(
+										isochronous_transfer_data *transfer);
+
+		// Transfer queue functions
+		uhci_qh *					CreateTransferQueue(uhci_td *descriptor);
+		void						FreeTransferQueue(uhci_qh *queueHead);
+
+		bool						LockIsochronous();
+		void						UnlockIsochronous();
+
+		// Descriptor functions
+		uhci_td *					CreateDescriptor(Pipe *pipe,
+										uint8 direction,
+										size_t bufferSizeToAllocate);
+		status_t					CreateDescriptorChain(Pipe *pipe,
+										uhci_td **firstDescriptor,
+										uhci_td **lastDescriptor,
+										uint8 direction,
+										size_t bufferSizeToAllocate);
+
+		void						FreeDescriptor(uhci_td *descriptor);
+		void						FreeDescriptorChain(uhci_td *topDescriptor);
+
+		void						LinkDescriptors(uhci_td *first,
+										uhci_td *second);
+
+		size_t						WriteDescriptorChain(uhci_td *topDescriptor,
+										generic_io_vec *vector, size_t vectorCount, bool physical);
+		size_t						ReadDescriptorChain(uhci_td *topDescriptor,
+										generic_io_vec *vector, size_t vectorCount, bool physical,
+										uint8 *lastDataToggle);
+		size_t						ReadActualLength(uhci_td *topDescriptor,
+										uint8 *lastDataToggle);
+		void						WriteIsochronousDescriptorChain(
+										uhci_td **isoRequest,
+										uint32 packetCount,
+										generic_io_vec *vector);
+		void						ReadIsochronousDescriptorChain(
+										isochronous_transfer_data *transfer,
+										generic_io_vec *vector);
+
+		// Register functions
+inline	void						WriteReg8(uint32 reg, uint8 value);
+inline	void						WriteReg16(uint32 reg, uint16 value);
+inline	void						WriteReg32(uint32 reg, uint32 value);
+inline	uint8						ReadReg8(uint32 reg);
+inline	uint16						ReadReg16(uint32 reg);
+inline	uint32						ReadReg32(uint32 reg);
+
+		uint32						fRegisterBase;
+		pci_info *					fPCIInfo;
+		bool						fIsPoulsbo;
+		pci_device_module_info*		fPci;
+		pci_device*					fDevice;
+		Stack *						fStack;
+		uint32						fEnabledInterrupts;
+		bool						fControllerHalted;
+		bool						fControllerGaveUpOnHalts;
+		bigtime_t					fLastHaltTime;
+		int32						fHaltRecoveryCount;
+		int32						fLateRecoveryCount;
+
+		// Frame list memory
+		area_id						fFrameArea;
+		uint32 *					fFrameList;
+		phys_addr_t					fFrameListPhysical;
+
+		// fFrameBandwidth[n] holds the available bandwidth
+		// of the nth frame in microseconds
+		uint16 *					fFrameBandwidth;
+
+		// fFirstIsochronousTransfer[n] and fLastIsochronousDescriptor[n]
+		// keeps track of the first and last isochronous transfer descriptor
+		// in the nth frame
+		uhci_td **					fFirstIsochronousDescriptor;
+		uhci_td **					fLastIsochronousDescriptor;
+
+		// Queues
+		int32						fQueueCount;
+		Queue **					fQueues;
+
+		// Maintain a linked list of transfers
+		transfer_data *				fFirstTransfer;
+		transfer_data *				fLastTransfer;
+		sem_id						fFinishTransfersSem;
+		thread_id					fFinishThread;
+		bool						fStopThreads;
+		Pipe *						fProcessingPipe;
+
+		transfer_data *				fFreeList;
+		thread_id					fCleanupThread;
+		sem_id						fCleanupSem;
+		int32						fCleanupCount;
+
+		// Maintain a linked list of isochronous transfers
+		isochronous_transfer_data *	fFirstIsochronousTransfer;
+		isochronous_transfer_data *	fLastIsochronousTransfer;
+		sem_id						fFinishIsochronousTransfersSem;
+		thread_id					fFinishIsochronousThread;
+		mutex						fIsochronousLock;
+
+		// Root hub
+		UHCIRootHub *				fRootHub;
+		uint8						fRootHubAddress;
+		uint8						fPortResetChange;
+
+		uint32						fIRQ;
+		bool						fUseMSI;
+		spinlock					fInterruptLock;
+
+		// Fatal-error handling: set when the
+		// controller signals a process error / halt. Outstanding transfers are
+		// then completed with an error so the USB stack's WaitForIdle() does
+		// not block forever (which otherwise panics: "USB object did not
+		// become idle!"). The controller is not restarted; it stays down until
+		// reboot, so only the halted instance dies and the other UHCI/EHCI
+		// controllers keep working.
+		//
+		// WHY THIS EXISTS -- it is not defensive, it was a reproduced failure.
+		// Measured with a Pioneer DDJ-SR (08e4:0183) streaming isochronous
+		// over UHCI: clean for ~30 s, then
+		//     usb uhci: process error
+		//     usb uhci: host controller halted
+		// (USBSTS bit 4, HCPRERR -- the controller failed a consistency check
+		// on a TD and cleared Run/Stop), followed by the WaitForIdle panic.
+		// The KDL itself was unobtainable: syslog_daemon dies before the lines
+		// reach disk, so only a live ssh tail caught them.
+		//
+		// With this handling in place, same hardware, same day: the log shows
+		// process error -> host controller halted -> the HALT DIAG line below,
+		// and the box STAYS ALIVE. No "not idle", no GPF, no KDL.
+		//
+		// ⚠️ A tempting wrong answer was tested and REFUTED. The leading
+		// hypothesis was that our own per-cycle dprintf spam caused the halt
+		// (each line blocks ~5 ms on a 115200 UART with serial_debug_output on,
+		// which would starve the finisher). The spam was removed and it still
+		// process-errored at ~30 s. The cause was the isochronous scheduling
+		// itself, which the rework in this series addresses.
+		//
+		// ⚠️ The cause is believed fixed by that rework -- the same device has
+		// played clean since -- so this path is not expected to fire. It is
+		// the net, not the fix. Do not remove it on the grounds that it never
+		// triggers; what it catches is a kernel panic.
+		bool						fHostControllerHalted;
+		// Schedule state captured at halt time, reported by the finisher. The
+		// capture above read usbsts=0x0030 (HCPRERR|HCHalted), usbcmd=0x0080
+		// (Run/Stop cleared), frnum=468.
+		uint16						fHaltFrame;
+		uint16						fHaltStatus;
+		uint16						fHaltCommand;
+		// Running count of isochronous TDs currently linked into the frame
+		// list (Link++ / Unlink--). Added specifically to decide the cause of
+		// the HC process error above: hundreds at halt time would confirm the
+		// finisher had fallen behind and overrun the schedule; tens would point
+		// at a malformed TD or a controller-read race instead.
+		// ⚠️ Never actually measured: the scheduling rework landed first and
+		// the halt stopped reproducing, so the question it was built to answer
+		// is still open.
+		int32						fLinkedIsoTDs;
+};
+
+
+class UHCIRootHub : public Hub {
+public:
+									UHCIRootHub(Object *rootObject,
+										int8 deviceAddress);
+
+static	status_t					ProcessTransfer(UHCI *uhci,
+										Transfer *transfer);
+};
+
+
+#endif

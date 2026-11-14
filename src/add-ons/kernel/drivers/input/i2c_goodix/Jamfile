@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: MIT
+
+SubDir HAIKU_TOP src add-ons kernel drivers input i2c_goodix ;
+
+SubDirC++Flags -fno-rtti ;
+
+SubDirSysHdrs $(HAIKU_TOP) headers os drivers ;
+UsePrivateHeaders input drivers device i2c ;
+UsePrivateKernelHeaders ;
+
+KernelAddon i2c_goodix :
+	Driver.cpp
+;

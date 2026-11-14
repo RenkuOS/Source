@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: MIT
+
+SubDir HAIKU_TOP src add-ons kernel drivers power intel_energy ;
+
+SubDirC++Flags -fno-rtti ;
+
+UsePrivateKernelHeaders ;
+
+KernelAddon intel_energy :
+	intel_energy.cpp
+	;

@@ -1,0 +1,274 @@
+/*
+ * Copyright 2018 Haiku, Inc. All rights reserved.
+ * Distributed under the terms of the MIT License.
+ *
+ * Authors:
+ *		B Krishnan Iyer, krishnaniyer97@gmail.com
+ */
+#ifndef MMC_BUS_H
+#define MMC_BUS_H
+
+
+#include <new>
+#include <stdio.h>
+#include <string.h>
+
+#include <lock.h>
+#include <util/AutoLock.h>
+#include "mmc.h"
+
+
+//#define MMCBUS_TRACE
+#ifdef MMCBUS_TRACE
+#	define TRACE(x...)		dprintf("\33[33mmmc_bus:\33[0m " x)
+#else
+#	define TRACE(x...)
+#endif
+#define TRACE_ALWAYS(x...)	dprintf("\33[33mmmc_bus:\33[0m " x)
+#define ERROR(x...)			dprintf("\33[33mmmc_bus:\33[0m " x)
+#define CALLED() 			TRACE("CALLED %s\n", __PRETTY_FUNCTION__)
+
+
+class CidWrapper {
+	public:
+		CidWrapper(const uint32 cid[4])
+		{
+			fWords[0] = cid[0];
+			fWords[1] = cid[1];
+			fWords[2] = cid[2];
+			fWords[3] = cid[3];
+		}
+
+		uint32_t VendorID() const
+		{
+			return (fWords[3] >> 24) & 0xFF;
+		}
+
+		uint32_t ProductSerial() const
+		{
+			return (fWords[1] << 16) | (fWords[0] >> 16);
+		}
+
+		uint16_t ProductRevision() const
+		{
+			uint16 rev = (fWords[1] >> 20) & 0xF;
+			rev *= 100;
+			rev += (fWords[1] >> 16) & 0xF;
+			return rev;
+		}
+
+	protected:
+		uint32_t fWords[4];
+};
+
+
+// per Physical Layer Simplified Specification Version 9.10
+// sec 5.2
+class SDCid : public CidWrapper {
+	public:
+		SDCid(const uint32 cid[4])
+			: 
+			CidWrapper(cid)
+		{
+		}
+
+		void ProductName(char out[6]) const
+		{
+			out[0] = (char)(fWords[2] >> 24);
+			out[1] = (char)(fWords[2] >> 16);
+			out[2] = (char)(fWords[2] >> 8);
+			out[3] = (char)(fWords[2]);
+			out[4] = (char)(fWords[1] >> 24);
+			out[5] = '\0';
+		}
+
+		uint8_t  ManufactureMonth() const { return (fWords[0] >> 8) & 0xF; }
+		uint16_t ManufactureYear()  const { return 2000 + ((fWords[0] >> 12) & 0xFF); }
+};
+
+
+// per JEDEC Standard No. 84-B51, sec 7.2
+//
+// The SDHCI controller does not store the CRC byte of the R2 response, so the
+// 128-bit CID arrives shifted right by 8 bits: CID bit N is at bit N - 8 of
+// the four words. The field positions below take that into account.
+class MMCCid : public CidWrapper {
+	public:
+		MMCCid(const uint32 cid[4])
+			:
+			CidWrapper(cid)
+		{
+		}
+
+		uint32_t VendorID() const
+		{
+			// MID, CID[127:120]
+			return (fWords[3] >> 16) & 0xFF;
+		}
+
+		uint8_t OemID() const
+		{
+			// OID, CID[111:104]
+			return fWords[3] & 0xFF;
+		}
+
+		void ProductName(char out[7]) const
+		{
+			// PNM, CID[103:56]
+			out[0] = (char)(fWords[2] >> 24);
+			out[1] = (char)(fWords[2] >> 16);
+			out[2] = (char)(fWords[2] >> 8);
+			out[3] = (char)(fWords[2]);
+			out[4] = (char)(fWords[1] >> 24);
+			out[5] = (char)(fWords[1] >> 16);
+			out[6] = '\0';
+			for (int i = 0; i < 6; i++) {
+				if (out[i] < 0x20 || out[i] > 0x7e)
+					out[i] = '?';
+			}
+		}
+
+		uint16_t ProductRevision() const
+		{
+			// PRV, CID[55:48], BCD major.minor
+			uint8 prv = (fWords[1] >> 8) & 0xFF;
+			return (prv >> 4) * 100 + (prv & 0xF);
+		}
+
+		uint32_t ProductSerial() const
+		{
+			// PSN, CID[47:16]
+			return (fWords[1] << 24) | (fWords[0] >> 8);
+		}
+
+		uint8_t ManufactureMonth() const
+		{
+			// MDT[7:4], CID[15:12]
+			return (fWords[0] >> 4) & 0x0F;
+		}
+
+		uint16_t ManufactureYear(bool modern) const
+		{
+			// MDT[3:0], CID[11:8]
+			// For eMMC 4.41 and later devices,
+			// indicated by a value larger than 4 in EXT_CSD_REV[192]
+			// year offset is 2013 instead of 1997.
+			uint8_t yearOffset = fWords[0] & 0x0F;
+			return  yearOffset + (modern? 2013 : 1997);
+		}
+
+		uint32_t Word(int index) const { return fWords[index]; }
+};
+
+
+extern device_manager_info *gDeviceManager;
+
+
+class MMCBus;
+
+class MMCBus {
+public:
+
+								MMCBus(device_node *node);
+								~MMCBus();
+				status_t		InitCheck();
+				void			Rescan();
+
+				status_t		ExecuteCommand(uint16_t rca, uint8_t command,
+									uint32_t argument, uint32_t* response);
+				status_t		DoIO(uint16_t rca, uint8_t command,
+									IOOperation* operation,
+									bool offsetAsSectors);
+				status_t		ReadData(uint16_t rca, uint8_t command,
+									uint32_t argument, void* buffer,
+									size_t length);
+				status_t		SetTiming(uint16_t rca, int timing,
+									uint32_t flags);
+				status_t		DirectIO(uint16_t rca, bool isWrite,
+									uint8_t function, uint32_t address,
+									uint8_t value, uint8_t* _result);
+				status_t		ExtendedIO(uint16_t rca, bool isWrite,
+									uint8_t function, uint32_t address,
+									bool incrementAddress, void* buffer,
+									uint32_t blockCount, uint32_t blockSize);
+				status_t		SetCardInterrupt(void (*handler)(void*),
+									void* cookie);
+
+				void			SetClock(int frequency);
+				void			SetBusWidth(int width);
+				void			SetCardType(card_type type);
+
+				void			AcquireBus() { acquire_sem(fLockSemaphore); }
+				void			ReleaseBus() { release_sem(fLockSemaphore); }
+				void			RegisterInitialDevices();
+
+private:
+				// Identity of a card found by a scan, to publish its node
+				struct card_info {
+					uint32_t	vendor;
+					char		name[7];
+					uint32_t	serial;
+					uint16_t	revision;
+					uint8_t		month;
+					uint16_t	year;
+					uint16_t	rca;
+					uint8_t		type;
+
+					// SDIO cards: one node is published per function
+					uint8_t		function;
+					uint16_t	sdioVendor;
+					uint16_t	sdioDevice;
+					uint8_t		sdioClass;
+				};
+		static	const int32		kMaxPendingCards = 8;
+
+				status_t		_ActivateDevice(uint16_t rca);
+				void			_AcquireScanSemaphore();
+				void			_TerminateBus();
+				void			_PublishCard(const card_info& card);
+				void			_RegisterCard(const card_info& card);
+				void			_InitialScanDone();
+				bool			_ProbeSDIO();
+				void			_SwitchSdioHighSpeed();
+				status_t		_ReadDirect(uint16_t rca, uint8_t function,
+									uint32_t address, uint8_t* _value);
+				status_t		_ReadCISManufacturer(uint16_t rca,
+									uint32_t cisPointer, uint16_t* _vendor,
+									uint16_t* _device);
+		static	status_t		_WorkerThread(void*);
+
+private:
+
+		device_node* 			fNode;
+		mmc_bus_interface* 		fController;
+		void* 					fCookie;
+		status_t				fStatus;
+		thread_id				fWorkerThread;
+		sem_id					fScanSemaphore;
+		sem_id					fLockSemaphore;
+
+		// First scan, done while the bus node is being registered, so that a
+		// boot volume on the device is found (see RegisterInitialDevices())
+		sem_id					fInitialScanDone;
+		bool					fInitialScanRequested;
+		bool					fInitialScanSignaled;
+		bool					fInitialScanWaited;
+		bool					fDeferRegistration;
+		uint16_t				fSdioRca;
+		bool					fSdioHighSpeedSupported;
+		mutex					fRegistrationLock;
+		card_info				fPendingCards[kMaxPendingCards];
+		int32					fPendingCount;
+
+		uint16					fActiveDevice;
+		card_type				fCardType;
+		// FIXME card type shall be extended to map card type to RCA.
+		// In theory RCA is 16 bit allowing for 2^16 devices on signle bus
+		// Practically this is limited by bus max capacitance(ver low speed)
+		// which narrows down to theoritical 40 cards, imperically 10 cards only.
+		// numbers qouted from untrusted sources but seems more than reasonable.
+		// Thus, an array of 40 card_types where RCA is the index shall work.
+};
+
+
+#endif /*MMC_BUS_H*/
