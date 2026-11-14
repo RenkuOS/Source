@@ -34,4 +34,11 @@
 #define CAR_mmLB_MEMORY_CTRL                                                        0x1ac1
 #define CAR_mmLB_DESKTOP_HEIGHT                                                     0x1ac3
 
+/* GRPH_CONTROL fields (the same in DCE 8) */
+#define CAR_GRPH_CONTROL__GRPH_DEPTH_MASK                                          0x3
+#define CAR_GRPH_CONTROL__GRPH_FORMAT_MASK                                         0x700
+#define CAR_GRPH_CONTROL__GRPH_ARRAY_MODE_MASK                                     0xf00000
+#define CAR_GRPH_CONTROL__GRPH_ARRAY_MODE__SHIFT                                   0x14
+#define CAR_ARRAY_LINEAR_ALIGNED                                                   0x1
+
 #endif /* DCE_11_0_D_H */

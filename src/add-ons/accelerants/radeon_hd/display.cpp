@@ -839,7 +839,21 @@ display_crtc_fb_set(uint8 crtcID, display_mode* mode)
 	Write32(OUT, regs->grphPrimarySurfaceAddr, (fbAddress & 0xFFFFFFFF));
 	Write32(OUT, regs->grphSecondarySurfaceAddr, (fbAddress & 0xFFFFFFFF));
 
-	if (info.chipsetID >= RADEON_R600) {
+	if (info.dceMajor >= 8) {
+		// From DCE 8 on, the control register also says how the surface is
+		// laid out in memory, and the scanout of a linear surface needs the
+		// GPU's pipe and bank configuration, which the firmware has set.
+		// Keep those, and ask for a linear aligned surface.
+		uint32 control = Read32(CRT, regs->grphControl);
+		control &= ~(CAR_GRPH_CONTROL__GRPH_DEPTH_MASK
+			| CAR_GRPH_CONTROL__GRPH_FORMAT_MASK
+			| CAR_GRPH_CONTROL__GRPH_ARRAY_MODE_MASK);
+		control |= fbFormat | (CAR_ARRAY_LINEAR_ALIGNED
+			<< CAR_GRPH_CONTROL__GRPH_ARRAY_MODE__SHIFT);
+		TRACE("%s: GRPH_CONTROL: 0x%" B_PRIX32 "\n", __func__, control);
+		Write32(CRT, regs->grphControl, control);
+		Write32(CRT, regs->grphSwapControl, fbSwap);
+	} else if (info.chipsetID >= RADEON_R600) {
 		Write32(CRT, regs->grphControl, fbFormat);
 		Write32(CRT, regs->grphSwapControl, fbSwap);
 	}
