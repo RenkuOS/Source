@@ -496,6 +496,9 @@ void			run_be_about();
 void			set_focus_follows_mouse(bool follow);
 bool			focus_follows_mouse();
 
+// A RenkuOS extension, with C linkage so that it can be looked up by name.
+extern "C" bool	is_composited_desktop();
+
 void			set_mouse_mode(mode_mouse mode);
 mode_mouse		mouse_mode();
 

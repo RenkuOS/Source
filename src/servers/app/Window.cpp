@@ -28,16 +28,20 @@
 #include <WindowPrivate.h>
 
 #include "ClickTarget.h"
+#include "Compositor.h"
 #include "Decorator.h"
 #include "DecorManager.h"
+#include "DefaultDecorator.h"
 #include "Desktop.h"
 #include "DrawingEngine.h"
 #include "HWInterface.h"
 #include "MessagePrivate.h"
 #include "PortLink.h"
+#include "RoundedDecorator.h"
 #include "ServerApp.h"
 #include "ServerWindow.h"
 #include "WindowBehaviour.h"
+#include "WindowBuffer.h"
 #include "Workspace.h"
 #include "WorkspacesView.h"
 
@@ -119,7 +123,11 @@ Window::Window(const BRect& frame, const char *name,
 	fMinHeight(1),
 	fMaxHeight(32768),
 
-	fWorkspacesViewCount(0)
+	fWorkspacesViewCount(0),
+
+	fBufferReady(false),
+	fHasRoundedCorners(false),
+	fCompositeAlpha(255)
 {
 	_InitWindowStack();
 
@@ -176,6 +184,9 @@ Window::~Window()
 	DetachFromWindowStack(false);
 
 	gDecorManager.CleanupForWindow(this);
+
+	if (fBufferInterface.IsSet())
+		fDrawingEngine->SetHWInterface(NULL);
 }
 
 
@@ -197,11 +208,160 @@ Window::SetClipping(BRegion* stillAvailableOnScreen)
 
 	// start from full region (as if the window was fully visible)
 	GetFullRegion(&fVisibleRegion);
+
+	if (fBufferInterface.IsSet()) {
+		fCompositeRegion = fVisibleRegion;
+		fOnScreenRegion = fVisibleRegion;
+		fOnScreenRegion.IntersectWith(stillAvailableOnScreen);
+
+		BRect frame = fCompositeRegion.Frame();
+		fBufferInterface->SetFrame(frame);
+
+		std::vector< ::Decorator::ShapeRect> shape;
+		bool hasRoundedCorners = false;
+		if (::Decorator* decorator = Decorator()) {
+			DefaultDecorator* standard = dynamic_cast<DefaultDecorator*>(decorator);
+			RoundedDecorator* rounded = dynamic_cast<RoundedDecorator*>(decorator);
+			if (standard != NULL && standard->HasRoundedCorners()) {
+				hasRoundedCorners = true;
+				standard->GetRoundedShape(shape);
+			} else if (rounded != NULL && RoundedDecorator::IsActive(fDesktop)) {
+				hasRoundedCorners = true;
+				rounded->GetRoundedShape(shape);
+			} else
+				decorator->GetShape(shape);
+		}
+		if (shape.empty()) {
+			::Decorator::ShapeRect rect = { fFrame, 0, 0, 0, 0 };
+			shape.push_back(rect);
+		}
+		DesktopSettings settings(fDesktop);
+		fShape.SetTo(shape, fCompositeRegion,
+			settings.CompositedShadows()
+				&& fLook != kDesktopWindowLook && fFeel != kDesktopWindowFeel
+				&& fLook != B_NO_BORDER_WINDOW_LOOK
+				&& (fFlags & kWindowScreenFlag) == 0,
+			settings.UIColor(B_PANEL_BACKGROUND_COLOR).IsDark(),
+			settings.UIColor(B_PANEL_TEXT_COLOR));
+
+		fTransparentRegion.MakeEmpty();
+		if (IsTransparent()) {
+			GetContentRegion(&fTransparentRegion);
+			fTransparentRegion.IntersectWith(&fCompositeRegion);
+		}
+
+		// The buffer can't be drawn to above or left of the screen, but other
+		// windows don't matter anymore: the window draws everything else.
+		BRegion drawable(BRect(0, 0, 65535, 65535));
+		fVisibleRegion.IntersectWith(&drawable);
+
+		fVisibleContentRegionValid = false;
+		fEffectiveDrawingRegionValid = false;
+
+		// If the decorator has grown or shrunk at the left top corner, the
+		// contents of the buffer are in the wrong place.
+		BPoint offset = frame.LeftTop() - fFrame.LeftTop();
+		if (offset != fBufferOffset) {
+			fBufferOffset = offset;
+			if (fBufferReady)
+				ProcessDirtyRegion(fVisibleRegion);
+		}
+
+		// The decorator draws its border differently around a rounded corner.
+		if (hasRoundedCorners != fHasRoundedCorners) {
+			fHasRoundedCorners = hasRoundedCorners;
+			if (fBufferReady) {
+				BRegion border;
+				GetBorderRegion(&border);
+				ProcessDirtyRegion(border);
+			}
+		}
+		return;
+	}
+
 	// clip to region still available on screen
 	fVisibleRegion.IntersectWith(stillAvailableOnScreen);
 
 	fVisibleContentRegionValid = false;
 	fEffectiveDrawingRegionValid = false;
+}
+
+
+void
+Window::GetOnScreenContentRegion(BRegion* region)
+{
+	if (!fBufferInterface.IsSet()) {
+		*region = VisibleContentRegion();
+		return;
+	}
+
+	GetContentRegion(region);
+	region->IntersectWith(&fOnScreenRegion);
+}
+
+
+bool
+Window::ShapeContains(const BPoint& where) const
+{
+	if (!fBufferInterface.IsSet())
+		return true;
+	if (!fShape.Contains(where))
+		return false;
+
+	// What the window hasn't drawn at all can't be clicked.
+	if (fTransparentRegion.Contains(where) && fBufferReady) {
+		const WindowBuffer& buffer = fBufferInterface->Buffer();
+		int32 x = (int32)where.x;
+		int32 y = (int32)where.y;
+		if (buffer.InitCheck() == B_OK && x >= 0 && y >= 0
+			&& buffer.Frame().Contains(BPoint(x, y))) {
+			return buffer.PixelAt(x, y)[3] != 0;
+		}
+	}
+	return true;
+}
+
+
+/*!	The window lock must be held for writing.
+*/
+void
+Window::ReleaseBuffer()
+{
+	if (!fBufferInterface.IsSet())
+		return;
+
+	// The Painter has to let go of the memory. Nothing can draw to the window
+	// either until its clipping is rebuilt when it is shown.
+	fDrawingEngine->SetHWInterface(NULL);
+	fBufferInterface->ReleaseBuffer();
+	fDrawingEngine->SetHWInterface(fBufferInterface.Get());
+
+	fBufferReady = false;
+	fVisibleRegion.MakeEmpty();
+	fVisibleContentRegionValid = false;
+	fEffectiveDrawingRegionValid = false;
+}
+
+
+void
+Window::SetCompositeAlpha(uint8 alpha)
+{
+	if (alpha == fCompositeAlpha)
+		return;
+
+	fCompositeAlpha = alpha;
+
+	Compositor* compositor = fDesktop->GetCompositor();
+	if (compositor != NULL)
+		compositor->Composite(BRegion(fShape.Bounds()));
+}
+
+
+void
+Window::SetBufferInterface(WindowBufferHWInterface* interface)
+{
+	fBufferInterface.SetTo(interface);
+	interface->SetWindow(this);
 }
 
 
@@ -662,6 +822,9 @@ Window::ReloadDecor()
 		decorator->SetSettings(settings);
 
 	stack->SetDecorator(decorator);
+	// It must draw to the buffer that is shown when compositing.
+	if (fBufferInterface.IsSet())
+		decorator->SetDrawingEngine(stack->TopLayerWindow()->GetDrawingEngine());
 
 	fWindowBehaviour.SetTo(windowBehaviour);
 
@@ -793,6 +956,13 @@ Window::RedrawDirtyRegion()
 
 		fRegionPool.Recycle(dirtyContentRegion);
 		fRegionPool.Recycle(exposeContentRegion);
+
+		if (fBufferInterface.IsSet() && !fBufferReady) {
+			fBufferReady = true;
+			// including the shadow
+			BRegion bounds(fShape.Bounds());
+			fBufferInterface->InvalidateRegion(bounds);
+		}
 	}
 
 	// reset the dirty region, since
@@ -1094,7 +1264,12 @@ Window::SetFocus(bool focus)
 		dirty = fRegionPool.GetRegion(decorator->GetFootprint());
 	if (dirty) {
 		dirty->IntersectWith(&fVisibleRegion);
-		fDesktop->MarkDirty(*dirty);
+		if (fBufferInterface.IsSet()) {
+			// Nothing has changed for any other window, but a stack's
+			// decorator is drawn by its top window.
+			TopLayerStackWindow()->ProcessDirtyRegion(*dirty);
+		} else
+			fDesktop->MarkDirty(*dirty);
 		fRegionPool.Recycle(dirty);
 	}
 
@@ -1363,6 +1538,14 @@ Window::SetFeel(window_feel feel)
 void
 Window::SetFlags(uint32 flags, BRegion* updateRegion)
 {
+	// Turning transparency on or off changes how the whole window is drawn.
+	if (((fFlags ^ flags) & B_TRANSPARENT_WINDOW) != 0
+		&& fBufferInterface.IsSet() && updateRegion != NULL) {
+		BRegion full;
+		GetFullRegion(&full);
+		updateRegion->Include(&full);
+	}
+
 	fOriginalFlags = flags;
 	fFlags = flags & ValidWindowFlags(fFeel);
 	if (!IsNormal())
@@ -1732,6 +1915,7 @@ Window::ValidWindowFlags()
 		| B_SAME_POSITION_IN_ALL_WORKSPACES
 		| B_AUTO_UPDATE_SIZE_LIMITS
 		| B_CLOSE_ON_ESCAPE
+		| B_TRANSPARENT_WINDOW
 		| B_NO_SERVER_SIDE_WINDOW_MODIFIERS
 		| kWindowScreenFlag
 		| kAcceptKeyboardFocusFlag;
@@ -2204,6 +2388,12 @@ Window::AddWindowToStack(Window* window)
 	}
 
 	window->SetLook(window->Look(), &dirty);
+	// Every window has its own buffer when compositing: the decorator must
+	// draw to the one that is shown.
+	if (fBufferInterface.IsSet() && decorator != NULL) {
+		decorator->SetDrawingEngine(
+			TopLayerStackWindow()->GetDrawingEngine());
+	}
 	fDesktop->RebuildAndRedrawAfterWindowChange(TopLayerStackWindow(), dirty);
 	window->SetFocus(window->IsFocus());
 	return true;
@@ -2250,10 +2440,21 @@ Window::MoveToTopStackLayer()
 	::Decorator* decorator = Decorator();
 	if (decorator == NULL)
 		return false;
+	bool wasOnTop = fCurrentStack->TopLayerWindow() == this;
 	decorator->SetDrawingEngine(GetDrawingEngine());
 	SetLook(Look(), NULL);
 	decorator->SetTopTab(PositionInStack());
-	return fCurrentStack->MoveToTopLayer(this);
+	bool moved = fCurrentStack->MoveToTopLayer(this);
+
+	// Only the top window of a stack draws, so a window that wasn't on top has
+	// an out of date buffer. This is called whenever a window is activated, and
+	// mostly there is nothing to do.
+	if (moved && !wasOnTop && fBufferInterface.IsSet()) {
+		BRegion full;
+		GetFullRegion(&full);
+		ProcessDirtyRegion(full);
+	}
+	return moved;
 }
 
 
