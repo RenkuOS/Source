@@ -104,7 +104,12 @@ init_registers(register_info* regs, uint8 crtcID)
 		regs->grphYStart = EVERGREEN_GRPH_Y_START + offset;
 		regs->grphXEnd = EVERGREEN_GRPH_X_END + offset;
 		regs->grphYEnd = EVERGREEN_GRPH_Y_END + offset;
-		regs->modeDesktopHeight = EVERGREEN_DESKTOP_HEIGHT + offset;
+		// From DCE 8 on, the line buffer's memory control is where
+		// Evergreen's desktop height was, and the height is further on.
+		if (info.dceMajor >= 8)
+			regs->modeDesktopHeight = (CAR_mmLB_DESKTOP_HEIGHT << 2) + offset;
+		else
+			regs->modeDesktopHeight = EVERGREEN_DESKTOP_HEIGHT + offset;
 		regs->modeDataFormat = EVERGREEN_DATA_FORMAT + offset;
 		regs->viewportStart = EVERGREEN_VIEWPORT_START + offset;
 		regs->viewportSize = EVERGREEN_VIEWPORT_SIZE + offset;
@@ -578,6 +583,8 @@ display_crtc_dpms(uint8 crtcID, int mode)
 			TRACE("%s: crtc %" B_PRIu8 " dpms powerup\n", __func__, crtcID);
 			if (gDisplay[crtcID]->attached == false)
 				return;
+			if (info.dceMajor >= 6)
+				display_crtc_powergate(crtcID, ATOM_DISABLE);
 			display_crtc_power(crtcID, ATOM_ENABLE);
 			gDisplay[crtcID]->powered = true;
 			if (info.dceMajor >= 3 && info.dceMajor < 6)
@@ -600,6 +607,27 @@ display_crtc_dpms(uint8 crtcID, int mode)
 }
 
 
+/*!	On DCE 11, every pixel goes through the LUT, whose memory can be
+	powered down, by display power gating among others; it then reads as
+	black. Keeps it on, as the firmware does and as Linux does before
+	loading it.
+*/
+static void
+display_crtc_lut_power(uint8 crtcID)
+{
+	radeon_shared_info &info = *gInfo->shared_info;
+	if (info.dceMajor < 11)
+		return;
+
+	uint32 offset = (CAR_mmDCFE_MEM_PWR_CTRL << 2)
+		+ gDisplay[crtcID]->regs->crtcOffset;
+	uint32 power = Read32(OUT, offset);
+	power &= ~CAR_DCFE_MEM_PWR_CTRL__DCP_LUT_MEM_PWR_FORCE_MASK;
+	power |= CAR_DCFE_MEM_PWR_CTRL__DCP_LUT_MEM_PWR_DIS_MASK;
+	Write32(OUT, offset, power);
+}
+
+
 void
 display_dce45_crtc_load_lut(uint8 crtcID)
 {
@@ -611,6 +639,8 @@ display_dce45_crtc_load_lut(uint8 crtcID)
 	uint16* r = info.color_data;
 	uint16* g = r + 256;
 	uint16* b = r + 512;
+
+	display_crtc_lut_power(crtcID);
 
 	if (info.dceMajor >= 5) {
 		Write32(OUT, NI_INPUT_CSC_CONTROL + regs->crtcOffset,
@@ -660,7 +690,9 @@ display_dce45_crtc_load_lut(uint8 crtcID)
 			(NI_OUTPUT_CSC_GRPH_MODE(NI_OUTPUT_CSC_BYPASS) |
 			NI_OUTPUT_CSC_OVL_MODE(NI_OUTPUT_CSC_BYPASS)));
 		/* XXX match this to the depth of the crtc fmt block, move to modeset? */
-		Write32(OUT, 0x6940 + regs->crtcOffset, 0);
+		// On DCE 11 the firmware sets it to match the panel's depth: keep it.
+		if (info.dceMajor < 11)
+			Write32(OUT, 0x6940 + regs->crtcOffset, 0);
 	}
 }
 
@@ -816,13 +848,16 @@ display_crtc_fb_set(uint8 crtcID, display_mode* mode)
 	TRACE("%s: Framebuffer at: 0x%" B_PRIX64 "\n", __func__, fbAddress);
 
 	if (info.chipsetID >= RADEON_RV770) {
+		// The high address is 4 bits wide before DCE 8, and 8 bits from then
+		// on, where an APU's frame buffer can be above 64 GB.
+		uint32 highMask = info.dceMajor >= 8 ? 0xff : 0xf;
 		TRACE("%s: Set SurfaceAddress High: 0x%" B_PRIX32 "\n",
-			__func__, (fbAddress >> 32) & 0xf);
+			__func__, (uint32)(fbAddress >> 32) & highMask);
 
 		Write32(OUT, regs->grphPrimarySurfaceAddrHigh,
-			(fbAddress >> 32) & 0xf);
+			(fbAddress >> 32) & highMask);
 		Write32(OUT, regs->grphSecondarySurfaceAddrHigh,
-			(fbAddress >> 32) & 0xf);
+			(fbAddress >> 32) & highMask);
 	}
 
 	TRACE("%s: Set SurfaceAddress: 0x%" B_PRIX64 "\n",
@@ -831,7 +866,21 @@ display_crtc_fb_set(uint8 crtcID, display_mode* mode)
 	Write32(OUT, regs->grphPrimarySurfaceAddr, (fbAddress & 0xFFFFFFFF));
 	Write32(OUT, regs->grphSecondarySurfaceAddr, (fbAddress & 0xFFFFFFFF));
 
-	if (info.chipsetID >= RADEON_R600) {
+	if (info.dceMajor >= 8) {
+		// From DCE 8 on, the control register also says how the surface is
+		// laid out in memory, and the scanout of a linear surface needs the
+		// GPU's pipe and bank configuration, which the firmware has set.
+		// Keep those, and ask for a linear aligned surface.
+		uint32 control = Read32(CRT, regs->grphControl);
+		control &= ~(CAR_GRPH_CONTROL__GRPH_DEPTH_MASK
+			| CAR_GRPH_CONTROL__GRPH_FORMAT_MASK
+			| CAR_GRPH_CONTROL__GRPH_ARRAY_MODE_MASK);
+		control |= fbFormat | (CAR_ARRAY_LINEAR_ALIGNED
+			<< CAR_GRPH_CONTROL__GRPH_ARRAY_MODE__SHIFT);
+		TRACE("%s: GRPH_CONTROL: 0x%" B_PRIX32 "\n", __func__, control);
+		Write32(CRT, regs->grphControl, control);
+		Write32(CRT, regs->grphSwapControl, fbSwap);
+	} else if (info.chipsetID >= RADEON_R600) {
 		Write32(CRT, regs->grphControl, fbFormat);
 		Write32(CRT, regs->grphSwapControl, fbSwap);
 	}
@@ -1132,6 +1181,30 @@ display_crtc_power(uint8 crtcID, int command)
 	args.ucEnable = command;
 
 	atom_execute_table(gAtomContext, index, (uint32*)&args);
+}
+
+
+/*!	From DCE 6 on, a display pipe's memories can be power gated while its
+	CRTC is off. ATOM_DISABLE turns the gating off, so that the pipe can
+	fetch and buffer the frame buffer again; ATOM_ENABLE allows it.
+*/
+void
+display_crtc_powergate(uint8 crtcID, int command)
+{
+	TRACE("%s: crtc %" B_PRIu8 ", gating %s\n", __func__, crtcID,
+		command == ATOM_ENABLE ? "on" : "off");
+	int index = GetIndexIntoMasterTable(COMMAND, EnableDispPowerGating);
+	ENABLE_DISP_POWER_GATING_PARAMETERS_V2_1 args;
+
+	memset(&args, 0, sizeof(args));
+
+	args.ucDispPipeId = crtcID;
+	args.ucEnable = command;
+
+	atom_execute_table(gAtomContext, index, (uint32*)&args);
+	// The table also lets the LUT memory power down again.
+	if (command == ATOM_DISABLE)
+		display_crtc_lut_power(crtcID);
 }
 
 

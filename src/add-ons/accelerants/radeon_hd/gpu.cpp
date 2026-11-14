@@ -608,7 +608,13 @@ radeon_gpu_mc_init()
 	// This is the card internal location.
 	uint64 vramBase = 0;
 
-	if ((info.chipsetFlags & CHIP_IGP) != 0) {
+	// An integrated GPU's memory is a carve-out of system memory, which the
+	// firmware has placed in the GPU's address space; on the DCE 10/11 APUs
+	// (Carrizo, Stoney) that is above 4 GB. Linux keeps the firmware's
+	// location on every APU; the older ones are left as they were here, as
+	// untested.
+	if ((info.chipsetFlags & CHIP_IGP) != 0
+		|| ((info.chipsetFlags & CHIP_APU) != 0 && info.dceMajor >= 10)) {
 		vramBase = Read32(OUT, fbVMLocationReg) & 0xFFFF;
 		vramBase <<= 24;
 	}
@@ -634,6 +640,14 @@ radeon_gpu_mc_setup()
 
 	TRACE("%s: vramStart: 0x%" B_PRIX64 ", vramEnd: 0x%" B_PRIX64 "\n",
 		__func__, gInfo->fb.vramStart, gInfo->fb.vramEnd);
+
+	// On the DCE 10/11 APUs the firmware has set the memory controller up,
+	// and the frame buffer lives where it put it: keep it.
+	if ((info.chipsetFlags & CHIP_APU) != 0 && info.dceMajor >= 10) {
+		TRACE("%s: keeping the firmware's memory controller setup\n",
+			__func__);
+		return B_OK;
+	}
 
 	if (info.chipsetID >= RADEON_CAYMAN)
 		return radeon_gpu_mc_setup_evergreen();	// also for ni

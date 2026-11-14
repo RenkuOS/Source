@@ -510,6 +510,10 @@ const struct supported_device {
 
 	// WARN: DCE versions below here get sketchy
 
+	// Stoney Ridge, DCE 11.1: tested on an AMD A4-9120C Chromebook
+	// (1002:98e4), the rest of DCE 10 and 11 below isn't yet
+	{0x98e4, 11, 1, RADEON_STONEY, CHIP_APU, "Radeon HD Stoney Ridge"},
+
 #if 0 /* disabled for R1/beta5 */
 	// Introduced: 2014
 	// Codename: Volcanic Islands
@@ -539,8 +543,6 @@ const struct supported_device {
 	{0x9875, 11, 0, RADEON_CARRIZO, CHIP_APU, "Radeon HD Carrizo"},
 	{0x9876, 11, 0, RADEON_CARRIZO, CHIP_APU, "Radeon HD Carrizo"},
 	{0x9877, 11, 0, RADEON_CARRIZO, CHIP_APU, "Radeon HD Carrizo"},
-	// Stoney Ridge 11.1?
-	{0x98e4, 11, 1, RADEON_STONEY, CHIP_APU, "Radeon HD Stoney Ridge"},
 
 	// Introduced: 2016
 	// Codename: Artic Islands / Polaris

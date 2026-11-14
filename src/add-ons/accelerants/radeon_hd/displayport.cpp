@@ -373,9 +373,10 @@ dp_get_lane_count(uint32 connectorIndex, display_mode* mode)
 	uint32 dpMaxLaneCount = dpcd_reg_read(connectorIndex,
 			DP_MAX_LANE_COUNT) & DP_MAX_LANE_COUNT_MASK;
 
-	uint32 lane;
-	// don't go below 2 lanes or display is jittery
-	for (lane = 2; lane < dpMaxLaneCount; lane <<= 1) {
+	// Don't go below 2 lanes or the display is jittery, but never use more
+	// than the sink has: an eDP panel may only have one.
+	uint32 lane = dpMaxLaneCount < 2 ? 1 : 2;
+	for (; lane < dpMaxLaneCount; lane <<= 1) {
 		uint32 maxPixelClock = dp_get_pixel_clock_max(dpMaxLinkRate, lane,
 			bitsPerPixel);
 		if (mode->timing.pixel_clock <= maxPixelClock)
