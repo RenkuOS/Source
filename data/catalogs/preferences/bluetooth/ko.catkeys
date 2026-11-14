@@ -1,0 +1,44 @@
+1	korean	x-vnd.Haiku-BluetoothPrefs	305903693
+Laptop	Settings view		랩탑
+Only from trusted devices	Settings view		신뢰할 수 있는 장치만 허용
+15 secs	Settings view		15 초
+Quit	main		종료
+Manufacturer: 	Device View		제조사: 
+Desktop	Settings view		데스크탑
+Server	Window		서버
+Identify host as:	Settings view		호스트 식별자:
+Local devices found on system:	Settings view		시스템에서 발견한 주변 장치:
+Service classes: 	Device View		서비스 클래스: 
+Remote devices	Window		원격 장치
+Settings	Window		설정
+Stop bluetooth services…	Window		블루투스 서비스 정지…
+61 secs	Settings view		61 초
+Add…	Remote devices		추가…
+Revert	Window		되돌리기
+Refresh local devices…	Window		주변 장치 재탐색…
+Disconnect	Remote devices		연결끊김
+Defaults	Window		기본값
+From all devices	Settings view		모든 장치에서
+Start bluetooth services…	Window		블루투스 서비스 시작…
+Launch now	main		지금 실행
+Bluetooth	System name		블루투스
+Remove	Remote devices		제거
+Pick device…	Settings view		장치 선택…
+Always ask	Settings view		항상 묻기
+With support of:\n - Mika Lindqvist\n - Adrien Destugues\n - Maksym Yevmenkin\n\nThanks to the individuals who helped…\n\nShipping/donating hardware:\n - Henry Jair Abril Florez (el Colombian)\n\t& Stefanie Bartolich\n - Edwin Erik Amsler\n - Dennis d'Entremont\n - Luroh\n - Pieter Panman\n\nEconomically:\n - Karl vom Dorff, Andrea Bernardi (OSDrawer),\n - Matt M, Doug F, Hubert H,\n - Sebastian B, Andrew M, Jared E,\n - Frederik H, Tom S, Ferry B,\n - Greg G, David F, Richard S, Martin W:\n\nWith patches:\n - Michael Weirauch\n - Fredrik Ekdahl\n - Raynald Lesieur\n - Andreas Färber\n - Joerg Meyer\nTesting:\n - Petter H. Juliussen\nWho gave me all the knowledge:\n - the yellowTAB team	main		이들의 지원이 함께 하였습니다:\n- Mika Lindqvist\n- Adrien Destugues\n- Maksym Yevmenkin\n\n도움을 주신 모든 사람들에게 감사드립니다…\n\n하드웨어 배송/기부:\n- Henry Jair Abril Florez (el Colombian)\n\t& Stefanie Bartolich\n- Edwin Erik Amsler\n- Dennis d'Entremont\n- Luroh\n- Pieter Panman\n\n경제적 지원:\n- Karl vom Dorff, Andrea Bernardi (OSDrawer),\n- Matt M, Doug F, Hubert H,\n- Sebastian B, Andrew M, Jared E,\n- Frederik H, Tom S, Ferry B,\n- Greg G, David F, Richard S, Martin W:\n\n패치 지원:\n- Michael Weirauch\n- Fredrik Ekdahl\n- Raynald Lesieur\n- Andreas Färber\n- Joerg Meyer\n테스트:\n- Petter H. Juliussen\n제게 모든 지식을 준:\n- the yellowTAB team
+Help	Window		도움말
+Pair…	Remote devices		페어…
+Incoming connections policy:	Settings view		들어오는 연결 정책:
+Retrieving names…	Inquiry panel		이름 가져오는 중…
+Show name	Extended local device view		이름 보기
+Add device to list	Inquiry panel		목록에 장치 추가
+The Bluetooth services are not currently running on this system.	main		시스템에서 블루투스 서비스가 실행 중이 아닙니다.
+Discoverable	Extended local device view		발견 가능
+Authenticate	Extended local device view		인증
+Smart phone	Settings view		스마트폰
+Default inquiry time:	Settings view		기본 조회 시간:
+Server	Settings view		서버
+Handheld	Settings view		핸드헬드
+ packets: 	Device View		 패킷: 
+About Bluetooth…	Window		블루투스 정보...
+Starting scan…	Inquiry panel		탐색 시작 중…

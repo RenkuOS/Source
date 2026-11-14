@@ -1,0 +1,73 @@
+SubDir HAIKU_TOP src add-ons kernel drivers network wlan broadcom43xxn ;
+
+UseHeaders [ FDirName $(HAIKU_TOP) src libs compat freebsd_network compat ]
+	: true ;
+UseHeaders [ FDirName $(HAIKU_TOP) src libs compat freebsd_wlan ] : true ;
+UsePrivateHeaders net system ;
+UsePrivateKernelHeaders ;
+
+# The chip's own half is Linux's brcmsmac, taken unchanged, and what this
+# driver put beneath it. It says #include <linux/...> and expects its own
+# compatibility headers, so those come first and as system headers.
+local brcmsDir = [ FDirName $(SUBDIR) brcms ] ;
+# Not brcms/linux itself: the sources there reach each other as
+# <linux/...>, and putting that directory on the path as well lets a plain
+# <types.h> from the FreeBSD side find the Linux one, which then collides
+# with half of Haiku's own kernel headers.
+SubDirSysHdrs $(brcmsDir) ;
+SubDirSysHdrs [ FDirName $(brcmsDir) phy ] ;
+UseHeaders [ FDirName $(SUBDIR) ] : true ;
+
+SubDirCcFlags [ FDefines _KERNEL=1 FBSD_DRIVER=1 ]
+	-Wno-format
+	-Wno-unused
+	-Wno-sign-compare
+	-Wno-pointer-sign
+	-Wno-missing-braces
+	-Wno-implicit-fallthrough
+	-Wno-unused-but-set-variable
+	-Wno-uninitialized
+	-fno-strict-aliasing
+	;
+
+SEARCH_SOURCE += $(brcmsDir) ;
+SEARCH_SOURCE += [ FDirName $(brcmsDir) phy ] ;
+
+local vectorSources ;
+if $(TARGET_ARCH) = x86_64 {
+	vectorSources += renku_vpaes.S ;
+}
+
+KernelAddon broadcom43xxn :
+	$(vectorSources)
+	# the interface, which answers net80211
+	if_brcms.c
+	glue.c
+
+	# brcmsmac's phy layer and the pieces of the driver it calls back into
+	phy_n.c
+	phy_cmn.c
+	phy_qmath.c
+	phytbl_n.c
+	phy_shim.c
+	aiutils.c
+	pmu.c
+	ucode_loader.c
+	cordic.c
+	dma.c
+
+	# what it stands on here
+	glue_bcma.c
+	glue_chip.c
+	glue_dma.c
+	glue_sprom.c
+	glue_brcms.c
+	glue_attach.c
+	glue_rx.c
+	glue_tx.c
+	glue_irq.c
+	glue_net.c
+	:
+	freebsd_wlan.a
+	libfreebsd_network.a
+	;

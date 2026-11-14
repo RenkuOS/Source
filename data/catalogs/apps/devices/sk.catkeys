@@ -1,0 +1,67 @@
+1	slovak	x-vnd.Haiku-Devices	1509979255
+ACPI bus	DevicesView		Zbernica ACPI
+Class info	DevicePCI		Info o triede
+Communications	DeviceSCSI		Komunikácia
+Mass storage controller	Device		Radič hromadného úložiska
+Printer	DeviceSCSI		Tlačiareň
+Manufacturer	Device		Výrobca
+Memory controller	Device		Radič pamäte
+Unknown device	DevicesView		Neznáme zariadenie
+Name	PropertyList		Názov
+Manufacturer	DeviceSCSI		Výrobca
+Satellite communications controller	Device		Radič satelitnej komunikácie
+PCI bus	DevicesView		Zbernica PCI
+Device	Device		Zariadenie
+Changer	DeviceSCSI		Menič
+Category	DevicesView		Kategória
+Refresh devices	DevicesView		Obnoviť zariadenia
+Device paths	Device		Cesty k zariadeniam
+Unknown device	Device		Neznáme zariadenie
+Value	PropertyList		Hodnota
+Generic system peripheral	Device		Všeobecné periférie systému
+Devices	DevicesView		Zariadenia
+Display controller	Device		Radič zobrazovania
+Device name	DevicePCI		Názov zariadenia
+Other	DeviceSCSI		Iné
+Order by:	DevicesView		Zoradiť podľa:
+Intelligent controller	Device		Inteligentný radič
+Multimedia controller	Device		Radič multimédií
+Quit	DevicesView		Ukončiť
+Processor	DeviceSCSI		Procesor
+Bridge	Device		Most
+Worm	DeviceSCSI		Červ
+CD-ROM	DeviceSCSI		CD-ROM
+Signal processing controller	Device		Radič spracovania signálov
+Docking station	Device		Dokovacia stanica
+Unclassified device	Device		Nezaradené zariadenie
+ACPI controller	Device		Radič ACPI
+ACPI bus	Device		Zbernica ACPI
+Encryption controller	Device		Radič šifrovania
+Devices	System name		Zariadenia
+Generate system information	DevicesView		Vytvoriť informácie o systéme
+Processor	Device		Procesor
+Computer	DevicesView		Počítač
+Connection	DevicesView		Pripojenie
+Scanner	DeviceSCSI		Skener
+ACPI node '%1'	DeviceACPI		Uzol ACPI „%1“
+Device name	Device		Názov zariadenia
+Device class	DeviceSCSI		Trieda zariadenia
+Input device controller	Device		Radič vstupných zariadení
+Serial bus controller	Device		Radič sériovej zbernice
+RBC	DeviceSCSI		RBC
+Wireless controller	Device		Radič bezdrôtových sietí
+Device name	DeviceACPI		Názov zariadenia
+Report compatibility	DevicesView		Nahlásiť kompatibilitu
+Computer	Device		Počítač
+Enclosure	DeviceSCSI		Skrinka
+PCI bus	Device		Zbernica PCI
+ISA bus	Device		Zbernica ISA
+ISA bus	DevicesView		Zbernica ISA
+Manufacturer	DevicePCI		Výrobca
+Bridge	DeviceSCSI		Most
+Device name	DeviceSCSI		Názov zariadenia
+Array	DeviceSCSI		Pole
+Network controller	Device		Radič siete
+Driver used	Device		Použitý ovládač
+Communication controller	Device		Radič komunikácie
+unknown	Device		neznáme

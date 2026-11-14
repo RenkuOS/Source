@@ -1,0 +1,59 @@
+SubDir HAIKU_TOP src add-ons kernel drivers network wlan atheros10kwifi ;
+
+UseHeaders [ FDirName $(HAIKU_TOP) src libs compat freebsd_network compat ]
+	: true ;
+UseHeaders [ FDirName $(HAIKU_TOP) src libs compat freebsd_wlan ] : true ;
+UsePrivateHeaders net system ;
+UsePrivateKernelHeaders ;
+
+SubDirCcFlags [ FDefines _KERNEL=1 FBSD_DRIVER=1 _XOPEN_SOURCE ]
+	-Wno-format
+	-Wno-unused
+	-Wno-uninitialized ;
+
+UseHeaders [ FDirName $(SUBDIR) ] : true ;
+UseHeaders [ FDirName $(SUBDIR) dev athp ] : true ;
+
+SEARCH_SOURCE += [ FDirName $(SUBDIR) dev athp ] ;
+SEARCH_SOURCE += [ FDirName $(SUBDIR) dev athp regd ] ;
+
+KernelAddon atheros10kwifi :
+	glue.c
+
+	if_athp_pci.c
+	if_athp_main.c
+	if_athp_debug.c
+	athp_idr.c
+	if_athp_regs.c
+	if_athp_regio.c
+	if_athp_pci_config.c
+	if_athp_pci_chip.c
+	if_athp_desc.c
+	if_athp_buf.c
+	if_athp_hal_compl.c
+	if_athp_pci_ce.c
+	if_athp_pci_pipe.c
+	if_athp_pci_hif.c
+	if_athp_bmi.c
+	if_athp_swap.c
+	if_athp_core.c
+	if_athp_htc.c
+	if_athp_wmi_tlv.c
+	if_athp_wmi.c
+	if_athp_mac.c
+	if_athp_htt.c
+	if_athp_txrx.c
+	if_athp_htt_tx.c
+	if_athp_htt_rx.c
+	if_athp_fwlog.c
+	if_athp_taskq.c
+	if_athp_trace.c
+	if_athp_ioctl.c
+	if_athp_spectral.c
+	if_athp_thermal.c
+	if_athp_debug_stats.c
+	regd.c
+	:
+	freebsd_wlan.a
+	libfreebsd_network.a
+	;

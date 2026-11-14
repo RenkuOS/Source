@@ -1,0 +1,71 @@
+1	danish	x-vnd.Haiku-Devices	1374585159
+ACPI bus	DevicesView		ACPI-bus
+USB bus	DevicesView		USB-bus
+Class info	DevicePCI		Klasseoplysninger
+USB bus	Device		USB-bus
+Communications	DeviceSCSI		Kommunikation
+Mass storage controller	Device		Lagringsstyreenhed
+Printer	DeviceSCSI		Printer
+Manufacturer	Device		Producent
+Memory controller	Device		Hukommelsesstyreenhed
+Unknown device	DevicesView		Ukendt enhed
+Name	PropertyList		Navn
+Manufacturer	DeviceSCSI		Producent
+Satellite communications controller	Device		Styreenhed for satellitkommunikation
+PCI bus	DevicesView		PCI-bus
+Device	Device		Enhed
+Changer	DeviceSCSI		Skifter
+Category	DevicesView		Kategori
+Refresh devices	DevicesView		Genopfrisk enheder
+Device paths	Device		Enhedsstier
+Unknown device	Device		Ukendt enhed
+Value	PropertyList		Værdi
+Generic system peripheral	Device		Almen systemenhed
+Devices	DevicesView		Enheder
+Display controller	Device		Skærmstyring
+Device name	DevicePCI		Enhedsnavn
+Other	DeviceSCSI		Andet
+Order by:	DevicesView		Sortér efter:
+Intelligent controller	Device		Intelligent styreenhed
+Multimedia controller	Device		Multimediestyreenhed
+Quit	DevicesView		Afslut
+Processor	DeviceSCSI		Processor
+Bridge	Device		Bro
+Worm	DeviceSCSI		Orm
+CD-ROM	DeviceSCSI		CD-ROM
+Signal processing controller	Device		Styreenhed for signalbehandling
+Docking station	Device		Dockingstation
+Unclassified device	Device		Uklassificeret enhed
+ACPI controller	Device		ACPI-kontroller
+ACPI bus	Device		ACPI-bus
+Encryption controller	Device		Krypteringsstyreenhed
+Devices	System name		Enheder
+Generate system information	DevicesView		Opbyg systemoplysninger
+Processor	Device		Processor
+Computer	DevicesView		Computer
+Connection	DevicesView		Forbindelse
+Scanner	DeviceSCSI		Skanner
+ACPI node '%1'	DeviceACPI		ACPI-knudepunkt '%1'
+Device name	Device		Enhedsnavn
+Device class	DeviceSCSI		Enhedsklasse
+Input device controller	Device		Styreenhed for inddataenhed
+Serial bus controller	Device		Styreenhed for seriel bus
+RBC	DeviceSCSI		RBC
+Wireless controller	Device		Trådløs styreenhed
+Device name	DeviceACPI		Enhedsnavn
+ACPI <unknown>	DeviceACPI		ACPI <ukendt>
+Report compatibility	DevicesView		Indberet kompatibilitet
+Computer	Device		Computer
+Enclosure	DeviceSCSI		Indpakning
+PCI bus	Device		PCI-bus
+ISA bus	Device		ISA-bus
+ISA bus	DevicesView		ISA-bus
+Manufacturer	DevicePCI		Producent
+Bridge	DeviceSCSI		Bro
+Device name	DeviceSCSI		Enhedsnavn
+Array	DeviceSCSI		Række
+Manufacturer	DeviceACPI		Producent
+Network controller	Device		Netværksstyreenhed
+Driver used	Device		Brugt driver
+Communication controller	Device		Styreenhed for kommunikation
+unknown	Device		ukendt

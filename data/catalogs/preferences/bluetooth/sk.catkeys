@@ -1,0 +1,40 @@
+1	slovak	x-vnd.Haiku-BluetoothPrefs	1890408135
+Laptop	Settings view		Notebook
+Only from trusted devices	Settings view		Iba z dôveryhodných zariadení
+15 secs	Settings view		15 sekúnd
+Quit	main		Ukončiť
+Manufacturer: 	Device View		Výrobca: 
+Desktop	Settings view		Plocha
+Server	Window		Server
+Identify host as:	Settings view		Identifikovať hostiteľa ako:
+Local devices found on system:	Settings view		Lokálne zariadenia nájdené na systéme:
+Service classes: 	Device View		Triedy služieb: 
+Remote devices	Window		Vzdialené zariadenia
+Settings	Window		Nastavenia
+Stop bluetooth services…	Window		Zastaviť zariadenia Bluetooth…
+61 secs	Settings view		61 sekúnd
+Add…	Remote devices		Pridať…
+Revert	Window		Vrátiť
+Refresh local devices…	Window		Obnoviť lokálne zariadenia…
+Disconnect	Remote devices		Odpojiť
+Defaults	Window		Predvolené
+From all devices	Settings view		Zo všetkých zariadení
+Start bluetooth services…	Window		Spustiť služby Bluetooth…
+Launch now	main		Spustiť teraz
+Bluetooth	System name		Bluetooth
+Remove	Remote devices		Odstrániť
+Always ask	Settings view		Vždy sa pýtať
+Help	Window		Pomoc
+Pair…	Remote devices		Spárovať…
+Incoming connections policy:	Settings view		Politika prichádzajúcich spojení:
+Show name	Extended local device view		Zobraziť názov
+Add device to list	Inquiry panel		Pridať zariadenie do zoznamu
+The Bluetooth services are not currently running on this system.	main		Služby Bluetooth momentálne na tomto systéme nebežia.
+Discoverable	Extended local device view		Objaviteľné
+Authenticate	Extended local device view		Autentifikovať
+Smart phone	Settings view		Smartfón
+Default inquiry time:	Settings view		Predvolený čas zisťovania:
+Server	Settings view		Server
+Handheld	Settings view		Handheld
+ packets: 	Device View		 pakety: 
+About Bluetooth…	Window		O aplikácii Bluetooth…

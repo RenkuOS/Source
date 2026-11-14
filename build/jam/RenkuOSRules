@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: MIT
+#
+# Build rules that are ours rather than Haiku's.
+#
+# Kept in their own file so the diff against upstream stays readable and so a
+# cherry-pick in either direction does not land on top of our additions. Rules
+# here are included last, after every upstream rule file, so they may use them.
+
+
+rule CreateRenkuOSBuildStamp target : build
+{
+	# CreateRenkuOSBuildStamp <target> : <build>
+	#
+	# Writes <build> into <target>, which ships in the haiku package and which
+	# the About window reads back from /boot/system/data/renkuos/build.
+	#
+	# The build number is carried separately from the revision on purpose. The
+	# revision string becomes the haiku package version (PackageRules:137) and
+	# every HaikuPorts package requires an hrev-shaped one, so our own counter
+	# cannot go there while we consume their repository. See ci-design.md 12.1
+	# and DECISIONS.md D2.
+
+	MakeLocate $(target) : [ FDirName $(HAIKU_BUILD_OUTPUT_DIR) renkuos ] ;
+	RENKUOS_BUILD on $(target) = $(build) ;
+	LocalClean clean : $(target) ;
+	CreateRenkuOSBuildStamp1 $(target) ;
+}
+
+
+actions CreateRenkuOSBuildStamp1
+{
+	echo "$(RENKUOS_BUILD)" > $(1)
+}

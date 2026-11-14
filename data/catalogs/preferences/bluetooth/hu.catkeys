@@ -1,0 +1,55 @@
+1	hungarian	x-vnd.Haiku-BluetoothPrefs	530464078
+Cancel	Remote devices		Mégse
+Laptop	Settings view		Laptop
+Only from trusted devices	Settings view		Csak biztonságos eszközöktől
+15 secs	Settings view		15 mp
+Quit	main		Kilépés
+Scan finished	Inquiry panel		Befejeződött a keresés
+Manufacturer: 	Device View		Gyártó:
+Scan	Inquiry panel		Keresés
+%secs% remaining	Inquiry panel		%secs% maradt
+Desktop	Settings view		Asztal
+Server	Window		Kiszolgáló
+Identify host as:	Settings view		Gazdagép azonosítása mint
+Local devices found on system:	Settings view		Helyi megtalált eszközök a rendszerben
+Service classes: 	Device View		Szervizosztályok:
+Remote devices	Window		Távoli eszközök
+This computer doesn't seem to have Bluetooth support.	Inquiry panel		Úgy látszik a számítógép nem támogatja a Bluetooth-szolgáltatást.
+Settings	Window		Beállítások
+Stop bluetooth services…	Window		Bluetooth-szolgáltatások leállítása…
+61 secs	Settings view		61 mp
+Add…	Remote devices		Hozzáadás…
+Revert	Window		Visszaállít
+Refresh local devices…	Window		Helyi eszközök frissítése…
+Disconnect	Remote devices		Kapcsolatbontás
+Make sure Bluetooth capabilities of the remote device are activated before starting the scan.	Inquiry panel		Győződj meg róla, hogy a távoli eszköz Bluetooth funkciói aktiválva vannak, mielőtt elkezded a keresést.
+Defaults	Window		Alapértékek
+From all devices	Settings view		Minden eszköztől
+Start bluetooth services…	Window		Bluetooth-szolgáltatások elindítása…
+Cancel	Inquiry panel		Mégse
+Launch now	main		Indítás
+Bluetooth	System name		Bluetooth
+Retrieving name of '%1'	Inquiry panel		'%1' nevének lekérése
+Remove	Remote devices		Eltávolítás
+Pick device…	Settings view		Eszköz kiválasztása…
+Always ask	Settings view		Mindig kérdezze
+With support of:\n - Mika Lindqvist\n - Adrien Destugues\n - Maksym Yevmenkin\n\nThanks to the individuals who helped…\n\nShipping/donating hardware:\n - Henry Jair Abril Florez (el Colombian)\n\t& Stefanie Bartolich\n - Edwin Erik Amsler\n - Dennis d'Entremont\n - Luroh\n - Pieter Panman\n\nEconomically:\n - Karl vom Dorff, Andrea Bernardi (OSDrawer),\n - Matt M, Doug F, Hubert H,\n - Sebastian B, Andrew M, Jared E,\n - Frederik H, Tom S, Ferry B,\n - Greg G, David F, Richard S, Martin W:\n\nWith patches:\n - Michael Weirauch\n - Fredrik Ekdahl\n - Raynald Lesieur\n - Andreas Färber\n - Joerg Meyer\nTesting:\n - Petter H. Juliussen\nWho gave me all the knowledge:\n - the yellowTAB team	main		Fejlesztők:\n- Mika Lindqvist\n- Adrien Destugues\n- Maksym Yevmenkin\n\nKöszönet az önkénteseknek…\n\nEszköz-adományok:\n- Henry Jair Abril Florez (el Colombian)\n\t& Stefanie Bartolich\n- Edwin Erik Amsler\n- Dennis d'Entremont\n- Luroh\n- Pieter Panman\n\nAnyagi segítség:\n- Karl vom Dorff, Andrea Bernardi (OSDrawer),\n- Matt M, Doug F, Hubert H,\n- Sebastian B, Andrew M, Jared E,\n- Frederik H, Tom S, Ferry B,\n- Greg G, David F, Richard S, Martin W:\n\nJavítások:\n- Michael Weirauch\n- Fredrik Ekdahl\n- Raynald Lesieur\n- Andreas Färber\n- Joerg Meyer\nTesztelés:\n- Petter H. Juliussen\nMentor:\n- a yellowTAB csapata
+Help	Window		Segítség
+Pair…	Remote devices		Párosítás…
+Incoming connections policy:	Settings view		Bejövő kapcsolatokra vonatkozó szabály
+Retrieving names…	Inquiry panel		Nevek beolvasása…
+Canceling scan…	Inquiry panel		Keresés megszakítása…
+Show name	Extended local device view		Név mutatása
+Add device to list	Inquiry panel		Eszköz hozzáadása
+Scanning progress:	Inquiry panel		Keresés állapota:
+The Bluetooth services are not currently running on this system.	main		A bluetooth szolgáltatás jelenleg nem fut a számítógépen.
+Discoverable	Extended local device view		Felfedezhető
+Authenticate	Extended local device view		Hitelesítés
+Smart phone	Settings view		Okostelefon
+Default inquiry time:	Settings view		Alapértelmezett lekérdezési időkorlát
+Friendly name:	Settings view		Baráti név:
+Server	Settings view		Kiszolgáló
+Handheld	Settings view		Mobiltelefon
+ packets: 	Device View		csomagok:
+About Bluetooth…	Window		Bluetooth névjegye…
+Starting scan…	Inquiry panel		Keresés indítása…

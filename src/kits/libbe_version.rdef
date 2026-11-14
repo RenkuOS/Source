@@ -1,0 +1,14 @@
+resource app_version {
+	major  = 1,
+	middle = 0,
+	minor  = 0,
+
+	variety = B_APPV_BETA,
+
+	internal = 10,
+
+	short_info = "",
+	long_info = "©2001-2026 Haiku Inc."
+};
+
+resource app_signature "application/x-vnd.Haiku-libbe" ;

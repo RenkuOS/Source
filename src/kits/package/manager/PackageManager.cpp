@@ -1,0 +1,1937 @@
+/*
+ * Copyright 2013-2020, Haiku, Inc. All Rights Reserved.
+ * Distributed under the terms of the MIT License.
+ *
+ * Authors:
+ *		Ingo Weinhold <ingo_weinhold@gmx.de>
+ *		Rene Gollent <rene@gollent.com>
+ */
+
+
+#include <package/manager/PackageManager.h>
+
+#include <glob.h>
+
+#include <vector>
+
+#include <Catalog.h>
+#include <Directory.h>
+#include <Entry.h>
+#include <File.h>
+#include <FindDirectory.h>
+#include <Path.h>
+#include <package/CommitTransactionResult.h>
+#include <package/DownloadFileRequest.h>
+#include <package/PackageInfoSet.h>
+#include <package/PackageRoster.h>
+#include <package/RefreshRepositoryRequest.h>
+#include <package/RepositoryCache.h>
+#include <package/solver/SolverPackage.h>
+#include <package/solver/SolverPackageSpecifier.h>
+#include <package/solver/SolverPackageSpecifierList.h>
+#include <package/solver/SolverProblem.h>
+#include <package/solver/SolverProblemSolution.h>
+#include <package/solver/SolverResult.h>
+
+#include <CopyEngine.h>
+#include <package/ActivationTransaction.h>
+#include <package/DaemonClient.h>
+#include <package/PackagesDirectoryDefs.h>
+#include <package/manager/RepositoryBuilder.h>
+
+#include "FetchFileJob.h"
+#include "FetchUtils.h"
+#include "PackageManagerUtils.h"
+#include "ValidateChecksumJob.h"
+
+#undef B_TRANSLATION_CONTEXT
+#define B_TRANSLATION_CONTEXT "PackageManagerKit"
+
+
+using BPackageKit::BPrivate::FetchUtils;
+using BPackageKit::BPrivate::FetchFileJob;
+using BPackageKit::BPrivate::ValidateChecksumJob;
+
+
+namespace BPackageKit {
+
+namespace BManager {
+
+namespace BPrivate {
+
+
+// Names of the packages that were installed only to satisfy the dependencies
+// of other packages, one per line, in the administrative directory of the
+// installation location. Packages not listed count as explicitly installed.
+static const char* const kAutoInstalledPackagesFileName
+	= "auto_installed_packages";
+
+
+static status_t
+get_auto_installed_packages_path(BPackageInstallationLocation location,
+	BPath& _path)
+{
+	directory_which packagesWhich;
+	switch (location) {
+		case B_PACKAGE_INSTALLATION_LOCATION_SYSTEM:
+			packagesWhich = B_SYSTEM_PACKAGES_DIRECTORY;
+			break;
+		case B_PACKAGE_INSTALLATION_LOCATION_HOME:
+			packagesWhich = B_USER_PACKAGES_DIRECTORY;
+			break;
+		default:
+			return B_BAD_VALUE;
+	}
+
+	status_t error = find_directory(packagesWhich, &_path);
+	if (error == B_OK)
+		error = _path.Append(PACKAGES_DIRECTORY_ADMIN_DIRECTORY);
+	if (error == B_OK)
+		error = _path.Append(kAutoInstalledPackagesFileName);
+	return error;
+}
+
+
+static void
+get_package_names(const BSolverRepository& repository, BStringList& _names)
+{
+	int32 count = repository.CountPackages();
+	for (int32 i = 0; i < count; i++) {
+		if (!_names.Add(repository.PackageAt(i)->Name()))
+			throw std::bad_alloc();
+	}
+}
+
+
+// Compares like the solver does: a required version without a revision stands
+// for all revisions of that version (e.g. "foo == 1.2" matches "foo 1.2-3").
+static int
+compare_to_required(const BPackageVersion& version,
+	const BPackageVersion& required)
+{
+	if (required.Revision() != 0 || version.Revision() == 0)
+		return version.Compare(required);
+
+	return BPackageVersion(version.Major(), version.Minor(), version.Micro(),
+		version.PreRelease(), 0).Compare(required);
+}
+
+
+// Returns whether a resolvable of the given version, which is compatible back
+// to compatibleVersion (if set), might satisfy the given expression. Errs on
+// the side of a match.
+static bool
+might_satisfy(const BPackageResolvableExpression& expression,
+	const BPackageVersion& version, const BPackageVersion& compatibleVersion)
+{
+	const BPackageVersion& required = expression.Version();
+	if (required.InitCheck() != B_OK || version.InitCheck() != B_OK)
+		return true;
+
+	// Like for the solver, a minimum version is only satisfied by a version
+	// that is still compatible with it (e.g. "lib:libavcodec >= 60.31" isn't
+	// satisfied by libavcodec 62.28, compatible >= 62).
+	bool hasCompatible = compatibleVersion.InitCheck() == B_OK;
+	const BPackageVersion& lowest = hasCompatible ? compatibleVersion : version;
+	switch (expression.Operator()) {
+		case B_PACKAGE_RESOLVABLE_OP_LESS:
+			return compare_to_required(lowest, required) < 0;
+		case B_PACKAGE_RESOLVABLE_OP_LESS_EQUAL:
+			return compare_to_required(lowest, required) <= 0;
+		case B_PACKAGE_RESOLVABLE_OP_EQUAL:
+			return compare_to_required(lowest, required) <= 0
+				&& compare_to_required(version, required) >= 0;
+		case B_PACKAGE_RESOLVABLE_OP_GREATER_EQUAL:
+			return compare_to_required(version, required) >= 0
+				&& (!hasCompatible
+					|| compare_to_required(compatibleVersion, required) <= 0);
+		case B_PACKAGE_RESOLVABLE_OP_GREATER:
+			return compare_to_required(version, required) > 0
+				&& (!hasCompatible
+					|| compare_to_required(compatibleVersion, required) <= 0);
+		default:
+			return true;
+	}
+}
+
+
+// Returns whether the package might satisfy the given expression, i.e. whether
+// the solver could have picked it for it. Errs on the side of a match, so that
+// in doubt a package is kept.
+static bool
+might_satisfy(const BPackageInfo& info,
+	const BPackageResolvableExpression& expression)
+{
+	BString name = expression.Name();
+	if (name.StartsWith("pkg:"))
+		name.Remove(0, 4);
+	if (info.Name() == name)
+		return might_satisfy(expression, info.Version(), BPackageVersion());
+
+	int32 count = info.ProvidesList().CountItems();
+	for (int32 i = 0; i < count; i++) {
+		const BPackageResolvable* provides = info.ProvidesList().ItemAt(i);
+		if (provides->Name() == name
+			&& might_satisfy(expression, provides->Version(),
+				provides->CompatibleVersion())) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+
+// #pragma mark - BPackageManager
+
+
+BPackageManager::BPackageManager(BPackageInstallationLocation location,
+	InstallationInterface* installationInterface,
+	UserInteractionHandler* userInteractionHandler)
+	:
+	fDebugLevel(0),
+	fLocation(location),
+	fSolver(NULL),
+	fSystemRepository(new (std::nothrow) InstalledRepository("system",
+		B_PACKAGE_INSTALLATION_LOCATION_SYSTEM, -1)),
+	fHomeRepository(new (std::nothrow) InstalledRepository("home",
+		B_PACKAGE_INSTALLATION_LOCATION_HOME, -3)),
+	fInstalledRepositories(10),
+	fOtherRepositories(10),
+	fLocalRepository(new (std::nothrow) MiscLocalRepository),
+	fTransactions(5),
+	fInstallationInterface(installationInterface),
+	fUserInteractionHandler(userInteractionHandler)
+{
+}
+
+
+BPackageManager::~BPackageManager()
+{
+	delete fSolver;
+	delete fSystemRepository;
+	delete fHomeRepository;
+	delete fLocalRepository;
+}
+
+
+void
+BPackageManager::Init(uint32 flags)
+{
+	if (fSolver != NULL)
+		return;
+
+	// create the solver
+	status_t error = BSolver::Create(fSolver);
+	if (error != B_OK)
+		DIE(error, "Failed to create solver");
+
+	if (fSystemRepository == NULL || fHomeRepository == NULL
+		|| fLocalRepository == NULL) {
+		throw std::bad_alloc();
+	}
+
+	fSolver->SetDebugLevel(fDebugLevel);
+
+	BRepositoryBuilder(*fLocalRepository).AddToSolver(fSolver, false);
+
+	// add installation location repositories
+	if ((flags & B_ADD_INSTALLED_REPOSITORIES) != 0) {
+		// We add only the repository of our actual installation location as the
+		// "installed" repository. The repositories for the more general
+		// installation locations are added as regular repositories, but with
+		// better priorities than the actual (remote) repositories. This
+		// prevents the solver from showing conflicts when a package in a more
+		// specific installation location overrides a package in a more general
+		// one. Instead any requirement that is already installed in a more
+		// general installation location will turn up as to be installed as
+		// well. But we can easily filter those out.
+		_AddInstalledRepository(fSystemRepository);
+
+		if (!fSystemRepository->IsInstalled()) {
+			// Only add the home repository if the directory exists
+			BPath path;
+			status_t error = find_directory(B_USER_PACKAGES_DIRECTORY, &path);
+			if (error == B_OK && BEntry(path.Path()).Exists())
+				_AddInstalledRepository(fHomeRepository);
+		}
+	}
+
+	// add other repositories
+	if ((flags & B_ADD_REMOTE_REPOSITORIES) != 0) {
+		BPackageRoster roster;
+		BStringList repositoryNames;
+		error = roster.GetRepositoryNames(repositoryNames);
+		if (error != B_OK) {
+			fUserInteractionHandler->Warn(error,
+				B_TRANSLATE("Failed to get repository names"));
+		}
+
+		int32 repositoryNameCount = repositoryNames.CountStrings();
+		for (int32 i = 0; i < repositoryNameCount; i++) {
+			_AddRemoteRepository(roster, repositoryNames.StringAt(i),
+				(flags & B_REFRESH_REPOSITORIES) != 0);
+		}
+	}
+}
+
+
+void
+BPackageManager::SetDebugLevel(int32 level)
+{
+	fDebugLevel = level;
+
+	if (fSolver != NULL)
+		fSolver->SetDebugLevel(fDebugLevel);
+}
+
+
+void
+BPackageManager::Install(const char* const* packages, int packageCount, bool refresh)
+{
+	BSolverPackageSpecifierList packagesToInstall;
+	_AddPackageSpecifiers(packages, packageCount, packagesToInstall);
+	Install(packagesToInstall, refresh);
+}
+
+
+void
+BPackageManager::Install(const BSolverPackageSpecifierList& packages, bool refresh)
+{
+	uint32 flags = B_ADD_INSTALLED_REPOSITORIES | B_ADD_REMOTE_REPOSITORIES;
+	if (refresh)
+		flags |= B_REFRESH_REPOSITORIES;
+
+	Init(flags);
+
+	// remember what was asked for and what is installed already, so that the
+	// packages pulled in only as dependencies can be told apart
+	BStringList requestedPackages;
+	_GetPackageNames(packages, requestedPackages);
+	BStringList installedPackages;
+	get_package_names(InstallationRepository(), installedPackages);
+
+	// solve
+	const BSolverPackageSpecifier* unmatchedSpecifier;
+	status_t error = fSolver->Install(packages, &unmatchedSpecifier);
+	if (error != B_OK) {
+		if (unmatchedSpecifier != NULL) {
+			DIE(error, "Failed to find a match for \"%s\"",
+				unmatchedSpecifier->SelectString().String());
+		} else
+			DIE(error, "Failed to compute packages to install");
+	}
+
+	_HandleProblems();
+
+	// install/uninstall packages
+	_AnalyzeResult();
+	try {
+		_ConfirmChanges();
+	} catch (BNothingToDoException&) {
+		// Asking for a package that is already installed as a dependency
+		// still marks it as explicitly installed.
+		_UpdateAutoInstalledPackages(requestedPackages, installedPackages);
+		throw;
+	}
+	_ApplyPackageChanges();
+	_UpdateAutoInstalledPackages(requestedPackages, installedPackages);
+}
+
+
+void
+BPackageManager::Uninstall(const char* const* packages, int packageCount)
+{
+	BSolverPackageSpecifierList packagesToUninstall;
+	if (!packagesToUninstall.AppendSpecifiers(packages, packageCount))
+		throw std::bad_alloc();
+	Uninstall(packagesToUninstall);
+}
+
+
+void
+BPackageManager::Uninstall(const BSolverPackageSpecifierList& packages)
+{
+	Init(B_ADD_INSTALLED_REPOSITORIES);
+
+	// find the packages that match the specification
+	const BSolverPackageSpecifier* unmatchedSpecifier;
+	PackageList foundPackages;
+	status_t error = fSolver->FindPackages(packages,
+		BSolver::B_FIND_INSTALLED_ONLY, foundPackages, &unmatchedSpecifier);
+	if (error != B_OK) {
+		if (unmatchedSpecifier != NULL) {
+			DIE(error, "Failed to find a match for \"%s\"",
+				unmatchedSpecifier->SelectString().String());
+		} else
+			DIE(error, "Failed to compute packages to uninstall");
+	}
+
+	_UninstallPackages(foundPackages);
+}
+
+
+void
+BPackageManager::Autoremove()
+{
+	Init(B_ADD_INSTALLED_REPOSITORIES);
+
+	PackageList orphanedPackages;
+	_AddOrphanedPackages(orphanedPackages);
+	if (orphanedPackages.IsEmpty())
+		throw BNothingToDoException();
+
+	_UninstallPackages(orphanedPackages);
+}
+
+
+void
+BPackageManager::_UninstallPackages(PackageList& foundPackages)
+{
+	InstalledRepository& installationRepository = InstallationRepository();
+	status_t error;
+	int32 disabledCount = 0;
+	for (;;) {
+		// Determine the inverse base package closure for the found packages
+		// and add the auto-installed packages nothing needs anymore, until
+		// neither adds another package.
+// TODO: Optimize!
+		int32 previousCount;
+		do {
+			previousCount = foundPackages.CountItems();
+
+			bool foundAnotherPackage;
+			do {
+				foundAnotherPackage = false;
+				int32 count = installationRepository.CountPackages();
+				for (int32 i = 0; i < count; i++) {
+					BSolverPackage* package
+						= installationRepository.PackageAt(i);
+					if (foundPackages.HasItem(package))
+						continue;
+
+					if (_FindBasePackage(foundPackages, package->Info()) >= 0) {
+						foundPackages.AddItem(package);
+						foundAnotherPackage = true;
+					}
+				}
+			} while (foundAnotherPackage);
+
+			_AddOrphanedPackages(foundPackages);
+		} while (foundPackages.CountItems() != previousCount);
+
+		// remove the packages from the repository
+		for (; disabledCount < foundPackages.CountItems(); disabledCount++) {
+			installationRepository.DisablePackage(
+				foundPackages.ItemAt(disabledCount));
+		}
+
+		// The packages that need the removed ones have to go as well, which
+		// may leave more auto-installed packages that nothing needs.
+		error = fSolver->VerifyInstallation(BSolver::B_VERIFY_ALLOW_UNINSTALL);
+		if (error != B_OK)
+			DIE(error, "Failed to compute packages to uninstall");
+
+		_HandleProblems();
+
+		BSolverResult result;
+		error = fSolver->GetResult(result);
+		if (error != B_OK)
+			DIE(error, "Failed to compute packages to uninstall");
+
+		bool foundDependentPackage = false;
+		for (int32 i = 0; const BSolverResultElement* element
+				= result.ElementAt(i); i++) {
+			BSolverPackage* package = element->Package();
+			if (element->Type() != BSolverResultElement::B_TYPE_UNINSTALL
+				|| package->Repository() != &installationRepository
+				|| foundPackages.HasItem(package)) {
+				continue;
+			}
+			if (!foundPackages.AddItem(package))
+				throw std::bad_alloc();
+			foundDependentPackage = true;
+		}
+
+		if (!foundDependentPackage)
+			break;
+	}
+
+	for (;;) {
+		error = fSolver->VerifyInstallation(BSolver::B_VERIFY_ALLOW_UNINSTALL);
+		if (error != B_OK)
+			DIE(error, "Failed to compute packages to uninstall");
+
+		_HandleProblems();
+
+		// (virtually) apply the result to this repository
+		_AnalyzeResult();
+
+		for (int32 i = foundPackages.CountItems() - 1; i >= 0; i--) {
+			if (!installationRepository.PackagesToDeactivate()
+					.AddItem(foundPackages.ItemAt(i))) {
+				throw std::bad_alloc();
+			}
+		}
+
+		installationRepository.ApplyChanges();
+
+		// verify the next specific respository
+		if (!_NextSpecificInstallationLocation())
+			break;
+
+		foundPackages.MakeEmpty();
+
+		// NOTE: In theory, after verifying a more specific location, it would
+		// be more correct to compute the inverse base package closure for the
+		// packages we need to uninstall and (if anything changed) verify again.
+		// In practice, however, base packages are always required with an exact
+		// version (ATM). If that base package still exist in a more general
+		// location (the only reason why the package requiring the base package
+		// wouldn't be marked to be uninstalled as well) there shouldn't have
+		// been any reason to remove it from the more specific location in the
+		// first place.
+	}
+
+	_ConfirmChanges(true);
+	_ApplyPackageChanges(true);
+
+	// forget about the removed packages
+	for (int32 i = 0;
+			InstalledRepository* repository = fInstalledRepositories.ItemAt(i);
+			i++) {
+		BStringList autoInstalled;
+		_ReadAutoInstalledPackages(repository->Location(), autoInstalled);
+
+		bool changed = false;
+		PackageList& packagesToDeactivate = repository->PackagesToDeactivate();
+		for (int32 k = 0; BSolverPackage* package
+				= packagesToDeactivate.ItemAt(k); k++) {
+			changed |= autoInstalled.Remove(package->Name());
+		}
+
+		if (changed
+			&& _WriteAutoInstalledPackages(repository->Location(),
+				autoInstalled) != B_OK) {
+			fUserInteractionHandler->Warn(B_OK, B_TRANSLATE("Failed to write "
+				"the list of auto-installed packages"));
+		}
+	}
+}
+
+
+void
+BPackageManager::Update(const char* const* packages, int packageCount)
+{
+	BSolverPackageSpecifierList packagesToUpdate;
+	_AddPackageSpecifiers(packages, packageCount, packagesToUpdate);
+	Update(packagesToUpdate);
+}
+
+
+void
+BPackageManager::Update(const BSolverPackageSpecifierList& packages)
+{
+	Init(B_ADD_INSTALLED_REPOSITORIES | B_ADD_REMOTE_REPOSITORIES
+		| B_REFRESH_REPOSITORIES);
+
+	// Requested packages that aren't installed yet are installed as well, new
+	// dependencies must be told apart from those. Updating a package doesn't
+	// change why it is installed, though.
+	BStringList installedPackages;
+	get_package_names(InstallationRepository(), installedPackages);
+	BStringList requestedPackages;
+	_GetPackageNames(packages, requestedPackages);
+	requestedPackages.Remove(installedPackages);
+
+	// solve
+	const BSolverPackageSpecifier* unmatchedSpecifier;
+	status_t error = fSolver->Update(packages, true,
+		&unmatchedSpecifier);
+	if (error != B_OK) {
+		if (unmatchedSpecifier != NULL) {
+			DIE(error, "Failed to find a match for \"%s\"",
+				unmatchedSpecifier->SelectString().String());
+		} else
+			DIE(error, "Failed to compute packages to update");
+	}
+
+	_HandleProblems();
+
+	// install/uninstall packages
+	_AnalyzeResult();
+	_ConfirmChanges();
+	_ApplyPackageChanges();
+	_UpdateAutoInstalledPackages(requestedPackages, installedPackages);
+}
+
+
+/*!	Returns the package named \a name in \a repository, or NULL.
+*/
+static BSolverPackage*
+installed_package_named(BSolverRepository& repository, const BString& name)
+{
+	for (int32 i = 0; BSolverPackage* package = repository.PackageAt(i); i++) {
+		if (package->Info().Name() == name)
+			return package;
+	}
+	return NULL;
+}
+
+
+void
+BPackageManager::FullSync()
+{
+	FullSync(false);
+}
+
+
+void
+BPackageManager::FullSync(bool reinstall)
+{
+	Init(B_ADD_INSTALLED_REPOSITORIES | B_ADD_REMOTE_REPOSITORIES
+		| B_REFRESH_REPOSITORIES);
+
+	BStringList installedPackages;
+	get_package_names(InstallationRepository(), installedPackages);
+
+	// solve
+	status_t error = fSolver->FullSync();
+	if (error != B_OK)
+		DIE(error, "Failed to compute packages to synchronize");
+
+	_HandleProblems();
+
+	// install/uninstall packages
+	_AnalyzeResult();
+	if (reinstall)
+		_AddReinstalls();
+	_ConfirmChanges();
+	_ApplyPackageChanges();
+	_UpdateAutoInstalledPackages(BStringList(), installedPackages);
+}
+
+
+void
+BPackageManager::Reinstall(const char* const* packages, int packageCount)
+{
+	Init(B_ADD_INSTALLED_REPOSITORIES | B_ADD_REMOTE_REPOSITORIES
+		| B_REFRESH_REPOSITORIES);
+
+	InstalledRepository& installationRepository = InstallationRepository();
+
+	// A package file replaces the installed package of the same name and
+	// version directly; names are looked up in the repositories.
+	BStringList names;
+	for (int i = 0; i < packageCount; i++) {
+		if (!_IsLocalPackage(packages[i])) {
+			if (!names.Add(packages[i]))
+				throw std::bad_alloc();
+			continue;
+		}
+
+		BSolverPackage* file = _AddLocalPackage(packages[i]);
+		const BPackageInfo& info = file->Info();
+		BSolverPackage* installed
+			= installed_package_named(installationRepository, info.Name());
+		if (installed == NULL)
+			DIE(B_ENTRY_NOT_FOUND, "%s isn't installed", info.Name().String());
+		if (installed->Info().Version().Compare(info.Version()) != 0) {
+			DIE(B_BAD_VALUE, "%s is version %s, but %s is installed; use "
+				"\"pkgman install\" to change versions", packages[i],
+				info.Version().ToString().String(),
+				installed->VersionedName().String());
+		}
+
+		if (!installationRepository.PackagesToActivate().AddItem(file)
+			|| !installationRepository.PackagesToDeactivate().AddItem(
+				installed)) {
+			throw std::bad_alloc();
+		}
+	}
+
+	// Same version in, same version out: nothing else needs to change, so
+	// there's nothing to solve.
+	if (!names.IsEmpty()) {
+		BStringList added;
+		_AddReinstalls(&names, &added);
+		for (int32 i = 0; i < names.CountStrings(); i++) {
+			const BString& name = names.StringAt(i);
+			if (added.HasString(name))
+				continue;
+			if (installed_package_named(installationRepository, name) == NULL)
+				DIE(B_ENTRY_NOT_FOUND, "%s isn't installed", name.String());
+			DIE(B_ENTRY_NOT_FOUND,
+				"No repository has the installed version of %s",
+				name.String());
+		}
+	}
+
+	_ConfirmChanges();
+	_ApplyPackageChanges(false, false);
+}
+
+
+void
+BPackageManager::VerifyInstallation()
+{
+	Init(B_ADD_INSTALLED_REPOSITORIES | B_ADD_REMOTE_REPOSITORIES
+		| B_REFRESH_REPOSITORIES);
+
+	for (;;) {
+		status_t error = fSolver->VerifyInstallation();
+		if (error != B_OK)
+			DIE(error, "Failed to compute package dependencies");
+
+		_HandleProblems();
+
+		// (virtually) apply the result to this repository
+		_AnalyzeResult();
+		InstallationRepository().ApplyChanges();
+
+		// verify the next specific respository
+		if (!_NextSpecificInstallationLocation())
+			break;
+	}
+
+	_ConfirmChanges();
+	_ApplyPackageChanges();
+}
+
+
+void
+BPackageManager::SetAutoInstalled(const char* const* packages,
+	int packageCount, bool autoInstalled)
+{
+	Init(B_ADD_INSTALLED_REPOSITORIES);
+
+	BSolverPackageSpecifierList specifiers;
+	if (!specifiers.AppendSpecifiers(packages, packageCount))
+		throw std::bad_alloc();
+
+	const BSolverPackageSpecifier* unmatchedSpecifier;
+	PackageList foundPackages;
+	status_t error = fSolver->FindPackages(specifiers,
+		BSolver::B_FIND_INSTALLED_ONLY, foundPackages, &unmatchedSpecifier);
+	if (error != B_OK) {
+		if (unmatchedSpecifier != NULL) {
+			DIE(error, "Failed to find a match for \"%s\"",
+				unmatchedSpecifier->SelectString().String());
+		} else
+			DIE(error, "Failed to find packages to mark");
+	}
+
+	BPackageInstallationLocation location = InstallationRepository().Location();
+	BStringList autoInstalledPackages;
+	_ReadAutoInstalledPackages(location, autoInstalledPackages);
+
+	bool changed = false;
+	for (int32 i = 0; BSolverPackage* package = foundPackages.ItemAt(i); i++) {
+		if (!autoInstalled) {
+			changed |= autoInstalledPackages.Remove(package->Name());
+		} else if (!autoInstalledPackages.HasString(package->Name())) {
+			if (!autoInstalledPackages.Add(package->Name()))
+				throw std::bad_alloc();
+			changed = true;
+		}
+	}
+
+	if (!changed)
+		throw BNothingToDoException();
+
+	error = _WriteAutoInstalledPackages(location, autoInstalledPackages);
+	if (error != B_OK)
+		DIE(error, "Failed to write the list of auto-installed packages");
+}
+
+
+BPackageManager::InstalledRepository&
+BPackageManager::InstallationRepository()
+{
+	if (fInstalledRepositories.IsEmpty())
+		DIE("No installation repository");
+
+	return *fInstalledRepositories.LastItem();
+}
+
+
+void
+BPackageManager::JobStarted(BSupportKit::BJob* job)
+{
+	if (dynamic_cast<FetchFileJob*>(job) != NULL) {
+		FetchFileJob* fetchJob = (FetchFileJob*)job;
+		fUserInteractionHandler->ProgressPackageDownloadStarted(
+			fetchJob->DownloadFileName());
+	} else if (dynamic_cast<ValidateChecksumJob*>(job) != NULL) {
+		fUserInteractionHandler->ProgressPackageChecksumStarted(
+			job->Title().String());
+	}
+}
+
+
+void
+BPackageManager::JobProgress(BSupportKit::BJob* job)
+{
+	if (dynamic_cast<FetchFileJob*>(job) != NULL) {
+		FetchFileJob* fetchJob = (FetchFileJob*)job;
+		try {
+			fUserInteractionHandler->ProgressPackageDownloadActive(
+				fetchJob->DownloadFileName(), fetchJob->DownloadProgress(),
+				fetchJob->DownloadBytes(), fetchJob->DownloadTotalBytes());
+		} catch (BAbortedByUserException&) {
+			fetchJob->Stop();
+		}
+	}
+}
+
+
+void
+BPackageManager::JobSucceeded(BSupportKit::BJob* job)
+{
+	if (dynamic_cast<FetchFileJob*>(job) != NULL) {
+		FetchFileJob* fetchJob = (FetchFileJob*)job;
+		fUserInteractionHandler->ProgressPackageDownloadComplete(
+			fetchJob->DownloadFileName());
+	} else if (dynamic_cast<ValidateChecksumJob*>(job) != NULL) {
+		fUserInteractionHandler->ProgressPackageChecksumComplete(
+			job->Title().String());
+	}
+}
+
+
+void
+BPackageManager::_HandleProblems()
+{
+	while (fSolver->HasProblems()) {
+		fUserInteractionHandler->HandleProblems();
+
+		status_t error = fSolver->SolveAgain();
+		if (error != B_OK)
+			DIE(error, "Failed to recompute packages to un/-install");
+	}
+}
+
+
+void
+BPackageManager::_AnalyzeResult()
+{
+	BSolverResult result;
+	status_t error = fSolver->GetResult(result);
+	if (error != B_OK)
+		DIE(error, "Failed to compute packages to un/-install");
+
+	InstalledRepository& installationRepository = InstallationRepository();
+	PackageList& packagesToActivate
+		= installationRepository.PackagesToActivate();
+	PackageList& packagesToDeactivate
+		= installationRepository.PackagesToDeactivate();
+
+	PackageList potentialBasePackages;
+
+	for (int32 i = 0; const BSolverResultElement* element = result.ElementAt(i);
+			i++) {
+		BSolverPackage* package = element->Package();
+
+		switch (element->Type()) {
+			case BSolverResultElement::B_TYPE_INSTALL:
+			{
+				PackageList& packageList
+					= dynamic_cast<InstalledRepository*>(package->Repository())
+							!= NULL
+						? potentialBasePackages
+						: packagesToActivate;
+				if (!packageList.AddItem(package))
+					throw std::bad_alloc();
+				break;
+			}
+
+			case BSolverResultElement::B_TYPE_UNINSTALL:
+				if (!packagesToDeactivate.AddItem(package))
+					throw std::bad_alloc();
+				break;
+		}
+	}
+
+	// Make sure base packages are installed in the same location.
+	for (int32 i = 0; i < packagesToActivate.CountItems(); i++) {
+		BSolverPackage* package = packagesToActivate.ItemAt(i);
+		int32 index = _FindBasePackage(potentialBasePackages, package->Info());
+		if (index < 0)
+			continue;
+
+		BSolverPackage* basePackage = potentialBasePackages.RemoveItemAt(index);
+		if (!packagesToActivate.AddItem(basePackage))
+			throw std::bad_alloc();
+	}
+
+	fInstallationInterface->ResultComputed(installationRepository);
+}
+
+
+void
+BPackageManager::_AddReinstalls(const BStringList* names, BStringList* added)
+{
+	// Replace every installed package the result keeps (or only those in
+	// \a names) with a fresh copy of the very same version from a
+	// repository, so that damaged package files are mended. Packages no
+	// repository has are left as they are.
+	InstalledRepository& installationRepository = InstallationRepository();
+	PackageList& packagesToActivate
+		= installationRepository.PackagesToActivate();
+	PackageList& packagesToDeactivate
+		= installationRepository.PackagesToDeactivate();
+
+	for (int32 i = 0;
+			BSolverPackage* installed = installationRepository.PackageAt(i);
+			i++) {
+		if (packagesToDeactivate.HasItem(installed))
+			continue;
+
+		const BPackageInfo& info = installed->Info();
+		if (names != NULL && !names->HasString(info.Name()))
+			continue;
+
+		BSolverPackage* fresh = NULL;
+		for (int32 j = 0;
+				RemoteRepository* repository = fOtherRepositories.ItemAt(j);
+				j++) {
+			for (int32 k = 0;
+					BSolverPackage* package = repository->PackageAt(k); k++) {
+				const BPackageInfo& otherInfo = package->Info();
+				if (otherInfo.Name() == info.Name()
+					&& otherInfo.Architecture() == info.Architecture()
+					&& otherInfo.Version().Compare(info.Version()) == 0) {
+					fresh = package;
+					break;
+				}
+			}
+			if (fresh != NULL)
+				break;
+		}
+		if (fresh == NULL)
+			continue;
+
+		if (!packagesToActivate.AddItem(fresh)
+			|| !packagesToDeactivate.AddItem(installed)
+			|| (added != NULL && !added->Add(info.Name()))) {
+			throw std::bad_alloc();
+		}
+	}
+}
+
+
+void
+BPackageManager::_ConfirmChanges(bool fromMostSpecific)
+{
+	// check, if there are any changes at all
+	int32 count = fInstalledRepositories.CountItems();
+	bool hasChanges = false;
+	for (int32 i = 0; i < count; i++) {
+		if (fInstalledRepositories.ItemAt(i)->HasChanges()) {
+			hasChanges = true;
+			break;
+		}
+	}
+
+	if (!hasChanges)
+		throw BNothingToDoException();
+
+	fUserInteractionHandler->ConfirmChanges(fromMostSpecific);
+}
+
+
+void
+BPackageManager::_ApplyPackageChanges(bool fromMostSpecific,
+	bool optionalReinstalls)
+{
+	int32 count = fInstalledRepositories.CountItems();
+	if (fromMostSpecific) {
+		for (int32 i = count - 1; i >= 0; i--)
+			_PreparePackageChanges(*fInstalledRepositories.ItemAt(i),
+				optionalReinstalls);
+	} else {
+		for (int32 i = 0; i < count; i++)
+			_PreparePackageChanges(*fInstalledRepositories.ItemAt(i),
+				optionalReinstalls);
+	}
+
+	for (int32 i = 0; Transaction* transaction = fTransactions.ItemAt(i); i++)
+		_CommitPackageChanges(*transaction);
+
+// TODO: Clean up the transaction directories on error!
+}
+
+
+/*!	Returns the installed package that \a package replaces with the very
+	same version from a repository, as a reinstall does, or NULL if it isn't
+	a reinstall.
+*/
+static BSolverPackage*
+reinstalled_package(BSolverPackage* package,
+	BObjectList<BSolverPackage>& packagesToDeactivate)
+{
+	const BPackageInfo& info = package->Info();
+	for (int32 i = 0;
+			BSolverPackage* installed = packagesToDeactivate.ItemAt(i); i++) {
+		const BPackageInfo& installedInfo = installed->Info();
+		if (installedInfo.Name() == info.Name()
+			&& installedInfo.Architecture() == info.Architecture()
+			&& installedInfo.Version().Compare(info.Version()) == 0) {
+			return installed;
+		}
+	}
+	return NULL;
+}
+
+
+void
+BPackageManager::_PreparePackageChanges(
+	InstalledRepository& installationRepository, bool optionalReinstalls)
+{
+	if (!installationRepository.HasChanges())
+		return;
+
+	PackageList& packagesToActivate
+		= installationRepository.PackagesToActivate();
+	PackageList& packagesToDeactivate
+		= installationRepository.PackagesToDeactivate();
+
+	// create the transaction
+	Transaction* transaction = new Transaction(installationRepository);
+	if (!fTransactions.AddItem(transaction)) {
+		delete transaction;
+		throw std::bad_alloc();
+	}
+
+	status_t error = fInstallationInterface->PrepareTransaction(*transaction);
+	if (error != B_OK)
+		DIE(error, "Failed to create transaction");
+
+	// reinstalls whose download failed, by the installed package's file name
+	BStringList skippedReinstalls;
+
+	// download the new packages and prepare the transaction
+	for (int32 i = 0; BSolverPackage* package = packagesToActivate.ItemAt(i);
+		i++) {
+		// get package URL and target entry
+
+		BString fileName(package->Info().FileName());
+		if (fileName.IsEmpty())
+			throw std::bad_alloc();
+
+		BEntry entry;
+		error = entry.SetTo(&transaction->TransactionDirectory(), fileName);
+		if (error != B_OK)
+			DIE(error, "Failed to create package entry");
+
+		RemoteRepository* remoteRepository
+			= dynamic_cast<RemoteRepository*>(package->Repository());
+		if (remoteRepository != NULL) {
+			bool reusingDownload = false;
+
+			// Check for matching files in already existing transaction
+			// directories. Not in old state directories: a reinstall would
+			// find the very package file it replaces there.
+			BPath path(&transaction->TransactionDirectory());
+			BPath parent;
+			if (path.GetParent(&parent) == B_OK) {
+				BString globPath = parent.Path();
+				globPath << "/transaction-*/" << fileName;
+				glob_t globbuf;
+				if (glob(globPath.String(), GLOB_NOSORT, NULL, &globbuf) == 0) {
+					off_t bestSize = 0;
+					const char* bestFile = NULL;
+
+					// If there are multiple matching files, pick the largest
+					// one (the others are most likely partial downloads)
+					for (size_t i = 0; i < globbuf.gl_pathc; i++) {
+						off_t size = 0;
+						BNode node(globbuf.gl_pathv[i]);
+						if (node.GetSize(&size) == B_OK && size > bestSize) {
+							bestSize = size;
+							bestFile = globbuf.gl_pathv[i];
+						}
+					}
+
+					// Copy the selected file into our own transaction directory
+					path.Append(fileName);
+					if (bestFile != NULL && BCopyEngine().CopyEntry(bestFile,
+						path.Path()) == B_OK) {
+						reusingDownload = true;
+						printf("Re-using download '%s' from previous "
+							"transaction%s\n", bestFile,
+							FetchUtils::IsDownloadCompleted(
+								path.Path()) ? "" : " (partial)");
+					}
+					globfree(&globbuf);
+				}
+			}
+
+			// download the package (this will resume the download if the
+			// file already exists)
+			BString url = remoteRepository->Config().PackagesURL();
+			url << '/' << fileName;
+
+			status_t error;
+retryDownload:
+			error = DownloadPackage(url, entry,
+				package->Info().Checksum());
+			if (error != B_OK) {
+				if (error == B_BAD_DATA || error == ERANGE) {
+					// B_BAD_DATA is returned when there is a checksum
+					// mismatch. Make sure this download is not re-used.
+					entry.Remove();
+
+					if (reusingDownload) {
+						// Maybe the download we reused had some problem.
+						// Try again, this time without reusing the download.
+						printf("\nPrevious download '%s' was invalid. Redownloading.\n",
+							path.Path());
+						reusingDownload = false;
+						goto retryDownload;
+					}
+				}
+
+				// A reinstall is optional: a repository that lists a package
+				// it can't serve shouldn't stop the other changes.
+				BSolverPackage* installed = optionalReinstalls
+					? reinstalled_package(package, packagesToDeactivate) : NULL;
+				if (installed != NULL) {
+					entry.Remove();
+					fUserInteractionHandler->Warn(error,
+						B_TRANSLATE("Couldn't download %s again, keeping the "
+							"installed copy"),
+						package->Info().Name().String());
+					if (!skippedReinstalls.Add(installed->Info().FileName()))
+						throw std::bad_alloc();
+					continue;
+				}
+
+				DIE(error, "Failed to download package %s",
+					package->Info().Name().String());
+			}
+		} else if (package->Repository() != &installationRepository) {
+			// clone the existing package
+			LocalRepository* localRepository
+				= dynamic_cast<LocalRepository*>(package->Repository());
+			if (localRepository == NULL) {
+				DIE("Internal error: repository %s is not a local repository",
+					package->Repository()->Name().String());
+			}
+			_ClonePackageFile(localRepository, package, entry);
+		}
+
+		// add package to transaction
+		if (!transaction->ActivationTransaction().AddPackageToActivate(
+				fileName)) {
+			throw std::bad_alloc();
+		}
+	}
+
+	for (int32 i = 0; BSolverPackage* package = packagesToDeactivate.ItemAt(i);
+		i++) {
+		// keep a package whose reinstall was skipped
+		if (skippedReinstalls.HasString(package->Info().FileName()))
+			continue;
+
+		// add package to transaction
+		if (!transaction->ActivationTransaction().AddPackageToDeactivate(
+				package->Info().FileName())) {
+			throw std::bad_alloc();
+		}
+	}
+
+	// if every change was a skipped reinstall, there's nothing to commit
+	BActivationTransaction& activation = transaction->ActivationTransaction();
+	if (activation.PackagesToActivate().IsEmpty()
+		&& activation.PackagesToDeactivate().IsEmpty()) {
+		BEntry directoryEntry;
+		if (transaction->TransactionDirectory().GetEntry(&directoryEntry)
+				== B_OK) {
+			directoryEntry.Remove();
+		}
+		fTransactions.RemoveItem(transaction);
+	}
+}
+
+
+void
+BPackageManager::_CommitPackageChanges(Transaction& transaction)
+{
+	InstalledRepository& installationRepository = transaction.Repository();
+
+	fUserInteractionHandler->ProgressStartApplyingChanges(
+		installationRepository);
+
+	// commit the transaction
+	BCommitTransactionResult transactionResult;
+	status_t error = fInstallationInterface->CommitTransaction(transaction,
+		transactionResult);
+	if (error != B_OK)
+		DIE(error, "Failed to commit transaction");
+	if (transactionResult.Error() != B_TRANSACTION_OK)
+		DIE(transactionResult);
+
+	fUserInteractionHandler->ProgressTransactionCommitted(
+		installationRepository, transactionResult);
+
+	BEntry transactionDirectoryEntry;
+	if ((error = transaction.TransactionDirectory()
+			.GetEntry(&transactionDirectoryEntry)) != B_OK
+		|| (error = transactionDirectoryEntry.Remove()) != B_OK) {
+		fUserInteractionHandler->Warn(error,
+			B_TRANSLATE("Failed to remove transaction directory"));
+	}
+
+	fUserInteractionHandler->ProgressApplyingChangesDone(
+		installationRepository);
+}
+
+
+void
+BPackageManager::_ClonePackageFile(LocalRepository* repository,
+	BSolverPackage* package, const BEntry& entry)
+{
+	// get source and destination path
+	BPath sourcePath;
+	repository->GetPackagePath(package, sourcePath);
+
+	BPath destinationPath;
+	status_t error = entry.GetPath(&destinationPath);
+	if (error != B_OK) {
+		DIE(error, "Failed to entry path of package file to install \"%s\"",
+			package->Info().FileName().String());
+	}
+
+	// Copy the package. Ideally we would just hard-link it, but BFS doesn't
+	// support that.
+	error = BCopyEngine().CopyEntry(sourcePath.Path(), destinationPath.Path());
+	if (error != B_OK)
+		DIE(error, "Failed to copy package file \"%s\"", sourcePath.Path());
+}
+
+
+int32
+BPackageManager::_FindBasePackage(const PackageList& packages,
+	const BPackageInfo& info)
+{
+	if (info.BasePackage().IsEmpty())
+		return -1;
+
+	// find the requirement matching the base package
+	BPackageResolvableExpression* basePackage = NULL;
+	int32 count = info.RequiresList().CountItems();
+	for (int32 i = 0; i < count; i++) {
+		BPackageResolvableExpression* require = info.RequiresList().ItemAt(i);
+		if (require->Name() == info.BasePackage()) {
+			basePackage = require;
+			break;
+		}
+	}
+
+	if (basePackage == NULL) {
+		fUserInteractionHandler->Warn(B_OK, B_TRANSLATE("Package %s-%s "
+			"doesn't have a matching requires for its base package \"%s\""),
+			info.Name().String(), info.Version().ToString().String(),
+			info.BasePackage().String());
+		return -1;
+	}
+
+	// find the first package matching the base package requires
+	count = packages.CountItems();
+	for (int32 i = 0; i < count; i++) {
+		BSolverPackage* package = packages.ItemAt(i);
+		if (package->Name() == basePackage->Name()
+			&& package->Info().Matches(*basePackage)) {
+			return i;
+		}
+	}
+
+	return -1;
+}
+
+
+void
+BPackageManager::_AddOrphanedPackages(PackageList& packages)
+{
+	InstalledRepository& installationRepository = InstallationRepository();
+	BStringList autoInstalled;
+	_ReadAutoInstalledPackages(installationRepository.Location(),
+		autoInstalled);
+	if (autoInstalled.IsEmpty())
+		return;
+
+	// Mark the auto-installed packages something still needs, starting from
+	// the packages that stay and weren't auto-installed. A package is needed,
+	// when a package that stays requires it, or when it supplements one (the
+	// solver installs supplementing packages, e.g. documentation, on its own).
+	// System packages never use home packages, so when working on the home
+	// location, only the home packages count.
+	std::vector<const BPackageInfo*> pendingPackages;
+	int32 count = installationRepository.CountPackages();
+	for (int32 i = 0; i < count; i++) {
+		BSolverPackage* package = installationRepository.PackageAt(i);
+		if (!packages.HasItem(package)
+			&& !autoInstalled.HasString(package->Name())) {
+			pendingPackages.push_back(&package->Info());
+		}
+	}
+
+	// The home packages aren't loaded when working on the system location,
+	// but they may depend on system packages all the same.
+	BPackageInfoSet homePackages;
+	if (installationRepository.Location()
+			== B_PACKAGE_INSTALLATION_LOCATION_SYSTEM
+		&& BPackageRoster().GetActivePackages(
+			B_PACKAGE_INSTALLATION_LOCATION_HOME, homePackages) == B_OK) {
+		BPackageInfoSet::Iterator it = homePackages.GetIterator();
+		while (it.HasNext())
+			pendingPackages.push_back(it.Next());
+	}
+
+	PackageList neededPackages;
+	while (!pendingPackages.empty()) {
+		const BPackageInfo* info = pendingPackages.back();
+		pendingPackages.pop_back();
+
+		for (int32 i = 0; i < count; i++) {
+			BSolverPackage* package = installationRepository.PackageAt(i);
+			if (packages.HasItem(package) || neededPackages.HasItem(package)
+				|| !autoInstalled.HasString(package->Name())) {
+				continue;
+			}
+
+			// Uninstalling a base package uninstalls the packages based on it
+			// as well, so never let a version mismatch decide on that.
+			bool needed = info->BasePackage() == package->Name();
+			int32 requiresCount = info->RequiresList().CountItems();
+			for (int32 k = 0; !needed && k < requiresCount; k++) {
+				needed = might_satisfy(package->Info(),
+					*info->RequiresList().ItemAt(k));
+			}
+
+			const BPackageInfo& packageInfo = package->Info();
+			int32 supplementsCount = packageInfo.SupplementsList().CountItems();
+			for (int32 k = 0; !needed && k < supplementsCount; k++) {
+				needed = might_satisfy(*info,
+					*packageInfo.SupplementsList().ItemAt(k));
+			}
+
+			if (!needed)
+				continue;
+			if (!neededPackages.AddItem(package))
+				throw std::bad_alloc();
+			pendingPackages.push_back(&packageInfo);
+		}
+	}
+
+	// all other auto-installed packages are orphaned
+	for (int32 i = 0; i < count; i++) {
+		BSolverPackage* package = installationRepository.PackageAt(i);
+		if (autoInstalled.HasString(package->Name())
+			&& !packages.HasItem(package)
+			&& !neededPackages.HasItem(package)) {
+			if (!packages.AddItem(package))
+				throw std::bad_alloc();
+		}
+	}
+}
+
+
+void
+BPackageManager::_GetPackageNames(const BSolverPackageSpecifierList& packages,
+	BStringList& _names)
+{
+	// Errors are ignored here, solving reports them in more detail.
+	PackageList foundPackages;
+	if (fSolver->FindPackages(packages, 0, foundPackages) != B_OK)
+		return;
+
+	for (int32 i = 0; BSolverPackage* package = foundPackages.ItemAt(i); i++) {
+		if (!_names.HasString(package->Name()) && !_names.Add(package->Name()))
+			throw std::bad_alloc();
+	}
+}
+
+
+void
+BPackageManager::_UpdateAutoInstalledPackages(
+	const BStringList& requestedPackages, const BStringList& installedPackages)
+{
+	InstalledRepository& installationRepository = InstallationRepository();
+	BStringList autoInstalled;
+	_ReadAutoInstalledPackages(installationRepository.Location(),
+		autoInstalled);
+
+	// newly installed packages nobody asked for are dependencies
+	bool changed = false;
+	PackageList& packagesToActivate
+		= installationRepository.PackagesToActivate();
+	for (int32 i = 0; BSolverPackage* package = packagesToActivate.ItemAt(i);
+			i++) {
+		const BString& name = package->Name();
+		if (requestedPackages.HasString(name)
+			|| installedPackages.HasString(name)
+			|| autoInstalled.HasString(name)) {
+			continue;
+		}
+		if (!autoInstalled.Add(name))
+			throw std::bad_alloc();
+		changed = true;
+	}
+
+	for (int32 i = 0; i < requestedPackages.CountStrings(); i++)
+		changed |= autoInstalled.Remove(requestedPackages.StringAt(i));
+
+	if (changed
+		&& _WriteAutoInstalledPackages(installationRepository.Location(),
+			autoInstalled) != B_OK) {
+		fUserInteractionHandler->Warn(B_OK, B_TRANSLATE("Failed to write the "
+			"list of auto-installed packages"));
+	}
+}
+
+
+void
+BPackageManager::_ReadAutoInstalledPackages(
+	BPackageInstallationLocation location, BStringList& _packages)
+{
+	BPath path;
+	if (get_auto_installed_packages_path(location, path) != B_OK)
+		return;
+
+	// no file means that nothing has been auto-installed
+	BFile file(path.Path(), B_READ_ONLY);
+	off_t size;
+	if (file.InitCheck() != B_OK || file.GetSize(&size) != B_OK || size == 0)
+		return;
+
+	BString content;
+	char* buffer = content.LockBuffer(size);
+	if (buffer == NULL)
+		throw std::bad_alloc();
+	ssize_t bytesRead = file.Read(buffer, size);
+	content.UnlockBuffer(bytesRead > 0 ? bytesRead : 0);
+
+	if (!content.Split("\n", true, _packages))
+		throw std::bad_alloc();
+}
+
+
+status_t
+BPackageManager::_WriteAutoInstalledPackages(
+	BPackageInstallationLocation location, const BStringList& packages)
+{
+	BPath path;
+	status_t error = get_auto_installed_packages_path(location, path);
+	if (error != B_OK)
+		return error;
+
+	BString content = packages.Join("\n");
+	if (!content.IsEmpty())
+		content << '\n';
+
+	// write to a temporary file first, so that the list is never cut short
+	BString temporaryPath(path.Path());
+	temporaryPath << ".tmp";
+	BFile file(temporaryPath.String(),
+		B_WRITE_ONLY | B_CREATE_FILE | B_ERASE_FILE);
+	error = file.InitCheck();
+	if (error == B_OK) {
+		ssize_t written = file.Write(content.String(), content.Length());
+		if (written < 0)
+			error = written;
+		else if (written != content.Length())
+			error = B_IO_ERROR;
+	}
+	if (error == B_OK)
+		error = file.Sync();
+	file.Unset();
+	if (error == B_OK)
+		error = BEntry(temporaryPath.String()).Rename(path.Path(), true);
+
+	if (error != B_OK)
+		BEntry(temporaryPath.String()).Remove();
+	return error;
+}
+
+
+void
+BPackageManager::_AddInstalledRepository(InstalledRepository* repository)
+{
+	fInstallationInterface->InitInstalledRepository(*repository);
+
+	BRepositoryBuilder(*repository)
+		.AddToSolver(fSolver, repository->Location() == fLocation);
+	repository->SetPriority(repository->InitialPriority());
+
+	if (!fInstalledRepositories.AddItem(repository))
+		throw std::bad_alloc();
+}
+
+
+void
+BPackageManager::_AddRemoteRepository(BPackageRoster& roster, const char* name,
+	bool refresh)
+{
+	BRepositoryConfig config;
+	status_t error = roster.GetRepositoryConfig(name, &config);
+	if (error != B_OK) {
+		fUserInteractionHandler->Warn(error, B_TRANSLATE(
+			"Failed to get config for repository \"%s\". Skipping."), name);
+		return;
+	}
+
+	BRepositoryCache cache;
+	error = _GetRepositoryCache(roster, config, refresh, cache);
+	if (error != B_OK) {
+		fUserInteractionHandler->Warn(error, B_TRANSLATE(
+			"Failed to get cache for repository \"%s\". Skipping."), name);
+		return;
+	}
+
+	RemoteRepository* repository = new RemoteRepository(config);
+	if (!fOtherRepositories.AddItem(repository)) {
+		delete repository;
+		throw std::bad_alloc();
+	}
+
+	BRepositoryBuilder(*repository, cache, config.Name())
+		.AddToSolver(fSolver, false);
+}
+
+
+status_t
+BPackageManager::_GetRepositoryCache(BPackageRoster& roster,
+	const BRepositoryConfig& config, bool refresh, BRepositoryCache& _cache)
+{
+	if (!refresh && roster.GetRepositoryCache(config.Name(), &_cache) == B_OK)
+		return B_OK;
+
+	status_t error = RefreshRepository(config);
+	if (error != B_OK) {
+		fUserInteractionHandler->Warn(error, B_TRANSLATE(
+			"Refreshing repository \"%s\" failed"), config.Name().String());
+	}
+
+	return roster.GetRepositoryCache(config.Name(), &_cache);
+}
+
+
+void
+BPackageManager::_AddPackageSpecifiers(const char* const* searchStrings,
+	int searchStringCount, BSolverPackageSpecifierList& specifierList)
+{
+	for (int i = 0; i < searchStringCount; i++) {
+		const char* searchString = searchStrings[i];
+		if (_IsLocalPackage(searchString)) {
+			BSolverPackage* package = _AddLocalPackage(searchString);
+			if (!specifierList.AppendSpecifier(package))
+				throw std::bad_alloc();
+		} else {
+			if (!specifierList.AppendSpecifier(searchString))
+				throw std::bad_alloc();
+		}
+	}
+}
+
+
+bool
+BPackageManager::_IsLocalPackage(const char* fileName)
+{
+	// Simple heuristic: fileName contains ".hpkg" and there's actually a file
+	// it refers to.
+	struct stat st;
+	return strstr(fileName, ".hpkg") != NULL && stat(fileName, &st) == 0
+		&& S_ISREG(st.st_mode);
+}
+
+
+BSolverPackage*
+BPackageManager::_AddLocalPackage(const char* fileName)
+{
+	if (fLocalRepository == NULL)
+		throw std::bad_alloc();
+	return fLocalRepository->AddLocalPackage(fileName);
+}
+
+
+bool
+BPackageManager::_NextSpecificInstallationLocation()
+{
+	try {
+		if (fLocation == B_PACKAGE_INSTALLATION_LOCATION_SYSTEM) {
+			fLocation = B_PACKAGE_INSTALLATION_LOCATION_HOME;
+			fSystemRepository->SetInstalled(false);
+			_AddInstalledRepository(fHomeRepository);
+			return true;
+		}
+	} catch (BFatalErrorException& e) {
+		// No home repo. This is acceptable for example when we are in an haikuporter chroot.
+	}
+
+	return false;
+}
+
+
+status_t
+BPackageManager::DownloadPackage(const BString& fileURL,
+	const BEntry& targetEntry, const BString& checksum)
+{
+	BDecisionProvider provider;
+	BContext context(provider, *this);
+	return DownloadFileRequest(context, fileURL, targetEntry, checksum)
+		.Process();
+}
+
+
+status_t
+BPackageManager::RefreshRepository(const BRepositoryConfig& repoConfig)
+{
+	BDecisionProvider provider;
+	BContext context(provider, *this);
+	return BRefreshRepositoryRequest(context, repoConfig).Process();
+}
+
+
+// #pragma mark - RemoteRepository
+
+
+BPackageManager::RemoteRepository::RemoteRepository(
+	const BRepositoryConfig& config)
+	:
+	BSolverRepository(),
+	fConfig(config)
+{
+}
+
+
+const BRepositoryConfig&
+BPackageManager::RemoteRepository::Config() const
+{
+	return fConfig;
+}
+
+
+// #pragma mark - LocalRepository
+
+
+BPackageManager::LocalRepository::LocalRepository()
+	:
+	BSolverRepository()
+{
+}
+
+
+BPackageManager::LocalRepository::LocalRepository(const BString& name)
+	:
+	BSolverRepository(name)
+{
+}
+
+
+// #pragma mark - MiscLocalRepository
+
+
+BPackageManager::MiscLocalRepository::MiscLocalRepository()
+	:
+	LocalRepository("local"),
+	fPackagePaths()
+{
+	SetPriority(-127);
+}
+
+
+BSolverPackage*
+BPackageManager::MiscLocalRepository::AddLocalPackage(const char* fileName)
+{
+	BSolverPackage* package;
+	BRepositoryBuilder(*this).AddPackage(fileName, &package);
+
+	fPackagePaths[package] = fileName;
+
+	return package;
+}
+
+
+void
+BPackageManager::MiscLocalRepository::GetPackagePath(BSolverPackage* package,
+	BPath& _path)
+{
+	PackagePathMap::const_iterator it = fPackagePaths.find(package);
+	if (it == fPackagePaths.end()) {
+		DIE("Package %s not in local repository",
+			package->VersionedName().String());
+	}
+
+	status_t error = _path.SetTo(it->second.c_str());
+	if (error != B_OK)
+		DIE(error, "Failed to init package path %s", it->second.c_str());
+}
+
+
+// #pragma mark - InstalledRepository
+
+
+BPackageManager::InstalledRepository::InstalledRepository(const char* name,
+	BPackageInstallationLocation location, int32 priority)
+	:
+	LocalRepository(),
+	fDisabledPackages(10),
+	fPackagesToActivate(),
+	fPackagesToDeactivate(),
+	fInitialName(name),
+	fLocation(location),
+	fInitialPriority(priority)
+{
+}
+
+
+void
+BPackageManager::InstalledRepository::GetPackagePath(BSolverPackage* package,
+	BPath& _path)
+{
+	directory_which packagesWhich;
+	switch (fLocation) {
+		case B_PACKAGE_INSTALLATION_LOCATION_SYSTEM:
+			packagesWhich = B_SYSTEM_PACKAGES_DIRECTORY;
+			break;
+		case B_PACKAGE_INSTALLATION_LOCATION_HOME:
+			packagesWhich = B_USER_PACKAGES_DIRECTORY;
+			break;
+		default:
+			DIE("Don't know packages directory path for installation location "
+				"\"%s\"", Name().String());
+	}
+
+	BString fileName(package->Info().FileName());
+	status_t error = find_directory(packagesWhich, &_path);
+	if (error != B_OK || (error = _path.Append(fileName)) != B_OK) {
+		DIE(error, "Failed to get path of package file \"%s\" in installation "
+			"location \"%s\"", fileName.String(), Name().String());
+	}
+}
+
+
+void
+BPackageManager::InstalledRepository::DisablePackage(BSolverPackage* package)
+{
+	if (fDisabledPackages.HasItem(package))
+		DIE("Package %s already disabled", package->VersionedName().String());
+
+	if (package->Repository() != this) {
+		DIE("Package %s not in repository %s",
+			package->VersionedName().String(), Name().String());
+	}
+
+	// move to disabled list
+	if (!fDisabledPackages.AddItem(package))
+		throw std::bad_alloc();
+
+	RemovePackage(package);
+}
+
+
+bool
+BPackageManager::InstalledRepository::EnablePackage(BSolverPackage* package)
+{
+	return fDisabledPackages.RemoveItem(package);
+}
+
+
+bool
+BPackageManager::InstalledRepository::HasChanges() const
+{
+	return !fPackagesToActivate.IsEmpty() || !fPackagesToDeactivate.IsEmpty();
+}
+
+
+void
+BPackageManager::InstalledRepository::ApplyChanges()
+{
+	// disable packages to deactivate
+	for (int32 i = 0; BSolverPackage* package = fPackagesToDeactivate.ItemAt(i);
+		i++) {
+		if (!fDisabledPackages.HasItem(package))
+			DisablePackage(package);
+	}
+
+	// add packages to activate
+	for (int32 i = 0; BSolverPackage* package = fPackagesToActivate.ItemAt(i);
+		i++) {
+		status_t error = AddPackage(package->Info());
+		if (error != B_OK) {
+			DIE(error, "Failed to add package %s to %s repository",
+				package->Name().String(), Name().String());
+		}
+	}
+}
+
+
+// #pragma mark - Transaction
+
+
+BPackageManager::Transaction::Transaction(InstalledRepository& repository)
+	:
+	fRepository(repository),
+	fTransaction(),
+	fTransactionDirectory()
+{
+}
+
+
+BPackageManager::Transaction::~Transaction()
+{
+}
+
+
+// #pragma mark - InstallationInterface
+
+
+BPackageManager::InstallationInterface::~InstallationInterface()
+{
+}
+
+
+void
+BPackageManager::InstallationInterface::ResultComputed(
+	InstalledRepository& repository)
+{
+}
+
+
+// #pragma mark - ClientInstallationInterface
+
+
+BPackageManager::ClientInstallationInterface::ClientInstallationInterface()
+	:
+	fDaemonClient()
+{
+}
+
+
+BPackageManager::ClientInstallationInterface::~ClientInstallationInterface()
+{
+}
+
+
+void
+BPackageManager::ClientInstallationInterface::InitInstalledRepository(
+	InstalledRepository& repository)
+{
+	const char* name = repository.InitialName();
+	BRepositoryBuilder(repository, name)
+		.AddPackages(repository.Location(), name);
+}
+
+
+status_t
+BPackageManager::ClientInstallationInterface::PrepareTransaction(
+	Transaction& transaction)
+{
+	return fDaemonClient.CreateTransaction(transaction.Repository().Location(),
+		transaction.ActivationTransaction(),
+		transaction.TransactionDirectory());
+}
+
+
+status_t
+BPackageManager::ClientInstallationInterface::CommitTransaction(
+	Transaction& transaction, BCommitTransactionResult& _result)
+{
+	return fDaemonClient.CommitTransaction(transaction.ActivationTransaction(),
+		_result);
+}
+
+
+// #pragma mark - UserInteractionHandler
+
+
+BPackageManager::UserInteractionHandler::~UserInteractionHandler()
+{
+}
+
+
+void
+BPackageManager::UserInteractionHandler::HandleProblems()
+{
+	throw BAbortedByUserException();
+}
+
+
+void
+BPackageManager::UserInteractionHandler::ConfirmChanges(bool fromMostSpecific)
+{
+	throw BAbortedByUserException();
+}
+
+
+void
+BPackageManager::UserInteractionHandler::Warn(status_t error,
+	const char* format, ...)
+{
+}
+
+
+void
+BPackageManager::UserInteractionHandler::ProgressPackageDownloadStarted(
+	const char* packageName)
+{
+}
+
+
+void
+BPackageManager::UserInteractionHandler::ProgressPackageDownloadActive(
+	const char* packageName, float completionPercentage, off_t bytes,
+	off_t totalBytes)
+{
+}
+
+
+void
+BPackageManager::UserInteractionHandler::ProgressPackageDownloadComplete(
+	const char* packageName)
+{
+}
+
+
+void
+BPackageManager::UserInteractionHandler::ProgressPackageChecksumStarted(
+	const char* title)
+{
+}
+
+
+void
+BPackageManager::UserInteractionHandler::ProgressPackageChecksumComplete(
+	const char* title)
+{
+}
+
+
+void
+BPackageManager::UserInteractionHandler::ProgressStartApplyingChanges(
+	InstalledRepository& repository)
+{
+}
+
+
+void
+BPackageManager::UserInteractionHandler::ProgressTransactionCommitted(
+	InstalledRepository& repository, const BCommitTransactionResult& result)
+{
+}
+
+
+void
+BPackageManager::UserInteractionHandler::ProgressApplyingChangesDone(
+	InstalledRepository& repository)
+{
+}
+
+
+}	// namespace BPrivate
+
+}	// namespace BManager
+
+}	// namespace BPackageKit

@@ -1,0 +1,44 @@
+1	portuguese	x-vnd.Haiku-BluetoothPrefs	305903693
+Laptop	Settings view		Portátil
+Only from trusted devices	Settings view		Apenas de dispositivos de confiança
+15 secs	Settings view		15 seg.
+Quit	main		Sair
+Manufacturer: 	Device View		Fabricante: 
+Desktop	Settings view		Área de Trabalho
+Server	Window		Servidor
+Identify host as:	Settings view		Identificar anfitrião como:
+Local devices found on system:	Settings view		Dispositivos locais encontrados no sistema:
+Service classes: 	Device View		Classes de serviço: 
+Remote devices	Window		Dispositivos remotos
+Settings	Window		Definições
+Stop bluetooth services…	Window		Parar serviços bluetooth…
+61 secs	Settings view		61 seg.
+Add…	Remote devices		Adicionar…
+Revert	Window		Reverter
+Refresh local devices…	Window		Atualizar dispositivos locais…
+Disconnect	Remote devices		Desligar
+Defaults	Window		Predefinições
+From all devices	Settings view		Todos os dispositivos
+Start bluetooth services…	Window		Iniciar serviços bluetooth…
+Launch now	main		Iniciar agora
+Bluetooth	System name		Bluetooth
+Remove	Remote devices		Remover
+Pick device…	Settings view		Escolher dispositivo…
+Always ask	Settings view		Perguntar sempre
+With support of:\n - Mika Lindqvist\n - Adrien Destugues\n - Maksym Yevmenkin\n\nThanks to the individuals who helped…\n\nShipping/donating hardware:\n - Henry Jair Abril Florez (el Colombian)\n\t& Stefanie Bartolich\n - Edwin Erik Amsler\n - Dennis d'Entremont\n - Luroh\n - Pieter Panman\n\nEconomically:\n - Karl vom Dorff, Andrea Bernardi (OSDrawer),\n - Matt M, Doug F, Hubert H,\n - Sebastian B, Andrew M, Jared E,\n - Frederik H, Tom S, Ferry B,\n - Greg G, David F, Richard S, Martin W:\n\nWith patches:\n - Michael Weirauch\n - Fredrik Ekdahl\n - Raynald Lesieur\n - Andreas Färber\n - Joerg Meyer\nTesting:\n - Petter H. Juliussen\nWho gave me all the knowledge:\n - the yellowTAB team	main		Com o apoio de:\n - Mika Lindqvist\n - Adrien Destugues\n - Maksym Yevmenkin\n\nAgradecemos às pessoas que ajudaram…\n\nEnviando/doando hardware:\n - Henry Jair Abril Florez (el Colombian)\n\t& Stefanie Bartolich\n - Edwin Erik Amsler\n - Dennis d'Entremont\n - Luroh\n - Pieter Panman\n\nEconomicamente:\n - Karl vom Dorff, Andrea Bernardi (OSDrawer),\n - Matt M, Doug F, Hubert H,\n - Sebastian B, Andrew M, Jared E,\n - Frederik H, Tom S, Ferry B,\n - Greg G, David F, Richard S, Martin W:\n\nCom correções:\n - Michael Weirauch\n - Fredrik Ekdahl\n - Raynald Lesieur\n - Andreas Färber\n - Joerg Meyer\nRealizando testes:\n - Petter H. Juliussen\nAs pessoas que me deram todo o conhecimento:\n - a equipa da yellowTAB
+Help	Window		Ajuda
+Pair…	Remote devices		Emparelhar…
+Incoming connections policy:	Settings view		Política de ligações de entrada:
+Retrieving names…	Inquiry panel		A obter nomes…
+Show name	Extended local device view		Mostrar nome
+Add device to list	Inquiry panel		Adicionar dispositivo à lista
+The Bluetooth services are not currently running on this system.	main		Os serviços Bluetooth não estão em execução neste sistema.
+Discoverable	Extended local device view		Detectável
+Authenticate	Extended local device view		Autenticar
+Smart phone	Settings view		Smart phone
+Default inquiry time:	Settings view		Tempo de procura predefinido:
+Server	Settings view		Servidor
+Handheld	Settings view		Computador de Bolso
+ packets: 	Device View		 pacotes: 
+About Bluetooth…	Window		Sobre o Bluetooth…
+Starting scan…	Inquiry panel		A iniciar busca…

@@ -1,0 +1,589 @@
+/*
+ * Copyright 2007 Oliver Ruiz Dorantes, oliver.ruiz.dorantes_at_gmail.com
+ * Copyright 2008 Mika Lindqvist, monni1995_at_gmail.com
+ * All rights reserved. Distributed under the terms of the MIT License.
+ */
+
+
+#include "h2transactions.h"
+
+#include <bluetooth/HCI/btHCI.h>
+#include <bluetooth/HCI/btHCI_event.h>
+#include <bluetooth/HCI/btHCI_acl.h>
+
+#include <ByteOrder.h>
+#include <kernel.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "Errors.h"
+#include "h2debug.h"
+#include "h2generic.h"
+#include "h2upper.h"
+#include "h2util.h"
+
+
+//#define DUMP_BUFFERS
+
+/* Forward declaration */
+
+void sco_tx_complete(void* cookie, status_t status, void* data, size_t actual_len);
+void sco_rx_complete(void* cookie, status_t status, void* data, size_t actual_len);
+void acl_tx_complete(void* cookie, status_t status, void* data, size_t actual_len);
+void acl_rx_complete(void* cookie, status_t status, void* data, size_t actual_len);
+void command_complete(void* cookie, status_t status, void* data, size_t actual_len);
+void event_complete(void* cookie, status_t status, void* data, size_t actual_len);
+
+
+static status_t
+assembly_rx(bt_usb_dev* bdev, bt_packet_t type, void* data, int count)
+{
+	bdev->stat.bytesRX += count;
+
+	return btDevices->PostTransportPacket(bdev->hdev, type, data, count);
+
+}
+
+
+#if 0
+#pragma mark --- RX Complete ---
+#endif
+
+void
+event_complete(void* cookie, status_t status, void* data, size_t actual_len)
+{
+	bt_usb_dev* bdev = (bt_usb_dev*)cookie;
+	// bt_usb_dev* bdev = fetch_device(cookie, 0); -> safer / slower option
+	status_t error;
+
+	TRACE("%s: cookie@%p status=%s len=%" B_PRIuSIZE "\n", __func__, cookie,
+		strerror(status), actual_len);
+
+	if (bdev == NULL)
+		return;
+
+	if (status == B_CANCELED || status == B_DEV_CRC_ERROR)
+		return; // or not running anymore...
+
+	if (status != B_OK || actual_len == 0)
+		goto resubmit;
+
+	if (assembly_rx(bdev, BT_EVENT, data, actual_len) == B_OK) {
+		bdev->stat.successfulTX++;
+	} else {
+		bdev->stat.errorRX++;
+	}
+
+resubmit:
+
+	error = usb->queue_interrupt(bdev->intr_in_ep->handle, data,
+		max_c(HCI_MAX_EVENT_SIZE, bdev->max_packet_size_intr_in),
+		event_complete, bdev);
+
+	if (error != B_OK) {
+		reuse_room(&bdev->eventRoom, data);
+		bdev->stat.rejectedRX++;
+		ERROR("%s: RX event resubmittion failed %s\n", __func__,
+			strerror(error));
+	} else {
+		bdev->stat.acceptedRX++;
+	}
+}
+
+
+void
+acl_rx_complete(void* cookie, status_t status, void* data, size_t actual_len)
+{
+	bt_usb_dev* bdev = (bt_usb_dev*)cookie;
+	// bt_usb_dev* bdev = fetch_device(cookie, 0); -> safer / slower option
+	status_t error;
+
+	if (bdev == NULL)
+		return;
+
+	if (status == B_CANCELED || status == B_DEV_CRC_ERROR)
+		return; // or not running anymore...
+
+	if (status != B_OK || actual_len == 0)
+		goto resubmit;
+
+	if (assembly_rx(bdev, BT_ACL, data, actual_len) == B_OK) {
+		bdev->stat.successfulRX++;
+	} else {
+		bdev->stat.errorRX++;
+	}
+
+resubmit:
+
+	error = usb->queue_bulk(bdev->bulk_in_ep->handle, data,
+		max_c(HCI_MAX_FRAME_SIZE, bdev->max_packet_size_bulk_in),
+		acl_rx_complete, (void*) bdev);
+
+	if (error != B_OK) {
+		reuse_room(&bdev->aclRoom, data);
+		bdev->stat.rejectedRX++;
+		ERROR("%s: RX acl resubmittion failed %s\n", __func__, strerror(error));
+	} else {
+		bdev->stat.acceptedRX++;
+	}
+}
+
+
+void
+sco_rx_complete(void* cookie, status_t status, void* data, size_t actual_len)
+{
+	sco_rx_transfer_t* ctx = (sco_rx_transfer_t*)cookie;
+
+	if (ctx == NULL)
+		return;
+
+	bt_usb_dev* bdev = ctx->bdev;
+	status_t error;
+
+	if (status == B_CANCELED)
+		return;
+
+	size_t packetSize = bdev->max_packet_size_iso_in;
+
+	if (status != B_OK || actual_len == 0)
+		goto resubmit;
+	{
+		bool frame_errors = false;
+		uint8* frame_ptr = (uint8*)data;
+
+		for (uint32 i = 0; i < SCO_PACKETS_PER_BUFFER; i++) {
+			if (ctx->descriptors[i].status == B_OK && ctx->descriptors[i].actual_length > 0) {
+				if (assembly_rx(bdev, BT_SCO, frame_ptr, ctx->descriptors[i].actual_length) != B_OK)
+					frame_errors = true;
+			}
+			frame_ptr += packetSize;
+		}
+
+		if (!frame_errors)
+			bdev->stat.successfulRX++;
+		else
+			bdev->stat.errorRX++;
+	}
+
+resubmit:
+
+	for (uint32 i = 0; i < SCO_PACKETS_PER_BUFFER; i++) {
+		ctx->descriptors[i].request_length = packetSize;
+		ctx->descriptors[i].actual_length = 0;
+		ctx->descriptors[i].status = B_OK;
+	}
+
+	uint32 startingFrame = 0;
+	error = usb->queue_isochronous(bdev->iso_in_ep->handle, data,
+		SCO_PACKETS_PER_BUFFER * packetSize, ctx->descriptors, SCO_PACKETS_PER_BUFFER,
+		&startingFrame, USB_ISO_ASAP, sco_rx_complete, (void*)ctx);
+
+	if (error != B_OK) {
+		reuse_room(&bdev->scoRoom, ctx);
+		bdev->stat.rejectedRX++;
+		ERROR("%s: RX sco resubmittion failed %s\n", __func__, strerror(error));
+	} else {
+		bdev->stat.acceptedRX++;
+	}
+}
+
+
+#if 0
+#pragma mark --- RX ---
+#endif
+
+status_t
+submit_rx_event(bt_usb_dev* bdev)
+{
+	size_t size = max_c(HCI_MAX_EVENT_SIZE, bdev->max_packet_size_intr_in);
+	void* buf = alloc_room(&bdev->eventRoom, size);
+	status_t status;
+
+	if (buf == NULL)
+		return ENOMEM;
+
+	status = usb->queue_interrupt(bdev->intr_in_ep->handle,	buf, size,
+		event_complete, (void*)bdev);
+
+	if (status != B_OK) {
+		reuse_room(&bdev->eventRoom, buf); // reuse allocated one
+		bdev->stat.rejectedRX++;
+	} else {
+		bdev->stat.acceptedRX++;
+		TRACE("%s: Accepted RX Event %d\n", __func__, bdev->stat.acceptedRX);
+	}
+
+	return status;
+}
+
+
+status_t
+submit_rx_acl(bt_usb_dev* bdev)
+{
+	size_t size = max_c(HCI_MAX_FRAME_SIZE, bdev->max_packet_size_bulk_in);
+	void* buf = alloc_room(&bdev->aclRoom, size);
+	status_t status;
+
+	if (buf == NULL)
+		return ENOMEM;
+
+	status = usb->queue_bulk(bdev->bulk_in_ep->handle, buf, size,
+		acl_rx_complete, bdev);
+
+	if (status != B_OK) {
+		reuse_room(&bdev->aclRoom, buf); // reuse allocated
+		bdev->stat.rejectedRX++;
+	} else {
+		bdev->stat.acceptedRX++;
+	}
+
+	return status;
+}
+
+
+status_t
+submit_rx_sco(bt_usb_dev* bdev)
+{
+
+	size_t packetSize = bdev->max_packet_size_iso_in;
+	if (packetSize == 0)
+		return B_ERROR;
+
+	size_t dataSize = SCO_PACKETS_PER_BUFFER * packetSize;
+	size_t roomSize = sizeof(sco_rx_transfer_t) + dataSize;
+
+	sco_rx_transfer_t* ctx = (sco_rx_transfer_t*)alloc_room(&bdev->scoRoom, roomSize);
+	if (ctx == NULL)
+		return B_NO_MEMORY;
+
+	ctx->bdev = bdev;
+
+	for (uint32 i = 0; i < SCO_PACKETS_PER_BUFFER; i++) {
+		ctx->descriptors[i].request_length = packetSize;
+		ctx->descriptors[i].actual_length = 0;
+		ctx->descriptors[i].status = B_OK;
+	}
+
+	void* dataBuffer = (uint8*)ctx + sizeof(sco_rx_transfer_t);
+
+	uint32 startingFrame = 0;
+	status_t status
+		= usb->queue_isochronous(bdev->iso_in_ep->handle, dataBuffer, dataSize, ctx->descriptors,
+			SCO_PACKETS_PER_BUFFER, &startingFrame, USB_ISO_ASAP, sco_rx_complete, ctx);
+
+	if (status != B_OK) {
+		reuse_room(&bdev->scoRoom, ctx);
+		bdev->stat.rejectedRX++;
+	} else {
+		bdev->stat.acceptedRX++;
+	}
+
+	return status;
+}
+
+
+#if 0
+#pragma mark --- TX Complete ---
+#endif
+
+void
+command_complete(void* cookie, status_t status, void* data, size_t actual_len)
+{
+	snet_buffer* snbuf = (snet_buffer*)cookie;
+	bt_usb_dev* bdev = (bt_usb_dev*)snb_cookie(snbuf);
+
+	TRACE("%s: len = %" B_PRIuSIZE " @%p\n", __func__, actual_len, data);
+
+	if (status == B_OK) {
+		bdev->stat.successfulTX++;
+		bdev->stat.bytesTX += actual_len;
+	} else {
+		bdev->stat.errorTX++;
+		// the packet has been lost, too late to requeue it
+	}
+
+	snb_park(&bdev->snetBufferRecycleTrash, snbuf);
+
+#ifdef BT_RESCHEDULING_AFTER_COMPLETITIONS
+	// TODO: check just the empty queues
+	schedTxProcessing(bdev);
+#endif
+}
+
+
+struct acl_tx_transfer {
+	bt_usb_dev*	bdev;
+	net_buffer*	nbuf;
+	void*		copy;
+	void*		data;
+	int32		retries;
+};
+
+
+static void free_acl_tx_transfer(acl_tx_transfer* transfer);
+
+
+/*!	The controller refused a packet (a CSR one does while it starts the
+	encryption of the link): clear the halt, then send the packet again a bit
+	later, as L2CAP does not resend its commands.
+*/
+static status_t
+clear_bulk_out_halt(void* cookie)
+{
+	acl_tx_transfer* transfer = (acl_tx_transfer*)cookie;
+	bt_usb_dev* bdev = transfer->bdev;
+
+	status_t status = B_OK;
+	if (atomic_get_and_set(&bdev->bulk_out_clearing, 1) == 0) {
+		status = usb->clear_feature(bdev->bulk_out_ep->handle,
+			USB_FEATURE_ENDPOINT_HALT);
+		TRACE("%s: cleared the halt of the ACL endpoint: %s\n", __func__,
+			strerror(status));
+		atomic_set(&bdev->bulk_out_clearing, 0);
+	} else {
+		// the packets queued after the refused one: wait for the halt to be
+		// cleared by the thread of the first one
+		for (int i = 0; i < 100 && atomic_get(&bdev->bulk_out_clearing) != 0;
+				i++) {
+			snooze(1000);
+		}
+	}
+
+	snooze(10000);
+	// nothing queued on a device that went away or is closing
+	if ((bdev->state & RUNNING) == 0 || atomic_get(&bdev->closing) != 0)
+		status = B_DEV_NOT_READY;
+	if (status == B_OK) {
+		status = usb->queue_bulk(bdev->bulk_out_ep->handle, transfer->data,
+			transfer->nbuf->size, acl_tx_complete, transfer);
+	}
+	if (status != B_OK) {
+		ERROR("%s: ACL packet of %" B_PRIu32 " bytes lost: %s\n", __func__,
+			transfer->nbuf->size, strerror(status));
+		free_acl_tx_transfer(transfer);
+	}
+	atomic_add(&bdev->resendThreads, -1);
+	return B_OK;
+}
+
+
+static void
+free_acl_tx_transfer(acl_tx_transfer* transfer)
+{
+	nb_destroy(transfer->nbuf);
+	free(transfer->copy);
+	free(transfer);
+}
+
+
+void
+acl_tx_complete(void* cookie, status_t status, void* data, size_t actual_len)
+{
+	acl_tx_transfer* transfer = (acl_tx_transfer*)cookie;
+	bt_usb_dev* bdev = transfer->bdev;
+
+	//debugf("fetched=%p type %lx %p\n", bdev, nbuf->type, data);
+
+	if (status == B_OK) {
+		bdev->stat.successfulTX++;
+		bdev->stat.bytesTX += actual_len;
+	} else {
+		bdev->stat.errorTX++;
+
+		// A halted endpoint refuses everything that follows: clear it and
+		// send the packet again, from a thread as this is the completion of
+		// the USB stack
+		// The thread is counted, and waited for when the device closes: it
+		// used the device, and the code of this driver, after a hot unplug.
+		if (status == B_DEV_STALLED && transfer->retries++ < 3
+			&& atomic_get(&bdev->closing) == 0) {
+			atomic_add(&bdev->resendThreads, 1);
+			thread_id thread = spawn_kernel_thread(clear_bulk_out_halt,
+				"h2generic resend", B_NORMAL_PRIORITY, transfer);
+			if (thread >= 0 && resume_thread(thread) == B_OK)
+				return;
+			atomic_add(&bdev->resendThreads, -1);
+		}
+
+		ERROR("%s: ACL packet of %" B_PRIu32 " bytes lost: %s\n", __func__,
+			transfer->nbuf->size, strerror(status));
+	}
+
+	free_acl_tx_transfer(transfer);
+
+#ifdef BT_RESCHEDULING_AFTER_COMPLETITIONS
+	schedTxProcessing(bdev);
+#endif
+}
+
+
+void
+sco_tx_complete(void* cookie, status_t status, void* data, size_t actual_len)
+{
+	sco_tx_transfer_t* transfer = (sco_tx_transfer_t*)cookie;
+	bt_usb_dev* bdev = transfer->bdev;
+
+	if (status == B_OK) {
+		bdev->stat.successfulTX++;
+		bdev->stat.bytesTX += actual_len;
+	} else {
+		bdev->stat.errorTX++;
+	}
+
+	nb_destroy(transfer->nbuf);
+
+	free(transfer->packet_descriptors);
+	free(transfer);
+
+#ifdef BT_RESCHEDULING_AFTER_COMPLETITIONS
+	schedTxProcessing(bdev);
+#endif
+}
+
+#if 0
+#pragma mark --- TX ---
+#endif
+
+status_t
+submit_tx_command(bt_usb_dev* bdev, snet_buffer* snbuf)
+{
+	uint8 bRequestType = bdev->ctrl_req;
+	uint8 bRequest = 0;
+	uint16 wIndex = 0;
+	uint16 value = 0;
+	uint16 wLength = B_HOST_TO_LENDIAN_INT16(snb_size(snbuf));
+	status_t error;
+
+	if ((bdev->state & RUNNING) == 0) {
+		return B_DEV_NOT_READY;
+	}
+
+	// set cookie
+	snb_set_cookie(snbuf, bdev);
+
+	TRACE("%s: @%p\n", __func__, snb_get(snbuf));
+
+	error = usb->queue_request(bdev->dev, bRequestType, bRequest,
+		value, wIndex, wLength,	snb_get(snbuf),
+		command_complete, (void*) snbuf);
+
+	if (error != B_OK) {
+		bdev->stat.rejectedTX++;
+	} else {
+		bdev->stat.acceptedTX++;
+	}
+
+	return error;
+}
+
+
+status_t
+submit_tx_acl(bt_usb_dev* bdev, net_buffer* nbuf)
+{
+	status_t error;
+
+	// set cookie
+	SET_DEVICE(nbuf, bdev->hdev);
+
+	if ((bdev->state & RUNNING) == 0) {
+		return B_DEV_NOT_READY;
+	}
+	/*
+	debugf("### Outgoing ACL: len = %ld\n", nbuf->size);
+	for (uint32 index = 0 ; index < nbuf->size; index++ ) {
+		dprintf("%x:",((uint8*)nb_get_whole_buffer(nbuf))[index]);
+	}
+	*/
+
+	acl_tx_transfer* transfer = (acl_tx_transfer*)malloc(sizeof(*transfer));
+	if (transfer == NULL)
+		return B_NO_MEMORY;
+	transfer->bdev = bdev;
+	transfer->nbuf = nbuf;
+	transfer->copy = NULL;
+	transfer->retries = 0;
+
+	// L2CAP can hand over a packet in pieces; USB wants it in one
+	void* data;
+	if (nb->direct_access(nbuf, 0, nbuf->size, &data) != B_OK) {
+		transfer->copy = malloc(nbuf->size);
+		if (transfer->copy == NULL
+			|| nb->read(nbuf, 0, transfer->copy, nbuf->size) != B_OK) {
+			free(transfer->copy);
+			free(transfer);
+			return B_NO_MEMORY;
+		}
+		data = transfer->copy;
+	}
+	transfer->data = data;
+
+	error = usb->queue_bulk(bdev->bulk_out_ep->handle, data, nbuf->size,
+		acl_tx_complete, transfer);
+
+	if (error != B_OK) {
+		free(transfer->copy);
+		free(transfer);
+		bdev->stat.rejectedTX++;
+	} else {
+		bdev->stat.acceptedTX++;
+	}
+
+	return error;
+}
+
+
+status_t
+submit_tx_sco(bt_usb_dev* bdev, net_buffer* nbuf)
+{
+	status_t error;
+
+	if ((bdev->state & RUNNING) == 0)
+		return B_DEV_NOT_READY;
+
+	SET_DEVICE(nbuf, bdev->hdev);
+
+	size_t maxPacketSize = bdev->max_packet_size_iso_out;
+	if (maxPacketSize == 0)
+		return B_ERROR;
+
+	uint32 packetCount = (nbuf->size + maxPacketSize - 1) / maxPacketSize;
+
+	sco_tx_transfer_t* transfer = (sco_tx_transfer_t*)malloc(sizeof(sco_tx_transfer_t));
+	usb_iso_packet_descriptor* descriptors
+		= (usb_iso_packet_descriptor*)malloc(sizeof(usb_iso_packet_descriptor) * packetCount);
+
+	if (transfer == NULL || descriptors == NULL) {
+		free(transfer);
+		free(descriptors);
+		return B_NO_MEMORY;
+	}
+
+	size_t remaining = nbuf->size;
+	for (uint32 i = 0; i < packetCount; i++) {
+		descriptors[i].request_length = (remaining > maxPacketSize) ? maxPacketSize : remaining;
+		descriptors[i].actual_length = 0;
+		descriptors[i].status = B_OK;
+
+		remaining -= descriptors[i].request_length;
+	}
+
+
+	transfer->bdev = bdev;
+	transfer->nbuf = nbuf;
+	transfer->packet_descriptors = descriptors;
+
+	uint32 startingFrameNumber = 0;
+	error = usb->queue_isochronous(bdev->iso_out_ep->handle, nb_get_whole_buffer(nbuf), nbuf->size,
+		descriptors, packetCount, &startingFrameNumber, USB_ISO_ASAP, sco_tx_complete,
+		(void*)transfer);
+
+	if (error != B_OK) {
+		free(descriptors);
+		free(transfer);
+		bdev->stat.rejectedTX++;
+	} else {
+		bdev->stat.acceptedTX++;
+	}
+
+	return error;
+}

@@ -1,0 +1,10 @@
+SubDir HAIKU_TOP src add-ons kernel drivers audio amd_acp ;
+
+SubDirC++Flags -fno-rtti ;
+
+UsePrivateHeaders audio drivers i2c ;
+UsePrivateKernelHeaders ;
+
+KernelAddon amd_acp :
+	amd_acp.cpp
+;

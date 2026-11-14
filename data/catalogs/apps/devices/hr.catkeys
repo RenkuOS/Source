@@ -1,0 +1,60 @@
+1	croatian	x-vnd.Haiku-Devices	3001748741
+ACPI bus	DevicesView		ACPI bus
+Communications	DeviceSCSI		Komunikacije
+Mass storage controller	Device		Upravljač masovne pohrane
+Printer	DeviceSCSI		Pisač
+Manufacturer	Device		Proizvođač
+Memory controller	Device		Mrežni upravljač
+Unknown device	DevicesView		Nepoznati uređaj
+Name	PropertyList		Ime
+Manufacturer	DeviceSCSI		Proizvođač
+Satellite communications controller	Device		Kontroler za satelitsku komunikaciju
+PCI bus	DevicesView		PCI bus
+Device	Device		Uređaj
+Category	DevicesView		Kategorija
+Refresh devices	DevicesView		Osvježi uređaje
+Device paths	Device		Putanje uređaja
+Unknown device	Device		Nepoznati uređaj
+Value	PropertyList		Vrijednost
+Devices	DevicesView		Uređaji
+Display controller	Device		Upravljač zaslona
+Device name	DevicePCI		Ime uređaja
+Other	DeviceSCSI		Ostalo
+Order by:	DevicesView		Poredaj po:
+Multimedia controller	Device		Multimedijalni kontroler
+Quit	DevicesView		Završi
+Processor	DeviceSCSI		Procesor
+Bridge	Device		Most
+Worm	DeviceSCSI		Crv
+CD-ROM	DeviceSCSI		CD-ROM
+Unclassified device	Device		Neklasificirani uređaj
+ACPI controller	Device		ACPI upravljač
+ACPI bus	Device		ACPI bus
+Encryption controller	Device		Kontroler enkripcije
+Devices	System name		Uređaji
+Generate system information	DevicesView		Generiraj informacije sustava
+Processor	Device		Procesor
+Computer	DevicesView		Računalo
+Connection	DevicesView		Veza
+Scanner	DeviceSCSI		Skener
+ACPI node '%1'	DeviceACPI		ACPI čvor '%1'
+Device name	Device		Ime uređaja
+Device class	DeviceSCSI		Klasa uređaja
+Input device controller	Device		Kontroler ulaznog uređaja
+RBC	DeviceSCSI		RBC
+Wireless controller	Device		Bežični kontroler
+Device name	DeviceACPI		Ime uređaja
+ACPI <unknown>	DeviceACPI		ACPI <unknown>
+Report compatibility	DevicesView		Izvještaj o kompatibilnosti
+Computer	Device		Računalo
+PCI bus	Device		PCI bus
+ISA bus	Device		ISA bus
+ISA bus	DevicesView		ISA bus
+Manufacturer	DevicePCI		Proizvođač
+Bridge	DeviceSCSI		Most
+Device name	DeviceSCSI		Ime uređaja
+Array	DeviceSCSI		Polje
+Network controller	Device		Mrežni upravljač
+Driver used	Device		Korišteni upravljački program
+Communication controller	Device		Komunikacijski upravljač
+unknown	Device		nepoznato
