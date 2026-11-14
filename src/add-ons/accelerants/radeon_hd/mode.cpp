@@ -329,6 +329,25 @@ is_mode_supported(display_mode* mode)
 	radeon_shared_info &info = *gInfo->shared_info;
 	uint32 pixelClock = mode->timing.pixel_clock;
 
+	// A laptop panel only takes its native timing, and the driver can't
+	// scale smaller modes up to it yet: offer only that.
+	{
+		connector_info* panel = gConnector[gDisplay[crtid]->connectorIndex];
+		const display_mode& native = gDisplay[crtid]->preferredMode;
+		if ((panel->type == VIDEO_CONNECTOR_LVDS
+				|| panel->type == VIDEO_CONNECTOR_EDP)
+			&& native.virtual_width > 0
+			&& (mode->timing.h_display != native.timing.h_display
+				|| mode->timing.v_display != native.timing.v_display)) {
+			TRACE("%s: rejecting %" B_PRIu32 "x%" B_PRIu32 ", not the "
+				"panel's native %" B_PRIu32 "x%" B_PRIu32 "\n", __func__,
+				(uint32)mode->timing.h_display, (uint32)mode->timing.v_display,
+				(uint32)native.timing.h_display,
+				(uint32)native.timing.v_display);
+			return false;
+		}
+	}
+
 	// Single-link TMDS tops out at 165 MHz, except that DCE6+ HDMI 1.3
 	// allows 340 MHz. Dual-link DVI and HDMI type B carry more (as Linux
 	// radeon_dvi_mode_valid()).
