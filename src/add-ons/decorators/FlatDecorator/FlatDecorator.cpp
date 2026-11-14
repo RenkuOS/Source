@@ -604,9 +604,11 @@ FlatDecorator::_DrawTab(Decorator::Tab* tab, BRect invalid)
 	if (tab && tab->buttonFocus) {
 		gradient.AddColor(tint_color(colors[COLOR_TAB], 0.6), 0);
 		gradient.AddColor(tint_color(colors[COLOR_TAB], 1.0), 200);
+		gradient.AddColor(tint_color(colors[COLOR_TAB], 1.0), 255);
 	} else {
 		gradient.AddColor(tint_color(colors[COLOR_TAB], 0.9), 0);
 		gradient.AddColor(tint_color(colors[COLOR_TAB], 1.0), 150);
+		gradient.AddColor(tint_color(colors[COLOR_TAB], 1.0), 255);
 	}
 
 	if (tab->look != kLeftTitledWindowLook) {
@@ -797,6 +799,7 @@ FlatDecorator::_DrawBlendedRect(DrawingEngine* engine, const BRect rect,
 	gradient.SetEnd(fillRect.LeftTop());
 	gradient.AddColor(startColor, 0);
 	gradient.AddColor(endColor, 250);
+	gradient.AddColor(endColor, 255);
 
 	engine->FillRect(fillRect, gradient);
 

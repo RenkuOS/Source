@@ -86,6 +86,8 @@ public:
 
 			void				SetSubpixelAntialiasing(bool subpix);
 			bool				SubpixelAntialiasing() const;
+			void				SetCompositedDesktop(bool composited);
+			bool				CompositedDesktop() const;
 			void				SetHinting(uint8 hinting);
 			uint8				Hinting() const;
 			void				SetSubpixelAverageWeight(uint8 averageWeight);
@@ -119,6 +121,7 @@ private:
 			int32				fWorkspacesColumns;
 			int32				fWorkspacesRows;
 			BMessage			fWorkspaceMessages[kMaxWorkspaces];
+			bool				fCompositedDesktop;
 			BString				fControlLook;
 
 			server_read_only_memory& fShared;

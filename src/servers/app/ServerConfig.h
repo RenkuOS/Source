@@ -25,6 +25,10 @@
 // Folder for additional window decorators
 #define DECORATORS_DIR "/boot/home/config/add-ons/decorators/"
 
+// Whether windows draw to their own buffers, which a compositor then combines
+// to make up the screen, until the Appearance preferences say otherwise.
+#define COMPOSITED_DESKTOP_DEFAULT false
+
 // These definitions provide the server something to use for default
 // system fonts.
 #define DEFAULT_FONT_SIZE 12.0f

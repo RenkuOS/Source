@@ -42,9 +42,12 @@
 #include <ServerReadOnlyMemory.h>
 #include <ViewPrivate.h>
 #include <WindowInfo.h>
+#include <driver_settings.h>
+#include <syscalls.h>
 
 #include "AppServer.h"
 #include "ClickTarget.h"
+#include "Compositor.h"
 #include "DecorManager.h"
 #include "DesktopSettingsPrivate.h"
 #include "DrawingEngine.h"
@@ -470,6 +473,9 @@ Desktop::Desktop(uid_t userID, const char* targetScreen)
 
 Desktop::~Desktop()
 {
+	// its thread uses the desktop
+	fCompositor.Unset();
+
 	delete_area(fSharedReadOnlyArea);
 	delete_port(fMessagePort);
 
@@ -526,6 +532,17 @@ Desktop::Init()
 	}
 
 	HWInterface()->SetDPMSMode(B_DPMS_ON);
+
+	// The compositor builds the screen in the back buffer, which not every kind
+	// of screen has. Safe mode is the way back if it doesn't work on a machine.
+	if (fSettings->CompositedDesktop() && HWInterface()->IsDoubleBuffered()
+		&& !_IsSafeMode()) {
+		fCompositor.SetTo(new(std::nothrow) Compositor(this));
+		if (fCompositor.IsSet() && fCompositor->InitCheck() != B_OK)
+			fCompositor.Unset();
+	}
+	debug_printf("app_server: desktop is %scomposited\n",
+		fCompositor.IsSet() ? "" : "not ");
 
 	// Restore brightness
 	{
@@ -1009,8 +1026,11 @@ Desktop::LockDirectScreen(team_id team)
 	// which would make this method superfluous.
 
 	status_t status = fDirectScreenLock.LockWithTimeout(1000000L);
-	if (status == B_OK)
+	if (status == B_OK) {
 		fDirectScreenTeam = team;
+		if (fCompositor.IsSet())
+			fCompositor->ScreenTaken();
+	}
 
 	return status;
 }
@@ -1022,6 +1042,8 @@ Desktop::UnlockDirectScreen(team_id team)
 	if (fDirectScreenTeam == team) {
 		fDirectScreenLock.Unlock();
 		fDirectScreenTeam = -1;
+		if (fCompositor.IsSet())
+			fCompositor->ScreenReleased();
 		return B_OK;
 	}
 
@@ -1350,7 +1372,7 @@ Desktop::SendWindowBehind(Window* window, Window* behindOf, bool sendStack)
 	_RebuildClippingForAllWindows(dummy);
 
 	// only redraw the top layer window to avoid flicker
-	if (sendStack) {
+	if (sendStack && !fCompositor.IsSet()) {
 		// mark everything dirty that is no longer visible
 		BRegion clean(window->VisibleRegion());
 		dirty.Exclude(&clean);
@@ -1473,6 +1495,8 @@ Desktop::HideWindow(Window* window, bool fromMinimize)
 		}
 	}
 
+	window->ReleaseBuffer();
+
 	NotifyWindowHidden(window, fromMinimize);
 
 	UnlockAllWindows();
@@ -1557,30 +1581,41 @@ Desktop::MoveWindowBy(Window* window, float x, float y, int32 workspace)
 	BRegion background;
 	_RebuildClippingForAllWindows(background);
 
-	// construct the region that is possible to be blitted
-	// to move the contents of the window
-	BRegion copyRegion(window->VisibleRegion());
-	copyRegion.OffsetBy((int32)-x, (int32)-y);
-	copyRegion.IntersectWith(&newDirtyRegion);
-		// newDirtyRegion == the windows old visible region
+	if (fCompositor.IsSet()) {
+		// The contents moved along with the window's buffer. Only what could
+		// not be drawn at the old position needs a redraw, which is what was
+		// left or above the screen.
+		newDirtyRegion.OffsetBy((int32)x, (int32)y);
+		BRegion revealed(window->VisibleRegion());
+		revealed.Exclude(&newDirtyRegion);
+		if (revealed.CountRects() > 0)
+			window->ProcessDirtyRegion(revealed);
+	} else {
+		// construct the region that is possible to be blitted
+		// to move the contents of the window
+		BRegion copyRegion(window->VisibleRegion());
+		copyRegion.OffsetBy((int32)-x, (int32)-y);
+		copyRegion.IntersectWith(&newDirtyRegion);
+			// newDirtyRegion == the windows old visible region
 
-	// include the the new visible region of the window being
-	// moved into the dirty region (for now)
-	newDirtyRegion.Include(&window->VisibleRegion());
+		// include the the new visible region of the window being
+		// moved into the dirty region (for now)
+		newDirtyRegion.Include(&window->VisibleRegion());
 
-	// NOTE: Having all windows locked should prevent any
-	// problems with locking the drawing engine here.
-	if (GetDrawingEngine()->LockParallelAccess()) {
-		GetDrawingEngine()->CopyRegion(&copyRegion, (int32)x, (int32)y);
-		GetDrawingEngine()->UnlockParallelAccess();
+		// NOTE: Having all windows locked should prevent any
+		// problems with locking the drawing engine here.
+		if (GetDrawingEngine()->LockParallelAccess()) {
+			GetDrawingEngine()->CopyRegion(&copyRegion, (int32)x, (int32)y);
+			GetDrawingEngine()->UnlockParallelAccess();
+		}
+
+		// in the dirty region, exclude the parts that we
+		// could move by blitting
+		copyRegion.OffsetBy((int32)x, (int32)y);
+		newDirtyRegion.Exclude(&copyRegion);
+
+		MarkDirty(newDirtyRegion);
 	}
-
-	// in the dirty region, exclude the parts that we
-	// could move by blitting
-	copyRegion.OffsetBy((int32)x, (int32)y);
-	newDirtyRegion.Exclude(&copyRegion);
-
-	MarkDirty(newDirtyRegion);
 	_SetBackground(background);
 	_WindowChanged(window);
 
@@ -1652,7 +1687,14 @@ Desktop::ResizeWindowBy(Window* window, float x, float y)
 	tmp.Exclude(&previousVisibleContentRegion);
 	exposeRegion.Include(&tmp);
 
-	MarkDirty(newDirtyRegion, exposeRegion);
+	if (fCompositor.IsSet()) {
+		// other windows didn't lose anything
+		newDirtyRegion.IntersectWith(&window->VisibleRegion());
+		exposeRegion.IntersectWith(&window->VisibleRegion());
+		window->TopLayerStackWindow()->ProcessDirtyRegion(newDirtyRegion,
+			exposeRegion);
+	} else
+		MarkDirty(newDirtyRegion, exposeRegion);
 	_SetBackground(background);
 	_WindowChanged(window);
 
@@ -1958,7 +2000,8 @@ Desktop::SetWindowFeel(Window* window, window_feel newFeel)
 			visibleBefore.Exclude(&visibleAfter);
 			dirty.Include(&visibleBefore);
 
-			MarkDirty(dirty);
+			if (!fCompositor.IsSet())
+				MarkDirty(dirty);
 		}
 	}
 
@@ -2010,8 +2053,10 @@ Desktop::WindowAt(BPoint where)
 {
 	for (Window* window = CurrentWindows().LastWindow(); window;
 			window = window->PreviousWindow(fCurrentWorkspace)) {
-		if (window->IsVisible() && window->VisibleRegion().Contains(where))
+		if (window->IsVisible() && window->VisibleRegion().Contains(where)
+			&& window->ShapeContains(where)) {
 			return window->StackedWindowAt(where);
+		}
 	}
 
 	return NULL;
@@ -3066,6 +3111,7 @@ Desktop::_UpdateFloating(int32 previousWorkspace, int32 nextWorkspace,
 			_Windows(previousWorkspace).RemoveWindow(floating);
 			floating->SetCurrentWorkspace(-1);
 			_HideWindow(floating);
+			floating->ReleaseBuffer();
 
 			if (FocusWindow() == floating)
 				SetFocusWindow();
@@ -3211,8 +3257,11 @@ Desktop::_ShowWindow(Window* window, bool affectsOtherWindows)
 		// window needs a redraw, but other windows
 		// are not affected, we can call ProcessDirtyRegion()
 		// of the window, and don't have to use MarkDirty()
+		// When compositing, that is always the case.
 		window->ProcessDirtyRegion(dirty);
-	} else
+	} else if (fCompositor.IsSet())
+		window->ProcessDirtyRegion(dirty);
+	else
 		MarkDirty(dirty);
 
 	if (window->ServerWindow()->HasDirectFrameBufferAccess()) {
@@ -3245,7 +3294,8 @@ Desktop::_HideWindow(Window* window)
 	_SetBackground(background);
 	_WindowChanged(window);
 
-	MarkDirty(dirty);
+	if (!fCompositor.IsSet())
+		MarkDirty(dirty);
 }
 
 
@@ -3317,6 +3367,7 @@ Desktop::_ChangeWindowWorkspaces(Window* window, uint32 oldWorkspaces,
 				if (i == CurrentWorkspace()) {
 					// remove its appearance from the current workspace
 					window->SetCurrentWorkspace(-1);
+					window->ReleaseBuffer();
 
 					if (!window->IsHidden())
 						_HideWindow(window);
@@ -3399,7 +3450,9 @@ Desktop::_BringWindowsToFront(WindowList& windows, int32 list, bool wereVisible)
 	}
 
 	dirty.Exclude(&clean);
-	MarkDirty(dirty);
+	// Windows that could be seen before have nothing new to draw.
+	if (!fCompositor.IsSet() || !wereVisible)
+		MarkDirty(dirty);
 
 	_UpdateFront();
 
@@ -3519,6 +3572,9 @@ Desktop::_RebuildClippingForAllWindows(BRegion& stillAvailableOnScreen)
 			stillAvailableOnScreen.Exclude(&window->VisibleRegion());
 		}
 	}
+
+	if (fCompositor.IsSet())
+		fCompositor->SceneChanged();
 }
 
 
@@ -3550,7 +3606,9 @@ Desktop::_SetBackground(BRegion& background)
 	dirtyBackground.IntersectWith(&background);
 	fBackgroundRegion = background;
 	if (dirtyBackground.Frame().IsValid()) {
-		if (GetDrawingEngine()->LockParallelAccess()) {
+		if (fCompositor.IsSet())
+			fCompositor->Composite(dirtyBackground);
+		else if (GetDrawingEngine()->LockParallelAccess()) {
 			GetDrawingEngine()->FillRegion(dirtyBackground,
 				fWorkspaces[fCurrentWorkspace].Color());
 
@@ -3580,7 +3638,7 @@ Desktop::RebuildAndRedrawAfterWindowChange(Window* changedWindow,
 	for (Window* window = CurrentWindows().LastWindow(); window != NULL;
 			window = window->PreviousWindow(fCurrentWorkspace)) {
 		if (!window->IsHidden()) {
-			if (window == changedWindow)
+			if (window == changedWindow && !fCompositor.IsSet())
 				dirty.IntersectWith(&stillAvailableOnScreen);
 
 			window->SetClipping(&stillAvailableOnScreen);
@@ -3596,10 +3654,44 @@ Desktop::RebuildAndRedrawAfterWindowChange(Window* changedWindow,
 		}
 	}
 
+	if (fCompositor.IsSet()) {
+		fCompositor->SceneChanged();
+		_SetBackground(stillAvailableOnScreen);
+		_WindowChanged(changedWindow);
+
+		// Only this window has something new to draw. What it left behind
+		// comes from the other windows' buffers.
+		// In a stack, only the top window draws.
+		changedWindow->TopLayerStackWindow()->ProcessDirtyRegion(dirty, dirty);
+		fCompositor->Composite(dirty);
+		return;
+	}
+
 	_SetBackground(stillAvailableOnScreen);
 	_WindowChanged(changedWindow);
 
 	_TriggerWindowRedrawing(dirty, dirty);
+}
+
+
+bool
+Desktop::_IsSafeMode() const
+{
+	char buffer[32];
+	size_t size = sizeof(buffer);
+	if (_kern_get_safemode_option(B_SAFEMODE_SAFE_MODE, buffer, &size) != B_OK)
+		return false;
+
+	return !strncasecmp(buffer, "true", size) || !strncasecmp(buffer, "yes", size)
+		|| !strncasecmp(buffer, "on", size)
+		|| !strncasecmp(buffer, "enabled", size);
+}
+
+
+rgb_color
+Desktop::CurrentBackgroundColor()
+{
+	return fWorkspaces[fCurrentWorkspace].Color();
 }
 
 
@@ -3849,6 +3941,8 @@ Desktop::_SetWorkspace(int32 index, bool moveFocusWindow)
 		}
 
 		window->SetCurrentWorkspace(-1);
+		// Like a hidden window, it redraws when it can be seen again.
+		window->ReleaseBuffer();
 	}
 
 	fPreviousWorkspace = fCurrentWorkspace;
