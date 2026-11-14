@@ -24,8 +24,10 @@
 #include <algorithm>
 #include <cmath>
 #include <new>
+#include <typeinfo>
 #include <stdio.h>
 
+#include <AffineTransform.h>
 #include <Autolock.h>
 #include <Debug.h>
 #include <GradientLinear.h>
@@ -36,12 +38,16 @@
 #include <WindowPrivate.h>
 
 #include "BitmapDrawingEngine.h"
+#include "Desktop.h"
 #include "DesktopSettings.h"
 #include "DrawingEngine.h"
 #include "DrawState.h"
 #include "FontManager.h"
 #include "PatternHandler.h"
+#include "RoundedDecorator.h"
+#include "SATDecorator.h"
 #include "ServerBitmap.h"
+#include "WindowShape.h"
 
 
 //#define DEBUG_DECORATOR
@@ -67,6 +73,10 @@ blend_color_value(uint8 a, uint8 b, float position)
 
 
 //	#pragma mark -
+
+
+static const int32 kFrameCornerRadius = 6;
+static const int32 kTabCornerRadius = 5;
 
 
 // TODO: get rid of DesktopSettings here, and introduce private accessor
@@ -188,7 +198,73 @@ DefaultDecorator::UpdateColors(DesktopSettings& settings)
 }
 
 
+bool
+DefaultDecorator::HasRoundedCorners() const
+{
+	// Without a compositor to cut them off, corners stay as they always were.
+	if (!RoundedDecorator::IsActive(
+			const_cast<DefaultDecorator*>(this)->GetDesktop())) {
+		return false;
+	}
+
+	return typeid(*this) == typeid(DefaultDecorator)
+		|| typeid(*this) == typeid(SATDecorator);
+}
+
+
+void
+DefaultDecorator::GetRoundedShape(std::vector<ShapeRect>& shape) const
+{
+	GetShape(shape);
+	RoundedDecorator::RoundShape(shape, fTopTab->look, kFrameCornerRadius,
+		kTabCornerRadius);
+}
+
+
 // #pragma mark - Protected methods
+
+
+void
+DefaultDecorator::_StrokeCorner(BPoint leftTop, int32 radius,
+	WindowShape::corner_kind kind, rgb_color color)
+{
+	if (HasRoundedCorners()) {
+		RoundedDecorator::StrokeCorner(fDrawingEngine, leftTop, radius, kind,
+			color);
+	}
+}
+
+
+void
+DefaultDecorator::_DrawFrameCorners(BRect rect)
+{
+	if (!HasRoundedCorners())
+		return;
+
+	std::vector<ShapeRect> shape;
+	GetRoundedShape(shape);
+	const ShapeRect& frame = shape[0];
+	const BRect& border = frame.rect;
+
+	ComponentColors top;
+	_GetComponentColors(COMPONENT_TOP_BORDER, top, fTopTab);
+	ComponentColors bottom;
+	_GetComponentColors(COMPONENT_BOTTOM_BORDER, bottom, fTopTab);
+
+	const int32 leftTop = (int32)frame.leftTop;
+	const int32 rightTop = (int32)frame.rightTop;
+	const int32 leftBottom = (int32)frame.leftBottom;
+	const int32 rightBottom = (int32)frame.rightBottom;
+
+	_StrokeCorner(border.LeftTop(), leftTop, WindowShape::LEFT_TOP, top[0]);
+	_StrokeCorner(BPoint(border.right - rightTop + 1, border.top), rightTop,
+		WindowShape::RIGHT_TOP, bottom[5]);
+	_StrokeCorner(BPoint(border.left, border.bottom - leftBottom + 1),
+		leftBottom, WindowShape::LEFT_BOTTOM, bottom[5]);
+	_StrokeCorner(BPoint(border.right - rightBottom + 1,
+			border.bottom - rightBottom + 1), rightBottom,
+		WindowShape::RIGHT_BOTTOM, bottom[5]);
+}
 
 
 void
@@ -376,6 +452,8 @@ DefaultDecorator::_DrawFrame(BRect rect)
 			break;
 	}
 
+	_DrawFrameCorners(rect);
+
 	// Draw the resize knob if we're supposed to
 	if (!(fTopTab->flags & B_NOT_RESIZABLE)) {
 		ComponentColors colors;
@@ -551,6 +629,19 @@ DefaultDecorator::_DrawTab(Decorator::Tab* tab, BRect invalid)
 		gradient.SetEnd(tabRect.RightTop());
 		fDrawingEngine->FillRect(BRect(tabRect.left + 2, tabRect.top + 2,
 			tabRect.right, tabRect.bottom - 2), gradient);
+	}
+
+	// The compositor cuts off the corners, the border follows them.
+	_StrokeCorner(tabRect.LeftTop(), kTabCornerRadius, WindowShape::LEFT_TOP,
+		colors[COLOR_TAB_FRAME_LIGHT]);
+	if (tab->look != kLeftTitledWindowLook) {
+		_StrokeCorner(BPoint(tabRect.right - kTabCornerRadius + 1, tabRect.top),
+			kTabCornerRadius, WindowShape::RIGHT_TOP,
+			colors[COLOR_TAB_FRAME_DARK]);
+	} else {
+		_StrokeCorner(BPoint(tabRect.left, tabRect.bottom - kTabCornerRadius + 1),
+			kTabCornerRadius, WindowShape::LEFT_BOTTOM,
+			colors[COLOR_TAB_FRAME_DARK]);
 	}
 
 	_DrawTitle(tab, tabRect);
