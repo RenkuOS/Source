@@ -20,6 +20,7 @@ HIDDevice::HIDDevice(const uint8* descriptor, size_t descriptorLength)
 	:
 	fStatus(B_NO_INIT),
 	fOpenCount(0),
+	fCookieCount(0),
 	fRemoved(false),
 	fParser(this),
 	fProtocolHandlerCount(0),
@@ -77,6 +78,10 @@ status_t
 HIDDevice::Close(ProtocolHandler* handler)
 {
 	atomic_add(&fOpenCount, -1);
+
+	// wake up the readers, as usb_hid does by cancelling its transfers: the
+	// one of this cookie finds it closed and returns, the others wait again
+	fParser.SetReport(B_CANCELED, NULL, 0);
 	return B_OK;
 }
 

@@ -92,8 +92,9 @@ bluetooth_hid_control_free(void* _cookie)
 			gDeviceList->RemoveDevice(NULL, handler);
 		}
 
-		if (device->IsOpen()) {
-			// deleted when its last handler is closed
+		if (device->HasCookies()) {
+			// a published device is still open, or closed with a read()
+			// still running in it: deleted when its last cookie is freed
 			device->Removed();
 		} else
 			delete device;
@@ -158,9 +159,29 @@ bluetooth_hid_control_control(void* _cookie, uint32 op, void* buffer,
 				break;
 		}
 
-		handler->SetPublishPath(strdup(path));
-		gDeviceList->AddDevice(handler->PublishPath(), handler);
+		char* publishPath = strdup(path);
+		if (publishPath == NULL) {
+			status = B_NO_MEMORY;
+			break;
+		}
+		handler->SetPublishPath(publishPath);
+
+		status = gDeviceList->AddDevice(handler->PublishPath(), handler);
+		if (status != B_OK)
+			break;
 		TRACE_ALWAYS("publishing %s\n", path);
+	}
+
+	if (status != B_OK) {
+		// nothing has been published yet, nobody can have opened them
+		for (uint32 i = 0;; i++) {
+			ProtocolHandler* handler = device->ProtocolHandlerAt(i);
+			if (handler == NULL)
+				break;
+			gDeviceList->RemoveDevice(NULL, handler);
+		}
+		delete device;
+		return status;
 	}
 
 	cookie->device = device;
@@ -234,6 +255,7 @@ bluetooth_hid_open(const char* name, uint32 flags, void** _cookie)
 		return result;
 	}
 
+	handler->Device()->AddCookie();
 	*_cookie = cookie;
 	return B_OK;
 }
@@ -280,11 +302,12 @@ bluetooth_hid_free(void* _cookie)
 
 	mutex_lock(&sDriverLock);
 
+	// The kernel calls the close hook while a read() may still be running
+	// and frees the cookie only once it has returned: the device has to stay
+	// until then, and not only while it is open.
 	HIDDevice* device = cookie->handler->Device();
-	if (device->IsOpen()) {
-		// another handler of this device is still open
-	} else if (device->IsRemoved()) {
-		// the connection is gone and none of its handlers is open anymore
+	if (device->RemoveCookie() && device->IsRemoved()) {
+		// the connection is gone and this was the last cookie
 		delete device;
 	}
 

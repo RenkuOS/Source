@@ -29,6 +29,13 @@ public:
 			status_t			Close(ProtocolHandler* handler);
 			int32				OpenCount() const { return fOpenCount; }
 
+			// the open cookies of the published devices, counted under the
+			// driver lock: the device is deleted when it is removed and the
+			// last of them is freed
+			void				AddCookie() { fCookieCount++; }
+			bool				RemoveCookie() { return --fCookieCount == 0; }
+			bool				HasCookies() const { return fCookieCount > 0; }
+
 			void				Removed();
 			bool				IsRemoved() const { return fRemoved; }
 
@@ -43,6 +50,7 @@ public:
 private:
 			status_t			fStatus;
 			int32				fOpenCount;
+			int32				fCookieCount;
 			bool				fRemoved;
 
 			HIDParser			fParser;
