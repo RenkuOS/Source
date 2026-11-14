@@ -607,6 +607,27 @@ display_crtc_dpms(uint8 crtcID, int mode)
 }
 
 
+/*!	On DCE 11, every pixel goes through the LUT, whose memory can be
+	powered down, by display power gating among others; it then reads as
+	black. Keeps it on, as the firmware does and as Linux does before
+	loading it.
+*/
+static void
+display_crtc_lut_power(uint8 crtcID)
+{
+	radeon_shared_info &info = *gInfo->shared_info;
+	if (info.dceMajor < 11)
+		return;
+
+	uint32 offset = (CAR_mmDCFE_MEM_PWR_CTRL << 2)
+		+ gDisplay[crtcID]->regs->crtcOffset;
+	uint32 power = Read32(OUT, offset);
+	power &= ~CAR_DCFE_MEM_PWR_CTRL__DCP_LUT_MEM_PWR_FORCE_MASK;
+	power |= CAR_DCFE_MEM_PWR_CTRL__DCP_LUT_MEM_PWR_DIS_MASK;
+	Write32(OUT, offset, power);
+}
+
+
 void
 display_dce45_crtc_load_lut(uint8 crtcID)
 {
@@ -618,6 +639,8 @@ display_dce45_crtc_load_lut(uint8 crtcID)
 	uint16* r = info.color_data;
 	uint16* g = r + 256;
 	uint16* b = r + 512;
+
+	display_crtc_lut_power(crtcID);
 
 	if (info.dceMajor >= 5) {
 		Write32(OUT, NI_INPUT_CSC_CONTROL + regs->crtcOffset,
@@ -1177,6 +1200,9 @@ display_crtc_powergate(uint8 crtcID, int command)
 	args.ucEnable = command;
 
 	atom_execute_table(gAtomContext, index, (uint32*)&args);
+	// The table also lets the LUT memory power down again.
+	if (command == ATOM_DISABLE)
+		display_crtc_lut_power(crtcID);
 }
 
 
