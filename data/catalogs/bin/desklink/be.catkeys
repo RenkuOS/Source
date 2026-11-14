@@ -1,0 +1,11 @@
+1	belarusian	x-vnd.Haiku-desklink	1429689568
+desklink	MediaReplicant	Title of an alert box	desklink
+Muted	MediaReplicant		Сцішаны
+%g dB	MediaReplicant		%g дБ
+OK	MediaReplicant		ОК
+Couldn't launch 	MediaReplicant		Немагчыма запусціць 
+Volume	VolumeControl		Узровень
+Media preferences…	MediaReplicant		Наладкі медыя…
+Beep	MediaReplicant		Біп
+Open %name	DeskButton	Don't translate variable %name	Адкрыць %name
+No media server running	VolumeControl		Медыя сервер не запушчаны

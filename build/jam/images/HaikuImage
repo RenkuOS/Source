@@ -1,0 +1,48 @@
+# This file defines what ends up on the Haiku image (respectively in the Haiku
+# installation directory) and it executes the rules building the image
+# (respectively installing the files in the installation directory).
+
+# import the defintions of the image content
+if $(HAIKU_BUILD_TYPE) = bootstrap {
+	include [ FDirName $(HAIKU_BUILD_RULES_DIR) images definitions bootstrap ] ;
+} else if $(HAIKU_BUILD_TYPE) = minimum {
+	include [ FDirName $(HAIKU_BUILD_RULES_DIR) images definitions minimum ] ;
+} else if $(HAIKU_BUILD_TYPE) = test {
+	include [ FDirName $(HAIKU_BUILD_RULES_DIR) images definitions test ] ;
+} else {
+	include [ FDirName $(HAIKU_BUILD_RULES_DIR) images definitions regular ] ;
+}
+
+# build the haiku system packages and add them
+include [ FDirName $(HAIKU_BUILD_RULES_DIR) HaikuPackages ] ;
+
+AddPackageFilesToHaikuImage system packages :
+	haiku_loader.hpkg
+	haiku.hpkg
+	haiku_datatranslators.hpkg
+	haiku_$(TARGET_PACKAGING_ARCHS[2-]).hpkg
+	:
+	nameFromMetaInfo
+	;
+
+if $(HAIKU_BUILD_TYPE) = bootstrap {
+	# activate the development package, so haikuporter can resolve haiku_devel
+	# when building ports on the bootstrap system
+	AddPackageFilesToHaikuImage system packages :
+		haiku_devel.hpkg
+		:
+		nameFromMetaInfo
+		;
+}
+
+if $(HAIKU_BUILD_TYPE) = test {
+	AddPackageFilesToHaikuImage system packages : haiku_unittests.hpkg ;
+}
+
+if $(HAIKU_BUILD_TYPE) = regular {
+	AddPackageFilesToHaikuImage system packages : mediatek_wifi_firmwares.hpkg
+		: nameFromMetaInfo ;
+}
+
+# import what is shared by all images
+include [ FDirName $(HAIKU_BUILD_RULES_DIR) images definitions common-tail ] ;

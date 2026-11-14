@@ -1,0 +1,55 @@
+1	czech	x-vnd.Haiku-BluetoothPrefs	530464078
+Cancel	Remote devices		Zrušit
+Laptop	Settings view		Notebook
+Only from trusted devices	Settings view		Jen od důvěryhodných zařízení
+15 secs	Settings view		15 sekund
+Quit	main		Konec
+Scan finished	Inquiry panel		Hledání hotovo
+Manufacturer: 	Device View		Výrobce: 
+Scan	Inquiry panel		Hledání
+%secs% remaining	Inquiry panel		zbývá %secs%
+Desktop	Settings view		Stolní počítač
+Server	Window		Server
+Identify host as:	Settings view		Identifikovat hosta jako:
+Local devices found on system:	Settings view		Lokální zařízení nalezená v systému:
+Service classes: 	Device View		Třídy služeb: 
+Remote devices	Window		Vzdálená zařízení
+This computer doesn't seem to have Bluetooth support.	Inquiry panel		Tento počítač asi nemá Bluetooth.
+Settings	Window		Nastavení
+Stop bluetooth services…	Window		Zastavit zařízení Bluetooth…
+61 secs	Settings view		61 sekund
+Add…	Remote devices		Přidat…
+Revert	Window		Obrátit
+Refresh local devices…	Window		Aktualizovat lokální zařízení…
+Disconnect	Remote devices		Odpojit
+Make sure Bluetooth capabilities of the remote device are activated before starting the scan.	Inquiry panel		Před započetím hledání se ujistěte, že je Bluetooth na hledaném zařízení aktivní.
+Defaults	Window		Původní
+From all devices	Settings view		Ze všech zařízení
+Start bluetooth services…	Window		Zapnout služby bluetooth…
+Cancel	Inquiry panel		Zrušit
+Launch now	main		Spustit nyní
+Bluetooth	System name		Bluetooth
+Retrieving name of '%1'	Inquiry panel		Získávání jména '%1'
+Remove	Remote devices		Odstranit
+Pick device…	Settings view		Vybrat zařízení…
+Always ask	Settings view		Vždy se dotázat
+With support of:\n - Mika Lindqvist\n - Adrien Destugues\n - Maksym Yevmenkin\n\nThanks to the individuals who helped…\n\nShipping/donating hardware:\n - Henry Jair Abril Florez (el Colombian)\n\t& Stefanie Bartolich\n - Edwin Erik Amsler\n - Dennis d'Entremont\n - Luroh\n - Pieter Panman\n\nEconomically:\n - Karl vom Dorff, Andrea Bernardi (OSDrawer),\n - Matt M, Doug F, Hubert H,\n - Sebastian B, Andrew M, Jared E,\n - Frederik H, Tom S, Ferry B,\n - Greg G, David F, Richard S, Martin W:\n\nWith patches:\n - Michael Weirauch\n - Fredrik Ekdahl\n - Raynald Lesieur\n - Andreas Färber\n - Joerg Meyer\nTesting:\n - Petter H. Juliussen\nWho gave me all the knowledge:\n - the yellowTAB team	main		S podporou:\n - Mika Lindqvist\n - Adrien Destugues\n - Maksym Yevmenkin\n\nDěkujeme všem, kteří pomohli…\n\nDopravu/darováním hardware:\n - Henry Jair Abril Florez (el Colombian)\n\t& Stefanie Bartolich\n - Edwin Erik Amsler\n - Dennis d'Entremont\n - Luroh\n - Pieter Panman\n\nFinančně:\n - Karl vom Dorff, Andrea Bernardi (OSDrawer),\n - Matt M, Doug F, Hubert H,\n - Sebastian B, Andrew M, Jared E,\n - Frederik H, Tom S, Ferry B,\n - Greg G, David F, Richard S, Martin W:\n\nPosláním záplat:\n - Michael Weirauch\n - Fredrik Ekdahl\n - Raynald Lesieur\n - Andreas Färber\n - Joerg Meyer\nTestováním:\n - Petter H. Juliussen\nKdo se podělil o své znalosti:\n - tým yellowTAB
+Help	Window		Nápověda
+Pair…	Remote devices		Spárovat…
+Incoming connections policy:	Settings view		Politika pro příchozí spojení:
+Retrieving names…	Inquiry panel		Načítání jmen…
+Canceling scan…	Inquiry panel		Ruším hledání…
+Show name	Extended local device view		Zobrazit jméno
+Add device to list	Inquiry panel		Přidat zařízení do seznamu
+Scanning progress:	Inquiry panel		Postup hledání:
+The Bluetooth services are not currently running on this system.	main		Služby Bluetooth na tomto systému nyní neběží.
+Discoverable	Extended local device view		Zjistitelný
+Authenticate	Extended local device view		Autentifikovat
+Smart phone	Settings view		Smartphone
+Default inquiry time:	Settings view		Implicitní čas pro průzkum:
+Friendly name:	Settings view		Pohledné jméno:
+Server	Settings view		Server
+Handheld	Settings view		Handheld
+ packets: 	Device View		 pakety: 
+About Bluetooth…	Window		O bluetooth…
+Starting scan…	Inquiry panel		Začíná vyhledávání…

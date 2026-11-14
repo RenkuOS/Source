@@ -1,0 +1,261 @@
+SubDir HAIKU_TOP src apps haikudepot ;
+
+# disable -Werror for this directory only
+SubDirC++Flags -Wno-error ;
+
+include [ FDirName $(SUBDIR) build jam JsonSchemaGenRules ] ;
+
+UsePrivateHeaders interface net netservices package shared storage ;
+UsePrivateHeaders support locale ;
+
+HAIKUDEPOT_GENERATED_SOURCES_DIRECTORY = $(TARGET_COMMON_DEBUG_LOCATE_TARGET) ;
+
+# Directories where generated sources will be written.
+
+local genServerRepositoryGenDirectory =
+	[ FDirName $(HAIKUDEPOT_GENERATED_SOURCES_DIRECTORY) dumpexportrepository ] ;
+local genServerPkgGenDirectory =
+	[ FDirName $(HAIKUDEPOT_GENERATED_SOURCES_DIRECTORY) dumpexportpkg ] ;
+local genServerReferenceGenDirectory =
+	[ FDirName $(HAIKUDEPOT_GENERATED_SOURCES_DIRECTORY) dumpexportreference ] ;
+
+# source directories
+local sourceDirs =
+	edits_generic
+	icon
+	model
+	packagemanagement
+	packagemodel
+	process
+	textview
+	ui
+	ui_generic
+	server
+	tar
+	util
+;
+
+local sourceDir ;
+for sourceDir in $(sourceDirs) {
+	SEARCH_SOURCE += [ FDirName $(SUBDIR) $(sourceDir) ] ;
+}
+
+SEARCH_SOURCE += [ FDirName $(HAIKU_TOP) src servers package ] ;
+
+SEARCH_SOURCE += $(genServerRepositoryGenDirectory) ;
+SEARCH_SOURCE += $(genServerPkgGenDirectory) ;
+SEARCH_SOURCE += $(genServerReferenceGenDirectory) ;
+
+local textDocumentSources =
+	# edits_generic
+	CompoundEdit.cpp
+	EditContext.cpp
+	EditManager.cpp
+	UndoableEdit.cpp
+
+	# textview
+	Bullet.cpp
+	BulletData.cpp
+	CharacterStyle.cpp
+	CharacterStyleData.cpp
+	MarkupParser.cpp
+	Paragraph.cpp
+	ParagraphLayout.cpp
+	ParagraphStyle.cpp
+	ParagraphStyleData.cpp
+	TextDocument.cpp
+	TextDocumentLayout.cpp
+	TextDocumentView.cpp
+	TextEditor.cpp
+	TextListener.cpp
+	TextSelection.cpp
+	TextSpan.cpp
+	TextView.cpp
+	UndoableEditListener.cpp
+;
+
+local applicationSources =
+	App.cpp
+	AccessToken.cpp
+	BitmapHolder.cpp
+	BitmapView.cpp
+	Captcha.cpp
+	CreateUserDetail.cpp
+	DecisionProvider.cpp
+	DeskbarLink.cpp
+	FeaturedPackagesView.cpp
+	FilterView.cpp
+	GeneralContentScrollView.cpp
+	HaikuDepotConstants.cpp
+	IdentityAndAccessUtils.cpp
+	IncrementViewCounterProcess.cpp
+	JobStateListener.cpp
+	JwtTokenHelper.cpp
+	LinkView.cpp
+	LinkedBitmapView.cpp
+	Logger.cpp
+	main.cpp
+	MainWindow.cpp
+	MarkupTextView.cpp
+	Model.cpp
+	NotAvailableView.cpp
+	PackageContentsView.cpp
+	PackageInfoListener.cpp
+	PackageInfoView.cpp
+	PackageListView.cpp
+	PackageScreenshotRepository.cpp
+	PasswordRequirements.cpp
+	RatePackageWindow.cpp
+	RatingView.cpp
+	RatingStability.cpp
+	RatingUtils.cpp
+	support.cpp
+	ScreenshotWindow.cpp
+	ScreenshotCoordinate.cpp
+	ScrollableGroupView.cpp
+	SettingsWindow.cpp
+	SharedIcons.cpp
+	SimpleAlert.cpp
+	ShuttingDownWindow.cpp
+	ToLatestUserUsageConditionsWindow.cpp
+	UserCredentials.cpp
+	UserDetail.cpp
+	UserLoginWindow.cpp
+	UserUsageConditions.cpp
+	UserUsageConditionsWindow.cpp
+	ValidationFailure.cpp
+	ValidationUtils.cpp
+	WorkStatusView.cpp
+
+	# icon
+	IconTarPtr.cpp
+	PackageIconDefaultRepository.cpp
+	PackageIconTarRepository.cpp
+
+	# packagemanagement
+	AbstractPackageProcess.cpp
+	InstallPackageProcess.cpp
+	OpenPackageProcess.cpp
+	PackageAction.cpp
+	PackageManager.cpp
+	UninstallPackageProcess.cpp
+
+	#packagemodel
+	DepotInfo.cpp
+	Language.cpp
+	PackageCategory.cpp
+	PackageClassificationInfo.cpp
+	PackageCoreInfo.cpp
+	PackageFilter.cpp
+	PackageFilterSpecification.cpp
+	PackageInfo.cpp
+	PackageLocalInfo.cpp
+	PackageLocalizedText.cpp
+	PackagePublisherInfo.cpp
+	PackageScreenshotInfo.cpp
+	PackageUserRatingInfo.cpp
+	PackageVersion.cpp
+	ScreenshotInfo.cpp
+	UserInfo.cpp
+	UserRating.cpp
+	UserRatingSummary.cpp
+
+	# network + server / local processes
+	AbstractProcess.cpp
+	AbstractProcessNode.cpp
+	AbstractServerProcess.cpp
+	AbstractSingleFileServerProcess.cpp
+	CacheScreenshotProcess.cpp
+	LocalPkgDataLoadProcess.cpp
+	LocalRepositoryUpdateProcess.cpp
+	PopulatePkgChangelogFromServerProcess.cpp
+	PopulatePkgSizesProcess.cpp
+	PopulatePkgUserRatingsFromServerProcess.cpp
+	ProcessCoordinator.cpp
+	ProcessCoordinatorFactory.cpp
+	ServerHelper.cpp
+	ServerIconExportUpdateProcess.cpp
+	ServerSettings.cpp
+	ServerPkgDataUpdateProcess.cpp
+	ServerReferenceDataUpdateProcess.cpp
+	ServerRepositoryDataUpdateProcess.cpp
+	ServerRuntimeInformationVerifierProcess.cpp
+	StandardMetaDataJsonEventListener.cpp
+	StandardMetaData.cpp
+	ThreadedProcessNode.cpp
+	UserDetailVerifierProcess.cpp
+	WebAppInterface.cpp
+
+	# tar
+	TarArchiveHeader.cpp
+	TarArchiveService.cpp
+
+	# util
+	AppUtils.cpp
+	DataIOUtils.cpp
+	LanguageMenuUtils.cpp
+	LocaleUtils.cpp
+	PackageKitUtils.cpp
+	PackageUtils.cpp
+	StorageUtils.cpp
+	StringUtils.cpp
+
+	# package_daemon
+	ProblemWindow.cpp
+	ResultWindow.cpp
+;
+
+# Generated source files
+
+local genServerRepositoryGenFiles =
+	DumpExportRepositoryModel.cpp DumpExportRepositoryJsonListener.cpp ;
+local genServerPkgGenFiles =
+	DumpExportPkgModel.cpp DumpExportPkgJsonListener.cpp ;
+local genServerReferenceGenFiles =
+	DumpExportReferenceModel.cpp DumpExportReferenceJsonListener.cpp ;
+
+Application HaikuDepot
+	:
+	$(applicationSources)
+	$(textDocumentSources)
+	$(genServerPkgGenFiles)
+	$(genServerRepositoryGenFiles)
+	$(genServerReferenceGenFiles)
+	:
+	be package bnetapi translation libnetservices.a libcolumnlistview.a shared
+	[ TargetLibstdc++ ] [ TargetLibsupc++ ] localestub
+	:
+	HaikuDepot.rdef
+;
+
+DoCatalogs HaikuDepot :
+	x-vnd.Haiku-HaikuDepot
+	:
+	$(applicationSources)
+;
+
+# Configuration of the code generation of schemas. The `sourcesDependentOnGen` is excessive in that
+# it makes all of the Application's sources dependent on the generated sources which is not the
+# case, but to isolate specific sources and maintain that list is likely quite difficult over time.
+
+local sourcesDependentOnGen =
+	[ FGristFiles $(applicationSources) ] [ FGristFiles $(applicationSources:S=.h) ] ;
+
+JsonSchemaModelAndParser
+	$(genServerRepositoryGenDirectory)
+	: $(genServerRepositoryGenFiles)
+	: $(sourcesDependentOnGen)
+	: [ FDirName $(SUBDIR) server schema dumpexportrepository.json ]
+;
+JsonSchemaModelAndParser
+	$(genServerPkgGenDirectory)
+	: $(genServerPkgGenFiles)
+	: $(sourcesDependentOnGen)
+	: [ FDirName $(SUBDIR) server schema dumpexportpkg.json ]
+;
+JsonSchemaModelAndParser
+	$(genServerReferenceGenDirectory)
+	: $(genServerReferenceGenFiles)
+	: $(sourcesDependentOnGen)
+	: [ FDirName $(SUBDIR) server schema dumpexportreference.json ]
+;

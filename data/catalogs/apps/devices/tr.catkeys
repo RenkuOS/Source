@@ -1,0 +1,103 @@
+1	turkish	x-vnd.Haiku-Devices	1928422885
+ACPI bus	DevicesView		ACPI veri yolu
+USB bus	DevicesView		USB veri yolu
+Class info	DevicePCI		Sınıf bilgisi
+USB bus	Device		USB veri yolu
+Communications	DeviceSCSI		İletişim
+Mass storage controller	Device		Yığın depolama denetleyicisi
+Printer	DeviceSCSI		Yazıcı
+Enable driver	DevicesView		Sürücüyü etkinleştir
+Manufacturer	Device		Üretici
+Memory controller	Device		Bellek denetleyicisi
+Unknown device	DevicesView		Bilinmeyen aygıt
+Name	PropertyList		Ad
+Graphics peripheral	DeviceSCSI		Grafik çevre birimi
+Manufacturer	DeviceSCSI		Üretici
+unknown	DeviceACPI		bilinmeyen
+Satellite communications controller	Device		Uydu iletişimi denetleyicisi
+OK	DevicesView		Tamam
+PCI bus	DevicesView		PCI veri yolu
+Device	Device		Aygıt
+Changer	DeviceSCSI		Değiştirici
+Category	DevicesView		Kategori
+Refresh devices	DevicesView		Aygıtları yenile
+Device paths	Device		Aygıt yolları
+Unknown device	Device		Bilinmeyen aygıt
+Value	PropertyList		Değer
+Generic system peripheral	Device		Genel sistem çevre birimi
+Devices	DevicesView		Aygıtlar
+Optical drive	DeviceSCSI		Optik sürücü
+Display controller	Device		Görüntü denetleyicisi
+Bus	DevicesView		Veri yolu
+Device name	DevicePCI		Aygıt adı
+Other	DeviceSCSI		Diğer
+Order by:	DevicesView		Sıralama:
+Intelligent controller	Device		Akıllı denetleyici
+ACPI processor namespace '%2'	DeviceACPI		ACPI işlemci ad alanı “%2”
+The driver path is not in a package volume: 	DevicesView		Sürücü yolu bir paket bölümünde değil: 
+Multimedia controller	Device		Çoklu ortam denetleyici
+Blocked entry:\n	DevicesView		Engellenen girdi:\n
+Quit	DevicesView		Çık
+Filter:	DevicesView		Süz:
+Processor	DeviceSCSI		İşlemci
+Disabling non-packaged drivers is not supported.	DevicesView		Paketlenmemiş sürücüleri devre dışı bırakma desteklenmiyor.
+Card reader	DeviceSCSI		Kart okuyucusu
+Bridge	Device		Köprü
+ACPI button '%1'	DeviceACPI		ACPI düğmesi “%1”
+Attributes	PropertyList		Öznitelikler
+The driver has been disabled. A reboot is required for the change to take effect.\n\nAfter rebooting, this device may no longer appear in the device list as the system will not be able to identify it without its driver.\n\nTo re-enable the driver, find the device in the %devices% application and click \"Enable driver\". If the device is no longer visible, remove the corresponding blocked entry from the packages settings file:\n	DevicesView		Sürücü devre dışı bırakıldı. Değişikliğin etkili olması için yeniden başlatma gereklidir.\n\nYeniden başlatmanın ardından, sistem sürücüsü olmadan aygıtı tanımlayamayacağı için bu aygıt artık aygıt listesinde görünmeyebilir.\n\nSürücüyü yeniden etkinleştirmek için aygıtı %devices% uygulamasında bulun ve “Sürücüyü etkinleştir” seçeneğine tıklayın. Aygıt artık görünmüyorsa paket ayarları dosyasından ilgili engellenmiş girişi kaldırın:\n
+Worm	DeviceSCSI		Solucan
+CD-ROM	DeviceSCSI		CD-ROM
+ACPI system bus	DeviceACPI		ACPI sistem veri yolu
+Signal processing controller	Device		Sinyal işleme denetleyicisi
+Docking station	Device		Takma istasyonu
+Unclassified device	Device		Sınıflandırılmamış aygıt
+Error	DevicesView		Hata
+ACPI controller	Device		ACPI denetleyicisi
+ACPI bus	Device		ACPI veri yolu
+Encryption controller	Device		Şifreleme denetleyicisi
+Devices	System name		Aygıtlar
+Generate system information	DevicesView		Sistem bilgisi üret
+Processor	Device		İşlemci
+Disable driver	DevicesView		Sürücüyü devre dışı bırak
+Reboot needed	DevicesView		Yeniden başlatma gerekiyor
+Computer	DevicesView		Bilgisayar
+ACPI thermal zone	DeviceACPI		ACPI termal bölgesi
+Connection	DevicesView		Bağlantı
+Failed to write to the settings file.	DevicesView		Ayarlar dosyasına yazılamadı.
+Scanner	DeviceSCSI		Tarayıcı
+ACPI node '%1'	DeviceACPI		ACPI düğümü “%1”
+Clear	DevicesView		Temizle
+Device name	Device		Aygıt adı
+Device class	DeviceSCSI		Aygıt sınıfı
+Input device controller	Device		Giriş aygıtı denetleyicisi
+Restart computer	DevicesView		Bilgisayarı yeniden başlat
+Serial bus controller	Device		Seri veri yolu denetleyicisi
+RBC	DeviceSCSI		RBC
+Wireless controller	Device		Kablosuz denetleyicisi
+Device name	DeviceACPI		Aygıt adı
+Shutdown failed with error: 	DevicesView		Kapanma hata ile başarısız oldu: 
+unknown	DevicePCI		bilinmeyen
+ACPI <unknown>	DeviceACPI		ACPI <bilinmiyor>
+Report compatibility	DevicesView		Uyumluluğu bildir
+Computer	Device		Bilgisayar
+Tape drive	DeviceSCSI		Kaset sürücüsü
+Enclosure	DeviceSCSI		Koruncak
+PCI bus	Device		PCI veri yolu
+none	Device		yok
+Disabling critical system drivers is not allowed.	DevicesView		Kritik sistem sürücülerinin devre dışı bırakılmasına izin verilmez.
+Driver disabled	DevicesView		Sürücü devre dışı
+ISA bus	Device		ISA veri yolu
+Basic information	PropertyList		Temel bilgiler
+ISA bus	DevicesView		ISA veri yolu
+Disk drive	DeviceSCSI		Disk sürücüsü
+Manufacturer	DevicePCI		Üretici
+Bridge	DeviceSCSI		Köprü
+ACPI system indicator	DeviceACPI		ACPI sistem göstergesi
+Device name	DeviceSCSI		Aygıt adı
+Array	DeviceSCSI		Diziliş
+Manufacturer	DeviceACPI		Üretici
+Network controller	Device		Ağ denetleyicisi
+Driver used	Device		Kullanılan sürücü
+Communication controller	Device		İletişim denetleyicisi
+unknown	Device		bilinmiyor

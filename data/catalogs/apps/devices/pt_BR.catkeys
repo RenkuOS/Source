@@ -1,0 +1,68 @@
+1	portuguese (brazil)	x-vnd.Haiku-Devices	4197922366
+ACPI bus	DevicesView		Barramento ACPI
+Class info	DevicePCI		Informações da Classe
+Communications	DeviceSCSI		Comunicações
+Mass storage controller	Device		Controlador de armazenamento em massa
+Printer	DeviceSCSI		Impressora
+Manufacturer	Device		Fabricante
+Memory controller	Device		Controlador de memória
+Unknown device	DevicesView		Dispositivo desconhecido
+Name	PropertyList		Nome
+Manufacturer	DeviceSCSI		Fabricante
+Satellite communications controller	Device		Controlador de comunicações via satélite
+PCI bus	DevicesView		Barramento PCI
+Device	Device		Dispositivo
+Changer	DeviceSCSI		Seletor
+Category	DevicesView		Categoria
+Refresh devices	DevicesView		Atualizar dispositivos
+Device paths	Device		Caminho dos dispositivos
+Unknown device	Device		Dispositivo desconhecido
+Value	PropertyList		Valor
+Generic system peripheral	Device		Periférico genérico do sistema
+Devices	DevicesView		Dispositivo
+Display controller	Device		Controlador de Tela
+Device name	DevicePCI		Nome do dispositivo
+Other	DeviceSCSI		Outro
+Order by:	DevicesView		Ordenar por:
+Intelligent controller	Device		Controlador inteligente
+Multimedia controller	Device		Controlador multimídia
+Quit	DevicesView		Sair
+Processor	DeviceSCSI		Processador
+Bridge	Device		Bridge
+Worm	DeviceSCSI		Worm
+CD-ROM	DeviceSCSI		CD-ROM
+Signal processing controller	Device		Controlador de processamento de sinais
+Docking station	Device		Base de conexão
+Unclassified device	Device		Dispositivo não classificado
+ACPI controller	Device		Controlador ACPI
+ACPI bus	Device		Barramento ACPI
+Encryption controller	Device		Controlador de criptografia
+Devices	System name		Dispositivo
+Generate system information	DevicesView		Gerar informações do sistema
+Processor	Device		Processador
+Computer	DevicesView		Computador
+Connection	DevicesView		Conexão
+Scanner	DeviceSCSI		Scanner
+ACPI node '%1'	DeviceACPI		Módulo ACPI '%1'
+Device name	Device		Nome do dispositivo
+Device class	DeviceSCSI		Classe de Dispositivo
+Input device controller	Device		Controlador de dispositivo de entrada
+Serial bus controller	Device		Controlador de barramento serial
+RBC	DeviceSCSI		RBC
+Wireless controller	Device		Controlador sem fio
+Device name	DeviceACPI		Nome do dispositivo
+ACPI <unknown>	DeviceACPI		ACPI <unknown>
+Report compatibility	DevicesView		Relatório de compatibilidade
+Computer	Device		Computador
+Enclosure	DeviceSCSI		Anexo
+PCI bus	Device		Barramento PCI
+ISA bus	Device		Barramento ISA
+ISA bus	DevicesView		Barramento ISA
+Manufacturer	DevicePCI		Fabricante
+Bridge	DeviceSCSI		Bridge
+Device name	DeviceSCSI		Nome do dispositivo
+Array	DeviceSCSI		Matriz
+Network controller	Device		Controlador de rede
+Driver used	Device		Driver usado
+Communication controller	Device		Controlador de comunicação
+unknown	Device		desconhecido

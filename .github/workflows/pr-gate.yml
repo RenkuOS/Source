@@ -1,0 +1,403 @@
+# The gate the repository cannot open without (D6). Builds both Tier 1 targets
+# on every pull request and produces a bootable image for each.
+#
+# Runs on GitHub-hosted runners only, and always will: a pull request can be
+# opened by anyone, so nothing it triggers may touch our own hardware. See
+# ci-design.md 2. This file must never gain a trigger other than pull_request.
+#
+# Prerequisite: the toolchain images from toolchain.yml must exist. Until the
+# first toolchain run succeeds, this workflow fails on the pull step, which is
+# the correct and obvious failure.
+name: pr-gate
+
+on:
+  pull_request:
+
+# A pull request from a fork gets no secrets and no writable token, and needs
+# none: it reads public code and pulls a public container.
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build ${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    # Generous on purpose: the real figure is unmeasured (ci-design.md 11) and
+    # the summary step below records it. The hard cap is 6 hours.
+    timeout-minutes: 240
+    strategy:
+      # INTERIM — 32-bit x86 is built as the x86_gcc2h hybrid, 2026-10-07.
+      # Pure x86 has no upstream package snapshot to build against; see the
+      # matrix comment in toolchain.yml and x86-ci-research.md 11.
+      #
+      # ADVISORY: branch protection requires "build x86_64" and "boot x86_64"
+      # by name, so the x86_gcc2h legs report but do not block a merge. They
+      # catch C++ that gcc 2.95 cannot compile, which a contributor who only
+      # builds x86_64 will not see. Add them to the required checks once they
+      # have been green for a while.
+      #
+      #   arch       names the job, artifacts, ISO, and toolchain image tag
+      #   packaging  the primary packaging architecture: object directories
+      #              and the HaikuPorts definition
+      #   secondary  the secondary architecture of a hybrid, or empty
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            packaging: x86_64
+            triple: x86_64-unknown-haiku
+            secondary: ''
+            secondary_triple: ''
+          - arch: x86_gcc2h
+            packaging: x86_gcc2
+            triple: i586-pc-haiku
+            secondary: x86
+            secondary_triple: i586-pc-haiku
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history and tags: the revision comes from `git describe`
+          # against upstream's hrev tags, and the package version is built from
+          # it. Depth-1 leaves no tags and an unusable revision.
+          fetch-depth: 0
+          fetch-tags: true
+
+
+      - name: Resolve toolchain image
+        id: img
+        run: |
+          set -euo pipefail
+          if [ -f .github/toolchain.pin ]; then
+            # shellcheck disable=SC1091
+            . .github/toolchain.pin
+          fi
+          REV="${BUILDTOOLS_REV:-master}"
+          OWNER="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
+          echo "image=ghcr.io/${OWNER}/cross-compiler:${{ matrix.arch }}-${REV}" >> "$GITHUB_OUTPUT"
+
+
+      - name: Pull toolchain
+        run: docker pull --quiet "${{ steps.img.outputs.image }}"
+
+      # build/jam/UserBuildConfig is in .gitignore, so CI can generate it per
+      # build and no tracked file is touched. Three settings matter here:
+      #
+      #   HAIKU_IMAGE_LABEL  the volume label burned into the image. Defaults to
+      #                      "Haiku" via HAIKU_DEFAULT_IMAGE_LABEL, and
+      #                      common-tail uses ?= so ours wins. Shipping a volume
+      #                      labelled "Haiku" would use their trademark.
+      #   HAIKU_REVISION     bypasses `git describe --match=hrev*` entirely
+      #                      (FileRules:379 short-circuits to writing this
+      #                      verbatim). It still has to be hrev-shaped while we
+      #                      consume HaikuPorts -- see below.
+      #   RENKUOS_BUILD      our own build counter, stamped into the haiku
+      #                      package as /boot/system/data/renkuos/build and
+      #                      shown by the About window. Separate from the
+      #                      revision precisely because that one is not ours
+      #                      to choose yet.
+      #
+      # The image FILENAME cannot be set this way: for anyboot-image the
+      # variable is HAIKU_ANYBOOT_NAME, and MiscRules assigns it with ?= after
+      # the build profile has already supplied "haiku-nightly-anyboot.iso", so
+      # the profile always wins. Renaming after the build (see below) is simpler
+      # than defining a parallel profile just to change a string.
+      # The package set is determined entirely by the repository definition
+      # file, and its sha256 is literally the snapshot URL, so hashing that file
+      # is a correct cache key by construction rather than by convention.
+      # restore-keys matters more than the exact key: when upstream bumps the
+      # package set, a partial cache still lands and jam fetches only the
+      # difference. After the first run this removes the dependency on
+      # eu.hpkg.haiku-os.org being up.
+      - name: Cache dependency packages
+        uses: actions/cache@v4
+        with:
+          path: generated.${{ matrix.arch }}/download
+          key: hpkg-${{ matrix.arch }}-${{ hashFiles(format('build/jam/repositories/HaikuPorts/{0}', matrix.packaging)) }}
+          restore-keys: |
+            hpkg-${{ matrix.arch }}-
+
+      - name: Brand the build
+        id: brand
+        run: |
+          set -euo pipefail
+          # The build number goes three places: the ISO filename, the About
+          # window (via RENKUOS_BUILD) and the release notes. It is the one
+          # identifier that is ours, so it is what a bug report should quote.
+          BUILD="build$(printf '%05d' "${{ github.run_number }}")"
+          # Mirror determine_haiku_revision: strip the -g<sha> suffix and turn
+          # remaining hyphens into plus signs. HaikuPorts packages require
+          # haiku >= r1~beta6_hrev59866_5-1 and that version is built from this
+          # string, so it must be hrev-shaped. Temporary -- see ci-design.md
+          # 12.1 and DECISIONS.md D2.
+          REV="$(git describe --dirty --tags --match='hrev*' --abbrev=1 \
+                 | sed 's/-g[0-9a-z]\+//' | sed 's/-/+/g')"
+          if [ -z "${REV}" ]; then
+            echo "::error::no hrev tag reachable; checkout is missing tags"
+            exit 1
+          fi
+          cat > build/jam/UserBuildConfig <<EOF
+          HAIKU_IMAGE_LABEL = "RenkuOS" ;
+          HAIKU_REVISION = "${REV}" ;
+          RENKUOS_BUILD = "${BUILD}" ;
+          EOF
+          # Belt and braces. The UserBuildConfig above is the documented
+          # route, but it demonstrably did not reach jam, whereas exporting
+          # does -- build-toolchain.sh relies on the export and works.
+          echo "HAIKU_REVISION=${REV}" >> "$GITHUB_ENV"
+          echo "HAIKU_IMAGE_LABEL=RenkuOS" >> "$GITHUB_ENV"
+          echo "RENKUOS_BUILD=${BUILD}" >> "$GITHUB_ENV"
+          echo "build=${BUILD}" >> "$GITHUB_OUTPUT"
+          echo "revision=${REV}" >> "$GITHUB_OUTPUT"
+          echo "Build ${BUILD}, revision ${REV}"
+          cat build/jam/UserBuildConfig
+
+      # The build fetches prebuilt dependency packages from the upstream Haiku
+      # package repository, so it needs network and is not hermetic. Once D2
+      # gives us our own signed repository this should point at that instead.
+      - name: Configure and build
+        id: build
+        env:
+          IMAGE: ${{ steps.img.outputs.image }}
+          ARCH: ${{ matrix.arch }}
+          PACKAGING: ${{ matrix.packaging }}
+          TRIPLE: ${{ matrix.triple }}
+          SECONDARY: ${{ matrix.secondary }}
+          SECONDARY_TRIPLE: ${{ matrix.secondary_triple }}
+        run: |
+          set -euo pipefail
+          START=$(date +%s)
+          docker run --rm \
+            -v "${PWD}:/src" -w /src \
+            -e ARCH -e PACKAGING -e TRIPLE -e SECONDARY -e SECONDARY_TRIPLE \
+            -e HOME=/tmp -e TERM=dumb \
+            -e HAIKU_REVISION -e HAIKU_IMAGE_LABEL -e RENKUOS_BUILD \
+            "${IMAGE}" \
+            bash -euo pipefail -c '
+              # The workspace is bind-mounted and owned by the runner user,
+              # while the container runs as root, so git refuses to touch it.
+              git config --global --add safe.directory /src
+              # Harden every download the build makes. The wget call belongs to
+              # the Haiku build and cannot be edited from here, and switching
+              # mirrors is not possible either: the mirror URL lives inside
+              # build/jam/repositories/HaikuPorts/<arch>, whose sha256 IS the
+              # snapshot key, so changing it gives a 404. But wget reads
+              # $HOME/.wgetrc, and HOME is /tmp in this container.
+              printf "tries = 10\nwaitretry = 5\ntimeout = 60\nretry_connrefused = on\n" > /tmp/.wgetrc
+              mkdir -p "generated.${ARCH}"
+              cd "generated.${ARCH}"
+              # --distro-compatibility default is required, not cosmetic: we are
+              # not the official Haiku distribution and must not generate files
+              # claiming their trademarks.
+              # The first prefix is the primary compiler. A hybrid adds a
+              # second one for its secondary architecture.
+              set -- --cross-tools-prefix "/tools/cross-tools-${PACKAGING}/bin/${TRIPLE}-"
+              if [ -n "${SECONDARY}" ]; then
+                set -- "$@" --cross-tools-prefix \
+                  "/tools/cross-tools-${SECONDARY}/bin/${SECONDARY_TRIPLE}-"
+              fi
+              ../configure "$@" --distro-compatibility default
+              jam -q -j"$(nproc)" @nightly-anyboot
+            '
+          echo "seconds=$(( $(date +%s) - START ))" >> "$GITHUB_OUTPUT"
+
+      # docker ran as root, so the tree is root-owned. Hand it back before
+      # anything else tries to read it.
+      - name: Restore ownership
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" . || true
+
+      - name: Locate image
+        id: iso
+        if: always()
+        run: |
+          set -uo pipefail
+          ISO="$(find "generated.${{ matrix.arch }}" -maxdepth 1 -name '*anyboot*.iso' | head -1)"
+          if [ -n "${ISO}" ]; then
+            # The build emits haiku-nightly-anyboot.iso, which we must not ship
+            # under that name. Rename to the RenkuOS convention.
+            WANT="generated.${{ matrix.arch }}/RenkuOS-${{ matrix.arch }}-$(date -u +%Y%m%d)-${{ steps.brand.outputs.build }}.iso"
+            mv "${ISO}" "${WANT}"
+            ISO="${WANT}"
+            echo "path=${ISO}" >> "$GITHUB_OUTPUT"
+            echo "name=$(basename "${ISO}")" >> "$GITHUB_OUTPUT"
+            echo "size=$(du -h "${ISO}" | cut -f1)" >> "$GITHUB_OUTPUT"
+          fi
+          echo "tree_size=$(du -sh "generated.${{ matrix.arch }}" 2>/dev/null | cut -f1)" >> "$GITHUB_OUTPUT"
+          echo "disk_left=$(df -h --output=avail / | tail -1 | tr -d ' ')" >> "$GITHUB_OUTPUT"
+
+      - name: Upload image
+        if: steps.iso.outputs.path != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: renku-${{ matrix.arch }}-pr${{ github.event.pull_request.number }}
+          path: ${{ steps.iso.outputs.path }}
+          retention-days: 7
+          # An ISO is already compressed; zipping it again just burns minutes.
+          compression-level: 0
+
+      # These four figures are the open measurements in ci-design.md 11.
+      # The first green run answers them, so record them where they are visible.
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### ${{ matrix.arch }}"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Toolchain | \`${{ steps.img.outputs.image }}\` |"
+            echo "| Build time | ${{ steps.build.outputs.seconds || 'n/a' }} s |"
+            echo "| Revision | \`${{ steps.brand.outputs.revision || 'n/a' }}\` |"
+            echo "| Image | ${{ steps.iso.outputs.name || 'not produced' }} (${{ steps.iso.outputs.size || '-' }}) |"
+            echo "| Build tree | ${{ steps.iso.outputs.tree_size || 'n/a' }} |"
+            echo "| Disk free after build | ${{ steps.iso.outputs.disk_left || 'n/a' }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # Boots the image that was just built and asserts on the serial console.
+  #
+  # NOT a smoke pass. It proves the kernel boots and does not die — which is
+  # the highest-value signal available on a free runner, because hosted runners
+  # have no /dev/kvm and QEMU therefore runs in software emulation. Reaching the
+  # desktop and launching applications belongs to the post-merge and nightly
+  # jobs, where slowness is free. See ci-design.md 6.
+  #
+  # Every string matched below was verified against the kernel source rather
+  # than assumed. Two traps worth knowing about:
+  #   * A healthy boot prints "Welcome to kernel debugger output!" while KDL
+  #     entry prints "Welcome to Kernel Debugging Land...". Matching loosely on
+  #     "kernel debug" would fail every single build.
+  #   * main.cpp's TRACE() macro is compiled out (//#define TRACE_BOOT), so
+  #     "launch_daemon started" never reaches serial. Do not assert on it.
+  boot:
+    name: boot ${{ matrix.arch }}
+    needs: build
+    # needs: waits for every build leg, and a job skipped for a failed need
+    # counts as passing a required check. Without this, an advisory x86_gcc2h
+    # build failure would skip "boot x86_64" and let an unbooted x86_64 image
+    # through. A failed x86_64 build still fails here, at the download.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Blocking. Two runs put the kernel banner at 5s under emulation, so the
+    # timeouts below are measured rather than guessed and there is no longer a
+    # reason to let a boot failure through.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            qemu: qemu-system-x86_64
+          - arch: x86_gcc2h
+            qemu: qemu-system-i386
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: renku-${{ matrix.arch }}-pr${{ github.event.pull_request.number }}
+
+      - name: Install QEMU
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-system-x86
+          ${{ matrix.qemu }} --version | head -1
+
+      - name: Boot and watch the serial console
+        id: boot
+        env:
+          # Generous because this is software emulation, not KVM.
+          BANNER_TIMEOUT: 120
+          SETTLE_SECONDS: 60
+        run: |
+          set -uo pipefail
+          # Matches the renamed artifact, not the build's own output name.
+          ISO="$(find . -maxdepth 2 -name 'RenkuOS-*.iso' | head -1)"
+          if [ -z "${ISO}" ]; then
+            echo "::error::No RenkuOS image found in the artifact."
+            find . -maxdepth 2 -type f | head -20
+            exit 1
+          fi
+          echo "Booting ${ISO} ($(du -h "${ISO}" | cut -f1)) under TCG"
+          : > serial.log
+
+          ${{ matrix.qemu }} \
+            -machine pc \
+            -accel tcg,thread=multi \
+            -smp "$(nproc)" \
+            -m 2048 \
+            -cdrom "${ISO}" -boot d \
+            -display none \
+            -serial file:serial.log \
+            -no-reboot &
+          QEMU=$!
+          # shellcheck disable=SC2064
+          trap "kill ${QEMU} 2>/dev/null || true" EXIT
+
+          # Verified in src/system/kernel/main.cpp and debug/debug.cpp.
+          fail_re='Kernel Debugging Land|^PANIC:|error starting "|main2: find_directory\(\) failed|main2: constructing path'
+          banner='Haiku revision:'
+
+          seen_banner=0
+          banner_at=0
+          elapsed=0
+          while :; do
+            if grep -qE "${fail_re}" serial.log 2>/dev/null; then
+              echo "::error::Guest failed. Matching serial lines:"
+              grep -nE "${fail_re}" serial.log | head -20
+              exit 1
+            fi
+            if [ "${seen_banner}" -eq 0 ] && grep -qF "${banner}" serial.log 2>/dev/null; then
+              seen_banner=1
+              banner_at=${elapsed}
+              echo "Kernel banner at ${banner_at}s: $(grep -F "${banner}" serial.log | head -1)"
+            fi
+            if [ "${seen_banner}" -eq 1 ] \
+               && [ $(( elapsed - banner_at )) -ge "${SETTLE_SECONDS}" ]; then
+              echo "Survived ${SETTLE_SECONDS}s past the banner with no failure marker."
+              echo "banner_at=${banner_at}" >> "$GITHUB_OUTPUT"
+              echo "lines=$(wc -l < serial.log)" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if ! kill -0 "${QEMU}" 2>/dev/null; then
+              # The guest exiting on its own is not yet expected: nothing in the
+              # image shuts it down. Treat it as a failure worth looking at.
+              echo "::error::QEMU exited after ${elapsed}s without a clean result."
+              tail -40 serial.log
+              exit 1
+            fi
+            if [ "${seen_banner}" -eq 0 ] && [ "${elapsed}" -ge "${BANNER_TIMEOUT}" ]; then
+              echo "::error::No kernel banner within ${BANNER_TIMEOUT}s. Last serial output:"
+              tail -40 serial.log
+              exit 1
+            fi
+            sleep 5
+            elapsed=$(( elapsed + 5 ))
+          done
+
+      # Always upload it: on failure it is the only evidence, and on success it
+      # is how the timeouts above get tuned into something worth blocking on.
+      - name: Upload serial log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: serial-${{ matrix.arch }}-pr${{ github.event.pull_request.number }}
+          path: serial.log
+          retention-days: 7
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### boot ${{ matrix.arch }}"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Kernel banner at | ${{ steps.boot.outputs.banner_at || 'never' }} s |"
+            echo "| Serial lines | ${{ steps.boot.outputs.lines || 'n/a' }} |"
+            echo "| Acceleration | TCG (no /dev/kvm on hosted runners) |"
+          } >> "$GITHUB_STEP_SUMMARY"

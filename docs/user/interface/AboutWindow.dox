@@ -1,0 +1,219 @@
+/*
+ * Copyright 2026 RenkuOS contributors.
+ * Distributed under the terms of the MIT License.
+ * SPDX-License-Identifier: MIT
+ *
+ * Corresponds to:
+ *		headers/os/interface/AboutWindow.h
+ *		src/kits/interface/AboutWindow.cpp
+ */
+
+
+/*!
+	\file AboutWindow.h
+	\ingroup interface
+	\ingroup libbe
+	\brief BAboutWindow class definition.
+*/
+
+
+/*!
+	\class BAboutWindow
+	\ingroup interface
+	\ingroup libbe
+	\brief A standard "About" window for an application.
+
+	The window shows the application's icon on a stripe down its left
+	side, its name and version, and below them text built up with the
+	Add...() methods: a description, the copyright, authors, thanks and
+	anything else. It titles itself "About <name>", opens centred
+	horizontally near the top of the screen, and closes with Escape.
+
+	The icon and the version are read from the application file whose
+	signature is passed to the constructor: the 64 x 64 icon of its
+	application type, and its \c B_APP_VERSION_KIND version info, shown as
+	"Version 1.2.3" followed by the variety unless that is final.
+
+	\code
+void
+MyApp::AboutRequested()
+{
+	BAboutWindow* about = new BAboutWindow("PowerPlay",
+		"application/x-vnd.PowerPlay");
+	about->AddDescription("An audio player with a VU meter in the Deskbar.");
+	about->AddCopyright(2026, "the PowerPlay authors");
+	const char* authors[] = { "Jane Doe", NULL };
+	about->AddAuthors(authors);
+	about->Show();
+}
+	\endcode
+
+	The window deletes itself when it is closed, like any other BWindow.
+
+	\since Haiku R1
+*/
+
+
+/*!
+	\fn BAboutWindow::BAboutWindow(const char* appName, const char* signature)
+	\brief Creates an About window for the application \a appName.
+
+	\param appName The application's name, shown in the window and its
+		title.
+	\param signature The signature of the application file to take the
+		icon and version from. May be \c NULL; the window then has neither
+		until SetIcon() and SetVersion() are called.
+
+	\since Haiku R1
+*/
+
+
+/*!
+	\fn BAboutWindow::~BAboutWindow()
+	\brief Destroys the window and its contents.
+
+	\since Haiku R1
+*/
+
+
+/*!
+	\fn void BAboutWindow::Show()
+	\brief Shows the window on the current workspace.
+
+	\since Haiku R1
+*/
+
+
+/*!
+	\fn BPoint BAboutWindow::AboutPosition(float width, float height)
+	\brief Returns where a window of the given size should open: centred
+		horizontally on the screen, in its upper part.
+
+	\since Haiku R1
+*/
+
+
+/*!
+	\fn void BAboutWindow::AddDescription(const char* description)
+	\brief Adds a paragraph describing the application.
+
+	\since Haiku R1
+*/
+
+
+/*!
+	\fn void BAboutWindow::AddCopyright(int32 firstCopyrightYear,
+		const char* copyrightHolder, const char** extraCopyrights)
+	\brief Adds a copyright notice.
+
+	The notice reads "© <years> <holder>", where the years run from
+	\a firstCopyrightYear to the current year, followed by "All Rights
+	Reserved.".
+
+	\param firstCopyrightYear The year the work was first published.
+	\param copyrightHolder The copyright holder.
+	\param extraCopyrights Further notices, each shown on its own line
+		after a "©", in a \c NULL terminated array; may be \c NULL.
+
+	\since Haiku R1
+*/
+
+
+/*!
+	\fn void BAboutWindow::AddAuthors(const char** authors)
+	\brief Adds a "Written by:" section listing \a authors, a \c NULL
+		terminated array.
+
+	\since Haiku R1
+*/
+
+
+/*!
+	\fn void BAboutWindow::AddSpecialThanks(const char** thanks)
+	\brief Adds a "Special thanks:" section listing \a thanks, a \c NULL
+		terminated array.
+
+	\since Haiku R1
+*/
+
+
+/*!
+	\fn void BAboutWindow::AddVersionHistory(const char** history)
+	\brief Adds a "Version history:" section listing \a history, a \c NULL
+		terminated array.
+
+	\since Haiku R1
+*/
+
+
+/*!
+	\fn void BAboutWindow::AddExtraInfo(const char* extraInfo)
+	\brief Adds a paragraph of any other information, such as a license.
+
+	\since Haiku R1
+*/
+
+
+/*!
+	\fn void BAboutWindow::AddText(const char* header, const char** contents)
+	\brief Adds a section: \a header in bold, followed by the lines of
+		\a contents, indented.
+
+	\param header The section's heading, or a plain paragraph when
+		\a contents is \c NULL.
+	\param contents The section's lines, a \c NULL terminated array; may be
+		\c NULL.
+
+	\since Haiku R1
+*/
+
+
+/*!
+	\fn BBitmap* BAboutWindow::Icon()
+	\brief Returns the icon shown in the window, or \c NULL. The window
+		keeps ownership.
+
+	\since Haiku R1
+*/
+
+
+/*!
+	\fn void BAboutWindow::SetIcon(BBitmap* icon)
+	\brief Replaces the icon shown in the window. The window takes
+		ownership of \a icon and deletes the previous one; \c NULL removes
+		the icon and its stripe.
+
+	\since Haiku R1
+*/
+
+
+/*!
+	\fn const char* BAboutWindow::Name()
+	\brief Returns the application name shown in the window.
+
+	\since Haiku R1
+*/
+
+
+/*!
+	\fn void BAboutWindow::SetName(const char* name)
+	\brief Replaces the application name shown in the window.
+
+	\since Haiku R1
+*/
+
+
+/*!
+	\fn const char* BAboutWindow::Version()
+	\brief Returns the version text shown in the window.
+
+	\since Haiku R1
+*/
+
+
+/*!
+	\fn void BAboutWindow::SetVersion(const char* version)
+	\brief Replaces the version text shown in the window.
+
+	\since Haiku R1
+*/

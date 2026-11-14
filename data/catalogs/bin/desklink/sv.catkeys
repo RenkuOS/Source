@@ -1,0 +1,14 @@
+1	swedish	x-vnd.Haiku-desklink	378743223
+desklink	MediaReplicant	Title of an alert box	desklink
+Mute	MediaReplicant		Mute
+Muted	MediaReplicant		Tyst
+%g dB	MediaReplicant		%g dB
+OK	MediaReplicant		OK
+Couldn't launch 	MediaReplicant		Kunde inte starta
+Volume	VolumeControl		Volym
+%ld dB	VolumeControl		%ld dB
+Media preferences…	MediaReplicant		Mediainställningar...
+Beep	MediaReplicant		Pip
+Open %name	DeskButton	Don't translate variable %name	Öppna %name
+Remove replicant	VolumeControl		Ta bort replikant
+No media server running	VolumeControl		Ingen aktiv mediaserver

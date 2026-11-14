@@ -1,0 +1,86 @@
+1	friulian	x-vnd.Haiku-Devices	2752258547
+ACPI bus	DevicesView		Bus ACPI
+USB bus	DevicesView		Bus USB
+Class info	DevicePCI		Informazions classe
+USB bus	Device		Bus USB
+Communications	DeviceSCSI		Comunicazions
+Mass storage controller	Device		Controlôr memorie di masse
+Printer	DeviceSCSI		Stampadore
+Manufacturer	Device		Fabricant
+Memory controller	Device		Controlôr de memorie
+Unknown device	DevicesView		Dispositîf no cognossût
+Name	PropertyList		Non
+Graphics peripheral	DeviceSCSI		Periferiche grafiche
+Manufacturer	DeviceSCSI		Fabricant
+unknown	DeviceACPI		no cognossût
+Satellite communications controller	Device		Controlôr di comunicazions satelitârs
+PCI bus	DevicesView		Bus PCI
+Device	Device		Dispositîf
+Changer	DeviceSCSI		Modificadôr
+Category	DevicesView		Categorie
+Refresh devices	DevicesView		Inzorne dispositîfs
+Device paths	Device		Percors dal dispositîf
+Unknown device	Device		Dispositîf no cognossût
+Value	PropertyList		Valôr
+Generic system peripheral	Device		Periferiche gjeneriche di sisteme
+Devices	DevicesView		Dispositîfs
+Optical drive	DeviceSCSI		Unitât otiche
+Display controller	Device		Controlôr dal visôr
+Bus	DevicesView		Bus
+Device name	DevicePCI		Non dal dispositîf
+Other	DeviceSCSI		Altri
+Order by:	DevicesView		Ordene par:
+Intelligent controller	Device		Controlôr inteligjent
+ACPI processor namespace '%2'	DeviceACPI		Spazi dai nons dal processôr ACPI '%2'
+Multimedia controller	Device		Controlôr multimediâl
+Quit	DevicesView		Jes
+Processor	DeviceSCSI		Processôr
+Card reader	DeviceSCSI		Letôr di schedis
+Bridge	Device		Puint
+ACPI button '%1'	DeviceACPI		Boton ACPI '%1'
+Attributes	PropertyList		Atribûts
+Worm	DeviceSCSI		Worm
+CD-ROM	DeviceSCSI		CD-ROM
+ACPI system bus	DeviceACPI		Bus di sisteme ACPI
+Signal processing controller	Device		Controlôr di elaborazion segnâi
+Docking station	Device		Stazion di bordament
+Unclassified device	Device		Dispositîf no classificât
+ACPI controller	Device		Controlôr ACPI
+ACPI bus	Device		Bus ACPI
+Encryption controller	Device		Controlôr di cifradure
+Devices	System name		Dispositîfs
+Generate system information	DevicesView		Gjenere informazions di sisteme
+Processor	Device		Processôr
+Computer	DevicesView		Computer
+ACPI thermal zone	DeviceACPI		Zone termiche ACPI
+Connection	DevicesView		Conession
+Scanner	DeviceSCSI		Scansionadôr
+ACPI node '%1'	DeviceACPI		Grop ACPI '%1'
+Device name	Device		Non dal dispositîf
+Device class	DeviceSCSI		Classe dispositîf
+Input device controller	Device		Controlôr dispositîfs di input
+Serial bus controller	Device		Controlôr bus seriâl
+RBC	DeviceSCSI		RBC
+Wireless controller	Device		Controlôr dispositîfs cence fîi
+Device name	DeviceACPI		Non dal dispositîf
+unknown	DevicePCI		no cognossût
+ACPI <unknown>	DeviceACPI		ACPI <no cognossût>
+Report compatibility	DevicesView		Segnale compatibilitât
+Computer	Device		Computer
+Tape drive	DeviceSCSI		Unitât a nastri
+Enclosure	DeviceSCSI		Cente
+PCI bus	Device		Bus PCI
+ISA bus	Device		Bus ISA
+Basic information	PropertyList		Informazions di base
+ISA bus	DevicesView		Bus ISA
+Disk drive	DeviceSCSI		Unitât disc
+Manufacturer	DevicePCI		Fabricant
+Bridge	DeviceSCSI		Puint
+ACPI system indicator	DeviceACPI		Indicadôr di sisteme ACPI
+Device name	DeviceSCSI		Non dal dispositîf
+Array	DeviceSCSI		Serie
+Manufacturer	DeviceACPI		Produtôr
+Network controller	Device		Controlôr di rêt
+Driver used	Device		Driver doprât
+Communication controller	Device		Controlôr di comunicazion
+unknown	Device		no cognossût

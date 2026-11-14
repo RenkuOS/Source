@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: MIT
+#
+# The firmware for mediatekwifi, from OpenBSD's mwx-firmware package. OpenBSD
+# repacks the archive under the same name (2026-10-27 and 2026-11-11, with the
+# files inside unchanged), which broke the pinned SHA-256. So the build fetches
+# our own copy from the firmware-mirror release instead. Never replace an asset
+# there: a new firmware version gets a new file name and a new hash.
+# Origin: https://firmware.openbsd.org/firmware/7.9/mwx-firmware-20260309p0.tgz
+local mediatekFirmwarePackage = mediatek_wifi_firmwares.hpkg ;
+HaikuPackage $(mediatekFirmwarePackage) ;
+
+local archive = [ DownloadFile mwx-firmware-20260309p0.tgz
+	: https://github.com/RenkuOS/Source/releases/download/firmware-mirror/mwx-firmware-20260309p0.tgz
+	:
+	: dec08b278bad6cab0e64e0d41c3500bcb0faaadbb577c8002ea2cd784ade1641 ] ;
+
+# MT7920 (_1a) and MT7921 (_1). The MT7922 and MT7925 blobs in the same
+# archive come with the device IDs that need them.
+local directory = [ FDirName $(HAIKU_OPTIONAL_BUILD_PACKAGES_DIR)
+	mwx-firmware-20260309p0 ] ;
+local firmwareFiles = [ ExtractArchive $(directory:G=mediatek-firmware)
+	:
+	firmware/mwx-mt7961_patch_mcu_1_2_hdr
+	firmware/mwx-mt7961_ram_code_1
+	firmware/mwx-mt7961_patch_mcu_1a_2_hdr
+	firmware/mwx-mt7961_ram_code_1a
+	: $(archive) : extracted-mediatek-firmware ] ;
+local licenseFile = [ ExtractArchive $(directory:G=mediatek-firmware)
+	: firmware/mwx-license : $(archive) : extracted-mediatek-firmware ] ;
+
+AddFilesToPackage data firmware mediatekwifi : $(firmwareFiles) $(licenseFile) ;
+# The license name the package info refers to, shipped with the package.
+AddFilesToPackage data licenses : $(licenseFile) : "MediaTek (firmware)" ;
+
+BuildHaikuPackage $(mediatekFirmwarePackage) : mediatek_wifi_firmwares ;

@@ -1,0 +1,315 @@
+Porting bits from ath10k:
+
+Based on linux-next commit id 76d164f582150fd0259ec0fcbc485470bcd8033e .
+
+===
+commit 76d164f582150fd0259ec0fcbc485470bcd8033e
+Author: Felix Fietkau <nbd@openwrt.org>
+Date:   Thu Sep 17 14:29:07 2015 +0300
+
+    ath10k: fix DMA related firmware crashes on multiple devices
+    
+    Some platforms really don't like DMA bursts of 256 bytes, and this
+    causes the firmware to crash when sending beacons.
+    Also, changing this based on the firmware version does not seem to make
+    much sense, so use 128 bytes for all versions.
+    
+    Cc: stable@vger.kernel.org
+    Signed-off-by: Felix Fietkau <nbd@openwrt.org>
+    Signed-off-by: Kalle Valo <kvalo@qca.qualcomm.com>
+
+===
+
+* (done) pci/pcie - includes a lot of SoC futzing to do things like cold/warm reset, etc
+* (done) legacy interrupts require magic, check pci.c
+* (done) copy engine pipe config
+* (done) copy engine basics
+* (done) bmi
+* (done) .. at this point we should be able to load in firmware
+
+Then:
+
+* (done) finish off copy engine bits
+* (done) htt
+* (done) wmi
+* (done) whatever missing pieces for tx/rx dma at this point (should've been done above, but..)
+* (done) send/recieve commands to firmware
+* (done) data!
+
+Notes:
+
+* ath10k has more than Peregrine 2.0 (QCA988x) support
+* it supports newer firmware, but chances are peregrine support is only 10.1 / 10.2
+* .. so don't cheat by hard-coding 10.1 or 10.2 APIs; we have to do this somewhat
+  clean early on.
+
+Bring-up order; more detail
+
+* (done) probe/attach
+* (done) pci bits (chip)
+* (done) sleep/wake
+* (done) ce bits
+* (done) busdma bits for mbuf, etc
+* (done) pipe bits, stubbed out
+* (done) wire up interrupts, enable/disable interrupts, even if it's legacy interrupts
+* (done) .. and add per-pipe interrupt task, schedule it appropriately
+* (done) wire up the global rx retry taskqueue as a taskqueue_timer
+* (done) .. and ensure the above gets cleaned up during shutdown
+
+Then look at what calls init_pipes() - cold/warm reset, chip reset, etc.
+And hif_powerup().  The target is to complete hif_powerup / hif_powerdown.
+
+* (done) then, just port / stub appropriately the hif layer, only implementing the
+  pieces we need and printf() stubbing the rest.
+
+The mac80211 setup sequence ends up calling ath10k_core_probe_fw() which
+brings things up and then tears them down again so the ath10k_start() routine
+can bring it up again.  It's .. silly, but that's what ath10k does.
+ath10k_core_probe_fw() is a good finishing point to verify that the basic bits
+are working - I don't think I need interrupts working (yet); I don't think
+I need WMI/HTT working.
+
+However, to tear the state down afterwards (ie, put the core into suspend mode)
+I need to have WMI working as the target suspend call is a WMI message.
+So stub that part of the setup out and just verify that the core can be brought
+up and stopped.
+
+Ie:
+
+* (done) init pipes, incl. replenishing rx mbufs, etc
+* (done) init config
+* (done) wake target cpu
+
+This requires pci_diag_read32(), pci_diag_write32(), pci_diag_writemem()
+to work.  And /these/ require the CE bits to work, DMA map/unmap to work, etc.
+It doesn't require interrupts; it's polled; so it should be pretty fun to bringup.
+
+I /think/ TX alignment is 4 bytes, not 8 bytes.  Hm.
+
+At this point the diag read/write works, the CE bits work w/ polling, and
+basic locking is working.  Hopefully the target wakes up and accepts a pipe
+config, and we can make a start on porting the rest of the BMI code for
+firmware injection and start stubbing out the HIF layer for implementing.
+The only bits of HIF layer we need are power_on, stop, power_off and the BMI
+HIF wait for message routine.
+
+net80211 bringup:
+
+* (done) mac.c - has the commands to send, the tx/rx path into mac80211, and the
+  command path
+* (done) thermal.c - thermal control
+* p2p.c - p2p support
+* debug*.c - debugfs support (yes, for debugging)
+
+rough order for net80211 bringup:
+
+* (done) add ath10k/mac.c into if_athp_mac.c, and stub out almost everything
+* make peer create/destroy work
+* (done) make vif create/destroy work
+* (done) leave the chanctx bits stubbed out, but at least eyeball them to see
+  how they're supposed to work (eg when they're doing channel switches, etc)
+* (done) write scan stubs so we don't change channel for scans
+* (done) stub out the net80211 management frame sending for now, leave it up to the
+  driver (so scans are done by the driver!) - same as if_rsu.c, I hope!
+* (done) program in a regulatory domain into the firmware, so it doesn't panic!
+* (done) add in initial scan support, see if we can get scan results!
+
+Then checkpoint, and fix up the dirty pieces before we continue.
+
+Things to finish doing:
+
+* (done) dma coherent API - remove it entirely; use the freebsd calls
+  (otherwise device_t versus struct device (linux) gets unhappy;
+  the linux layer really expects struct device)
+* (done) convert everything to freebsd list iteration
+* (done) convert everything to freebsd tasks, task_timeouts, callout as appropriate
+  (the linux lock model and callout/tasklet model doens't seem to be implemented
+  completely 'right' with what freebsd needs.)
+
+MSI:
+
+* (done) figure out all of the MSI bits that I missed!
+* (done) add single MSI support
+* (done) do MSI-X support
+* Figure out what to do about beeliner MSI - the regvals say there are 12
+  CEs, the HW says "32 MSIs", but when we request them, we only get 8?
+  Need to figure that out.
+* Have MSI-X failure try MSI, then if that fails try legacy.
+
+802.11 fragmentation:
+
+* (done) TODO: need to teach net80211 about never doing 802.11 fragmentation, as the
+  firmware does it for us.  Otherwise firmware will transmit the frames with
+  the fragment bit cleared (which it does), leading to garbage.
+* TODO: if in raw mode then net80211 does fragmentation; else don't and let
+  the firmware do it.
+* TODO: teach the athp_transmit() API about fragments and at least warn/print
+  about it for now!
+
+(done) Suspend/resume, restarting VAPs after firmware panic:
+
+* (done) when we suspend, we power down the NIC.  Upon resume, we need to transition
+  through INIT, and this requires re-creating the ath10k state.  Same with
+  firmware panics.
+
+  So, think of a way to iterate over the vdevs, mark the state as down /
+  free the ath10k state, drag the interfaces back to init, and then
+  re-allocate the vdevs again.  Then bring the interface/vdevs up so
+  net80211 can just restart programming in things.
+
+  The tricky bit will be tearing down the state without tearing down the
+  vap, and then making sure the net80211 state is gone (eg nodes, crypto
+  keys, etc) before the firmware is brought up.  We don't want to see
+  net80211 expect things that aren't setup (eg keys, peers/nodes) or
+  things are there it doesn't have setup, or trampling upon existing state.
+
+Regulatory:
+
+* Re-revisit all of the regulatory stuff - hardcoded txpower lists are bad.
+  Hard-coded EEPROM regulatory code is bad.  Etc, etc.
+
+vdev start/restart:
+
+* The vdev start/restart path in if_athp_mac.c is sending, say, dtim/beacon intval=0
+  at the first couple of associations.  The cached arvif fields are not updated
+  before the device starts.
+
+  Check to see what linux ath10k is doing and see if those parameters should be
+  non-zero (where appropriate, especially intval) for the first vdev start
+  call.
+
+* Occasionally the first vdev start doesn't succeed; need to figure out why.
+  (The above may be the reason.)
+
+* Go look at when I should call vdev start (eg, after a vdev down?) and then
+  continue to call vdev restart (eg during parameter reconfiguration?);
+  right now I bet I'm doing it subtly wrong.
+
+* STA mode association works fine the first time, but if I need to reassociate
+  to a different network, I hit
+
+  ath10k_vif_bring_up: XXX failed; is already started!
+
+  .. and TX will timeout.
+
+  This is telling me that I'm not tearing down the STA mode BSS first.
+
+WEP:
+
+* We need to actually, yes, plumb in WEP keys
+* There are a few things to do:
+  + Re-read ath10k/mac.c and see how WEP keys are plumbed in, and in what order;
+  + Note that whenever the default TX key index changes, we should replumb all
+    of the keys per peer
+  + The keys are per-peer, not global - so we track those in ath10k_vif as
+    arvif->wep_keys[0..3] and then when a peer is added, all of those keys are
+    added.
+  + And then theres another routine that loops over the peers and plumbs in
+    updated WEP keys.
+  + So, let's go see what needs to be done for all of the above.
+
+* Ideally - convert the driver to use ath10k_install_key(),
+  ath10k_set_default_unicast_key(), and have the /deferred/ callback
+  routines call that instead of doing direct key set calls.
+
+  That way we get the WEP STA mode stuff for free.
+
+* For WEP IBSS/AP - need to do all of the peer wep key changes/updates
+  as done below.  Interestingly - what to do about the BSS peer key
+  for broadcast/unicast traffic?  Will have to figure that one out.
+
+Hostap (and also STA too, as part of unifying node handling):
+
+* (done) We need to buffer frames to a node until the firmware has finished
+  plumbing up a node via the async callback driven path.  We can't just sleep;
+  net80211 currently holds a TX lock during all of this.  So, we'll have to
+  append frames to a buffer queue and then flush it when the node is plumbed up.
+
+* BSS changes - not sure what to do here yet.  Do we get notification that our
+  BSS changed?
+
+* Need to take care of peer wep key changes/updates - whenever the key changes,
+  all peers need their WEP key / default key index updated.
+
+===
+
+net80211 changes:
+
+* Its time to push seqno allocation into the driver and have drivers correctly
+  serialise queuing frames into their own stack.  Doing this will allow that
+  net80211 TX lock to be removed.
+
+  This means:
+
+  + Add a new method that does the seqno allocation/assignment
+  + Add a flag that states that a driver does its own seqno assignment
+  + Slowly migrate all drivers over to doing seqno assignment and crypto
+    encap in the same driver TX lock so as to correctly serialise all
+    of that stuff
+  + This exposes some races, eg setting up A-MPDU sessions.  Hm!
+  + Re-test at least ath(4) with this + the TX lock removed, to verify
+    that indeed the damned crypto stuff doesn't go out of order.
+    A lot of these bugs got fixed in 2012 and it'd suck to see them
+    come back.
+
+* Add a deferred callout to set the tx key once userland sets it, in case
+  it gets changed on the fly.  It needs to be deferred into the callout
+  queue so it happens in the same as order as submitted key updates.
+
+===
+
+Random completion bits:
+
+* (done) Add busdma ops to all the places where we do descdma operations - especiall
+  ath10k_htt_tx() and the completion path (wherever txbuf_paddr is referenced -
+  find where it first checks the txbuf and go from there.)
+
+* (done) Sending frames require a peer.  If there's no peer, then we can't actually
+  transmit it - it'll just get stuck in the transmit queue.  Figure this out?
+
+* (done) Tidy up tx power handling - when creating an interface, set the arvif txpower
+  to a suitable value.  When scanning, etc, also do the same.
+
+* (done) Extend net80211 rx_stats struct to include MAC timestamp, PHY timestamp,
+  RX duration, RX phy/rate, etc, etc.  Then, teach the htt_r routines
+  (eg things referenced in htt_rx_h_ppdu())
+
+* (done) AMSDU more flag too; the upper layer should be told about AMSDU-more so
+  it knows not to do some checks (eg all decaped AMSDU frames will
+  share the same faked seqno, crypto, IV, etc.)
+
+* (done) RX checksum offloading - htt_rx_h_csum_offload()
+
+* (done) Revisit the timeouts (ath10k_wait, ath10k_compl) and anywhere that sleep/wakeup
+  times are calculated (grep for ticks, time_after, etc).
+  The sleep time is 1ms per loop check, which is too long?
+
+* (done) Fix up the bitops/idr code to have its own namespace for everything so it
+  doesn't trip up the linux compat layer symbols.
+
+* (done) the regulatory code programs in the regdomain in a regdomain callback handler.
+  If we don't call that WMI routine then things fail badly and the firmware
+  panics.
+
+  (done) Go find ath10k_regd_update() and ensure we call it as part of dev/vif up or
+  firmware will panic upon scan!
+
+* (done) add an iv_reset method to handle TX power changes on the fly, and turn that
+  into a suitable WMI command.
+
+Panics / locking issues that need addressing
+============================================
+
+* There's a problem with the frame cleanup path:
+  - ath10k_halt()
+  - holds CONF lock whilst it does its shutdown parts
+  - goes through htt_tx free
+  - frees the TX buffers
+  - one of them has a node reference
+  - node reference is the last node reference
+  - that triggers a node delete
+  - that re-enters the driver and calls athp_peer_free()
+  - athp_peer_free() grabs the lock and goes to mtx_sleep()
+  - .. and it's sleeping on a recursed lock.
+
+* peer deletion sleeps on a net80211 lock in some instances - fix!
