@@ -690,7 +690,9 @@ display_dce45_crtc_load_lut(uint8 crtcID)
 			(NI_OUTPUT_CSC_GRPH_MODE(NI_OUTPUT_CSC_BYPASS) |
 			NI_OUTPUT_CSC_OVL_MODE(NI_OUTPUT_CSC_BYPASS)));
 		/* XXX match this to the depth of the crtc fmt block, move to modeset? */
-		Write32(OUT, 0x6940 + regs->crtcOffset, 0);
+		// On DCE 11 the firmware sets it to match the panel's depth: keep it.
+		if (info.dceMajor < 11)
+			Write32(OUT, 0x6940 + regs->crtcOffset, 0);
 	}
 }
 
