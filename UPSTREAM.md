@@ -18,6 +18,15 @@ under an appropriate licence and that you have the right to submit it.
 clearly-labelled commit rather than quietly editing the import. That keeps the diff against
 upstream honest and the fix attributable.
 
+**Interfaces we keep stable.** RenkuOS promises add-on authors that some classes don't change
+the way upstream may change them. An upstream commit that touches one of these is reworked
+before it's imported, never cherry-picked verbatim, and the rework is named in its row:
+
+- `headers/os/interface/ControlLook.h`: `BControlLook` only changes through its reserved virtual
+  slots (`_ReservedControlLook6`–`10`) and `_reserved`. Virtual methods are never added in the
+  middle, reordered or removed, and members are never added. Control looks built once against
+  it depend on this.
+
 | Date | Upstream commit | Subject | Why |
 |---|---|---|---|
 | 2026-09-16 | `fcdee3a787` | deskbar: don't loop forever if replicant is larger than the row itself | Fixes a Deskbar hang (#19394): a replicant wider than the tray made the placement loop spin at 100% CPU, so Deskbar never appeared |

@@ -30,7 +30,10 @@ class HaikuControlLook;
 
 // Look add-ons are built against this class, so its layout only changes by
 // using the reserved slots and members below: virtual methods are never
-// reordered or removed.
+// reordered or removed. The start of _reserved holds the look that the
+// default look calls through (see create_default_control_look()). An upstream
+// change to this class is reworked onto the reserved slots when it's
+// imported (see UPSTREAM.md).
 class BControlLook {
 public:
 								BControlLook();
@@ -468,6 +471,8 @@ extern "C" _EXPORT BControlLook *instantiate_control_look(image_id id);
 // outer; the caller deletes it. Such an add-on runs inside applications whose
 // libbe exports HaikuControlLook: link it with -Wl,--no-undefined, or a
 // symbol it lacks binds to that private class and ties it to one build.
+// A look is still a C++ class: it's built once for each architecture and
+// compiler, so on x86_gcc2h, once with gcc 2.95 and once with gcc 13.
 extern "C" BPrivate::BControlLook* create_default_control_look(
 	BPrivate::BControlLook* outer);
 
