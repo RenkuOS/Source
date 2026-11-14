@@ -19,6 +19,7 @@
 
 
 #include "TabDecorator.h"
+#include "WindowShape.h"
 
 
 class Desktop;
@@ -37,6 +38,13 @@ public:
 
 	virtual void				UpdateColors(DesktopSettings& settings);
 
+			void				GetRoundedShape(
+									std::vector<ShapeRect>& shape) const;
+			// Decorators built on this one have their own idea of the corners,
+			// except for the one that adds stack and tile to it, which is the
+			// one the system normally uses.
+			bool				HasRoundedCorners() const;
+
 protected:
 	virtual	void				_DrawFrame(BRect rect);
 
@@ -52,6 +60,10 @@ protected:
 									const ComponentColors& color);
 
 private:
+			void				_StrokeCorner(BPoint leftTop, int32 radius,
+									WindowShape::corner_kind kind,
+									rgb_color color);
+			void				_DrawFrameCorners(BRect rect);
  			void				_DrawButtonBitmap(ServerBitmap* bitmap,
  									bool direct, BRect rect);
 			void				_DrawBlendedRect(DrawingEngine *engine,

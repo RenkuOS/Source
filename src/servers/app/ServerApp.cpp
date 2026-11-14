@@ -3514,6 +3514,23 @@ ServerApp::_DispatchMessage(int32 code, BPrivate::LinkReceiver& link)
 			break;
 		}
 
+		case AS_SET_COMPOSITED_DESKTOP:
+		{
+			bool composited;
+			if (link.Read<bool>(&composited) == B_OK) {
+				LockedDesktopSettings settings(fDesktop);
+				settings.SetCompositedDesktop(composited);
+			}
+			break;
+		}
+		case AS_GET_COMPOSITED_DESKTOP:
+		{
+			DesktopSettings settings(fDesktop);
+			fLink.StartMessage(B_OK);
+			fLink.Attach<bool>(settings.CompositedDesktop());
+			fLink.Flush();
+			break;
+		}
 		case AS_GET_SUBPIXEL_ANTIALIASING:
 		{
 			DesktopSettings settings(fDesktop);

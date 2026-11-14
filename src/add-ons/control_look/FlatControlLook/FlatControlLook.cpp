@@ -1050,6 +1050,7 @@ FlatControlLook::DrawActiveTab(BView* view, BRect& rect,
 		bevelShadowColor = tint_color(base, 1.0);
 		fillGradient.AddColor(tint_color(base, 0.95), 0);
 		fillGradient.AddColor(tint_color(base, 1.0), 155);
+		fillGradient.AddColor(tint_color(base, 1.0), 255);
 	}
 
 	static const float kRoundCornerRadius = kRadius;
