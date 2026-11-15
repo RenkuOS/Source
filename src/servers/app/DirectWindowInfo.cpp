@@ -83,7 +83,7 @@ DirectWindowInfo::GetSyncData(direct_window_sync_data& data) const
 status_t
 DirectWindowInfo::SetState(direct_buffer_state bufferState,
 	direct_driver_state driverState, RenderingBuffer* buffer,
-	const BRect& windowFrame, const BRegion& clipRegion)
+	const BRect& windowFrame, const BRegion& clipRegion, area_id bitsArea)
 {
 	if ((fBufferInfo->buffer_state & B_DIRECT_MODE_MASK) == B_DIRECT_STOP
 		&& (bufferState & B_DIRECT_MODE_MASK) != B_DIRECT_START)
@@ -94,9 +94,16 @@ DirectWindowInfo::SetState(direct_buffer_state bufferState,
 	if ((int)driverState != -1)
 		fBufferInfo->driver_state = driverState;
 
-	if ((bufferState & B_BUFFER_RESET) != 0 || fBufferInfo->bits_area < 0) {
+	if ((bufferState & B_BUFFER_RESET) != 0 || fBufferInfo->bits_area < 0
+		|| (bitsArea >= 0 && bitsArea != fBufferInfo->bits_area)) {
 		void* bits = buffer->Bits();
-		if (IS_USER_ADDRESS(bits)) {
+		if (bitsArea >= 0) {
+			// The client clones the area again when bits is NULL.
+			fBufferInfo->bits = NULL;
+			fBufferInfo->bits_area = bitsArea;
+			set_area_protection(bitsArea,
+				B_READ_AREA | B_WRITE_AREA | B_CLONEABLE_AREA);
+		} else if (IS_USER_ADDRESS(bits)) {
 			fBufferInfo->bits = NULL;
 
 			area_id area = area_for(bits);
@@ -148,6 +155,10 @@ DirectWindowInfo::SetState(direct_buffer_state bufferState,
 		}
 
 		fBufferInfo->pixel_format = buffer->ColorSpace();
+		// A window buffer's alpha is only used for transparent windows;
+		// applications expect the format of a screen.
+		if (bitsArea >= 0 && fBufferInfo->pixel_format == B_RGBA32)
+			fBufferInfo->pixel_format = B_RGB32;
 		fBufferInfo->layout = B_BUFFER_NONINTERLEAVED;
 		fBufferInfo->orientation = B_BUFFER_TOP_TO_BOTTOM;
 			// TODO
