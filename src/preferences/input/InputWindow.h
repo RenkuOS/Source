@@ -15,6 +15,7 @@
 #include <Input.h>
 #include <ListView.h>
 #include <Message.h>
+#include <String.h>
 #include <Window.h>
 
 #include "MouseSettings.h"
@@ -31,12 +32,15 @@ public:
 private:
 		status_t			FindDevice();
 		void				AddDevice(BInputDevice* device);
+		bool				_SelectDevice(const char* name);
 
 private:
 		BListView*			fDeviceListView;
 		BCardView*			fCardView;
 
 		MultipleMouseSettings 	fMultipleMouseSettings;
+		BString				fDeviceToSelect;
+				// asked for before the device was there
 };
 
 #endif /* INPUT_WINDOW_H */

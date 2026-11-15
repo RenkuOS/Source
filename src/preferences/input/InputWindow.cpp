@@ -8,6 +8,8 @@
  */
 
 
+#include <string.h>
+
 #include <CardLayout.h>
 #include <CardView.h>
 #include <Catalog.h>
@@ -104,6 +106,15 @@ InputWindow::MessageReceived(BMessage* message)
 			break;
 		}
 
+		case kMsgSelectDevice:
+		{
+			// a device that has just connected may not be listed yet: then
+			// it is selected when it comes
+			BString name = message->GetString("name", "");
+			fDeviceToSelect = _SelectDevice(name) ? "" : name.String();
+			break;
+		}
+
 		case B_INPUT_DEVICES_CHANGED:
 		{
 			int32 operation = message->FindInt32("be:opcode");
@@ -113,6 +124,8 @@ InputWindow::MessageReceived(BMessage* message)
 				BInputDevice* device = find_input_device(name);
 				if (device)
 					AddDevice(device);
+				if (!fDeviceToSelect.IsEmpty() && _SelectDevice(fDeviceToSelect))
+					fDeviceToSelect = "";
 			} else if (operation == B_INPUT_DEVICE_REMOVED) {
 				for (int i = 0; i < fDeviceListView->CountItems(); i++) {
 					DeviceListItemView* item
@@ -208,4 +221,23 @@ InputWindow::AddDevice(BInputDevice* dev)
 		fDeviceListView->AddItem(keyboard);
 	} else
 		delete dev;
+}
+
+
+/*!	Shows the settings of the device with this name, if it is listed. */
+bool
+InputWindow::_SelectDevice(const char* name)
+{
+	if (name == NULL || name[0] == '\0')
+		return false;
+	for (int32 i = 0; i < fDeviceListView->CountItems(); i++) {
+		DeviceListItemView* item = dynamic_cast<DeviceListItemView*>(
+			fDeviceListView->ItemAt(i));
+		if (item != NULL && strcmp(item->Label(), name) == 0) {
+			fDeviceListView->Select(i);
+			fDeviceListView->ScrollToSelection();
+			return true;
+		}
+	}
+	return false;
 }

@@ -13,6 +13,10 @@
 #include <SupportDefs.h>
 
 
+// Shows the device whose name is in "name": another application (as the
+// Bluetooth preferences) can send it to open Input on that device
+const uint32 kMsgSelectDevice	= 'slDv';
+
 const uint32 kMsgDefaults		= 'BTde';
 const uint32 kMsgRevert			= 'BTre';
 const uint32 kMsgUpdate			= 'BTup';
