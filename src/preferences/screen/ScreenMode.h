@@ -82,6 +82,7 @@ private:
 			bool				fUpdatedModes;
 			display_mode		fOriginalDisplayMode[32];
 			screen_mode			fOriginal[32];
+			bool				fHasOriginal[32];
 };
 
 

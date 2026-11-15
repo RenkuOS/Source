@@ -188,6 +188,8 @@ ScreenMode::ScreenMode(BWindow* window)
 	fWindow(window),
 	fUpdatedModes(false)
 {
+	memset(fHasOriginal, 0, sizeof(fHasOriginal));
+
 	BScreen screen(window);
 	if (screen.GetModeList(&fModeList, &fModeCount) == B_OK) {
 		// sort modes by resolution and refresh to make
@@ -313,6 +315,9 @@ ScreenMode::Revert()
 	status_t result = B_OK;
 	screen_mode current;
 	for (int32 workspace = 0; workspace < count_workspaces(); workspace++) {
+		// A workspace that had no mode of its own has nothing to go back to.
+		if (!fHasOriginal[workspace])
+			continue;
 		if (Get(current, workspace) == B_OK && fOriginal[workspace] == current)
 			continue;
 
@@ -340,8 +345,9 @@ ScreenMode::UpdateOriginalModes()
 {
 	BScreen screen(fWindow);
 	for (int32 workspace = 0; workspace < count_workspaces(); workspace++) {
-		if (screen.GetMode(workspace, &fOriginalDisplayMode[workspace])
-				== B_OK) {
+		fHasOriginal[workspace] = screen.GetMode(workspace,
+			&fOriginalDisplayMode[workspace]) == B_OK;
+		if (fHasOriginal[workspace]) {
 			Get(fOriginal[workspace], workspace);
 			fUpdatedModes = true;
 		}
