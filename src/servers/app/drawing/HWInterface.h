@@ -184,6 +184,9 @@ public:
 	virtual	status_t			Invalidate(const BRect& frame);
 	// while CopyBackToFront() actually performs the operation
 	virtual	status_t			CopyBackToFront(const BRect& frame);
+	// puts B_RGBA32 pixels laid out like the drawing buffer on the screen
+			void				CopyToScreen(const uint8* bits,
+									uint32 bytesPerRow, const IntRect& area);
 
 	// A finished frame: where the screen can flip between two pages, it is
 	// copied to the hidden one, which is shown from the next retrace on.

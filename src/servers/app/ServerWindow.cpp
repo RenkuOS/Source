@@ -1067,6 +1067,7 @@ ServerWindow::_DispatchMessage(int32 code, BPrivate::LinkReceiver& link)
 			BPoint where;
 			int32 buttons;
 			fDesktop->GetLastMouseState(&where, &buttons);
+			fDesktop->MapEmulatedScreenPoint(ClientTeam(), where);
 
 			fLink.StartMessage(B_OK);
 			fLink.Attach<BPoint>(where);

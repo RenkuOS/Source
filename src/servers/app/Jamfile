@@ -75,6 +75,7 @@ local app_server_src =
 	RegionPool.cpp
 	Screen.cpp
 	ScreenConfigurations.cpp
+	ScreenEmulation.cpp
 	ScreenManager.cpp
 	ServerApp.cpp
 	ServerBitmap.cpp

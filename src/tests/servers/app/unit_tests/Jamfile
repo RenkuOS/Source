@@ -7,6 +7,7 @@ SEARCH_SOURCE += [ FDirName $(HAIKU_TOP) src servers app ] ;
 UnitTestLib app_server_unit_tests.so :
 	AppServerUnitTestAddOn.cpp
 
+	EmulatedScreenLayoutTest.cpp
 	IntPoint.cpp
 	IntRect.cpp
 	ScreenRotationTest.cpp
