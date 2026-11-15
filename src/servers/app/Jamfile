@@ -91,6 +91,7 @@ Application app_server :
 	RegionPool.cpp
 	Screen.cpp
 	ScreenConfigurations.cpp
+	ScreenEmulation.cpp
 	ScreenManager.cpp
 	ServerApp.cpp
 	ServerBitmap.cpp

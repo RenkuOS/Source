@@ -55,6 +55,7 @@
 #include "HWInterface.h"
 #include "InputManager.h"
 #include "Screen.h"
+#include "ScreenEmulation.h"
 #include "ScreenManager.h"
 #include "ServerApp.h"
 #include "ServerConfig.h"
@@ -1133,6 +1134,10 @@ Desktop::LockDirectScreen(team_id team)
 		fDirectScreenTeam = team;
 		if (fCompositor.IsSet())
 			fCompositor->ScreenTaken();
+
+		BAutolock _(fScreenEmulationLock);
+		if (fScreenEmulation.IsSet() && fScreenEmulation->Team() == team)
+			fScreenEmulation->Start(HWInterface());
 	}
 
 	return status;
@@ -1143,14 +1148,83 @@ status_t
 Desktop::UnlockDirectScreen(team_id team)
 {
 	if (fDirectScreenTeam == team) {
+		bool emulated = false;
+		{
+			BAutolock _(fScreenEmulationLock);
+			if (fScreenEmulation.IsSet() && fScreenEmulation->IsRunning()) {
+				fScreenEmulation->Stop();
+				emulated = true;
+			}
+		}
+
 		fDirectScreenLock.Unlock();
 		fDirectScreenTeam = -1;
 		if (fCompositor.IsSet())
 			fCompositor->ScreenReleased();
+		else if (emulated) {
+			// The mode didn't change, nothing has redrawn the screen.
+			Redraw();
+		}
 		return B_OK;
 	}
 
 	return B_PERMISSION_DENIED;
+}
+
+
+/*!	Gives \a team, which has a BWindowScreen, a frame buffer of its own of
+	\a width by \a height pixels in \a space, to draw to in \a _area. While
+	the team has the screen, \a displayWidth by \a displayHeight of it are
+	shown on the screen, scaled to fit and turned with it. That is for a
+	rotated screen, or a mode the screen doesn't have.
+*/
+status_t
+Desktop::EmulateScreen(team_id team, uint32 width, uint32 height,
+	uint32 displayWidth, uint32 displayHeight, color_space space,
+	area_id* _area)
+{
+	BAutolock _(fScreenEmulationLock);
+
+	if (fScreenEmulation.IsSet() && fScreenEmulation->Team() != team) {
+		if (fScreenEmulation->IsRunning())
+			return B_BUSY;
+		fScreenEmulation.Unset();
+	}
+
+	if (!fScreenEmulation.IsSet()) {
+		fScreenEmulation.SetTo(new(std::nothrow) ScreenEmulation(team));
+		if (!fScreenEmulation.IsSet())
+			return B_NO_MEMORY;
+	}
+
+	status_t status = fScreenEmulation->SetMode(width, height, displayWidth,
+		displayHeight, space);
+	if (status != B_OK)
+		return status;
+
+	if (fDirectScreenTeam == team)
+		fScreenEmulation->Start(HWInterface());
+
+	*_area = fScreenEmulation->Area();
+	return B_OK;
+}
+
+
+void
+Desktop::StopScreenEmulation(team_id team)
+{
+	bool wasRunning = false;
+	{
+		BAutolock _(fScreenEmulationLock);
+		if (!fScreenEmulation.IsSet() || fScreenEmulation->Team() != team)
+			return;
+
+		wasRunning = fScreenEmulation->IsRunning();
+		fScreenEmulation.Unset();
+	}
+
+	if (wasRunning && !fCompositor.IsSet())
+		Redraw();
 }
 
 

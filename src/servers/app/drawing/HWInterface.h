@@ -184,6 +184,9 @@ public:
 	virtual	status_t			Invalidate(const BRect& frame);
 	// while CopyBackToFront() actually performs the operation
 	virtual	status_t			CopyBackToFront(const BRect& frame);
+	// puts B_RGBA32 pixels laid out like the drawing buffer on the screen
+			void				CopyToScreen(const uint8* bits,
+									uint32 bytesPerRow, const IntRect& area);
 
 protected:
 	virtual	void				_CopyBackToFront(/*const*/ BRegion& region);

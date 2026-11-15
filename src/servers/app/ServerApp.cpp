@@ -176,6 +176,7 @@ ServerApp::~ServerApp()
 	snooze(20000);
 
 	fDesktop->RevertScreenModes(fTemporaryDisplayModeChange);
+	fDesktop->StopScreenEmulation(ClientTeam());
 
 	_StopScreenObserver();
 
@@ -3762,6 +3763,38 @@ ServerApp::_DispatchMessage(int32 code, BPrivate::LinkReceiver& link)
 			fLink.Flush();
 			break;
 		}
+
+		case AS_EMULATE_SCREEN:
+		{
+			uint32 width;
+			uint32 height;
+			uint32 displayWidth;
+			uint32 displayHeight;
+			color_space space;
+			link.Read<uint32>(&width);
+			link.Read<uint32>(&height);
+			link.Read<uint32>(&displayWidth);
+			link.Read<uint32>(&displayHeight);
+			status_t status = link.Read<color_space>(&space);
+
+			area_id area = -1;
+			if (status == B_OK) {
+				status = fDesktop->EmulateScreen(ClientTeam(), width, height,
+					displayWidth, displayHeight, space, &area);
+			}
+
+			fLink.StartMessage(status);
+			if (status == B_OK)
+				fLink.Attach<area_id>(area);
+			fLink.Flush();
+			break;
+		}
+
+		case AS_STOP_SCREEN_EMULATION:
+			fDesktop->StopScreenEmulation(ClientTeam());
+			fLink.StartMessage(B_OK);
+			fLink.Flush();
+			break;
 
 		// Hinting and aliasing
 

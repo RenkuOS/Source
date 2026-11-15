@@ -433,6 +433,26 @@ HWInterface::CopyBackToFront(const BRect& frame)
 }
 
 
+/*!	Puts \a area of \a bits, which are B_RGBA32 and as large as the drawing
+	buffer, on the screen, turned with it. The object must be locked.
+*/
+void
+HWInterface::CopyToScreen(const uint8* bits, uint32 bytesPerRow,
+	const IntRect& area)
+{
+	RenderingBuffer* drawingBuffer = DrawingBuffer();
+	if (drawingBuffer == NULL || FrontBuffer() == NULL)
+		return;
+
+	IntRect clipped = area & drawingBuffer->Bounds();
+	if (!clipped.IsValid())
+		return;
+
+	_CopyToFront((uint8*)bits + clipped.top * bytesPerRow + clipped.left * 4,
+		bytesPerRow, clipped.left, clipped.top, clipped.right, clipped.bottom);
+}
+
+
 void
 HWInterface::_CopyBackToFront(/*const*/ BRegion& region)
 {
