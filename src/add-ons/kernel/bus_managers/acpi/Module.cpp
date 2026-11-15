@@ -67,6 +67,29 @@ acpi_module_register_device(device_node* parent)
 }
 
 
+/*!	Returns the _STA flags of the device at \a path. A device without _STA is
+	present and functioning (ACPI 6.3.7), and so is one whose _STA fails, as
+	it was before _STA was checked at all.
+*/
+static uint32
+get_device_status(const char* path)
+{
+	ACPI_HANDLE handle;
+	acpi_data buf;
+	acpi_object_type object;
+	buf.pointer = &object;
+	buf.length = sizeof(acpi_object_type);
+	if (AcpiGetHandle(NULL, (ACPI_STRING)path, &handle) == AE_OK
+		&& evaluate_method(handle, "_STA", NULL, &buf) == B_OK
+		&& object.object_type == ACPI_TYPE_INTEGER) {
+		return object.integer.integer;
+	}
+
+	return ACPI_STA_DEVICE_PRESENT | ACPI_STA_DEVICE_ENABLED
+		| ACPI_STA_DEVICE_UI | ACPI_STA_DEVICE_FUNCTIONING;
+}
+
+
 static status_t
 acpi_enumerate_child_devices(device_node* node, const char* root)
 {
@@ -85,6 +108,19 @@ acpi_enumerate_child_devices(device_node* node, const char* root)
 			case ACPI_TYPE_PROCESSOR:
 			case ACPI_TYPE_THERMAL:
 			case ACPI_TYPE_DEVICE: {
+				// Power resources have an _STA too, but it means on or off.
+				if (type == ACPI_TYPE_DEVICE || type == ACPI_TYPE_PROCESSOR) {
+					uint32 status = get_device_status(result);
+					if ((status & ACPI_STA_DEVICE_PRESENT) == 0) {
+						// No node for an absent device, whose registers may
+						// not be backed. Its children can still be present
+						// if it is functioning (ACPI 6.3.7).
+						if ((status & ACPI_STA_DEVICE_FUNCTIONING) != 0)
+							acpi_enumerate_child_devices(node, result);
+						break;
+					}
+				}
+
 				device_attr attrs[16] = {
 					// info about device
 					{ B_DEVICE_BUS, B_STRING_TYPE, { .string = "acpi" }},
