@@ -55,6 +55,12 @@ inline static bool IsBitSet(Type val, int bit) {
 	return (val & (Type(1) << bit)) != 0;}
 
 
+// The key states in keyboard messages and key_info keep key k in byte k / 8,
+// most significant bit first, like the PS/2 and USB keyboards report them.
+inline static uint8 KeyBit(uint32 key) {
+	return 1 << (7 - key % 8);}
+
+
 #ifdef TRACE_VIRTIO_INPUT_DEVICE
 static void WriteInputPacket(const VirtioInputPacket &pkt)
 {
@@ -442,8 +448,12 @@ KeyboardHandler::PacketReceived(const VirtioInputPacket &pkt)
 				break;
 
 			uint32 code = kATKeycodeMap[pkt.code - 1];
-			if (code < 128)
-				SetBitTo(fNewState.keys[code / 8], code % 8, pkt.value != 0);
+			if (code < 128) {
+				if (pkt.value != 0)
+					fNewState.keys[code / 8] |= KeyBit(code);
+				else
+					fNewState.keys[code / 8] &= ~KeyBit(code);
+			}
 			break;
 		}
 		case kVirtioInputEvSyn: {
@@ -457,7 +467,7 @@ KeyboardHandler::PacketReceived(const VirtioInputPacket &pkt)
 bool
 KeyboardHandler::_IsKeyPressed(const KeyboardState &state, uint32 key)
 {
-	return key < 256 && IsBitSet(state.keys[key / 8], key % 8);
+	return key < 256 && (state.keys[key / 8] & KeyBit(key)) != 0;
 }
 
 
@@ -619,7 +629,7 @@ KeyboardHandler::_StateChanged()
 		diff[i] = fState.keys[i] ^ fNewState.keys[i];
 
 	for (i = 0; i < 128; ++i) {
-		if (diff[i/8] & (1 << (i % 8))) {
+		if ((diff[i / 8] & KeyBit(i)) != 0) {
 			ObjectDeleter<BMessage> msg(new(std::nothrow) BMessage());
 			if (msg.IsSet()) {
 				_KeyString(i, str, sizeof(str));
@@ -642,7 +652,7 @@ KeyboardHandler::_StateChanged()
 					msg->AddInt32("raw_char", rawCh);
 				}
 
-				if (fNewState.keys[i / 8] & (1 << (i % 8))) {
+				if ((fNewState.keys[i / 8] & KeyBit(i)) != 0) {
 					if (str[0] != '\0')
 						msg->what = B_KEY_DOWN;
 					else
