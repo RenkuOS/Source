@@ -50,6 +50,8 @@ typedef struct {
 	pci_device_module_info* pci;
 	pci_device* device;
 	bool virtio1;
+	bool legacyMmio;
+		// legacy registers are in a memory BAR (Parallels on arm64)
 	addr_t base_addr;
 	area_id registersArea[6];
 	addr_t commonCfgAddr;
@@ -71,6 +73,67 @@ typedef struct {
 
 device_manager_info* gDeviceManager;
 virtio_for_controller_interface* gVirtio;
+
+
+/*!	Accessors for the legacy register block. Its BAR is usually an I/O
+	port BAR, but some hosts (Parallels Desktop on arm64) put it in a memory
+	BAR, which init_bus() maps; base_addr then holds the mapped address.
+*/
+static uint8
+legacy_read_8(virtio_pci_sim_info* bus, addr_t address)
+{
+	if (bus->legacyMmio)
+		return *(volatile uint8*)address;
+	return bus->pci->read_io_8(bus->device, address);
+}
+
+
+static uint16
+legacy_read_16(virtio_pci_sim_info* bus, addr_t address)
+{
+	if (bus->legacyMmio)
+		return *(volatile uint16*)address;
+	return bus->pci->read_io_16(bus->device, address);
+}
+
+
+static uint32
+legacy_read_32(virtio_pci_sim_info* bus, addr_t address)
+{
+	if (bus->legacyMmio)
+		return *(volatile uint32*)address;
+	return bus->pci->read_io_32(bus->device, address);
+}
+
+
+static void
+legacy_write_8(virtio_pci_sim_info* bus, addr_t address, uint8 value)
+{
+	if (bus->legacyMmio)
+		*(volatile uint8*)address = value;
+	else
+		bus->pci->write_io_8(bus->device, address, value);
+}
+
+
+static void
+legacy_write_16(virtio_pci_sim_info* bus, addr_t address, uint16 value)
+{
+	if (bus->legacyMmio)
+		*(volatile uint16*)address = value;
+	else
+		bus->pci->write_io_16(bus->device, address, value);
+}
+
+
+static void
+legacy_write_32(virtio_pci_sim_info* bus, addr_t address, uint32 value)
+{
+	if (bus->legacyMmio)
+		*(volatile uint32*)address = value;
+	else
+		bus->pci->write_io_32(bus->device, address, value);
+}
 
 
 static status_t
@@ -117,7 +180,7 @@ virtio_pci_interrupt(void *data)
 		uint8* isrAddr = (uint8*)bus->isrAddr;
 		isr = *isrAddr;
 	} else {
-		isr = bus->pci->read_io_8(bus->device,
+		isr = legacy_read_8(bus,
 			bus->base_addr + VIRTIO_PCI_ISR);
 	}
 	if (isr == 0)
@@ -173,9 +236,9 @@ virtio_pci_setup_msix_interrupts(virtio_pci_sim_info* bus)
 			+ offsetof(struct virtio_pci_common_cfg, config_msix_vector));
 		*msixVector = irq;
 	} else {
-		bus->pci->write_io_16(bus->device, bus->base_addr
+		legacy_write_16(bus, bus->base_addr
 			+ VIRTIO_MSI_CONFIG_VECTOR, irq);
-		if (bus->pci->read_io_16(bus->device, bus->base_addr
+		if (legacy_read_16(bus, bus->base_addr
 			+ VIRTIO_MSI_CONFIG_VECTOR) == VIRTIO_MSI_NO_VECTOR) {
 			ERROR("msix config vector incorrect\n");
 			return B_BAD_VALUE;
@@ -193,12 +256,12 @@ virtio_pci_setup_msix_interrupts(virtio_pci_sim_info* bus)
 				+ offsetof(struct virtio_pci_common_cfg, queue_msix_vector));
 			*msixVector = irq;
 		} else {
-			bus->pci->write_io_16(bus->device, bus->base_addr
+			legacy_write_16(bus, bus->base_addr
 				+ VIRTIO_PCI_QUEUE_SEL, queue);
-			bus->pci->write_io_16(bus->device, bus->base_addr
+			legacy_write_16(bus, bus->base_addr
 				+ VIRTIO_MSI_QUEUE_VECTOR, irq);
 
-			if (bus->pci->read_io_16(bus->device, bus->base_addr
+			if (legacy_read_16(bus, bus->base_addr
 				+ VIRTIO_MSI_QUEUE_VECTOR) == VIRTIO_MSI_NO_VECTOR) {
 				ERROR("msix queue vector incorrect\n");
 				return B_BAD_VALUE;
@@ -241,7 +304,7 @@ read_host_features(void* cookie, uint64 *features)
 		*features |= ((uint64)*feature << 32) ;
 		TRACE("read_host_features() %" B_PRIx64 "\n", *features);
 	} else {
-		*features = bus->pci->read_io_32(bus->device,
+		*features = legacy_read_32(bus,
 			bus->base_addr + VIRTIO_PCI_HOST_FEATURES);
 	}
 	return B_OK;
@@ -263,7 +326,7 @@ write_guest_features(void* cookie, uint64 features)
 		*select = 1;
 		*feature = (features >> 32) ;
 	} else {
-		bus->pci->write_io_32(bus->device, bus->base_addr
+		legacy_write_32(bus, bus->base_addr
 			+ VIRTIO_PCI_GUEST_FEATURES, features);
 	}
 	return B_OK;
@@ -280,7 +343,7 @@ get_status(void* cookie)
 			+ offsetof(struct virtio_pci_common_cfg, device_status));
 		return *addr;
 	} else {
-		return bus->pci->read_io_8(bus->device, bus->base_addr + VIRTIO_PCI_STATUS);
+		return legacy_read_8(bus, bus->base_addr + VIRTIO_PCI_STATUS);
 	}
 }
 
@@ -305,12 +368,12 @@ set_status(void* cookie, uint8 status)
 		}
 	} else {
 		if (status == 0) {
-			bus->pci->write_io_8(bus->device, bus->base_addr + VIRTIO_PCI_STATUS, 0);
-			while (bus->pci->read_io_8(bus->device, bus->base_addr + VIRTIO_PCI_STATUS) != 0)
+			legacy_write_8(bus, bus->base_addr + VIRTIO_PCI_STATUS, 0);
+			while (legacy_read_8(bus, bus->base_addr + VIRTIO_PCI_STATUS) != 0)
 				cpu_pause();
 		} else {
-			uint8 old = bus->pci->read_io_8(bus->device, bus->base_addr + VIRTIO_PCI_STATUS);
-			bus->pci->write_io_8(bus->device, bus->base_addr + VIRTIO_PCI_STATUS, status | old);
+			uint8 old = legacy_read_8(bus, bus->base_addr + VIRTIO_PCI_STATUS);
+			legacy_write_8(bus, bus->base_addr + VIRTIO_PCI_STATUS, status | old);
 		}
 	}
 }
@@ -334,20 +397,20 @@ read_device_config(void* cookie, uint8 _offset, void* _buffer,
 			if (bus->virtio1) {
 				*buffer = *(uint8*)offset;
 			} else {
-				*buffer = bus->pci->read_io_8(bus->device, offset);
+				*buffer = legacy_read_8(bus, offset);
 			}
 		} else if (bufferSize <= 3) {
 			size = 2;
 			if (bus->virtio1) {
 				*(uint16*)buffer = *(uint16*)offset;
 			} else {
-				*(uint16*)buffer = bus->pci->read_io_16(bus->device, offset);
+				*(uint16*)buffer = legacy_read_16(bus, offset);
 			}
 		} else {
 			if (bus->virtio1) {
 				*(uint32*)buffer = *(uint32*)offset;
 			} else {
-				*(uint32*)buffer = bus->pci->read_io_32(bus->device,
+				*(uint32*)buffer = legacy_read_32(bus,
 					offset);
 			}
 		}
@@ -378,20 +441,20 @@ write_device_config(void* cookie, uint8 _offset, const void* _buffer,
 			if (bus->virtio1) {
 				*(uint8*)offset = *buffer;
 			} else {
-				bus->pci->write_io_8(bus->device, offset, *buffer);
+				legacy_write_8(bus, offset, *buffer);
 			}
 		} else if (bufferSize <= 3) {
 			size = 2;
 			if (bus->virtio1) {
 				*(uint16*)offset = *(uint16*)buffer;
 			} else {
-				bus->pci->write_io_16(bus->device, offset, *(const uint16*)buffer);
+				legacy_write_16(bus, offset, *(const uint16*)buffer);
 			}
 		} else {
 			if (bus->virtio1) {
 				*(uint32*)offset = *(uint32*)buffer;
 			} else {
-				bus->pci->write_io_32(bus->device, offset, *(const uint32*)buffer);
+				legacy_write_32(bus, offset, *(const uint32*)buffer);
 			}
 		}
 		buffer += size;
@@ -415,9 +478,9 @@ get_queue_ring_size(void* cookie, uint16 queue)
 			+ offsetof(struct virtio_pci_common_cfg, queue_size));
 		return *ringSize;
 	} else {
-		bus->pci->write_io_16(bus->device, bus->base_addr + VIRTIO_PCI_QUEUE_SEL,
+		legacy_write_16(bus, bus->base_addr + VIRTIO_PCI_QUEUE_SEL,
 			queue);
-		return bus->pci->read_io_16(bus->device, bus->base_addr
+		return legacy_read_16(bus, bus->base_addr
 			+ VIRTIO_PCI_QUEUE_NUM);
 	}
 }
@@ -453,9 +516,9 @@ setup_queue(void* cookie, uint16 queue, phys_addr_t phy, phys_addr_t phyAvail,
 			+ offsetof(struct virtio_pci_common_cfg, queue_notify_off));
 		bus->notifyOffsets[queue] = *queueNotifyOffset * bus->notifyOffsetMultiplier;
 	} else {
-		bus->pci->write_io_16(bus->device, bus->base_addr + VIRTIO_PCI_QUEUE_SEL, queue);
-		bus->pci->write_io_32(bus->device, bus->base_addr + VIRTIO_PCI_QUEUE_PFN,
-			(uint32)phy >> VIRTIO_PCI_QUEUE_ADDR_SHIFT);
+		legacy_write_16(bus, bus->base_addr + VIRTIO_PCI_QUEUE_SEL, queue);
+		legacy_write_32(bus, bus->base_addr + VIRTIO_PCI_QUEUE_PFN,
+			(uint32)(phy >> VIRTIO_PCI_QUEUE_ADDR_SHIFT));
 	}
 	return B_OK;
 }
@@ -597,7 +660,7 @@ notify_queue(void* cookie, uint16 queue)
 		volatile uint16* notifyAddr = (volatile uint16*)(bus->notifyAddr + bus->notifyOffsets[queue]);
 		*notifyAddr = queue;
 	} else {
-		bus->pci->write_io_16(bus->device, bus->base_addr
+		legacy_write_16(bus, bus->base_addr
 			+ VIRTIO_PCI_QUEUE_NOTIFY, queue);
 	}
 }
@@ -718,11 +781,28 @@ init_bus(device_node* node, void** bus_cookie)
 	} else {
 		// legacy interrupt
 		bus->base_addr = pciInfo->u.h0.base_registers[0];
+		bus->legacyMmio
+			= (pciInfo->u.h0.base_register_flags[0] & PCI_address_space) == 0;
+		uint16 decode = PCI_command_io;
+		if (bus->legacyMmio) {
+			bus->registersArea[0] = map_physical_memory(
+				"Virtio PCI legacy registers", bus->base_addr,
+				pciInfo->u.h0.base_register_sizes[0], B_ANY_KERNEL_ADDRESS,
+				B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA,
+				(void**)&bus->base_addr);
+			if (bus->registersArea[0] < B_OK) {
+				status_t error = bus->registersArea[0];
+				delete bus;
+				return error;
+			}
+			decode = PCI_command_memory;
+		}
 
-		// enable bus master and io
+		// enable bus master and register decoding
 		uint16 pcicmd = pci->read_pci_config(device, PCI_command, 2);
-		pcicmd &= ~(PCI_command_memory | PCI_command_int_disable);
-		pcicmd |= PCI_command_master | PCI_command_io;
+		pcicmd &= ~(PCI_command_memory | PCI_command_io
+			| PCI_command_int_disable);
+		pcicmd |= PCI_command_master | decode;
 		pci->write_pci_config(device, PCI_command, 2, pcicmd);
 	}
 
@@ -767,7 +847,8 @@ uninit_bus(void* bus_cookie)
 				break;
 		}
 		delete[] bus->notifyOffsets;
-	}
+	} else if (bus->legacyMmio)
+		delete_area(bus->registersArea[0]);
 
 	delete bus;
 }
