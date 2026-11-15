@@ -61,6 +61,55 @@ inline static uint8 KeyBit(uint32 key) {
 	return 1 << (7 - key % 8);}
 
 
+// The device sends evdev key codes. Codes 1 to 88 are the AT set 1 scancodes,
+// which kATKeycodeMap translates. The keys above that have other scancodes:
+// most are sent with an E0 prefix, which kATKeycodeMap has at 0x80 + scancode.
+static const struct {
+	uint16	evdev;
+	uint16	scancode;
+} kEvdevScancodes[] = {
+	{ 89, 0x73 },	// Ro
+	{ 92, 0x79 },	// Henkan
+	{ 93, 0x70 },	// Katakana/Hiragana
+	{ 94, 0x7b },	// Muhenkan
+	{ 96, 0x9c },	// Keypad Enter
+	{ 97, 0x9d },	// Right Control
+	{ 98, 0xb5 },	// Keypad /
+	{ 99, 0xb7 },	// Print Screen / SysRq
+	{ 100, 0xb8 },	// Right Alt
+	{ 102, 0xc7 },	// Home
+	{ 103, 0xc8 },	// Up
+	{ 104, 0xc9 },	// Page Up
+	{ 105, 0xcb },	// Left
+	{ 106, 0xcd },	// Right
+	{ 107, 0xcf },	// End
+	{ 108, 0xd0 },	// Down
+	{ 109, 0xd1 },	// Page Down
+	{ 110, 0xd2 },	// Insert
+	{ 111, 0xd3 },	// Delete
+	{ 119, 0xc6 },	// Pause
+	{ 121, 0x7e },	// Keypad , (Keypad . on Brazilian ABNT2)
+	{ 124, 0x7d },	// Yen
+	{ 125, 0xdb },	// Left Meta (Windows)
+	{ 126, 0xdc },	// Right Meta (Windows)
+	{ 127, 0xdd },	// Menu
+};
+
+
+static uint32
+EvdevToKeycode(uint16 code)
+{
+	if (code >= 1 && code <= 88)
+		return kATKeycodeMap[code - 1];
+
+	for (size_t i = 0; i < B_COUNT_OF(kEvdevScancodes); i++) {
+		if (kEvdevScancodes[i].evdev == code)
+			return kATKeycodeMap[kEvdevScancodes[i].scancode - 1];
+	}
+	return 0;
+}
+
+
 #ifdef TRACE_VIRTIO_INPUT_DEVICE
 static void WriteInputPacket(const VirtioInputPacket &pkt)
 {
@@ -444,11 +493,10 @@ KeyboardHandler::PacketReceived(const VirtioInputPacket &pkt)
 #endif
 	switch (pkt.type) {
 		case kVirtioInputEvKey: {
-			if (pkt.code == 0 || pkt.code > B_COUNT_OF(kATKeycodeMap))
-				break;
-
-			uint32 code = kATKeycodeMap[pkt.code - 1];
-			if (code < 128) {
+			// Keys without a Haiku key code (0) are dropped; so are the media
+			// and power keys (HID usages), which this add-on does not send.
+			uint32 code = EvdevToKeycode(pkt.code);
+			if (code != 0 && code < 128) {
 				if (pkt.value != 0)
 					fNewState.keys[code / 8] |= KeyBit(code);
 				else
