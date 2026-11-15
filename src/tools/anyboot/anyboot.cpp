@@ -294,6 +294,12 @@ main(int argc, char *argv[])
 
 	// TODO: MacEFI (HFS) maybe someday
 
+	// The BIOS loader carries the MBR signature; without one (EFI-only
+	// platforms) write it here, or the partition table is not recognized.
+	static const uint8_t kSignature[2] = { 0x55, 0xaa };
+	ssize_t written = pwrite(outputFileHandle, kSignature, 2, 510);
+	checkError(written != 2, "failed to write MBR signature");
+
 	free(sCopyBuffer);
 	return 0;
 }
