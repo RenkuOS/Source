@@ -12,7 +12,11 @@
 
 #include "efi_platform.h"
 
-#include <arch_kernel.h>
+#if defined(__i386__) || defined(__x86_64__)
+#	include <arch_kernel.h>
+		// KERNEL_FIXUP_FOR_LONG_MODE; on riscv64 this header clashes with the
+		// loader's own definitions
+#endif
 #include <util/FixedWidthPointer.h>
 
 
