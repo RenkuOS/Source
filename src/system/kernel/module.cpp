@@ -1892,33 +1892,42 @@ module_init_post_boot_device(bool bootingFromBootLoaderVolume)
 			bool pathNormalized = false;
 			KPath pathBuffer;
 			if (image->path[0] != '/') {
-				// relative path
-				for (uint32 i = kNumModulePaths; i-- > 0;) {
+				// relative path: the boot loader loaded the image from one
+				// of these directories (see load_modules())
+				static const char* const kBootLoaderModuleDirectories[] = {
+					"kernel/boot",
+					"kernel/file_systems",
+					"kernel/partitioning_systems",
+				};
+				for (uint32 i = kNumModulePaths; i-- > 0 && !pathNormalized;) {
 					if (sDisableUserAddOns && i >= kFirstNonSystemModulePath)
 						continue;
 
-					if (__find_directory(kModulePaths[i], gBootDevice, true,
-							pathBuffer.LockBuffer(), pathBuffer.BufferSize())
-								!= B_OK) {
+					for (size_t j = 0;
+							j < B_COUNT_OF(kBootLoaderModuleDirectories); j++) {
+						if (__find_directory(kModulePaths[i], gBootDevice,
+								true, pathBuffer.LockBuffer(),
+								pathBuffer.BufferSize()) != B_OK) {
+							pathBuffer.UnlockBuffer();
+							break;
+						}
+
 						pathBuffer.UnlockBuffer();
-						continue;
+
+						// Append the directory and the relative image path,
+						// normalize the path, and check whether it exists.
+						struct stat st;
+						if (pathBuffer.Append(kBootLoaderModuleDirectories[j])
+								!= B_OK
+							|| pathBuffer.Append(image->path) != B_OK
+							|| pathBuffer.Normalize(true) != B_OK
+							|| lstat(pathBuffer.Path(), &st) != 0) {
+							continue;
+						}
+
+						pathNormalized = true;
+						break;
 					}
-
-					pathBuffer.UnlockBuffer();
-
-					// Append the relative boot module directory and the
-					// relative image path, normalize the path, and check
-					// whether it exists.
-					struct stat st;
-					if (pathBuffer.Append("kernel/boot") != B_OK
-						|| pathBuffer.Append(image->path) != B_OK
-						|| pathBuffer.Normalize(true) != B_OK
-						|| lstat(pathBuffer.Path(), &st) != 0) {
-						continue;
-					}
-
-					pathNormalized = true;
-					break;
 				}
 			} else {
 				// absolute path -- try to normalize it anyway
