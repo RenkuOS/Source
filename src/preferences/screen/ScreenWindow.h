@@ -52,6 +52,7 @@ private:
 			void			_UpdateActiveMode(int32 workspace);
 			void			_UpdateWorkspaceButtons();
 			void			_UpdateRefreshControl();
+			void			_SetModeRotation(int32 degrees);
 			void			_UpdateMonitorView();
 			void			_UpdateControls();
 			void			_UpdateOriginal();
@@ -86,6 +87,8 @@ private:
 			BPopUpMenu*		fRefreshMenu;
 			BMenuField*		fRefreshField;
 			BMenuItem*		fOtherRefresh;
+			BPopUpMenu*		fRotationMenu;
+			BMenuField*		fRotationField;
 
 			BPopUpMenu*		fCombineMenu;
 			BMenuField*		fCombineField;

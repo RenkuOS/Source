@@ -31,6 +31,7 @@ static const uint32 POP_COMBINE_DISPLAYS_MSG = 'pcdi';
 static const uint32 POP_SWAP_DISPLAYS_MSG = 'psdi';
 static const uint32 POP_USE_LAPTOP_PANEL_MSG = 'pulp';
 static const uint32 POP_TV_STANDARD_MSG = 'ptvs';
+static const uint32 POP_ROTATION_MSG = 'prot';
 //static const uint32 UPDATE_DESKTOP_COLOR_MSG = 'udsc';
 	// This is now defined in headers/private/preferences/ScreenDefs.h
 static const uint32 UPDATE_DESKTOP_MSG = 'udsk';
