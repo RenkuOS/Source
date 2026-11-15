@@ -96,6 +96,7 @@ AddFilesToPackage add-ons kernel generic :
 	ata_adapter
 	bios@x86,x86_64
 	dpc
+	jh7110_clock_reset@riscv64
 	mpu401
 	scsi_periph
 	smbios@x86,x86_64
@@ -364,6 +365,7 @@ AddBootModuleSymlinksToPackage
 	isa@x86,x86_64
 	intel
 	it8211
+	jh7110_clock_reset@riscv64
 	legacy_sata
 	mmc
 	mmc_disk
