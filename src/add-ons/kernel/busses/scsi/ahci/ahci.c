@@ -6,6 +6,7 @@
 #include "ahci_defs.h"
 #include "util.h"
 
+#include <ACPI.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -202,6 +203,37 @@ register_sim(device_node *parent)
 //	#pragma mark -
 
 
+/*!	Matches an AHCI controller enumerated by ACPI as a platform device:
+	Parallels Desktop's (arm64) by _HID, and others by the AHCI class code
+	(_CLS 01/06/01, which Parallels' also carries), as Linux ahci_platform does.
+*/
+static float
+ahci_supports_acpi_device(device_node *parent)
+{
+	const char *hid;
+	uint16 baseClass, subClass, classAPI;
+
+	if (gDeviceManager->get_attr_string(parent, ACPI_DEVICE_HID_ITEM, &hid,
+			false) == B_OK && strcmp(hid, "PRL4010") == 0) {
+		TRACE("ACPI AHCI controller %s found!\n", hid);
+		return 1.0f;
+	}
+
+	if (gDeviceManager->get_attr_uint16(parent, B_DEVICE_TYPE, &baseClass,
+				false) < B_OK
+		|| gDeviceManager->get_attr_uint16(parent, B_DEVICE_SUB_TYPE, &subClass,
+				false) < B_OK
+		|| gDeviceManager->get_attr_uint16(parent, B_DEVICE_INTERFACE,
+				&classAPI, false) < B_OK
+		|| baseClass != PCI_mass_storage || subClass != PCI_sata
+		|| classAPI != PCI_sata_ahci)
+		return 0.0f;
+
+	TRACE("generic ACPI AHCI controller found!\n");
+	return 0.8f;
+}
+
+
 static float
 ahci_supports_device(device_node *parent)
 {
@@ -216,6 +248,9 @@ ahci_supports_device(device_node *parent)
 	if (gDeviceManager->get_attr_string(parent, B_DEVICE_BUS, &bus, false)
 			< B_OK)
 		return 0.0f;
+
+	if (strcmp(bus, "acpi") == 0)
+		return ahci_supports_acpi_device(parent);
 
 	if (strcmp(bus, "pci"))
 		return 0.0f;
@@ -289,6 +324,21 @@ ahci_dma_high_address(device_node *parent)
 	area_id area;
 	uint16 pcicmd;
 	uint32 cap;
+	phys_addr_t regsAddress;
+	const char *bus;
+
+	if (gDeviceManager->get_attr_string(parent, B_DEVICE_BUS, &bus, false)
+			== B_OK && strcmp(bus, "acpi") == 0) {
+		size_t regsSize;
+		uint32 irq;
+		if (ahci_get_acpi_resources(parent, &regsAddress, &regsSize, &irq)
+				!= B_OK || regsSize < sizeof(uint32)) {
+			TRACE("dma_high_address: no ACPI registers, keeping the 4 GiB "
+				"limit\n");
+			return kConservativeLimit;
+		}
+		goto probe;
+	}
 
 	if (gDeviceManager->get_driver(parent, (driver_module_info **)&pci,
 			(void **)&device) != B_OK) {
@@ -316,10 +366,12 @@ ahci_dma_high_address(device_node *parent)
 		pci->write_pci_config(device, PCI_command, 2,
 			pcicmd | PCI_command_memory);
 	}
+	regsAddress = info.u.h0.base_registers[5];
 
+probe:
 	// CAP is the first register of the HBA's generic host control block, so a
 	// single uint32 at BAR5+0 is all this probe needs.
-	area = map_mem((void **)&hbaCap, info.u.h0.base_registers[5],
+	area = map_mem((void **)&hbaCap, regsAddress,
 		sizeof(uint32), B_KERNEL_READ_AREA, "AHCI HBA cap probe");
 	if (area < B_OK) {
 		TRACE("dma_high_address: mapping BAR5 failed, keeping the 4 GiB limit\n");

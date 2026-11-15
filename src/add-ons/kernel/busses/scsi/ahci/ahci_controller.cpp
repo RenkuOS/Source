@@ -18,7 +18,8 @@
 
 
 AHCIController::AHCIController(device_node *node,
-		pci_device_module_info *pciModule, pci_device *device)
+		pci_device_module_info *pciModule, pci_device *device,
+		phys_addr_t regsAddress, size_t regsSize, uint32 irq)
 	:
 	fNode(node),
 	fPCI(pciModule),
@@ -26,10 +27,12 @@ AHCIController::AHCIController(device_node *node,
 	fPCIVendorID(0xffff),
 	fPCIDeviceID(0xffff),
 	fFlags(0),
+	fRegsAddress(regsAddress),
+	fRegsSize(regsSize),
 	fCommandSlotCount(0),
 	fPortCount(0),
 	fPortImplementedMask(0),
-	fIRQ(0),
+	fIRQ(irq),
 	fUseMSI(false),
 	fInstanceCheck(-1)
 {
@@ -49,8 +52,12 @@ AHCIController::~AHCIController()
 }
 
 
+/*!	PCI part of Init(): instance check, PCI command and quirk setup, IRQ or
+	MSI, and BAR5. Returns the register window to map in \a _address and
+	\a _size. An ACPI controller gets these from _CRS instead.
+*/
 status_t
-AHCIController::Init()
+AHCIController::InitPCI(phys_addr_t *_address, size_t *_size)
 {
 	pci_info pciInfo;
 	fPCI->get_pci_info(fPCIDevice, &pciInfo);
@@ -130,6 +137,36 @@ AHCIController::Init()
 	if (addr == 0) {
 		TRACE("PCI base address register 5 not assigned\n");
 		return B_ERROR;
+	}
+
+	*_address = addr;
+	*_size = size;
+	return B_OK;
+}
+
+
+status_t
+AHCIController::Init()
+{
+	phys_addr_t addr = fRegsAddress;
+	size_t size = fRegsSize;
+
+	if (fPCI != NULL) {
+		if (InitPCI(&addr, &size) != B_OK)
+			return B_ERROR;
+	} else {
+// --- Instance check workaround begin
+		char sName[32];
+		snprintf(sName, sizeof(sName), "ahci-inst-%" B_PRIxPHYSADDR, addr);
+		if (find_port(sName) >= 0) {
+			dprintf("AHCIController::Init ERROR: an instance for %#"
+				B_PRIxPHYSADDR " already exists\n", addr);
+			return B_ERROR;
+		}
+		fInstanceCheck = create_port(1, sName);
+// --- Instance check workaround end
+		TRACE("AHCIController::Init ACPI, registers at %#" B_PRIxPHYSADDR
+			", size %#" B_PRIxSIZE ", irq %" B_PRIu32 "\n", addr, size, fIRQ);
 	}
 
 	fRegsArea = map_mem((void **)&fRegs, addr, size, B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA,
