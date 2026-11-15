@@ -132,6 +132,7 @@ public:
 			void				RevertScreenModes(uint32 workspaces);
 
 			status_t			SetBrightness(int32 id, float brightness);
+			status_t			SetScreenRotation(int32 id, int32 degrees);
 
 			MultiLocker&		ScreenLocker() { return fScreenLock; }
 

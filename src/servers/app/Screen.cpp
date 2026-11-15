@@ -19,6 +19,7 @@
 #include <Point.h>
 #include <GraphicsDefs.h>
 
+#include <algorithm>
 #include <stdlib.h>
 #include <stdio.h>
 
@@ -205,8 +206,36 @@ Screen::GetMode(uint16 &width, uint16 &height, uint32 &colorspace,
 
 	width = mode.virtual_width;
 	height = mode.virtual_height;
+	if (Rotation() == 90 || Rotation() == 270)
+		std::swap(width, height);
 	colorspace = mode.space;
 	frequency = get_mode_frequency(mode);
+}
+
+
+/*!	Turns what is shown by \a degrees clockwise. The display mode is the
+	same, but the screen's frame is turned with it.
+*/
+status_t
+Screen::SetRotation(int32 degrees)
+{
+	if (degrees == Rotation())
+		return B_OK;
+
+	gBitmapManager->SuspendOverlays();
+
+	status_t status = fHWInterface->SetRotation(degrees);
+
+	gBitmapManager->ResumeOverlays();
+
+	return status;
+}
+
+
+int32
+Screen::Rotation() const
+{
+	return fHWInterface->Rotation();
 }
 
 
@@ -227,10 +256,12 @@ Screen::SetFrame(const BRect& rect)
 BRect
 Screen::Frame() const
 {
-	display_mode mode;
-	fHWInterface->GetMode(&mode);
+	uint16 width, height;
+	uint32 colorSpace;
+	float frequency;
+	GetMode(width, height, colorSpace, frequency);
 
-	return BRect(0, 0, mode.virtual_width - 1, mode.virtual_height - 1);
+	return BRect(0, 0, width - 1, height - 1);
 }
 
 

@@ -16,6 +16,7 @@
 
 #include "AccelerantHWInterface.h"
 
+#include <algorithm>
 #include <new>
 
 #include <dirent.h>
@@ -563,6 +564,10 @@ AccelerantHWInterface::SetMode(const display_mode& mode)
 	if (!_IsValidMode(mode))
 		return B_BAD_VALUE;
 
+	// the rotated copy to the screen only knows 32 bit pixels
+	if (fRotation != 0 && mode.space != B_RGB32 && mode.space != B_RGBA32)
+		return B_NOT_SUPPORTED;
+
 	if (!fFrontBuffer.IsSet())
 		return B_NO_INIT;
 
@@ -634,29 +639,9 @@ AccelerantHWInterface::SetMode(const display_mode& mode)
 
 	_UpdateHooksAfterModeChange();
 
-	// update backbuffer if necessary
-	if (!fBackBuffer.IsSet()
-		|| fBackBuffer->Width() != fFrontBuffer->Width()
-		|| fBackBuffer->Height() != fFrontBuffer->Height()
-		|| (fFrontBuffer->ColorSpace() == B_RGB32 && fBackBuffer.IsSet())) {
-		// NOTE: backbuffer is always B_RGBA32, this simplifies the
-		// drawing backend implementation tremendously for the time
-		// being. The color space conversion is handled in CopyBackToFront()
-
-		fBackBuffer.Unset();
-
-		fBackBuffer.SetTo(new(nothrow) MallocBuffer(
-			fFrontBuffer->Width(), fFrontBuffer->Height()));
-
-		status = fBackBuffer.IsSet()
-			? fBackBuffer->InitCheck() : B_NO_MEMORY;
-		if (status < B_OK) {
-			fBackBuffer.Unset();
-			return status;
-		}
-		// clear out backbuffer, alpha is 255 this way
-		memset(fBackBuffer->Bits(), 255, fBackBuffer->BitsLength());
-	}
+	status = _UpdateBackBuffer();
+	if (status != B_OK)
+		return status;
 
 	// update color palette configuration if necessary
 	if (fDisplayMode.space == B_CMAP8)
@@ -668,6 +653,49 @@ AccelerantHWInterface::SetMode(const display_mode& mode)
 	_NotifyFrameBufferChanged();
 
 	return status;
+}
+
+
+/*!	Turns what is drawn by \a degrees clockwise on its way to the screen.
+	The display mode stays the same, the drawing buffer is as wide as the
+	screen is high for 90 and 270. A rotated screen has a software cursor and
+	no overlays.
+*/
+status_t
+AccelerantHWInterface::SetRotation(int32 degrees)
+{
+	if (!IsValidRotation(degrees))
+		return B_BAD_VALUE;
+
+	{
+		AutoWriteLocker _(this);
+
+		if (degrees == fRotation)
+			return B_OK;
+
+		if (degrees != 0 && fFrontBuffer->ColorSpace() != B_RGB32
+			&& fFrontBuffer->ColorSpace() != B_RGBA32) {
+			return B_NOT_SUPPORTED;
+		}
+
+		int32 previous = fRotation;
+		fRotation = degrees;
+		status_t status = _UpdateBackBuffer();
+		if (status != B_OK) {
+			fRotation = previous;
+			_UpdateBackBuffer();
+			return status;
+		}
+
+		_NotifyFrameBufferChanged();
+	}
+
+	// switches between the hardware and the software cursor
+	ServerCursorReference cursor = Cursor();
+	if (cursor.IsSet())
+		SetCursor(cursor.Get());
+
+	return B_OK;
 }
 
 
@@ -698,6 +726,40 @@ AccelerantHWInterface::_UpdateModeList()
 		return B_ERROR;
 	}
 
+	return B_OK;
+}
+
+
+/*!	The back buffer is as large as the screen, turned by the rotation. It is
+	always B_RGBA32, which keeps the drawing backend simple; _CopyToFront()
+	converts it to the front buffer's color space.
+*/
+status_t
+AccelerantHWInterface::_UpdateBackBuffer()
+{
+	uint32 width = fFrontBuffer->Width();
+	uint32 height = fFrontBuffer->Height();
+	if (fRotation == 90 || fRotation == 270)
+		std::swap(width, height);
+
+	if (fBackBuffer.IsSet() && fBackBuffer->Width() == width
+		&& fBackBuffer->Height() == height
+		&& fFrontBuffer->ColorSpace() != B_RGB32) {
+		return B_OK;
+	}
+
+	fBackBuffer.Unset();
+
+	fBackBuffer.SetTo(new(nothrow) MallocBuffer(width, height));
+
+	status_t status = fBackBuffer.IsSet()
+		? fBackBuffer->InitCheck() : B_NO_MEMORY;
+	if (status < B_OK) {
+		fBackBuffer.Unset();
+		return status;
+	}
+	// clear out backbuffer, alpha is 255 this way
+	memset(fBackBuffer->Bits(), 255, fBackBuffer->BitsLength());
 	return B_OK;
 }
 
@@ -1103,6 +1165,10 @@ AccelerantHWInterface::AcquireOverlayChannel()
 		|| fAccReleaseOverlay == NULL)
 		return NULL;
 
+	// an overlay is put on the screen as it is, not turned
+	if (fRotation != 0)
+		return NULL;
+
 	// The current display mode only matters at the time we're planning on
 	// showing the overlay channel on screen - that's why we can't use
 	// the B_OVERLAY_COUNT hook.
@@ -1204,6 +1270,12 @@ AccelerantHWInterface::FreeOverlayBuffer(const overlay_buffer* buffer)
 void
 AccelerantHWInterface::ConfigureOverlay(Overlay* overlay)
 {
+	// One from before the screen was rotated would be in the wrong place.
+	if (fRotation != 0) {
+		HideOverlay(overlay);
+		return;
+	}
+
 	// TODO: this only needs to be done on mode changes!
 	overlay->SetColorSpace(fDisplayMode.space);
 
@@ -1232,7 +1304,8 @@ AccelerantHWInterface::SetCursor(ServerCursor* cursor)
 
 	bool cursorSet = false;
 
-	if (fAccSetCursorBitmap != NULL) {
+	// The hardware cursor would be put on the screen as it is, not turned.
+	if (fRotation == 0 && fAccSetCursorBitmap != NULL) {
 		// Bitmap cursor
 		// TODO are x and y switched for this, too?
 		uint16 xHotSpot = (uint16)cursor->GetHotSpot().x;
@@ -1247,7 +1320,8 @@ AccelerantHWInterface::SetCursor(ServerCursor* cursor)
 			cursor->Bits()) == B_OK;
 	}
 
-	if (!cursorSet && cursor->CursorData() != NULL && fAccSetCursorShape != NULL) {
+	if (fRotation == 0 && !cursorSet && cursor->CursorData() != NULL
+		&& fAccSetCursorShape != NULL) {
 		// BeOS BCursor, 16x16 monochrome
 		uint8 size = cursor->CursorData()[0];
 		// CursorData()[1] is color depth (always monochrome)
