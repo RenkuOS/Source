@@ -531,6 +531,26 @@ Desktop::Init()
 		return B_ERROR;
 	}
 
+	// Restore the rotation, which belongs to the screen like the brightness
+	{
+		Screen* screen = fVirtualScreen.ScreenAt(0);
+		monitor_info info;
+		bool hasInfo = (screen->GetMonitorInfo(info) == B_OK);
+
+		screen_configuration* stored = fWorkspaces[0]
+			.StoredScreenConfiguration().BestFit(screen->ID(),
+				hasInfo ? &info : NULL);
+		if (stored != NULL && stored->rotation != 0
+			&& screen->SetRotation(stored->rotation) == B_OK) {
+			fVirtualScreen.UpdateFrame();
+
+			screen_configuration* current = fWorkspaces[0]
+				.CurrentScreenConfiguration().GetByID(screen->ID());
+			if (current != NULL)
+				current->frame = screen->Frame();
+		}
+	}
+
 	HWInterface()->SetDPMSMode(B_DPMS_ON);
 
 	// The compositor builds the screen in the back buffer, which not every kind
@@ -1018,6 +1038,91 @@ Desktop::SetBrightness(int32 id, float brightness)
 	}
 
 	return result;
+}
+
+
+/*!	The frame of a screen in \a mode, turned by \a degrees */
+static BRect
+rotated_screen_frame(const display_mode& mode, int32 degrees)
+{
+	if (degrees == 90 || degrees == 270)
+		return BRect(0, 0, mode.virtual_height - 1, mode.virtual_width - 1);
+	return BRect(0, 0, mode.virtual_width - 1, mode.virtual_height - 1);
+}
+
+
+/*!	Turns screen \a id by \a degrees clockwise. Like the brightness, the
+	rotation belongs to the screen rather than to a workspace, and is kept for
+	the next boot in the first workspace's configuration.
+*/
+status_t
+Desktop::SetScreenRotation(int32 id, int32 degrees)
+{
+	if (!::HWInterface::IsValidRotation(degrees))
+		return B_BAD_VALUE;
+
+	AutoWriteLocker _(fWindowLock);
+
+	Screen* screen = fVirtualScreen.ScreenByID(id);
+	if (screen == NULL)
+		return B_NAME_NOT_FOUND;
+	if (screen->Rotation() == degrees)
+		return B_OK;
+
+	_SuspendDirectFrameBufferAccess();
+
+	{
+		AutoWriteLocker locker(fScreenLock);
+
+		status_t status = screen->SetRotation(degrees);
+		if (status != B_OK) {
+			locker.Unlock();
+
+			// The screen may have been given a new, blank back buffer.
+			_ScreenChanged(screen);
+			_ResumeDirectFrameBufferAccess();
+			return status;
+		}
+	}
+
+	// The screen's frame turns with it, whatever the mode in each workspace
+	for (int32 workspace = 0; workspace < kMaxWorkspaces; workspace++) {
+		screen_configuration* current = fWorkspaces[workspace]
+			.CurrentScreenConfiguration().GetByID(id);
+		if (current == NULL)
+			continue;
+
+		current->frame = rotated_screen_frame(current->mode, degrees);
+	}
+
+	monitor_info info;
+	bool hasInfo = screen->GetMonitorInfo(info) == B_OK;
+
+	ScreenConfigurations& stored = fWorkspaces[0].StoredScreenConfiguration();
+	screen_configuration* previous = stored.BestFit(id,
+		hasInfo ? &info : NULL);
+
+	display_mode mode;
+	float brightness = 1.0f;
+	if (previous != NULL) {
+		mode = previous->mode;
+		brightness = previous->brightness;
+	} else
+		screen->GetMode(mode);
+
+	if (stored.Set(id, hasInfo ? &info : NULL,
+			rotated_screen_frame(mode, degrees), mode, brightness) == B_OK) {
+		screen_configuration* configuration = stored.BestFit(id,
+			hasInfo ? &info : NULL);
+		if (configuration != NULL)
+			configuration->rotation = degrees;
+		StoreWorkspaceConfiguration(0);
+	}
+
+	_ScreenChanged(screen);
+	_ResumeDirectFrameBufferAccess();
+
+	return B_OK;
 }
 
 
@@ -3787,7 +3892,7 @@ Desktop::_ScreenChanged(Screen* screen)
 
 	// update our cached screen region
 	fScreenRegion.Set(screen->Frame());
-	gInputManager->UpdateScreenBounds(screen->Frame());
+	gInputManager->UpdateScreenBounds(screen->Frame(), screen->Rotation());
 
 	BRegion background;
 	_RebuildClippingForAllWindows(background);

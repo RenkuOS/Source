@@ -134,6 +134,7 @@ ScreenConfigurations::Set(int32 id, const monitor_info* info,
 		if (configuration == NULL)
 			return B_NO_MEMORY;
 
+		configuration->rotation = 0;
 		fConfigurations.AddItem(configuration);
 	}
 
@@ -195,6 +196,8 @@ ScreenConfigurations::Store(BMessage& settings) const
 		screenSettings.AddData("mode", B_RAW_TYPE, &configuration->mode,
 			sizeof(display_mode));
 		screenSettings.AddFloat("brightness", configuration->brightness);
+		if (configuration->rotation != 0)
+			screenSettings.AddInt32("rotation", configuration->rotation);
 
 		settings.AddMessage("screen", &screenSettings);
 	}
@@ -256,6 +259,8 @@ ScreenConfigurations::Restore(const BMessage& settings)
 
 		if (stored.FindFloat("brightness", &configuration->brightness) != B_OK)
 			configuration->brightness = 1.0f;
+		if (stored.FindInt32("rotation", &configuration->rotation) != B_OK)
+			configuration->rotation = 0;
 
 		fConfigurations.AddItem(configuration);
 	}

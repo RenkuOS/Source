@@ -9,6 +9,7 @@ UnitTestLib app_server_unit_tests.so :
 
 	IntPoint.cpp
 	IntRect.cpp
+	ScreenRotationTest.cpp
 	SimpleTransformTest.cpp
 
 	: be [ TargetLibstdc++ ]
