@@ -218,9 +218,9 @@ Painter::Painter()
 	fMiterLimit(B_DEFAULT_MITER_LIMIT),
 
 	fPatternHandler(),
-	fTextRenderer(fSubpixRenderer, fRenderer, fRendererBin, fUnpackedScanline,
-		fSubpixUnpackedScanline, fSubpixRasterizer, fMaskedUnpackedScanline,
-		fTransform),
+	fTextRenderer(fBaseRenderer, fSubpixRenderer, fRenderer, fRendererBin,
+		fUnpackedScanline, fSubpixUnpackedScanline, fSubpixRasterizer,
+		fMaskedUnpackedScanline, fTransform),
 	fInternal(fPatternHandler)
 {
 	fPixelFormat.SetDrawingMode(fDrawingMode, fAlphaSrcMode, fAlphaFncMode);

@@ -23,6 +23,7 @@ class FontCacheReference;
 class AGGTextRenderer {
 public:
 								AGGTextRenderer(
+									renderer_base& baseRenderer,
 									renderer_subpix_type& subpixRenderer,
 									renderer_type& solidRenderer,
 									renderer_bin_type& binRenderer,
@@ -75,6 +76,7 @@ private:
 	FontCacheEntry::CurveConverter		fCurves;
 	FontCacheEntry::ContourConverter	fContour;
 
+	renderer_base&				fBaseRenderer;
 	renderer_type&				fSolidRenderer;
 	renderer_bin_type&			fBinRenderer;
 	renderer_subpix_type&		fSubpixRenderer;

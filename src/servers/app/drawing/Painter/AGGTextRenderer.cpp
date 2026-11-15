@@ -16,6 +16,7 @@
 #include <agg_trans_affine.h>
 
 #include <math.h>
+#include <string.h>
 #include <malloc.h>
 #include <stdio.h>
 #include <string.h>
@@ -27,7 +28,8 @@
 #include "IntRect.h"
 
 
-AGGTextRenderer::AGGTextRenderer(renderer_subpix_type& subpixRenderer,
+AGGTextRenderer::AGGTextRenderer(renderer_base& baseRenderer,
+		renderer_subpix_type& subpixRenderer,
 		renderer_type& solidRenderer, renderer_bin_type& binRenderer,
 		scanline_unpacked_type& scanline,
 		scanline_unpacked_subpix_type& subpixScanline,
@@ -44,6 +46,7 @@ AGGTextRenderer::AGGTextRenderer(renderer_subpix_type& subpixRenderer,
 	fCurves(fPathAdaptor),
 	fContour(fCurves),
 
+	fBaseRenderer(baseRenderer),
 	fSolidRenderer(solidRenderer),
 	fBinRenderer(binRenderer),
 	fSubpixRenderer(subpixRenderer),
@@ -190,6 +193,46 @@ public:
 	{
 	}
 
+	void _RenderColorGlyph(const GlyphCache* glyph, double x, double y)
+	{
+		// A colour bitmap (emoji) keeps its own colours: its alpha is the
+		// coverage, so it is drawn through the clipping region with the
+		// view's drawing mode, like antialiased text. It is not rotated or
+		// sheared, and an alpha mask (ClipToPicture()) does not apply.
+		// TODO: Apply the alpha mask (fRenderer.fMaskedScanline).
+		int32 dimensions[2];
+		if (glyph->data_size < sizeof(dimensions))
+			return;
+		memcpy(dimensions, glyph->data, sizeof(dimensions));
+		int32 width = dimensions[0];
+		int32 height = dimensions[1];
+		if (width <= 0 || height <= 0 || glyph->data_size
+				< sizeof(dimensions) + (uint32)width * height * 4) {
+			return;
+		}
+		const uint8* pixels = glyph->data + sizeof(dimensions);
+
+		int left = agg::iround(x) + glyph->bounds.x1;
+		int top = agg::iround(y) + glyph->bounds.y1;
+
+		enum { kSpan = 64 };
+		pixfmt::color_type colors[kSpan];
+		uint8 covers[kSpan];
+		renderer_base& base = fRenderer.fBaseRenderer;
+		for (int32 row = 0; row < height; row++) {
+			const uint8* p = pixels + row * width * 4;
+			for (int32 start = 0; start < width; start += kSpan) {
+				int32 count = width - start < kSpan ? width - start : kSpan;
+				for (int32 i = 0; i < count; i++, p += 4) {
+					colors[i] = pixfmt::color_type(p[0], p[1], p[2], 255);
+					covers[i] = p[3];
+				}
+				base.blend_color_hspan(left + start, top + row, count,
+					colors, covers);
+			}
+		}
+	}
+
 	bool ConsumeGlyph(int32 index, uint32 charCode, const GlyphCache* glyph,
 		FontCacheEntry* entry, double x, double y, double advanceX,
 			double advanceY)
@@ -224,10 +267,12 @@ public:
 			// "glyphBounds" is now transformed into screen coords
 			// in order to stop drawing when we are already outside
 			// of the clipping frame
+			double transformedX = x;
+			double transformedY = y;
 			if (glyph->data_type != glyph_data_outline) {
 				// we cannot use the transformation pipeline
-				double transformedX = x + fTransformOffset.x;
-				double transformedY = y + fTransformOffset.y;
+				transformedX = x + fTransformOffset.x;
+				transformedY = y + fTransformOffset.y;
 				entry->InitAdaptors(glyph, transformedX, transformedY,
 					fRenderer.fMonoAdaptor,
 					fRenderer.fGray8Adaptor,
@@ -265,6 +310,10 @@ public:
 								fRenderer.fGray8Scanline,
 								fRenderer.fSolidRenderer);
 						}
+						break;
+
+					case glyph_data_bgra:
+						_RenderColorGlyph(glyph, transformedX, transformedY);
 						break;
 
 					case glyph_data_subpix:

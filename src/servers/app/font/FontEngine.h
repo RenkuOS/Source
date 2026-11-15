@@ -60,7 +60,11 @@ enum glyph_data_type {
 	glyph_data_mono		= 1,
 	glyph_data_gray8	= 2,
 	glyph_data_outline	= 3,
-	glyph_data_subpix   = 4
+	glyph_data_subpix   = 4,
+	glyph_data_bgra		= 5
+		// A colour bitmap (emoji): two int32, width and height, then
+		// width * height pixels of red, green, blue and alpha, not
+		// premultiplied.
 };
 
 
@@ -125,6 +129,9 @@ class FontEngine {
 								FontEngine(const FontEngine&);
 			const FontEngine&	operator=(const FontEngine&);
 
+			bool				_SelectBitmapSize(double size);
+			bool				_PrepareColorGlyph(uint32 glyphIndex);
+
 			int					fLastError;
 			bool				fLibraryInitialized;
 			FT_Library			fLibrary;	// handle to library
@@ -132,6 +139,14 @@ class FontEngine {
 
 			glyph_rendering		fGlyphRendering;
 			bool				fHinting;
+
+			// Fonts of colour bitmaps (CBDT, sbix: Noto Color Emoji) come in
+			// fixed sizes; their glyphs are scaled from the nearest one.
+			bool				fColorBitmaps;
+			double				fSize;
+			double				fBitmapScale;
+			uint8*				fColorGlyph;
+			uint32				fColorGlyphCapacity;
 
 			// members needed to generate individual glyphs according
 			// to glyph rendering type

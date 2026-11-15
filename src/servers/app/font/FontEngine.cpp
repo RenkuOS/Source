@@ -32,6 +32,8 @@
 #include FT_LCD_FILTER_H
 
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include <agg_bitset_iterator.h>
 #include <agg_renderer_scanline.h>
@@ -431,6 +433,12 @@ FontEngine::FontEngine()
 	fGlyphRendering(glyph_ren_native_gray8),
 	fHinting(true),
 
+	fColorBitmaps(false),
+	fSize(0.0),
+	fBitmapScale(1.0),
+	fColorGlyph(NULL),
+	fColorGlyphCapacity(0),
+
 	fDataSize(0),
 	fDataType(glyph_data_invalid),
 	fBounds(1, 1, 0, 0),
@@ -458,6 +466,7 @@ FontEngine::FontEngine()
 
 FontEngine::~FontEngine()
 {
+	free(fColorGlyph);
 	FT_Done_Face(fFace);
 
 	if (fLibraryInitialized)
@@ -485,6 +494,9 @@ FontEngine::GlyphIndexForGlyphCode(uint32 glyphCode) const
 bool
 FontEngine::PrepareGlyph(uint32 glyphIndex)
 {
+	if (fColorBitmaps)
+		return _PrepareColorGlyph(glyphIndex);
+
 	FT_Int32 loadFlags = fHinting ? FT_LOAD_DEFAULT : FT_LOAD_NO_HINTING;
 	loadFlags |= fGlyphRendering == glyph_ren_subpix ?
 		FT_LOAD_TARGET_LCD : FT_LOAD_TARGET_NORMAL;
@@ -609,6 +621,10 @@ FontEngine::WriteGlyphTo(uint8* data) const
 				fPath.serialize(data);
 				break;
 
+			case glyph_data_bgra:
+				memcpy(data, fColorGlyph, fDataSize);
+				break;
+
 			case glyph_data_invalid:
 			default:
 				break;
@@ -638,6 +654,133 @@ FontEngine::GetKerning(uint32 first, uint32 second, double* x, double* y)
 
 
 // #pragma mark -
+
+
+/*!	Picks the smallest of the font's fixed sizes that is at least \a size,
+	or the largest one, and the scale from it to \a size.
+*/
+bool
+FontEngine::_SelectBitmapSize(double size)
+{
+	if (fFace->num_fixed_sizes <= 0 || size <= 0.0)
+		return false;
+
+	int best = 0;
+	for (int i = 1; i < fFace->num_fixed_sizes; i++) {
+		FT_Pos bestSize = fFace->available_sizes[best].y_ppem;
+		FT_Pos thisSize = fFace->available_sizes[i].y_ppem;
+		bool bestTooSmall = bestSize < dbl_to_int26p6(size);
+		if (bestTooSmall ? thisSize > bestSize
+				: (thisSize >= dbl_to_int26p6(size) && thisSize < bestSize)) {
+			best = i;
+		}
+	}
+
+	if (FT_Select_Size(fFace, best) != 0)
+		return false;
+
+	double strikeSize = int26p6_to_dbl(fFace->available_sizes[best].y_ppem);
+	if (strikeSize <= 0.0)
+		return false;
+	fBitmapScale = size / strikeSize;
+	return true;
+}
+
+
+/*!	Loads a colour bitmap glyph and scales it from the font's fixed size to
+	the size asked for: an area average when shrinking, the nearest pixel when
+	growing. The result is stored as glyph_data_bgra.
+*/
+bool
+FontEngine::_PrepareColorGlyph(uint32 glyphIndex)
+{
+	fLastError = FT_Load_Glyph(fFace, glyphIndex, FT_LOAD_COLOR);
+	if (fLastError != 0)
+		return false;
+
+	FT_GlyphSlot slot = fFace->glyph;
+	fAdvanceX = int26p6_to_dbl(slot->advance.x) * fBitmapScale;
+	fAdvanceY = int26p6_to_dbl(slot->advance.y) * fBitmapScale;
+	fPreciseAdvanceX = fSize > 0.0 ? fAdvanceX / fSize : 0.0;
+	fPreciseAdvanceY = fSize > 0.0 ? fAdvanceY / fSize : 0.0;
+	fInsetLeft = int26p6_to_dbl(slot->metrics.horiBearingX) * fBitmapScale;
+	fInsetRight = int26p6_to_dbl(slot->metrics.horiBearingX
+		+ slot->metrics.width - slot->metrics.horiAdvance) * fBitmapScale;
+
+	const FT_Bitmap& bitmap = slot->bitmap;
+	if (bitmap.pixel_mode != FT_PIXEL_MODE_BGRA || bitmap.width == 0
+		|| bitmap.rows == 0) {
+		return false;
+	}
+
+	int srcWidth = bitmap.width;
+	int srcHeight = bitmap.rows;
+	int width = (int)(srcWidth * fBitmapScale + 0.5);
+	int height = (int)(srcHeight * fBitmapScale + 0.5);
+	if (width < 1)
+		width = 1;
+	if (height < 1)
+		height = 1;
+
+	uint32 size = 2 * sizeof(int32) + (uint32)width * height * 4;
+	if (size > fColorGlyphCapacity) {
+		uint8* glyph = (uint8*)realloc(fColorGlyph, size);
+		if (glyph == NULL)
+			return false;
+		fColorGlyph = glyph;
+		fColorGlyphCapacity = size;
+	}
+	int32 dimensions[2] = { width, height };
+	memcpy(fColorGlyph, dimensions, sizeof(dimensions));
+	uint8* out = fColorGlyph + sizeof(dimensions);
+
+	for (int y = 0; y < height; y++) {
+		int srcY1 = y * srcHeight / height;
+		int srcY2 = (y + 1) * srcHeight / height;
+		if (srcY2 <= srcY1)
+			srcY2 = srcY1 + 1;
+		for (int x = 0; x < width; x++) {
+			int srcX1 = x * srcWidth / width;
+			int srcX2 = (x + 1) * srcWidth / width;
+			if (srcX2 <= srcX1)
+				srcX2 = srcX1 + 1;
+
+			// FreeType's BGRA is premultiplied
+			uint32 b = 0, g = 0, r = 0, a = 0;
+			for (int sy = srcY1; sy < srcY2; sy++) {
+				const uint8* p = bitmap.buffer + sy * bitmap.pitch + srcX1 * 4;
+				for (int sx = srcX1; sx < srcX2; sx++, p += 4) {
+					b += p[0];
+					g += p[1];
+					r += p[2];
+					a += p[3];
+				}
+			}
+			if (a == 0) {
+				out[0] = out[1] = out[2] = out[3] = 0;
+			} else {
+				uint32 count = (srcY2 - srcY1) * (srcX2 - srcX1);
+				out[0] = (uint8)(r * 255 / a < 255 ? r * 255 / a : 255);
+				out[1] = (uint8)(g * 255 / a < 255 ? g * 255 / a : 255);
+				out[2] = (uint8)(b * 255 / a < 255 ? b * 255 / a : 255);
+				out[3] = (uint8)((a + count / 2) / count);
+			}
+			out += 4;
+		}
+	}
+
+	int left = (int)floor(slot->bitmap_left * fBitmapScale + 0.5);
+	int top = (int)floor(slot->bitmap_top * fBitmapScale + 0.5);
+	if (kFlipY)
+		top = -top;
+	fBounds.x1 = left;
+	fBounds.y1 = top;
+	fBounds.x2 = left + width - 1;
+	fBounds.y2 = top + height - 1;
+	fDataSize = size;
+	fDataType = glyph_data_bgra;
+	return true;
+}
 
 
 bool
@@ -685,9 +828,14 @@ FontEngine::Init(const char* fontFilePath, unsigned faceIndex, double size,
 			break;
 	}
 
-	FT_Set_Pixel_Sizes(fFace,
-		unsigned(size * 64.0) >> 6,		// pixel_width
-		unsigned(size * 64.0) >> 6);	// pixel_height
+	fSize = size;
+	fColorBitmaps = FT_HAS_COLOR(fFace) && !FT_IS_SCALABLE(fFace)
+		&& _SelectBitmapSize(size);
+	if (!fColorBitmaps) {
+		FT_Set_Pixel_Sizes(fFace,
+			unsigned(size * 64.0) >> 6,		// pixel_width
+			unsigned(size * 64.0) >> 6);	// pixel_height
+	}
 
 	if (charMap != FT_ENCODING_NONE) {
 		fLastError = FT_Select_Charmap(fFace, charMap);
