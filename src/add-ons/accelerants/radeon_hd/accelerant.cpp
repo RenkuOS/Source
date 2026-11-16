@@ -272,6 +272,8 @@ radeon_init_accelerant(int device)
 
 	radeon_gpu_ring_boot(RADEON_QUEUE_TYPE_GFX_INDEX);
 
+	radeon_retrace_init();
+
 	TRACE("%s done\n", __func__);
 	return B_OK;
 }
@@ -286,6 +288,8 @@ radeon_uninit_accelerant(void)
 	TRACE("%s enter\n", __func__);
 
 	gInfo->mode_list = NULL;
+
+	radeon_retrace_uninit();
 
 	radeon_shared_info &info = *gInfo->shared_info;
 
@@ -321,4 +325,130 @@ radeon_get_accelerant_device_info(accelerant_device_info* di)
 
 	di->memory = gInfo->shared_info->graphics_memory_size;
 	return B_OK;
+}
+
+
+//	#pragma mark - retrace
+
+
+/*!	Wakes those waiting for the vertical retrace. */
+static void
+release_retrace_waiters()
+{
+	int32 count;
+	if (get_sem_count(gInfo->retraceSemaphore, &count) == B_OK && count < 0)
+		release_sem_etc(gInfo->retraceSemaphore, -count, B_DO_NOT_RESCHEDULE);
+}
+
+
+/*!	The driver gets no vertical blank interrupt, so this follows the CRTC
+	instead: it reads where the scanout is, sleeps until just before the
+	vertical blank, waits for the blank to begin, and then wakes those
+	waiting for the retrace, such as app_server's compositor.
+*/
+static status_t
+retrace_thread(void*)
+{
+	while (!gInfo->retraceQuit) {
+		display_info* display = gDisplay[0];
+		if (display == NULL || display->regs == NULL) {
+			snooze(16667);
+			release_retrace_waiters();
+			continue;
+		}
+		const display_timing& timing = display->currentMode.timing;
+		if (!display->attached || !display->powered
+			|| timing.pixel_clock == 0 || timing.h_total == 0) {
+			// nothing is shown: keep waiters going at about 60 Hz
+			snooze(16667);
+			release_retrace_waiters();
+			continue;
+		}
+
+		uint32 offset = display->regs->crtcOffset;
+		uint32 vTotal
+			= (Read32(CRT, EVERGREEN_CRTC_V_TOTAL + offset) & 0x3fff) + 1;
+		uint32 vBlankStart
+			= Read32(CRT, EVERGREEN_CRTC_V_BLANK_START_END + offset) & 0x3fff;
+		uint32 position
+			= Read32(CRT, EVERGREEN_CRTC_STATUS_POSITION + offset) & 0x3fff;
+
+		// pixel_clock is in kHz
+		bigtime_t lineTime = (bigtime_t)timing.h_total * 1000
+			/ timing.pixel_clock;
+		if (lineTime < 1)
+			lineTime = 1;
+		bigtime_t frameTime = lineTime * vTotal;
+
+		uint32 lines = (vBlankStart + vTotal - position) % vTotal;
+		if (lines > 2)
+			snooze((lines - 2) * lineTime);
+
+		// Wait for the blank to begin; give up after a frame, should the
+		// registers not say what is expected.
+		bigtime_t deadline = system_time() + frameTime;
+		while ((Read32(CRT, EVERGREEN_CRTC_STATUS + offset) & 1) == 0
+			&& system_time() < deadline && !gInfo->retraceQuit) {
+			snooze(max_c(lineTime / 2, 20));
+		}
+
+		release_retrace_waiters();
+
+		// and for it to end, so that one blank wakes the waiters once
+		deadline = system_time() + frameTime;
+		while ((Read32(CRT, EVERGREEN_CRTC_STATUS + offset) & 1) != 0
+			&& system_time() < deadline && !gInfo->retraceQuit) {
+			snooze(max_c(lineTime, 20));
+		}
+	}
+	return B_OK;
+}
+
+
+void
+radeon_retrace_init()
+{
+	gInfo->retraceSemaphore = -1;
+	gInfo->retraceThread = -1;
+	gInfo->retraceQuit = false;
+
+	// The CRTC registers used are where they are from Evergreen (DCE 4) on.
+	if (gInfo->shared_info->dceMajor < 4)
+		return;
+
+	gInfo->retraceSemaphore = create_sem(0, "radeon hd retrace");
+	if (gInfo->retraceSemaphore < 0)
+		return;
+
+	gInfo->retraceThread = spawn_thread(&retrace_thread, "radeon hd retrace",
+		B_REAL_TIME_DISPLAY_PRIORITY, NULL);
+	if (gInfo->retraceThread < 0) {
+		delete_sem(gInfo->retraceSemaphore);
+		gInfo->retraceSemaphore = -1;
+		return;
+	}
+	resume_thread(gInfo->retraceThread);
+}
+
+
+void
+radeon_retrace_uninit()
+{
+	if (gInfo->retraceThread >= 0) {
+		gInfo->retraceQuit = true;
+		status_t result;
+		wait_for_thread(gInfo->retraceThread, &result);
+		gInfo->retraceThread = -1;
+	}
+	if (gInfo->retraceSemaphore >= 0) {
+		delete_sem(gInfo->retraceSemaphore);
+		gInfo->retraceSemaphore = -1;
+	}
+}
+
+
+sem_id
+radeon_accelerant_retrace_semaphore()
+{
+	return gInfo->retraceSemaphore;
 }

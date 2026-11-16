@@ -87,6 +87,10 @@ struct accelerant_info {
 	uint32			lvdsSpreadSpectrumID;
 
 	RingQueue*		ringQueue[RADEON_QUEUE_MAX]; // Ring buffer command processor
+
+	sem_id			retraceSemaphore;
+	thread_id		retraceThread;
+	volatile bool	retraceQuit;
 };
 
 
