@@ -116,7 +116,9 @@ static const struct pci_matchid mwx_devices[] = {
 #endif
 };
 
+#ifndef __HAIKU__
 #define MWX_DEBUG	1
+#endif
 
 #define	MT7920_ROM_PATCH	"mwx-mt7961_patch_mcu_1a_2_hdr"
 #define	MT7920_FIRMWARE_WM	"mwx-mt7961_ram_code_1a"
@@ -1473,7 +1475,9 @@ mwx_bgscan_done_task(void *arg)
 		ni->ni_rsn_supp_state = RSNA_SUPP_INITIALIZE;
 	}
 
+#if !defined(__HAIKU__) || defined(MWX_DEBUG)
 printf("%s: %s: XXX %s refcnt %u\n", DEVNAME(sc), __func__, ether_sprintf(ni->ni_macaddr), ni->ni_refcnt);
+#endif
 
         /*
 	 * Tx queues have been flushed and Tx agg has been stopped.
@@ -2123,6 +2127,9 @@ mwx_attach(struct device *parent, struct device *self, void *aux)
 	MWX_ATTACH_RETURN(0);
 
 fail:
+#ifdef __HAIKU__
+	printf("%s: attach failed\n", DEVNAME(sc));
+#endif
 	mwx_txwi_free(sc);
 	mwx_dma_free(sc);
 	if (sc->sc_ih != NULL)
@@ -3220,11 +3227,13 @@ mwx_mcu_send_mbuf(struct mwx_softc *sc, uint32_t cmd, struct mbuf *m, int *seqp)
 	q = &sc->sc_txmcuq;
 enqueue:
 
+#if !defined(__HAIKU__) || defined(MWX_DEBUG)
 if (cmd != MCU_CMD_FW_SCATTER) {
 printf("%s: %s: cmd %08x\n", DEVNAME(sc), __func__, cmd);
 if (cmd == MCU_UNI_CMD_SCAN_REQ || cmd == MCU_UNI_CMD_BSS_INFO_UPDATE || cmd == MCU_UNI_CMD_EDCA_UPDATE)
 	pkt_hex_dump(m);
 }
+#endif
 
 	s = splnet();
 	while (1) {
@@ -3344,7 +3353,9 @@ mwx_mcu_rx_event(struct mwx_softc *sc, struct mbuf *m)
 	case 0x6:
 		printf("%s: MAGIC COMMAND\n", DEVNAME(sc));
 	default:
+#if !defined(__HAIKU__) || defined(MWX_DEBUG)
 printf("%s: mcu rx event, seq %x eid %x ext_eid %x opt %x len %u\n", DEVNAME(sc), rxd->seq, rxd->eid, rxd->ext_eid, rxd->option, le16toh(rxd->len));
+#endif
 
 		if (rxd->option & MCU_UNI_CMD_UNSOLICITED_EVENT) {
 			mwx_mcu_rx_unsolicited_event(sc, rxd, m);
@@ -3407,10 +3418,12 @@ printf("%s: mcu rx event, seq %x eid %x ext_eid %x opt %x len %u\n", DEVNAME(sc)
 			mcu_int = le32toh(event->val);
 		}
 
+#if !defined(__HAIKU__) || defined(MWX_DEBUG)
 		printf("%s: mcu rx event, seq %x eid %x "
 		    "ext_eid %x, opt %x len %u, cmd %x, mcu_int %d\n",
 		    DEVNAME(sc), rxd->seq, rxd->eid, rxd->ext_eid,
 		    rxd->option, le16toh(rxd->len), cmd, mcu_int);
+#endif
 
 		sc->sc_mcu_wait[rxd->seq].mcu_int = mcu_int;
 		sc->sc_mcu_wait[rxd->seq].mcu_m = m;
@@ -3754,6 +3767,10 @@ mwx_init_hardware(struct mwx_softc *sc)
 	return 0;
 
  fail:
+#ifdef __HAIKU__
+	/* MWX_DEBUG is off on Haiku, so the specific cause isn't logged. */
+	printf("%s: hardware init failed\n", DEVNAME(sc));
+#endif
 	/* reset dma */
 	rv = mwx_dma_reset(sc, 1);
 	if (rv != 0)
@@ -5643,7 +5660,9 @@ mwx_mcu_uni_add_dev(struct mwx_softc *sc, struct mwx_vif *mvif,
 		len = sizeof(basic_req);
 	}
 
+#if !defined(__HAIKU__) || defined(MWX_DEBUG)
 printf("%s: %s cmd %x mvif idx %d omac %d band %d wmm %d\n", DEVNAME(sc), __func__, cmd, mvif->idx, mvif->omac_idx, mvif->band_idx, mvif->wmm_idx);
+#endif
 	rv = mwx_mcu_send_wait(sc, cmd, data, len);
 	if (rv < 0)
 		return rv;
@@ -5658,7 +5677,9 @@ printf("%s: %s cmd %x mvif idx %d omac %d band %d wmm %d\n", DEVNAME(sc), __func
 		len = sizeof(dev_req);
 	}
 
+#if !defined(__HAIKU__) || defined(MWX_DEBUG)
 printf("%s: %s cmd %x wcid %d\n", DEVNAME(sc), __func__, cmd, mn->wcid);
+#endif
 	return mwx_mcu_send_wait(sc, cmd, data, len);
 }
 
