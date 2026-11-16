@@ -33,6 +33,7 @@
 #include <unistd.h>
 
 #include <Accelerant.h>
+#include <Autolock.h>
 #include <Cursor.h>
 #include <Directory.h>
 #include <FindDirectory.h>
@@ -120,6 +121,7 @@ AccelerantHWInterface::AccelerantHWInterface()
 	fAccSetCursorBitmap(NULL),
 	fAccMoveCursor(NULL),
 	fAccShowCursor(NULL),
+	fAccMoveDisplay(NULL),
 
 	// dpms hooks
 	fAccDPMSCapabilities(NULL),
@@ -148,6 +150,14 @@ AccelerantHWInterface::AccelerantHWInterface()
 	fFrontBuffer(new (nothrow) AccelerantBuffer()),
 
 	fInitialModeSwitch(true),
+
+	fFlipLock("page flipping"),
+	fPageFlippingWanted(false),
+	fHasSecondPage(false),
+	fFlipping(false),
+	fShownPage(0),
+	fWritePage(0),
+	fKDLDepth(32),
 
 	fRetraceSemaphore(-1),
 
@@ -398,6 +408,7 @@ AccelerantHWInterface::_SetupDefaultHooks()
 		= (set_cursor_bitmap)fAccelerantHook(B_SET_CURSOR_BITMAP, NULL);
 	fAccMoveCursor = (move_cursor)fAccelerantHook(B_MOVE_CURSOR, NULL);
 	fAccShowCursor = (show_cursor)fAccelerantHook(B_SHOW_CURSOR, NULL);
+	fAccMoveDisplay = (move_display_area)fAccelerantHook(B_MOVE_DISPLAY, NULL);
 
 	// dpms
 	fAccDPMSCapabilities
@@ -571,9 +582,25 @@ AccelerantHWInterface::SetMode(const display_mode& mode)
 
 	display_mode newMode = mode;
 
+	// Room for a second page below the first, to flip to. One row more
+	// than two pages, so that no driver takes it for two screens on top of
+	// each other.
+	bool secondPage = fPageFlippingWanted && fAccMoveDisplay != NULL
+		&& mode.virtual_height == mode.timing.v_display;
+	if (secondPage)
+		newMode.virtual_height = mode.timing.v_display * 2 + 1;
+
 	status_t status = B_ERROR;
-	if (!use_fail_safe_video_mode() || !fInitialModeSwitch)
+	if (!use_fail_safe_video_mode() || !fInitialModeSwitch) {
 		status = fAccSetDisplayMode(&newMode);
+		if (status != B_OK && secondPage) {
+			newMode = mode;
+			secondPage = false;
+			status = fAccSetDisplayMode(&newMode);
+		}
+	}
+	if (status != B_OK)
+		secondPage = false;
 	if (status != B_OK) {
 		ATRACE(("setting display mode failed\n"));
 		if (!fInitialModeSwitch)
@@ -609,6 +636,12 @@ AccelerantHWInterface::SetMode(const display_mode& mode)
 		}
 	}
 
+	// The rest of app_server sees a page.
+	fHasSecondPage = secondPage
+		&& newMode.virtual_height >= newMode.timing.v_display * 2;
+	if (secondPage)
+		newMode.virtual_height = newMode.timing.v_display;
+
 	fDisplayMode = newMode;
 	fInitialModeSwitch = false;
 
@@ -626,6 +659,7 @@ AccelerantHWInterface::SetMode(const display_mode& mode)
 		/ fFrontBuffer->Width()) << 3;
 	if (fDisplayMode.space == B_RGB15)
 		depth = 15;
+	fKDLDepth = depth;
 
 	_kern_frame_buffer_update((addr_t)fFrameBufferConfig.frame_buffer,
 		fFrontBuffer->Width(), fFrontBuffer->Height(),
@@ -663,6 +697,20 @@ AccelerantHWInterface::SetMode(const display_mode& mode)
 		_SetSystemPalette();
 	else if (fDisplayMode.space == B_GRAY8)
 		_SetGrayscalePalette();
+
+	// Frames go to the second page first; it starts out empty.
+	fSecondPage.Unset();
+	if (fHasSecondPage)
+		fSecondPage.SetTo(new(nothrow) AccelerantBuffer(*fFrontBuffer.Get(), true));
+	fHasSecondPage = fSecondPage.IsSet();
+	fFlipping = fHasSecondPage && fPageFlippingWanted;
+	if (fPageFlippingWanted) {
+		debug_printf("app_server: %s\n", fFlipping
+			? "flipping between two pages" : "no second page to flip to");
+	}
+	fShownPage = 0;
+	fWritePage = 0;
+	fPageBehind.Set((BRect)fFrontBuffer->Bounds());
 
 	// notify all listeners about the mode change
 	_NotifyFrameBufferChanged();
@@ -1354,7 +1402,127 @@ AccelerantHWInterface::MoveCursorTo(float x, float y)
 RenderingBuffer*
 AccelerantHWInterface::FrontBuffer() const
 {
+	if (fFlipping && fWritePage == 1)
+		return fSecondPage.Get();
 	return fFrontBuffer.Get();
+}
+
+
+/*!	Outside of a frame, such as for the cursor, only the page last flipped
+	to is updated: the other one may still be on the screen until the next
+	retrace, and must not get the newer pixels before the rest of them. It
+	gets them with the next frame. The object must be locked.
+*/
+status_t
+AccelerantHWInterface::CopyBackToFront(const BRect& frame)
+{
+	if (!fFlipping)
+		return HWInterface::CopyBackToFront(frame);
+
+	// The cursor code holds the overlays lock when it gets here.
+	BAutolock overlays(fFloatingOverlaysLock);
+	BAutolock _(fFlipLock);
+	fWritePage = fShownPage;
+	fPageBehind.Include(frame);
+	return HWInterface::CopyBackToFront(frame);
+}
+
+
+/*!	Copies the frame to the hidden page, together with what that page missed
+	of the last one, and flips to it. The driver shows it from the next
+	retrace on, so nothing is ever copied to the page being scanned out: the
+	caller waits for a retrace between frames. The object must be locked.
+*/
+status_t
+AccelerantHWInterface::PresentRegion(const BRegion& region)
+{
+	// in the order the cursor code takes them
+	BAutolock overlays(fFloatingOverlaysLock);
+	BAutolock _(fFlipLock);
+	BRegion frame(region);
+	_TakeCursorDamage(frame);
+	if (!fFlipping)
+		return InvalidateRegion(frame);
+
+	int32 page = 1 - fShownPage;
+	BRegion update(frame);
+	update.Include(&fPageBehind);
+
+	fWritePage = page;
+	for (int32 i = 0; i < update.CountRects(); i++)
+		HWInterface::CopyBackToFront(update.RectAt(i));
+
+	status_t status = fAccMoveDisplay(0, page * fDisplayMode.virtual_height);
+	if (status != B_OK) {
+		// Back to copying to the page that is shown.
+		fFlipping = false;
+		fWritePage = fShownPage;
+		for (int32 i = 0; i < update.CountRects(); i++)
+			HWInterface::CopyBackToFront(update.RectAt(i));
+		return status;
+	}
+
+	fShownPage = page;
+	fPageBehind = frame;
+
+	// The on-screen KDL draws where the screen is.
+	RenderingBuffer* shown = FrontBuffer();
+	_kern_frame_buffer_update((addr_t)shown->Bits(), shown->Width(),
+		shown->Height(), fKDLDepth, shown->BytesPerRow());
+	return B_OK;
+}
+
+
+/*!	Page flipping is used while there is a compositor that waits for the
+	retrace between frames. It is paused while an application has the screen,
+	which then draws to the first page.
+*/
+void
+AccelerantHWInterface::SetPageFlipping(bool enable)
+{
+	if (!enable) {
+		if (!LockParallelAccess())
+			return;
+		{
+			BAutolock overlays(fFloatingOverlaysLock);
+			BAutolock _(fFlipLock);
+			fPageFlippingWanted = false;
+			if (fFlipping) {
+				fFlipping = false;
+				if (fShownPage != 0) {
+					fWritePage = 0;
+					HWInterface::CopyBackToFront((BRect)fFrontBuffer->Bounds());
+					fAccMoveDisplay(0, 0);
+					fShownPage = 0;
+					_kern_frame_buffer_update(
+						(addr_t)fFrontBuffer->Bits(), fFrontBuffer->Width(),
+						fFrontBuffer->Height(), fKDLDepth,
+						fFrontBuffer->BytesPerRow());
+				}
+				fWritePage = 0;
+			}
+		}
+		UnlockParallelAccess();
+		return;
+	}
+
+	if (!WriteLock())
+		return;
+	fPageFlippingWanted = true;
+	bool needsMode = !fHasSecondPage;
+	display_mode mode = fDisplayMode;
+	if (needsMode) {
+		// so that the same mode isn't skipped as unchanged
+		fDisplayMode.virtual_height = 0;
+	} else {
+		fFlipping = true;
+		fPageBehind.Set((BRect)fFrontBuffer->Bounds());
+	}
+	WriteUnlock();
+
+	// The same mode again, with room for the second page.
+	if (needsMode)
+		SetMode(mode);
 }
 
 

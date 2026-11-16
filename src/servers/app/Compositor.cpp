@@ -203,14 +203,21 @@ Compositor::Flush()
 void
 Compositor::ScreenTaken()
 {
-	// _Composite() looks at the owner of the screen with this held.
-	BAutolock _(fLock);
+	{
+		// _Composite() looks at the owner of the screen with this held.
+		BAutolock _(fLock);
+	}
+
+	// The application draws to the first page.
+	fDesktop->HWInterface()->SetPageFlipping(false);
 }
 
 
 void
 Compositor::ScreenReleased()
 {
+	fDesktop->HWInterface()->SetPageFlipping(true);
+
 	BRegion all((BRect)fDesktop->HWInterface()->DrawingBuffer()->Bounds());
 	Composite(all);
 }
@@ -340,14 +347,14 @@ Compositor::_Present(const BRegion& region)
 
 	BAutolock _(fLock);
 
-	if (fDesktop->IsDirectScreenLocked())
-		return;
-
 	::HWInterface* interface = fDesktop->HWInterface();
 	if (!interface->LockParallelAccess())
 		return;
 
-	interface->InvalidateRegion(region);
+	if (fDesktop->IsDirectScreenLocked())
+		interface->CancelPendingFrame();
+	else
+		interface->PresentRegion(region);
 
 	interface->UnlockParallelAccess();
 }
@@ -489,12 +496,21 @@ Compositor::_Composite(const BRegion& damage, BRegion* present)
 	fBandBackground = &remaining;
 	fBandColor = fDesktop->CurrentBackgroundColor();
 	fBandLayerCount = layerCount;
+
+	// Under a wobbling or see-through window, a pixel is written more than
+	// once on its way to the frame: the cursor, drawn from here, would show
+	// what is in between, like the desktop or a shadow.
+	bool cursorLocked = interface->LockFloatingOverlays();
 	_DrawBands(screenDamage);
 
-	if (present != NULL)
+	if (present != NULL) {
 		present->Include(&screenDamage);
-	else
+		if (screenDamage.CountRects() > 0)
+			interface->SetFramePending();
+	} else
 		interface->InvalidateRegion(screenDamage);
+	if (cursorLocked)
+		interface->UnlockFloatingOverlays();
 
 	interface->UnlockParallelAccess();
 }
