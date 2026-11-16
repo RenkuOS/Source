@@ -64,6 +64,27 @@ jobs:
                  --name "image-${arch}" --dir "staging" 2>/dev/null || continue
               published="${published} ${arch}"
               echo "including ${arch}"
+              # The system package repository of the same build, for mirrors
+              # to fetch without a GitHub token. The artifact holds one
+              # directory, named for the packaging architecture (x86_gcc2 for
+              # x86_gcc2h). The tar has the same layout as RenkuOSPorts'
+              # renkuosports-arm64-repo.tar, so fetch-repo.sh can serve it
+              # with REPO_TAR set to its name.
+              if gh run download "${{ github.run_id }}" --repo "${{ github.repository }}" \
+                   --name "package-repo-${arch}" --dir "/tmp/repo-${arch}" 2>/dev/null; then
+                packaging="$(ls "/tmp/repo-${arch}")"
+                if [ "$(echo "${packaging}" | wc -l)" = 1 ] && [ -f "/tmp/repo-${arch}/${packaging}/repo" ]; then
+                  tar -cf "staging/renkuos-${packaging}-repo.tar" -C "/tmp/repo-${arch}/${packaging}" \
+                    repo repo.info repo.sha256 packages &&
+                    ( cd staging && sha256sum "renkuos-${packaging}-repo.tar" > "renkuos-${packaging}-repo.tar.sha256" ) ||
+                    { rm -f "staging/renkuos-${packaging}-repo.tar" "staging/renkuos-${packaging}-repo.tar.sha256"
+                      echo "::warning::could not pack the ${arch} package repository"; }
+                else
+                  echo "::warning::unexpected layout in package-repo-${arch}; not publishing it"
+                fi
+              else
+                echo "::warning::no package-repo-${arch} artifact; publishing the image without it"
+              fi
             else
               echo "::warning::${arch} did not pass the boot check; not publishing it."
             fi
@@ -85,8 +106,58 @@ jobs:
           SHA="$(git rev-parse --short=7 HEAD)"
           BUILD="build$(printf '%05d' "${{ github.run_number }}")"
 
+          URL="https://github.com/${{ github.repository }}/releases/download/nightly"
           {
             echo "Automated nightly build. **Not a release** — expect breakage."
+            echo ""
+            echo "## Download"
+            echo ""
+            echo "Pick the image for your computer. That one file is all you need."
+            echo ""
+            echo "| For | Download | Then |"
+            echo "|---|---|---|"
+            for arch in x86_64 x86_gcc2h arm64; do
+              for f in staging/RenkuOS-"${arch}"-*; do
+                [ -e "$f" ] || continue
+                name="$(basename "$f")"
+                case "${name}" in
+                  *.sha256) continue ;;
+                esac
+                case "${arch}" in
+                  x86_64) who="64-bit PC (most computers)"
+                          how="Write it to a USB stick, or boot it in a virtual machine" ;;
+                  x86_gcc2h) who="32-bit PC"
+                             how="Write it to a USB stick, or boot it in a virtual machine" ;;
+                  arm64) who="ARM64, in QEMU"
+                         how="Decompress it with \`zstd -d\`, then start it as shown below" ;;
+                esac
+                echo "| ${who} | [\`${name}\`](${URL}/${name}) | ${how} |"
+                if [ "${arch}" = arm64 ]; then ARM64_IMAGE="${name}"; fi
+              done
+            done
+            echo ""
+            echo "To check a download, put it next to its \`.sha256\` file and run"
+            echo "\`sha256sum -c <file>.sha256\`."
+            if [ -n "${ARM64_IMAGE:-}" ]; then
+              echo ""
+              echo "### Starting the arm64 image"
+              echo ""
+              echo "It runs on QEMU's \`virt\` machine with EDK2 firmware (the \`qemu-system-arm\`"
+              echo "and \`qemu-efi-aarch64\` packages on Debian and Ubuntu):"
+              echo ""
+              echo '```'
+              echo "zstd -d ${ARM64_IMAGE}"
+              echo "qemu-system-aarch64 -M virt -cpu cortex-a72 -smp 4 -m 2048 \\"
+              echo "  -bios /usr/share/qemu-efi-aarch64/QEMU_EFI.fd \\"
+              echo "  -drive file=${ARM64_IMAGE%.zst},format=raw,if=none,id=d0 -device virtio-blk-device,drive=d0 \\"
+              echo "  -device ramfb -device qemu-xhci -device usb-kbd -device usb-tablet"
+              echo '```'
+              echo ""
+              echo "arm64 is Tier 2: it ships when it boots. It has no clock driver yet, so the"
+              echo "clock starts in 1970."
+            fi
+            echo ""
+            echo "## Build details"
             echo ""
             echo "| | |"
             echo "|---|---|"
@@ -98,16 +169,23 @@ jobs:
             echo ""
             echo "\`x86_gcc2h\` is the 32-bit image: gcc2 for the system, GCC 13 for x86"
             echo "secondary packages."
-            echo ""
-            echo "\`arm64\` is a disk image for QEMU's \`virt\` machine with EDK2 firmware,"
-            echo "built from the RenkuOSPorts arm64 packages. Decompress it with \`zstd -d\`."
-            echo "It is Tier 2: it ships when it boots, and it has no clock driver yet."
+            if [ -n "${ARM64_IMAGE:-}" ]; then
+              echo "The arm64 image is built from the RenkuOSPorts arm64 packages."
+            fi
             echo ""
             echo "Every image here booted under emulation without entering the kernel"
             echo "debugger. That is the extent of the automated testing so far — it is"
             echo "not evidence that anything else works."
-            echo ""
-            echo "Verify a download with the matching \`.sha256\` file."
+            if compgen -G "staging/renkuos-*-repo.tar" > /dev/null; then
+              echo ""
+              echo "## For mirror operators"
+              echo ""
+              echo "You do not need these to run RenkuOS. Each \`renkuos-<arch>-repo.tar\` is the"
+              echo "system package repository of the same build (\`repo\`, \`repo.info\`,"
+              echo "\`repo.sha256\`, and \`packages/\`), named for the packaging architecture"
+              echo "(\`x86_gcc2\` for \`x86_gcc2h\`). Its name does not change, so its URL always"
+              echo "gives the newest one."
+            fi
           } > notes.md
 
           if gh release view nightly --repo "${{ github.repository }}" >/dev/null 2>&1; then
@@ -128,5 +206,5 @@ jobs:
             echo ""
             echo "https://github.com/${{ github.repository }}/releases/tag/nightly"
             echo ""
-            for f in staging/*.iso staging/*.zst; do [ -e "$f" ] || continue; echo "- \`$(basename "$f")\` ($(du -h "$f" | cut -f1))"; done
+            for f in staging/*.iso staging/*.zst staging/*.tar; do [ -e "$f" ] || continue; echo "- \`$(basename "$f")\` ($(du -h "$f" | cut -f1))"; done
           } >> "$GITHUB_STEP_SUMMARY"
