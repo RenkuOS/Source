@@ -3308,7 +3308,7 @@ mwx_mcu_send_mbuf(struct mwx_softc *sc, uint32_t cmd, struct mbuf *m, int *seqp)
 	uint32_t *txd, val;
 	int s, rv, mcu_cmd = cmd & MCU_CMD_FIELD_ID_MASK;
 	int tot_len, txd_len, len = m->m_pkthdr.len;
-	uint8_t seq;
+	uint8_t seq = 0;	/* not used for MCU_CMD_FW_SCATTER */
 
 	if (cmd == MCU_CMD_FW_SCATTER) {
 		q = &sc->sc_txfwdlq;
@@ -3406,7 +3406,10 @@ printf("%s: %s: cmd %08x\n", DEVNAME(sc), __func__, cmd);
 	}
 	splx(s);
 	if (rv != 0) {
-		memset(&sc->sc_mcu_wait[seq], 0, sizeof(sc->sc_mcu_wait[0]));
+		/* only clear the wait slot this call armed */
+		if (seqp != NULL)
+			memset(&sc->sc_mcu_wait[seq], 0,
+			    sizeof(sc->sc_mcu_wait[0]));
 		m_freem(m);
 	}
 	return rv;
@@ -3519,6 +3522,18 @@ mwx_mcu_rx_event(struct mwx_softc *sc, struct mbuf *m)
 			break;
 		}
 
+#ifdef __HAIKU__
+		/*
+		 * Firmware-initiated events that Linux handles in
+		 * mt7921_mcu_rx_unsolicited_event(); not implemented here
+		 * (see the #if 0 cases above), drop them without the bad seq
+		 * message.
+		 */
+		if (rxd->seq == 0 && (rxd->eid == MCU_EVENT_BSS_ABSENCE ||
+		    rxd->eid == MCU_EVENT_BSS_BEACON_LOSS))
+			break;
+#endif
+
 		if (rxd->seq == 0 || rxd->seq >= nitems(sc->sc_mcu_wait)) {
 			printf("%s: mcu rx bad seq %x, eid %x ext_eid %x, "
 			    "opt %x len %u\n",
@@ -3583,6 +3598,8 @@ mwx_mcu_rx_event(struct mwx_softc *sc, struct mbuf *m)
 #endif
 
 		sc->sc_mcu_wait[rxd->seq].mcu_int = mcu_int;
+		/* a duplicate ack must not leak the first one */
+		m_freem(sc->sc_mcu_wait[rxd->seq].mcu_m);
 		sc->sc_mcu_wait[rxd->seq].mcu_m = m;
 		wakeup(&sc->sc_mcu_wait[rxd->seq]);
 		return;
@@ -3621,18 +3638,16 @@ mwx_mcu_wait_resp_int(struct mwx_softc *sc, uint32_t cmd, int seq,
 	KASSERT(seq < nitems(sc->sc_mcu_wait));
 
 	rv = tsleep_nsec(&sc->sc_mcu_wait[seq], 0, "mwxwait", SEC_TO_NSEC(3));
+	if (rv == 0 && val != NULL)
+		*val = sc->sc_mcu_wait[seq].mcu_int;
+	/* disarm the slot so a late ack is dropped, not stored */
+	m_freem(sc->sc_mcu_wait[seq].mcu_m);
+	memset(&sc->sc_mcu_wait[seq], 0, sizeof(sc->sc_mcu_wait[0]));
 	if (rv != 0) {
 		printf("%s: command %x timeout\n", DEVNAME(sc), cmd);
 		mwx_reset(sc);
 		return rv;
 	}
-
-	if (sc->sc_mcu_wait[seq].mcu_m != NULL) {
-		m_freem(sc->sc_mcu_wait[seq].mcu_m);
-		sc->sc_mcu_wait[seq].mcu_m = NULL;
-	}
-	if (val != NULL)
-		*val = sc->sc_mcu_wait[seq].mcu_int;
 	return 0;
 }
 
@@ -3640,25 +3655,29 @@ int
 mwx_mcu_wait_resp_msg(struct mwx_softc *sc, uint32_t cmd, int seq,
     struct mbuf **mp)
 {
+	struct mbuf *m;
 	int rv;
 
 	KASSERT(seq < nitems(sc->sc_mcu_wait));
 
 	rv = tsleep_nsec(&sc->sc_mcu_wait[seq], 0, "mwxwait", SEC_TO_NSEC(3));
+	/* disarm the slot so a late ack is dropped, not stored */
+	m = sc->sc_mcu_wait[seq].mcu_m;
+	memset(&sc->sc_mcu_wait[seq], 0, sizeof(sc->sc_mcu_wait[0]));
 	if (rv != 0) {
+		m_freem(m);
 		printf("%s: command %x timeout\n", DEVNAME(sc), cmd);
 		mwx_reset(sc);
 		return rv;
 	}
-	if (sc->sc_mcu_wait[seq].mcu_m == NULL) {
+	if (m == NULL) {
 		printf("%s: command response missing\n", DEVNAME(sc));
 		return ENOENT;
 	}
 	if (mp != NULL)
-		*mp = sc->sc_mcu_wait[seq].mcu_m;
+		*mp = m;
 	else
-		m_freem(sc->sc_mcu_wait[seq].mcu_m);
-	sc->sc_mcu_wait[seq].mcu_m = NULL;
+		m_freem(m);
 	return 0;
 }
 
@@ -5213,10 +5232,9 @@ mt7925_mcu_scan_event(struct mwx_softc *sc, struct mbuf *m)
 	} __packed *chinfo;
 	size_t len;
 
-	if (m->m_len < sizeof(uint32_t)) {
-		m_freem(m);
+	/* mwx_mcu_rx_event() frees m */
+	if (m->m_len < sizeof(uint32_t))
 		return;
-	}
 
 	m_adj(m, sizeof(uint32_t));
 	while (m->m_len >= sizeof(*tlv)) {
