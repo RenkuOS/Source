@@ -2254,7 +2254,23 @@ template<class Array>
 void
 Painter::_MakeGradient(Array& array, const BGradient& gradient) const
 {
-	for (int i = 0; i < gradient.CountColorStops() - 1; i++) {
+	const int32 stopCount = gradient.CountColorStops();
+	if (stopCount == 0)
+		return;
+
+	// The stops don't have to cover the whole array, make sure we fill it.
+	const BGradient::ColorStop* first = gradient.ColorStopAtFast(0);
+	const BGradient::ColorStop* last = gradient.ColorStopAtFast(stopCount - 1);
+	agg::rgba8 firstColor(first->color.red, first->color.green,
+		first->color.blue, first->color.alpha);
+	agg::rgba8 lastColor(last->color.red, last->color.green,
+		last->color.blue, last->color.alpha);
+	for (int j = 0; j < (int)first->offset; j++)
+		array[j] = firstColor;
+	for (int j = (int)last->offset + 1; j < (int)array.size(); j++)
+		array[j] = lastColor;
+
+	for (int i = 0; i < stopCount - 1; i++) {
 		BGradient::ColorStop* from = gradient.ColorStopAtFast(i);
 		BGradient::ColorStop* to = gradient.ColorStopAtFast(i + 1);
 		agg::rgba8 fromColor(from->color.red, from->color.green,
