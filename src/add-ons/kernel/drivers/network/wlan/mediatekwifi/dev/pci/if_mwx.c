@@ -996,6 +996,10 @@ mwx_stop(struct ifnet *ifp)
 	ifp->if_timer = 0;
 	ifp->if_flags &= ~IFF_RUNNING;
 	ifq_clr_oactive(&ifp->if_snd);
+#ifdef __HAIKU__
+	/* nothing else drops it, so it would be sent after the next init */
+	ifq_purge(&ifp->if_snd);
+#endif
 
 
 	/* reset soft state */
@@ -2142,10 +2146,70 @@ fail:
 #endif
 
 #ifdef __FreeBSD_version
+/*
+ * Undo mwx_attach() before the softc is freed on unload.  Called without
+ * Giant: the tasks, the reset timeout and the interrupt handler take it,
+ * so they are drained with it released.
+ */
+static int
+mwx_detach(device_t dev)
+{
+	struct mwx_softc *sc = device_get_softc(dev);
+	struct ieee80211com *ic = &sc->sc_ic;
+	struct ifnet *ifp = &ic->ic_if;
+
+	mtx_lock(&Giant);
+	ifp->if_flags &= ~IFF_UP;
+	mwx_stop(ifp);
+	sc->sc_resetting = 1;		/* mwx_reset() is a no-op from now on */
+	mtx_unlock(&Giant);
+
+	/* a running reset task may still mwx_init() and queue newstate */
+	callout_drain(&sc->sc_reset_to.c);
+	taskqueue_drain(taskqueue_fast, &sc->sc_reset_task);
+	taskqueue_drain(taskqueue_fast, &sc->sc_newstate_task);
+	taskqueue_drain(taskqueue_fast, &sc->sc_bgscan_done_task);
+	taskqueue_drain(taskqueue_fast, &sc->sc_setkey_task);
+	taskqueue_drain(taskqueue_fast, &sc->sc_scan_task);
+	taskqueue_drain(taskqueue_fast, &sc->sc_ba_task);
+
+	mtx_lock(&Giant);
+	mwx_stop(ifp);
+	mtx_unlock(&Giant);
+
+	/* mwx_intr() re-enables HOST_INT_ENA, so remove it first */
+	pci_intr_disestablish(NULL, sc->sc_ih);
+	pci_release_msi(dev);
+	/* the reset task clears the guard; intr could re-arm the timeout */
+	sc->sc_resetting = 1;
+	callout_drain(&sc->sc_reset_to.c);
+	task_del(sc->sc_nswq, &sc->sc_reset_task);
+	taskqueue_drain(taskqueue_fast, &sc->sc_reset_task);
+	mwx_write(sc, MT_WFDMA0_HOST_INT_ENA, 0);
+	mwx_write(sc, MT_PCIE_MAC_INT_ENABLE, 0);
+	mwx_dma_disable(sc, 1);
+
+	mtx_lock(&Giant);
+	ieee80211_ifdetach(ifp);
+	mtx_unlock(&Giant);
+	/* freeing the nodes stops their BA sessions: sc_ba_task is queued */
+	task_del(sc->sc_nswq, &sc->sc_ba_task);
+	taskqueue_drain(taskqueue_fast, &sc->sc_ba_task);
+	taskqueue_drain(taskqueue_fast, &ic->ic_rtm_80211info_task);
+
+	mwx_dma_free(sc);
+	mwx_txwi_free(sc);
+	bus_space_unmap(sc->sc_st, sc->sc_memh, sc->sc_mems);
+	bus_dma_tag_destroy(sc->sc_dmat);
+	if_free_inplace(ifp);
+	return 0;
+}
+
 static device_method_t mwx_pci_methods[] = {
 	/* Device interface */
 	DEVMETHOD(device_probe,		mwx_probe),
 	DEVMETHOD(device_attach,	mwx_attach),
+	DEVMETHOD(device_detach,	mwx_detach),
 
 	DEVMETHOD_END
 };
@@ -2327,12 +2391,18 @@ mwx_txwi_free(struct mwx_softc *sc)
 
 	if (q->mt_data != NULL) {
 		int i;
+		/*
+		 * Maps are missing after a failed alloc and busy txwis are
+		 * not on the free list; the memset below clears the list.
+		 */
 		for (i = 0; i < q->mt_count; i++) {
 			struct mwx_txwi *mt = &q->mt_data[i];
+			if (mt->mt_map == NULL)
+				continue;
+			if (mt->mt_mbuf != NULL)
+				bus_dmamap_unload(sc->sc_dmat, mt->mt_map);
 			bus_dmamap_destroy(sc->sc_dmat, mt->mt_map);
 			m_freem(mt->mt_mbuf);
-			if (i >= MT_PACKET_ID_FIRST)
-				LIST_REMOVE(mt, mt_entry);
 		}
 		free(q->mt_data, M_DEVBUF, q->mt_count * sizeof(*q->mt_data));
 	}
@@ -2350,8 +2420,16 @@ mwx_txwi_free(struct mwx_softc *sc)
 	if (q->mt_seg.ds_len != 0)
 		bus_dmamem_unmap(sc->sc_dmat, (caddr_t)q->mt_desc,
 			q->mt_count * sizeof(*q->mt_desc));
+#ifdef __HAIKU__
+	/* free only memory that was allocated, and destroy the map */
+	if (q->mt_seg.ds_len != 0)
+		bus_dmamem_free(sc->sc_dmat, &q->mt_seg, 1);
+	if (q->mt_map != NULL)
+		bus_dmamap_destroy(sc->sc_dmat, q->mt_map);
+#else
 	if (q->mt_map != NULL)
 		bus_dmamem_free(sc->sc_dmat, &q->mt_seg, 1);
+#endif
 
 	memset(q, 0, sizeof(*q));
 }
@@ -2522,6 +2600,10 @@ mwx_queue_free(struct mwx_softc *sc, struct mwx_queue *q)
 		int i;
 		for (i = 0; i < q->mq_count; i++) {
 			struct mwx_queue_data  *md = &q->mq_data[i];
+			if (md->md_map == NULL)
+				continue;
+			if (md->md_mbuf != NULL)
+				bus_dmamap_unload(sc->sc_dmat, md->md_map);
 			bus_dmamap_destroy(sc->sc_dmat, md->md_map);
 			m_freem(md->md_mbuf);
 		}
@@ -2541,8 +2623,17 @@ mwx_queue_free(struct mwx_softc *sc, struct mwx_queue *q)
 	if (q->mq_seg.ds_len != 0)
 		bus_dmamem_unmap(sc->sc_dmat, (caddr_t)q->mq_desc,
 			q->mq_count * sizeof(*q->mq_desc));
+#ifdef __HAIKU__
+	/* free only memory that was allocated, and destroy the map */
+	if (q->mq_seg.ds_len != 0)
+		bus_dmamem_free(sc->sc_dmat, &q->mq_seg, 1);
+	if (q->mq_map != NULL)
+		bus_dmamap_destroy(sc->sc_dmat, q->mq_map);
+#else
 	if (q->mq_map != NULL)
 		bus_dmamem_free(sc->sc_dmat, &q->mq_seg, 1);
+#endif
+	m_freem(q->mq_mbuf);		/* partial RX chain */
 
 	memset(q, 0, sizeof(*q));
 }
@@ -2581,6 +2672,10 @@ mwx_queue_reset(struct mwx_softc *sc, struct mwx_queue *q)
 	mwx_write(sc, q->mq_regbase + MT_DMA_DMA_IDX, 0);
 	q->mq_cons = 0;
 	q->mq_prod = 0;
+
+	/* a partial RX chain cannot be completed after a reset */
+	m_freem(q->mq_mbuf);
+	q->mq_mbuf = q->mq_mtail = NULL;
 
 	/* free buffers */
 	for (i = 0; i < q->mq_count; i++) {
