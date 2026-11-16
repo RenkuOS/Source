@@ -5,7 +5,11 @@
 
 #include <OS.h>
 #include <stdio.h>
+#include <string.h>
 #include <syscalls.h>
+#include <unistd.h>
+#include <sys/mman.h>
+#include <sys/wait.h>
 
 
 int
@@ -139,6 +143,162 @@ resize_past_reservation_test()
 }
 
 
+// Forks a child that keeps a copy of the memory at address, tries to shrink
+// that memory's area to one page in the parent, and returns the result.
+// The child's own area must keep its size either way.
+static status_t
+fork_and_shrink(void* address, status_t& childSizeOk)
+{
+	int toChild[2];
+	int toParent[2];
+	if (pipe(toChild) != 0 || pipe(toParent) != 0)
+		return B_ERROR;
+
+	pid_t child = fork();
+	if (child < 0)
+		return child;
+	if (child == 0) {
+		char c;
+		read(toChild[0], &c, 1);
+		area_info info;
+		status_t ok = get_area_info(area_for(address), &info) == B_OK
+			&& info.size == 4 * B_PAGE_SIZE ? B_OK : B_ERROR;
+		write(toParent[1], &ok, sizeof(ok));
+		_exit(0);
+	}
+
+	status_t status = resize_area(area_for(address), B_PAGE_SIZE);
+	write(toChild[1], "x", 1);
+	if (read(toParent[0], &childSizeOk, sizeof(childSizeOk))
+			!= sizeof(childSizeOk)) {
+		childSizeOk = B_ERROR;
+	}
+	waitpid(child, NULL, 0);
+	close(toChild[0]);
+	close(toChild[1]);
+	close(toParent[0]);
+	close(toParent[1]);
+	return status;
+}
+
+
+int
+shrink_shared_area_test()
+{
+	// A clone in another team must not be able to shrink the area under
+	// its owner, and the owner must not shrink it under the clone.
+	void* address;
+	area_id area = create_area("shared test area", &address, B_ANY_ADDRESS,
+		4 * B_PAGE_SIZE, B_NO_LOCK,
+		B_READ_AREA | B_WRITE_AREA | B_CLONEABLE_AREA);
+	if (area < B_OK)
+		return area;
+
+	int toChild[2];
+	int toParent[2];
+	if (pipe(toChild) != 0 || pipe(toParent) != 0)
+		return B_ERROR;
+
+	pid_t child = fork();
+	if (child < 0)
+		return child;
+	if (child == 0) {
+		void* cloneAddress;
+		area_id clone = clone_area("shared test clone", &cloneAddress,
+			B_ANY_ADDRESS, B_READ_AREA, area);
+		status_t status = clone < B_OK
+			? clone : resize_area(clone, B_PAGE_SIZE);
+		write(toParent[1], &status, sizeof(status));
+		char c;
+		read(toChild[0], &c, 1);
+		delete_area(clone);
+		write(toParent[1], &status, sizeof(status));
+		_exit(0);
+	}
+
+	status_t cloneStatus = B_ERROR;
+	read(toParent[0], &cloneStatus, sizeof(cloneStatus));
+	area_info info;
+	get_area_info(area, &info);
+	status_t ownerStatus = resize_area(area, B_PAGE_SIZE);
+	write(toChild[1], "x", 1);
+	status_t dummy;
+	read(toParent[0], &dummy, sizeof(dummy));
+	waitpid(child, NULL, 0);
+	status_t unsharedStatus = resize_area(area, B_PAGE_SIZE);
+	delete_area(area);
+	close(toChild[0]);
+	close(toChild[1]);
+	close(toParent[0]);
+	close(toParent[1]);
+
+	if (cloneStatus != B_NOT_ALLOWED) {
+		printf("a clone in another team shrank the area: %s\n",
+			strerror(cloneStatus));
+		return -1;
+	}
+	if (info.size != 4 * B_PAGE_SIZE) {
+		printf("the area shrank to %zu bytes\n", info.size);
+		return -1;
+	}
+	if (ownerStatus != B_NOT_ALLOWED) {
+		printf("the owner shrank an area another team maps: %s\n",
+			strerror(ownerStatus));
+		return -1;
+	}
+	if (unsharedStatus != B_OK) {
+		printf("shrinking the area failed once it was no longer shared: "
+			"%s\n", strerror(unsharedStatus));
+		return -1;
+	}
+	return 0;
+}
+
+
+int
+shrink_after_fork_test()
+{
+	// fork() gives private memory a copy-on-write cache per team, so it
+	// can still be shrunk. Shared memory stays shared, so it cannot.
+	void* address;
+	area_id area = create_area("private test area", &address, B_ANY_ADDRESS,
+		4 * B_PAGE_SIZE, B_NO_LOCK, B_READ_AREA | B_WRITE_AREA);
+	if (area < B_OK)
+		return area;
+	memset(address, 0x55, 4 * B_PAGE_SIZE);
+
+	status_t childSizeOk;
+	status_t status = fork_and_shrink(address, childSizeOk);
+	delete_area(area);
+	if (status != B_OK) {
+		printf("shrinking private memory after fork() failed: %s\n",
+			strerror(status));
+		return -1;
+	}
+	if (childSizeOk != B_OK) {
+		printf("shrinking private memory changed the child's copy\n");
+		return -1;
+	}
+
+	address = mmap(NULL, 4 * B_PAGE_SIZE, PROT_READ | PROT_WRITE,
+		MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+	if (address == MAP_FAILED)
+		return B_NO_MEMORY;
+	status = fork_and_shrink(address, childSizeOk);
+	munmap(address, 4 * B_PAGE_SIZE);
+	if (status != B_NOT_ALLOWED) {
+		printf("shrinking shared memory after fork() did not fail with "
+			"B_NOT_ALLOWED: %s\n", strerror(status));
+		return -1;
+	}
+	if (childSizeOk != B_OK) {
+		printf("shrinking shared memory changed the child's mapping\n");
+		return -1;
+	}
+	return 0;
+}
+
+
 int
 main()
 {
@@ -148,6 +308,12 @@ main()
 		return status;
 
 	if ((status = resize_past_reservation_test()) != 0)
+		return status;
+
+	if ((status = shrink_shared_area_test()) != 0)
+		return status;
+
+	if ((status = shrink_after_fork_test()) != 0)
 		return status;
 
 	return 0;

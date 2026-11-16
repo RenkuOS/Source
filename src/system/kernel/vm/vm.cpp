@@ -4695,8 +4695,18 @@ vm_resize_area(area_id areaID, size_t newSize, bool kernel)
 					|= current->address_space == VMAddressSpace::Kernel();
 			}
 		} else {
-			// We're shrinking the areas, so we must make sure the affected
-			// ranges are not wired.
+			// Shrinking unmaps the end of every area of this cache. Only the
+			// kernel may do that to an area of another team: that team may
+			// be using the memory, and would fault on the pages that go.
+			if (!kernel) {
+				for (VMArea* current = cache->areas.First(); current != NULL;
+						current = cache->areas.GetNext(current)) {
+					if (current->address_space->ID() != team)
+						return B_NOT_ALLOWED;
+				}
+			}
+
+			// We must also make sure the affected ranges are not wired.
 			for (VMArea* current = cache->areas.First(); current != NULL;
 					current = cache->areas.GetNext(current)) {
 				anyKernelArea
