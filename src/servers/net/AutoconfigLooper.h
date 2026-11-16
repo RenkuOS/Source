@@ -38,6 +38,7 @@ private:
 			AutoconfigClient*	fCurrentClient;
 			int32				fLastMediaStatus;
 			bool				fJoiningNetwork;
+			bigtime_t			fJoinStarted;
 };
 
 #endif	// AUTOCONFIG_LOOPER_H
