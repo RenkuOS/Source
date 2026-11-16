@@ -99,6 +99,7 @@ arch_handle_acpi()
 		uint64 gicc_base = 0;
 		uint64 gicd_base = 0;
 		uint64 gicr_base = 0;
+		uint64 gicc_gicr_base = 0;
 		uint8 version = 0;
 
 		acpi_apic *desc = (acpi_apic*)(madt + 1);
@@ -107,6 +108,10 @@ arch_handle_acpi()
 				acpi_gic_interface *acpi_gicc = (acpi_gic_interface*)desc;
 				if (acpi_gicc->cpu_interface_num == 0)
 					gicc_base = acpi_gicc->base_address;
+				if (desc->length >= offsetof(acpi_gic_interface, gicr_address) + sizeof(uint64)
+					&& acpi_gicc->gicr_address != 0
+					&& (gicc_gicr_base == 0 || acpi_gicc->gicr_address < gicc_gicr_base))
+					gicc_gicr_base = acpi_gicc->gicr_address;
 
 				platform_cpu_info* cpu = NULL;
 				arch_smp_register_cpu(&cpu);
@@ -124,6 +129,11 @@ arch_handle_acpi()
 			}
 			desc = (acpi_apic*)((char*)desc + desc->length);
 		}
+
+		// ACPI allows the GICR base per GICC instead of a GICR structure (Hyper-V does this)
+		// The redistributor frames are assumed contiguous from the lowest one.
+		if (gicr_base == 0)
+			gicr_base = gicc_gicr_base;
 
 		intc_info& intc = gKernelArgs.arch_args.interrupt_controller;
 		if (version == 0) {
