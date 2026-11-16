@@ -167,6 +167,30 @@ rule DefineDefaultBuildProfiles
 				p7zip
 				;
 
+			if $(TARGET_ARCH) = arm64 {
+				# arm64 is mostly run in virtual machines straight from
+				# this image, never through Installer, which is what would
+				# install the development packages: activate them instead.
+				# Added before OptionalPackages, so they skip _packages_.
+				AddHaikuImageSystemPackages
+					# the Development and DevelopmentBase toolchain
+					autoconf automake binutils bison cdrtools flex gcc jam
+					libjpeg_turbo_devel libpng16_devel m4 make mawk
+					mkdepend mpc mpfr nasm openssl3_devel patch pkgconfig
+					texinfo zlib_devel zstd_devel
+					# more build tools
+					autoconf_archive cmake doxygen gettext gperf help2man
+					libtool libtool_libltdl meson ninja python3.14 swig
+					yasm
+					# more headers and libraries
+					bzip2_devel curl_devel expat_devel freetype_devel
+					gcc_syslibs_devel gettext_libintl_devel gmp_devel
+					icu74_devel libedit_devel libiconv_devel libxml2_devel
+					mpc_devel mpfr_devel ncurses6_devel readline_devel
+					sqlite sqlite_devel xz_utils_devel
+					;
+			}
+
 			AddOptionalHaikuImagePackages Development Git ;
 
 			# WebPositive can only built for x86_gcc2, x86 and x86_64

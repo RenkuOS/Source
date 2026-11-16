@@ -120,8 +120,16 @@ if [ IsOptionalHaikuImagePackageAdded DevelopmentBase ] {
 
 # DevelopmentMin
 if [ IsOptionalHaikuImagePackageAdded DevelopmentMin ]
-		&& ( $(TARGET_ARCH) = x86 || $(TARGET_ARCH) = x86_64 ) {
-	AddPackageFilesToHaikuImage _packages_
+		&& ( $(TARGET_ARCH) = x86 || $(TARGET_ARCH) = x86_64
+			|| $(TARGET_ARCH) = arm64 ) {
+	local container = _packages_ ;
+	if $(TARGET_ARCH) = arm64 && $(HAIKU_NIGHTLY_BUILD) = 1 {
+		# The arm64 nightly activates its development tools, see
+		# DefaultBuildProfiles.
+		container = system packages ;
+	}
+
+	AddPackageFilesToHaikuImage $(container)
 		:
 		haiku_devel.hpkg
 		haiku_$(TARGET_PACKAGING_ARCHS[2-])_devel.hpkg
@@ -130,7 +138,7 @@ if [ IsOptionalHaikuImagePackageAdded DevelopmentMin ]
 		;
 
 	if $(HAIKU_IS_BOOTSTRAP) != 1 {
-		AddPackageFilesToHaikuImage _packages_
+		AddPackageFilesToHaikuImage $(container)
 			:
 			makefile_engine.hpkg
 			:
