@@ -13,17 +13,23 @@ rule BuildAnybootImageEfi anybootImage : mbrPart : efiPart : isoPart : imageFile
 	Depends $(anybootImage) : $(efiPart) ;
 	Depends $(anybootImage) : $(imageFile) ;
 
-	BuildAnybootImageEfi1 $(anybootImage) : $(anyboot) $(mbrPart) $(efiPart) $(isoPart) $(imageFile) ;
+	BuildAnybootImageEfi1 $(anybootImage) : $(anyboot) $(efiPart) $(isoPart) $(imageFile) $(mbrPart) ;
 }
 
+# "-b" is glued to the MBR source so it expands to nothing without one.
 actions BuildAnybootImageEfi1 {
-	$(2[1]) -b $(2[2]) -e $(2[3]) $(2[4]) $(2[5]) $(1)
+	$(2[1]) -b$(2[5]) -e $(2[2]) $(2[3]) $(2[4]) $(1)
 }
 
-local baseMBR = base_mbr.bin ;
-local mbrSource = [ FDirName $(HAIKU_TOP) src bin writembr mbr.S ] ;
-BuildMBR $(baseMBR) : $(mbrSource) ;
-MakeLocate $(baseMBR) : $(HAIKU_OUTPUT_DIR) ;
+# The MBR boot code is x86 real mode; arm and arm64 get the partition table
+# without it.
+local baseMBR ;
+if ! ( $(TARGET_ARCH) in arm arm64 ) {
+	baseMBR = base_mbr.bin ;
+	local mbrSource = [ FDirName $(HAIKU_TOP) src bin writembr mbr.S ] ;
+	BuildMBR $(baseMBR) : $(mbrSource) ;
+	MakeLocate $(baseMBR) : $(HAIKU_OUTPUT_DIR) ;
+}
 MakeLocate $(HAIKU_ANYBOOT) : $(HAIKU_ANYBOOT_DIR) ;
 
 # Currently the Anyboot image is available only for EFI+BIOS or BIOS-only
