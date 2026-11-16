@@ -564,20 +564,16 @@ ieee80211_rtm_80211info_task(void* arg)
 }
 
 
-#if 0
 void
-ieee80211_notify_scan_done(struct ieee80211vap* vap)
+ieee80211_notify_scan_done(struct ieee80211com* ic)
 {
-	TRACE("%s\n", __FUNCTION__);
-
 	if (sNotificationModule != NULL) {
 		char messageBuffer[512];
 		KMessage message;
 		message.SetTo(messageBuffer, sizeof(messageBuffer), B_NETWORK_MONITOR);
 		message.AddInt32("opcode", B_NETWORK_WLAN_SCANNED);
-		message.AddString("interface", vap->iv_ifp->device_name);
+		message.AddString("interface", ic->ic_if.device_name);
 
 		sNotificationModule->send_notification(&message);
 	}
 }
-#endif
