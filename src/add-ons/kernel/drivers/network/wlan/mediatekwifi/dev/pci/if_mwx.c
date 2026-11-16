@@ -691,6 +691,10 @@ int		mwx_mcu_set_sniffer(struct mwx_softc *, int);
 int		mt7925_mcu_config_sniffer(struct mwx_softc *);
 int		mt7921_mcu_set_beacon_filter(struct mwx_softc *, int);
 int		mt7921_mcu_set_bss_pm(struct mwx_softc *, int);
+#ifdef __HAIKU__
+int		mt7921_mcu_add_bss(struct mwx_softc *, struct ieee80211_node *);
+int		mt7921_mcu_set_ps_profile(struct mwx_softc *, int);
+#endif
 int		mt7921_mcu_set_tx(struct mwx_softc *, struct mwx_vif *);
 int		mt7925_mcu_set_tx(struct mwx_softc *, struct mwx_vif *);
 int		mwx_mcu_set_hif_suspend(struct mwx_softc *, int);
@@ -1362,6 +1366,25 @@ mwx_newstate_task(void *ptr)
 			mt7925_mcu_set_rts_thresh(sc, 0x92b);
 		else
 			mt7921_mcu_set_rts_thresh(sc, 0x92b, 0);
+#ifdef __HAIKU__
+		/*
+		 * The mt7921 path never told the firmware which BSS it joined
+		 * (no BSSID/channel in BSS_INFO) and left the PS profile at the
+		 * firmware default.  Linux does both at association.
+		 */
+		if (sc->sc_hwtype != MWX_HW_MT7925) {
+			int err;
+
+			err = mt7921_mcu_add_bss(sc, ic->ic_bss);
+			if (err != 0)
+				printf("%s: could not add bss (error %d)\n",
+				    DEVNAME(sc), err);
+			err = mt7921_mcu_set_ps_profile(sc, 0);
+			if (err != 0)
+				printf("%s: could not set ps profile "
+				    "(error %d)\n", DEVNAME(sc), err);
+		}
+#endif
 		break;
 	}
 
@@ -1545,6 +1568,17 @@ mwx_set_key(struct ieee80211com *ic, struct ieee80211_node *ni,
 	    sc->sc_setkey_tail)
 		return ENOSPC;
 
+#ifdef __HAIKU__
+	/*
+	 * Also load the key for software crypto: frames the hardware did
+	 * not decrypt (no IEEE80211_RXI_HWDEC, e.g. group-addressed ones)
+	 * are otherwise dropped by net80211. TX stays in hardware.
+	 */
+	if (ieee80211_set_key(ic, ni, k) != 0)
+		printf("%s: no sw crypto for key %d cipher %d\n", DEVNAME(sc),
+		    k->k_id, k->k_cipher);
+#endif
+
 	a = &sc->sc_setkey_arg[sc->sc_setkey_cur];
 	a->ni = ni;
 	a->k = k;
@@ -1563,6 +1597,10 @@ mwx_delete_key(struct ieee80211com *ic, struct ieee80211_node *ni,
 	    DEVNAME(sc), ni, k->k_id, k->k_flags, k->k_cipher);
 
 	mwx_mcu_sta_key_delete(sc, ni, k);
+#ifdef __HAIKU__
+	if (k->k_flags & IEEE80211_KEY_SWCRYPTO)
+		ieee80211_delete_key(ic, ni, k);
+#endif
 }
 
 void
@@ -6066,6 +6104,120 @@ mt7921_mcu_set_bss_pm(struct mwx_softc *sc, int enable)
 #endif
 	return rv;
 }
+
+#ifdef __HAIKU__
+/* Linux mt76_connac_mcu_uni_add_bss() + mt76_connac_mcu_uni_set_chctx() */
+int
+mt7921_mcu_add_bss(struct mwx_softc *sc, struct ieee80211_node *ni)
+{
+	struct mwx_vif *mvif = &sc->sc_vif;
+	struct mwx_node *mn = (struct mwx_node *)ni;
+	struct {
+		struct {
+			uint8_t		bss_idx;
+			uint8_t		pad[3];
+		} __packed hdr;
+		struct mt76_connac_bss_basic_tlv basic;
+		struct {
+			uint16_t	tag;
+			uint16_t	len;
+			uint8_t		qos;
+			uint8_t		pad[3];
+		} __packed qos;
+	} __packed basic_req;
+	struct {
+		struct {
+			uint8_t		bss_idx;
+			uint8_t		pad[3];
+		} __packed hdr;
+		struct {
+			uint16_t	tag;
+			uint16_t	len;
+			uint8_t		control_channel;
+			uint8_t		center_chan;
+			uint8_t		center_chan2;
+			uint8_t		bw;
+			uint8_t		tx_streams;
+			uint8_t		rx_streams;
+			uint8_t		short_st;
+			uint8_t		ht_op_info;
+			uint8_t		sco;
+			uint8_t		band;
+			uint8_t		pad[2];
+		} __packed rlm;
+	} __packed rlm_req;
+	uint8_t nss;
+	int rv;
+
+	if (ni == NULL || ni->ni_chan == NULL)
+		return EINVAL;
+
+	memset(&basic_req, 0, sizeof(basic_req));
+	basic_req.hdr.bss_idx = mvif->idx;
+	basic_req.basic.tag = htole16(UNI_BSS_INFO_BASIC);
+	basic_req.basic.len = htole16(sizeof(basic_req.basic));
+	basic_req.basic.active = 1;
+	basic_req.basic.omac_idx = mvif->omac_idx;
+	basic_req.basic.hw_bss_idx = mvif->omac_idx > EXT_BSSID_START ?
+	    HW_BSSID_0 : mvif->omac_idx;
+	basic_req.basic.band_idx = mvif->band_idx;
+	basic_req.basic.wmm_idx = mvif->wmm_idx;
+	basic_req.basic.conn_type = htole32(STA_TYPE_STA | NETWORK_INFRA);
+	/* BSS_INFO uses the inverted sense (mt7915/mt7925: !enable) */
+	basic_req.basic.conn_state = 0;
+	memcpy(basic_req.basic.bssid, ni->ni_bssid,
+	    sizeof(basic_req.basic.bssid));
+	basic_req.basic.bmc_tx_wlan_idx = htole16(mvif->vif_mn.wcid);
+	basic_req.basic.sta_idx = htole16(mn->wcid);
+	basic_req.basic.bcn_interval = htole16(ni->ni_intval);
+	basic_req.basic.dtim_period = ni->ni_dtimperiod ?
+	    ni->ni_dtimperiod : 1;
+	basic_req.qos.tag = htole16(UNI_BSS_INFO_QBSS);
+	basic_req.qos.len = htole16(sizeof(basic_req.qos));
+	basic_req.qos.qos = (ni->ni_flags & IEEE80211_NODE_QOS) != 0;
+
+	DPRINTF("%s: add bss %s wcid %u bmc %u bcn %u dtim %u\n",
+	    DEVNAME(sc), ether_sprintf(ni->ni_bssid), mn->wcid,
+	    mvif->vif_mn.wcid, ni->ni_intval, basic_req.basic.dtim_period);
+	rv = mwx_mcu_send_wait(sc, MCU_UNI_CMD_BSS_INFO_UPDATE, &basic_req,
+	    sizeof(basic_req));
+	if (rv != 0)
+		return rv;
+
+	nss = sc->sc_capa.num_streams ? sc->sc_capa.num_streams : 1;
+	memset(&rlm_req, 0, sizeof(rlm_req));
+	rlm_req.hdr.bss_idx = mvif->idx;
+	rlm_req.rlm.tag = htole16(UNI_BSS_INFO_RLM);
+	rlm_req.rlm.len = htole16(sizeof(rlm_req.rlm));
+	rlm_req.rlm.control_channel = ieee80211_mhz2ieee(ni->ni_chan->ic_freq,
+	    ni->ni_chan->ic_flags);
+	rlm_req.rlm.center_chan = rlm_req.rlm.control_channel;
+	rlm_req.rlm.bw = CMD_CBW_20MHZ;
+	rlm_req.rlm.tx_streams = nss;
+	rlm_req.rlm.rx_streams = (1 << nss) - 1;	/* chainmask */
+	rlm_req.rlm.short_st = 1;
+	rlm_req.rlm.band = IEEE80211_IS_CHAN_2GHZ(ni->ni_chan) ? 1 : 2;
+
+	return mwx_mcu_send_wait(sc, MCU_UNI_CMD_BSS_INFO_UPDATE, &rlm_req,
+	    sizeof(rlm_req));
+}
+
+/* ps_state 0: awake (CAM), 1: static PS, 2: dynamic PS */
+int
+mt7921_mcu_set_ps_profile(struct mwx_softc *sc, int ps_state)
+{
+	struct {
+		uint8_t		bss_idx;
+		uint8_t		ps_state;
+	} __packed req = {
+		.bss_idx = sc->sc_vif.idx,
+		.ps_state = ps_state,
+	};
+
+	return mwx_mcu_send_msg(sc, MCU_CE_CMD_SET_PS_PROFILE, &req,
+	    sizeof(req), NULL);
+}
+#endif
 
 #define IEEE80211_NUM_ACS	4
 int
