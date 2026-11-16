@@ -10,6 +10,7 @@
 #include <arch_acpi.h>
 #include <arch_smp.h>
 
+#include "aarch64.h"
 #include "serial.h"
 #include "acpi.h"
 
@@ -18,6 +19,7 @@
 
 
 void arm64_handle_acpi_fadt(acpi_fadt_arm_boot_arch armBootFlags);
+void arm64_smp_boot_cpu_only(uint64 mpidr);
 
 
 static void arch_acpi_get_uart_pl011(const uart_info &uart)
@@ -100,6 +102,10 @@ arch_handle_acpi()
 		uint64 gicd_base = 0;
 		uint64 gicr_base = 0;
 		uint8 version = 0;
+		// The boot CPU's MPIDR as arm64_secondary_startup computes it
+		const uint64 bootMpidr = READ_SPECIALREG(MPIDR_EL1) & ~((1UL << 31) | (1UL << 24));
+		platform_cpu_info* cpus[SMP_MAX_CPUS];
+		uint32 cpuCount = 0;
 
 		acpi_apic *desc = (acpi_apic*)(madt + 1);
 		while (desc != (acpi_apic*)((char*)madt + madt->header.length)) {
@@ -108,12 +114,18 @@ arch_handle_acpi()
 				if (acpi_gicc->cpu_interface_num == 0)
 					gicc_base = acpi_gicc->base_address;
 
+				if ((acpi_gicc->flags & ACPI_GICC_ENABLED) == 0) {
+					desc = (acpi_apic*)((char*)desc + desc->length);
+					continue;
+				}
+
 				platform_cpu_info* cpu = NULL;
 				arch_smp_register_cpu(&cpu);
 				if (cpu == NULL)
 					break;
 				cpu->id = acpi_gicc->cpu_interface_num;
 				cpu->mpidr = acpi_gicc->mpidr;
+				cpus[cpuCount++] = cpu;
 			} else if (desc->type == ACPI_MADT_GIC_DISTRIBUTOR) {
 				acpi_gic_distributor *acpi_gicd = (acpi_gic_distributor*)desc;
 				gicd_base = acpi_gicd->base_address;
@@ -135,6 +147,26 @@ arch_handle_acpi()
 			else if (gicc_base != 0)
 				version = GICV2;
 			dprintf("gic version not reported in acpi, assuming %d\n", version);
+		}
+		if (version != GICV2) {
+			// The CPU interface number is for GICv2 only (Hyper-V's GICv3
+			// GICCs all say 0); number the CPUs in MADT order instead, as
+			// the device tree path does, with the boot CPU as 0.
+			const uint64 affinityMask = 0xff00ffffffUL;
+			bool bootCpuFound = false;
+			uint32 secondaryCpus = 0;
+			for (uint32 i = 0; i < cpuCount; i++) {
+				if (!bootCpuFound
+					&& (cpus[i]->mpidr & affinityMask) == (bootMpidr & affinityMask)) {
+					cpus[i]->id = 0;
+					bootCpuFound = true;
+				} else
+					cpus[i]->id = ++secondaryCpus;
+			}
+			if (!bootCpuFound) {
+				dprintf("boot cpu mpidr %lx not in acpi madt, using it alone\n", bootMpidr);
+				arm64_smp_boot_cpu_only(bootMpidr);
+			}
 		}
 		if (version == GICV2 && gicc_base != 0 && gicd_base != 0) {
 			strcpy(intc.kind, INTC_KIND_GICV2);

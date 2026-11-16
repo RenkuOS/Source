@@ -279,6 +279,16 @@ arm64_handle_acpi_fadt(acpi_fadt_arm_boot_arch armBootFlags)
 
 
 void
+arm64_smp_boot_cpu_only(uint64 mpidr)
+{
+	// The CPU list does not describe the boot CPU: run on it alone
+	sCpus[0].id = 0;
+	sCpus[0].mpidr = mpidr;
+	sCpuCount = 1;
+}
+
+
+void
 arm64_handle_fdt_psci_node(const void* fdt, int node)
 {
 	const char* method = (const char*)fdt_getprop(fdt, node,

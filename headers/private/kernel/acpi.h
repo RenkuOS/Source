@@ -233,6 +233,8 @@ typedef struct acpi_gic_interface {
 	uint16 spe_overflow_gsiv;
 } _PACKED acpi_gic_interface;
 
+#define ACPI_GICC_ENABLED		0x01
+
 typedef struct acpi_gic_distributor {
 	uint8 type;
 	uint8 length;
