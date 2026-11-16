@@ -114,7 +114,8 @@ AudioMixer::AudioMixer(BMediaAddOn *addOn, bool isSystemMixer)
 	fInternalLatency(1),
 	fAutoStop(false),
 	fLastLateNotification(0),
-	fLastLateness(0)
+	fLastLateness(0),
+	fNextFirstID(-1)
 {
 	BMediaNode::AddNodeKind(B_SYSTEM_MIXER);
 
@@ -403,12 +404,34 @@ AudioMixer::GetLatencyFor(const media_destination &for_whom,
 }
 
 
+/*!	The output whose device runs the mix: the first output, or while that
+	one is detached (MixerCore::DetachFirstOutput()), another connected
+	output on the same clock.
+*/
+MixerOutput*
+AudioMixer::_ClockOutput()
+{
+	if (!fCore->FirstOutputDetached())
+		return fCore->Output();
+
+	for (int32 i = 0; MixerOutput* output = fCore->OutputAt(i); i++) {
+		if (output != fCore->Output() && output->SharesClock()
+			&& output->MediaOutput().destination != media_destination::null)
+			return output;
+	}
+	return NULL;
+}
+
+
 void
 AudioMixer::_AutoStart()
 {
-	MixerOutput* mixerOutput = fCore->Output();
-	if (mixerOutput == NULL)
+	MixerOutput* mixerOutput = _ClockOutput();
+	if (mixerOutput == NULL) {
+		if (fCore->Output() != NULL)
+			fCore->Start();
 		return;
+	}
 
 	BMediaRoster* roster = BMediaRoster::Roster();
 	media_node_id outputID = roster->NodeIDFor(mixerOutput->MediaOutput().destination.port);
@@ -444,7 +467,7 @@ AudioMixer::_AutoStop()
 {
 	fCore->Stop();
 
-	MixerOutput* mixerOutput = fCore->Output();
+	MixerOutput* mixerOutput = _ClockOutput();
 	if (mixerOutput == NULL)
 		return;
 
@@ -809,10 +832,15 @@ AudioMixer::GetNextOutput(int32 *cookie, media_output *out_output)
 		out_output->destination = media_destination::null;
 		out_output->format.Clear();
 		out_output->format.type = B_MEDIA_RAW_AUDIO;
-		strcpy(out_output->name,
-			fCore->Output() != NULL ? "Free Output" : "Mixer Output");
+		// The same name whether or not anything is connected yet, so the
+		// jack to connect from is always the one called "Free Output"; the
+		// connections made from it are "Mixer Output", "Mixer Output 2"...
+		strcpy(out_output->name, "Free Output");
 	} else {
-		// the other outputs are the currently connected ones
+		// the other outputs are the currently connected ones; a detached
+		// first output (always at index 0) is not connected
+		if (*cookie == 1 && fCore->FirstOutputDetached())
+			*cookie += 1;
 		MixerOutput *output = fCore->OutputAt(*cookie - 1);
 		if (output == NULL) {
 			fCore->Unlock();
@@ -963,17 +991,27 @@ AudioMixer::PrepareToConnect(const media_source &what,
 	bigtime_t latency;
 	media_node_id timeSource;
 	status_t latencyStatus = FindLatencyFor(where, &latency, &timeSource);
+	media_node systemTimeSource;
+	if (BMediaRoster::Roster()->GetTimeSource(&systemTimeSource) != B_OK)
+		systemTimeSource = media_node::null;
 
 	fCore->Lock();
 
 	MixerOutput* first = fCore->Output();
-	if (first != NULL) {
+	bool sameClock = latencyStatus == B_OK && fCore->TimeSource() != NULL
+		&& timeSource == fCore->TimeSource()->ID();
+	// A detached first output gives its place to the next output on its
+	// clock, or on the system time source: media_server moves that one
+	// first when the default output changes to another device.
+	bool takesFirst = first != NULL && fCore->FirstOutputDetached()
+		&& fNextFirstID < 0 && latencyStatus == B_OK
+		&& (sameClock || timeSource == systemTimeSource.node);
+	if (first != NULL && !takesFirst) {
 		// Another output gets the same mix at the same time, so it must run
 		// on the same clock: another channel of the same device, or a node
 		// that follows the default time source such as BMediaRecorder. A
 		// second sound card has its own clock and would drift.
-		if (latencyStatus != B_OK || fCore->TimeSource() == NULL
-			|| timeSource != fCore->TimeSource()->ID()) {
+		if (!sameClock) {
 			fCore->Unlock();
 			ERROR("AudioMixer::PrepareToConnect: destination is not on our "
 				"time source\n");
@@ -1030,7 +1068,7 @@ AudioMixer::PrepareToConnect(const media_source &what,
 	/* set source and suggest a name */
 	*out_source = what;
 	out_source->id = fCore->CreateOutputID();
-	if (first == NULL)
+	if (first == NULL || takesFirst)
 		strcpy(out_name, "Mixer Output");
 	else {
 		// The ids also count failed format attempts, so the label takes the
@@ -1065,7 +1103,7 @@ AudioMixer::PrepareToConnect(const media_source &what,
 
 	PRINT_FORMAT("AudioMixer::PrepareToConnect: final format", *format);
 
-	if (first != NULL) {
+	if (first != NULL && sameClock) {
 		// it is mixed in the same cycle as the first output
 		const media_multi_audio_format& mix
 			= first->MediaOutput().format.u.raw_audio;
@@ -1089,6 +1127,8 @@ AudioMixer::PrepareToConnect(const media_source &what,
 
 	// it stays disabled until Connect()
 	fCore->AddOutput(output);
+	if (takesFirst)
+		fNextFirstID = out_source->id;
 
 	fCore->Unlock();
 	return B_OK;
@@ -1100,6 +1140,10 @@ AudioMixer::Connect(status_t error, const media_source &source,
 	const media_destination &dest, const media_format &format, char *io_name)
 {
 	TRACE("AudioMixer::Connect\n");
+
+	bool takesFirst = source.id == fNextFirstID;
+	if (takesFirst)
+		fNextFirstID = -1;
 
 	fCore->Lock();
 	// are we still connected?
@@ -1119,8 +1163,22 @@ AudioMixer::Connect(status_t error, const media_source &source,
 		fCore->Lock();
 		delete output->BufferGroup();
 		fCore->RemoveOutput(source);
+		if (fCore->FirstOutputDetached() && fCore->CountOutputs() == 1) {
+			// the outputs it kept going for have gone in the meantime
+			fCore->RemoveOutput(fCore->Output()->MediaOutput().source);
+			fCore->SetTimingInfo(NULL, 0);
+		}
 		fCore->Unlock();
 		return;
+	}
+
+	if (takesFirst) {
+		fCore->Lock();
+		if (fCore->FirstOutputDetached()) {
+			fCore->ReplaceFirstOutput(output);
+			isFirst = true;
+		}
+		fCore->Unlock();
 	}
 
 	if (!isFirst) {
@@ -1251,14 +1309,23 @@ AudioMixer::Disconnect(const media_source& what, const media_destination& where)
 	}
 
 	BBufferGroup* group = output->BufferGroup();
-	if (output != fCore->Output()) {
-		// one of the other outputs: the mix goes on as before
-		fCore->RemoveOutput(what);
+	bool detached = fCore->FirstOutputDetached();
+	int32 connected = fCore->CountOutputs() - (detached ? 1 : 0);
+	if (connected > 1) {
+		// The other outputs keep the mix. The first output's place stays
+		// with its time source, format, master gain and mute, so they go on
+		// as before, and the next connection to it takes it over.
+		if (output == fCore->Output())
+			fCore->DetachFirstOutput();
+		else
+			fCore->RemoveOutput(what);
 		delete group;
 		fCore->Unlock();
 		UpdateParameterWeb();
 		return;
 	}
+
+	// The last output: the mixer stops, as it always did.
 
 	// Switch our prefered format back to default
 	// frame rate and channel count.
@@ -1268,6 +1335,8 @@ AudioMixer::Disconnect(const media_source& what, const media_destination& where)
 	if (fAutoStop)
 		_AutoStop();
 
+	if (detached)
+		fCore->RemoveOutput(fCore->Output()->MediaOutput().source);
 	fCore->RemoveOutput(what);
 	fCore->SetTimingInfo(NULL, 0);
 
