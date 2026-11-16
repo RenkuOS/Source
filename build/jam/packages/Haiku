@@ -64,7 +64,7 @@ AddFilesToPackage add-ons kernel busses random :
 	;
 AddFilesToPackage add-ons kernel busses scsi :
 	ahci
-	hyperv_scsi@x86,x86_64
+	hyperv_scsi@x86,x86_64,arm64
 	virtio_scsi
 	;
 AddFilesToPackage add-ons kernel busses usb :
@@ -174,7 +174,7 @@ AddNewDriversToPackage audio hmulti :
 #	virtio_sound
 	;
 AddNewDriversToPackage hyperv :
-	hyperv_ic@x86,x86_64
+	hyperv_ic@x86,x86_64,arm64
 	;
 
 # legacy drivers
@@ -356,8 +356,8 @@ AddBootModuleSymlinksToPackage
 	efi_gpt
 	generic_ide_pci
 	highpoint_ide_pci
-	hyperv@x86,x86_64
-	hyperv_scsi@x86,x86_64
+	hyperv@x86,x86_64,arm64
+	hyperv_scsi@x86,x86_64,arm64
 	ide_isa@x86
 	isa@x86,x86_64
 	intel
