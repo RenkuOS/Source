@@ -35,14 +35,6 @@ operator==(const display_mode &lhs, const display_mode &rhs)
 }
 
 
-/*!	Checks if the specified \a mode can be set using VESA. */
-static bool
-is_mode_supported(display_mode* mode)
-{
-	return (mode != NULL) && (*mode == gInfo->shared_info->current_mode);
-}
-
-
 /*!	Creates the initial mode list of the primary accelerant.
 	It's called from vesa_init_accelerant().
 */
@@ -58,23 +50,31 @@ create_mode_list(void)
 
 	const color_space colorspace[] = {(color_space)currentMode.space};
 
-	if (!gInfo->shared_info->has_edid) {
-		display_mode mode = gInfo->shared_info->current_mode;
-
-		compute_display_timing(mode.virtual_width, mode.virtual_height, 60, false,
-			&mode.timing);
-		fill_display_mode(mode.virtual_width, mode.virtual_height, &mode);
-
-		gInfo->mode_list_area = create_display_modes("virtio_gpu modes",
-			NULL, &mode, 1, colorspace, 1, is_mode_supported, &gInfo->mode_list,
-			&gInfo->shared_info->mode_count);
-	} else {
-		edid1_info edidInfo;
-		edid_decode(&edidInfo, &gInfo->shared_info->edid_raw);
-		gInfo->mode_list_area = create_display_modes("virtio_gpu modes",
-			&edidInfo, NULL, 0, colorspace, 1, NULL, &gInfo->mode_list,
-			&gInfo->shared_info->mode_count);
+	// A virtual display can show any size up to the driver's 3840x2160
+	// framebuffer, whatever its EDID says (Parallels Desktop only lists
+	// 1024x768 there), so always offer the host's current size and a set of
+	// common sizes besides the EDID modes.
+	static const struct { uint16 width, height; } kSizes[] = {
+		{1280, 720}, {1280, 800}, {1280, 1024}, {1366, 768}, {1440, 900},
+		{1600, 900}, {1600, 1200}, {1680, 1050}, {1920, 1080}, {1920, 1200},
+		{2560, 1440}, {2560, 1600}, {3840, 2160}
+	};
+	const uint32 kSizeCount = sizeof(kSizes) / sizeof(kSizes[0]);
+	display_mode modes[kSizeCount + 1];
+	modes[0] = currentMode;
+	fill_display_mode(currentMode.virtual_width, currentMode.virtual_height, &modes[0]);
+	for (uint32 i = 0; i < kSizeCount; i++) {
+		compute_display_timing(kSizes[i].width, kSizes[i].height, 60, false,
+			&modes[i + 1].timing);
+		fill_display_mode(kSizes[i].width, kSizes[i].height, &modes[i + 1]);
 	}
+
+	edid1_info edidInfo;
+	if (gInfo->shared_info->has_edid)
+		edid_decode(&edidInfo, &gInfo->shared_info->edid_raw);
+	gInfo->mode_list_area = create_display_modes("virtio_gpu modes",
+		gInfo->shared_info->has_edid ? &edidInfo : NULL, modes, kSizeCount + 1,
+		colorspace, 1, NULL, &gInfo->mode_list, &gInfo->shared_info->mode_count);
 	if (gInfo->mode_list_area < 0)
 		return gInfo->mode_list_area;
 
