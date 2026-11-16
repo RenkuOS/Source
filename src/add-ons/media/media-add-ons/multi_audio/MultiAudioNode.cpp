@@ -872,6 +872,7 @@ MultiAudioNode::Connected(const media_source& producer,
 	// so that the next connection to this port finds a free jack
 	_KeepOneFreeInput(channel->fPort);
 
+	_RunWhileInUse();
 	return B_OK;
 }
 
@@ -902,6 +903,8 @@ MultiAudioNode::Disconnected(const media_source& producer,
 
 	// may delete channel
 	_KeepOneFreeInput(channel->fPort);
+
+	_StopWhenUnused();
 }
 
 
@@ -1191,6 +1194,7 @@ MultiAudioNode::Connect(status_t error, const media_source& source,
 	_KeepOneFreeOutput(channel->fPort);
 
 	_StartOutputThreadIfNeeded();
+	_RunWhileInUse();
 }
 
 
@@ -1219,6 +1223,8 @@ MultiAudioNode::Disconnect(const media_source& what,
 
 		// may delete channel
 		_KeepOneFreeOutput(channel->fPort);
+
+		_StopWhenUnused();
 	} else {
 		fprintf(stderr, "\tDisconnect() called with wrong source/destination ("
 			"%" B_PRId32 "/%" B_PRId32 "), ours is (%" B_PRId32 "/%" B_PRId32
@@ -1321,6 +1327,14 @@ MultiAudioNode::HandleEvent(const media_timed_event* event, bigtime_t lateness,
 		case BTimedEventQueue::B_HANDLE_BUFFER:
 			if (RunState() == BMediaEventLooper::B_STARTED)
 				_HandleBuffer(event, lateness, realTimeEvent);
+			else {
+				// Taking it out of the queue does not recycle it, so a
+				// stopped node would keep the producer's buffers for good
+				// and it would run out of them.
+				BBuffer* buffer = (BBuffer*)event->pointer;
+				if (buffer != NULL)
+					buffer->Recycle();
+			}
 			break;
 		case BTimedEventQueue::B_DATA_STATUS:
 			_HandleDataStatus(event, lateness, realTimeEvent);
@@ -2702,6 +2716,66 @@ MultiAudioNode::_StartOutputThreadIfNeeded()
 
 	resume_thread(fThread);
 	return B_OK;
+}
+
+
+/*!	Whether anything is connected to us, to a playback jack or a capture
+	output (our own capture to our own playback counts).
+*/
+bool
+MultiAudioNode::_InUse() const
+{
+	if (fActiveOutputs > 0)
+		return true;
+	for (int32 i = 0; i < fInputs.CountItems(); i++) {
+		node_input* input = (node_input*)fInputs.ItemAt(i);
+		if (input->fInput.source != media_source::null)
+			return true;
+	}
+	return false;
+}
+
+
+/*!	A device runs while anything is connected to it, as a JACK or PipeWire
+	driver does: the first connection starts it, whoever made it. Before,
+	only the system mixer started it (when an application began to play
+	through it), so a node connected straight to the device got nothing
+	until then.
+*/
+void
+MultiAudioNode::_RunWhileInUse()
+{
+	if (RunState() == B_STARTED || !_InUse())
+		return;
+	BMediaEventLooper::Start(TimeSource()->Now());
+}
+
+
+/*!	The last connection is gone: stop, as the system mixer used to stop us
+	when its last application stopped playing.
+*/
+void
+MultiAudioNode::_StopWhenUnused()
+{
+	if (RunState() != B_STARTED || _InUse())
+		return;
+	BMediaEventLooper::Stop(0, true);
+}
+
+
+/*!	A Stop while anything is connected is ignored: the system mixer stops its
+	output when no application plays through it, and that silenced every
+	other node playing straight to the device (a DAW) and stopped the clock
+	they run on. We stop when the last connection goes (_StopWhenUnused()).
+*/
+void
+MultiAudioNode::Stop(bigtime_t performanceTime, bool immediate)
+{
+	if (_InUse()) {
+		PRINT(("MultiAudioNode::Stop: in use, keeps running\n"));
+		return;
+	}
+	BMediaEventLooper::Stop(performanceTime, immediate);
 }
 
 
