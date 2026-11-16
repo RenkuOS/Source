@@ -113,6 +113,9 @@ public:
 
 			void				SetAutoInstalled(const char* const* packages,
 									int packageCount, bool autoInstalled);
+			void				SetHeld(const char* const* packages,
+									int packageCount, bool held);
+			void				GetHeldPackages(BStringList& _packages);
 
 
 	virtual	status_t			DownloadPackage(const BString& fileURL,
@@ -161,11 +164,13 @@ private:
 			void				_UpdateAutoInstalledPackages(
 									const BStringList& requestedPackages,
 									const BStringList& installedPackages);
-			void				_ReadAutoInstalledPackages(
+			void				_ReadPackageNames(
 									BPackageInstallationLocation location,
+									const char* fileName,
 									BStringList& _packages);
-			status_t			_WriteAutoInstalledPackages(
+			status_t			_WritePackageNames(
 									BPackageInstallationLocation location,
+									const char* fileName,
 									const BStringList& packages);
 
 			void				_AddInstalledRepository(
@@ -195,6 +200,7 @@ protected:
 			RemoteRepositoryList fOtherRepositories;
 			MiscLocalRepository* fLocalRepository;
 			TransactionList		fTransactions;
+			BStringList			fHeldPackages;
 
 			// must be set by the derived class
 			InstallationInterface* fInstallationInterface;
