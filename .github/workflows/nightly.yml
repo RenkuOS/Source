@@ -64,6 +64,27 @@ jobs:
                  --name "image-${arch}" --dir "staging" 2>/dev/null || continue
               published="${published} ${arch}"
               echo "including ${arch}"
+              # The system package repository of the same build, for mirrors
+              # to fetch without a GitHub token. The artifact holds one
+              # directory, named for the packaging architecture (x86_gcc2 for
+              # x86_gcc2h). The tar has the same layout as RenkuOSPorts'
+              # renkuosports-arm64-repo.tar, so fetch-repo.sh can serve it
+              # with REPO_TAR set to its name.
+              if gh run download "${{ github.run_id }}" --repo "${{ github.repository }}" \
+                   --name "package-repo-${arch}" --dir "/tmp/repo-${arch}" 2>/dev/null; then
+                packaging="$(ls "/tmp/repo-${arch}")"
+                if [ "$(echo "${packaging}" | wc -l)" = 1 ] && [ -f "/tmp/repo-${arch}/${packaging}/repo" ]; then
+                  tar -cf "staging/renkuos-${packaging}-repo.tar" -C "/tmp/repo-${arch}/${packaging}" \
+                    repo repo.info repo.sha256 packages &&
+                    ( cd staging && sha256sum "renkuos-${packaging}-repo.tar" > "renkuos-${packaging}-repo.tar.sha256" ) ||
+                    { rm -f "staging/renkuos-${packaging}-repo.tar" "staging/renkuos-${packaging}-repo.tar.sha256"
+                      echo "::warning::could not pack the ${arch} package repository"; }
+                else
+                  echo "::warning::unexpected layout in package-repo-${arch}; not publishing it"
+                fi
+              else
+                echo "::warning::no package-repo-${arch} artifact; publishing the image without it"
+              fi
             else
               echo "::warning::${arch} did not pass the boot check; not publishing it."
             fi
@@ -107,6 +128,11 @@ jobs:
             echo "debugger. That is the extent of the automated testing so far — it is"
             echo "not evidence that anything else works."
             echo ""
+            echo "Each \`renkuos-<arch>-repo.tar\` is the system package repository of the"
+            echo "same build (\`repo\`, \`repo.info\`, \`repo.sha256\`, and \`packages/\`), for"
+            echo "mirrors, named for the packaging architecture (\`x86_gcc2\` for \`x86_gcc2h\`)."
+            echo "Its name does not change, so its URL always gives the newest one."
+            echo ""
             echo "Verify a download with the matching \`.sha256\` file."
           } > notes.md
 
@@ -128,5 +154,5 @@ jobs:
             echo ""
             echo "https://github.com/${{ github.repository }}/releases/tag/nightly"
             echo ""
-            for f in staging/*.iso staging/*.zst; do [ -e "$f" ] || continue; echo "- \`$(basename "$f")\` ($(du -h "$f" | cut -f1))"; done
+            for f in staging/*.iso staging/*.zst staging/*.tar; do [ -e "$f" ] || continue; echo "- \`$(basename "$f")\` ($(du -h "$f" | cut -f1))"; done
           } >> "$GITHUB_STEP_SUMMARY"
