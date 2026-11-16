@@ -413,6 +413,12 @@ FUNCTION(x86_64_sysenter32_entry):
 	// On this return path it is possible that the frame has been modified,
 	// for example to execute a signal handler. In this case it is safer to
 	// return via IRET.
+	// Back from a signal handler, the interrupted code gets the FPU state
+	// arch_restore_signal_frame() restored, as on the fast path, also when
+	// there was more to do on the way out: cleared registers would be lost
+	// ones when the signal had interrupted it rather than a syscall.
+	cmpq	$SYSCALL_RESTORE_SIGNAL_FRAME, %r14
+	je		.Lrestore_fpu
 	CLEAR_FPU_STATE()
 	jmp .Liret
 
