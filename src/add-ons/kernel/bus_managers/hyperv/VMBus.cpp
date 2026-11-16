@@ -666,11 +666,14 @@ void
 VMBus::_ProcessPendingMessage(int32_t cpu)
 {
 	volatile hv_message* hvMessage = &fCPUMessages[cpu].interrupts[VMBUS_SINT_MESSAGE];
-	if (hvMessage->message_type != HYPERV_MSGTYPE_CHANNEL
+	uint32 messageType = hvMessage->message_type;
+	// The host writes the payload before message_type: don't read it ahead (arm64)
+	memory_read_barrier();
+	if (messageType != HYPERV_MSGTYPE_CHANNEL
 			|| hvMessage->payload_size < sizeof(vmbus_msg_header)) {
 		// Ignore any spurious pending messages
-		if (hvMessage->message_type != HYPERV_MSGTYPE_NONE)
-			ERROR("Invalid VMBus Hyper-V message type %u length 0x%X\n", hvMessage->message_type,
+		if (messageType != HYPERV_MSGTYPE_NONE)
+			ERROR("Invalid VMBus Hyper-V message type %u length 0x%X\n", messageType,
 				hvMessage->payload_size);
 		_SendEndOfMessage(cpu);
 		return;
