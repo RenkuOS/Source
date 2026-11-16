@@ -1242,11 +1242,15 @@ file_cache_init_post_boot_device(void)
 	if (handle == NULL)
 		return B_OK;
 
+	// Like CACHE_SET_MODULE, only accept a cache module: any other module
+	// would be called through the cache hooks
 	const char* name = get_driver_parameter(handle, "file_cache_module", NULL,
 		NULL);
-	if (name != NULL && get_module(name, (module_info**)&sCacheModule)
-			== B_OK) {
-		dprintf("file_cache: using cache module %s\n", name);
+	if (name != NULL) {
+		if (strncmp(name, CACHE_MODULES_NAME, strlen(CACHE_MODULES_NAME)) != 0)
+			dprintf("file_cache: %s is not a cache module\n", name);
+		else if (get_module(name, (module_info**)&sCacheModule) == B_OK)
+			dprintf("file_cache: using cache module %s\n", name);
 	}
 
 	unload_driver_settings(handle);
