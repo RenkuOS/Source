@@ -2758,6 +2758,13 @@ ieee80211_recv_deauth(struct ieee80211com *ic, struct mbuf *m,
 		    ic->ic_state == IEEE80211_S_RUN);
 		int stay_auth = ((ic->ic_userflags & IEEE80211_F_STAYAUTH) &&
 		    ic->ic_state >= IEEE80211_S_AUTH);
+#ifdef __HAIKU__
+		/* ignore deauth not sent from our BSS */
+		if (!IEEE80211_ADDR_EQ(wh->i_addr3, ic->ic_bss->ni_bssid)) {
+			ic->ic_stats.is_rx_wrongbss++;
+			break;
+		}
+#endif
 		if (!(bgscan || stay_auth))
 			ieee80211_new_state(ic, IEEE80211_S_AUTH,
 			    IEEE80211_FC0_SUBTYPE_DEAUTH);
@@ -2813,6 +2820,13 @@ ieee80211_recv_disassoc(struct ieee80211com *ic, struct mbuf *m,
 	case IEEE80211_M_STA: {
 		int bgscan = ((ic->ic_flags & IEEE80211_F_BGSCAN) &&
 		    ic->ic_state == IEEE80211_S_RUN);
+#ifdef __HAIKU__
+		/* ignore disassoc not sent from our BSS */
+		if (!IEEE80211_ADDR_EQ(wh->i_addr3, ic->ic_bss->ni_bssid)) {
+			ic->ic_stats.is_rx_wrongbss++;
+			break;
+		}
+#endif
 #ifdef __HAIKU__
 		/*
 		 * An AP that still holds our previous association ends it when
