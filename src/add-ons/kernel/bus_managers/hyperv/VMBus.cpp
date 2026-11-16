@@ -570,9 +570,15 @@ VMBus::_InterruptACPICallback(ACPI_RESOURCE* res, void* context)
 	int32* irq = static_cast<int32*>(context);
 
 	// Grab the first IRQ only. Gen1 usually has two IRQs, Gen2 just one.
-	// Only one IRQ is required for the VMBus device.
-	if (res->Type == ACPI_RESOURCE_TYPE_IRQ && *irq < 0)
+	// Only one IRQ is required for the VMBus device. arm64 gives one extended
+	// IRQ, a GIC PPI.
+	if (*irq >= 0)
+		return B_OK;
+	if (res->Type == ACPI_RESOURCE_TYPE_IRQ)
 		*irq = res->Data.Irq.Interrupt;
+	else if (res->Type == ACPI_RESOURCE_TYPE_EXTENDED_IRQ
+		&& res->Data.ExtendedIrq.InterruptCount > 0)
+		*irq = res->Data.ExtendedIrq.Interrupts[0];
 	return B_OK;
 }
 
