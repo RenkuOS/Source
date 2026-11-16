@@ -30,6 +30,11 @@ void x86_restart_syscall(struct iframe* frame);
 void x86_set_tls_context(Thread* thread);
 
 
+#ifdef __x86_64__
+bool x86_64_is_user_ip(uint64 cs, uint64 ip);
+#endif
+
+
 static inline Thread*
 arch_thread_get_current_thread(void)
 {

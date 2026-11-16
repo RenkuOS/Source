@@ -225,7 +225,14 @@ arch_restore_signal_frame(struct signal_frame_data* signalFrameData)
 	frame->fp = signalFrameData->context.uc_mcontext.x[29];
 	frame->lr = signalFrameData->context.uc_mcontext.lr;
 	frame->elr = signalFrameData->context.uc_mcontext.elr;
-	frame->spsr = signalFrameData->context.uc_mcontext.spsr;
+	// Only the condition flags are taken from userland. ERET restores PSTATE
+	// from SPSR_EL1, including the Exception level and the interrupt masks
+	// (Arm ARM DDI 0487D.a, D1-2179), so a user value could return to EL1 or
+	// run EL0 with interrupts masked. The rest keeps the EL0 state this
+	// syscall was entered with.
+	const uint64 userFlags = PSR_N | PSR_Z | PSR_C | PSR_V;
+	frame->spsr = (frame->spsr & ~userFlags)
+		| (signalFrameData->context.uc_mcontext.spsr & userFlags);
 	frame->sp = signalFrameData->context.uc_mcontext.sp;
 	memcpy(frame->fpu.regs, signalFrameData->context.uc_mcontext.fp_q,
 		sizeof(signalFrameData->context.uc_mcontext.fp_q));

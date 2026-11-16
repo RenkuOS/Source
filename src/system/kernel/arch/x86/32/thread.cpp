@@ -402,12 +402,11 @@ arch_restore_signal_frame(struct signal_frame_data* signalFrameData)
 	// handler for information purposes only, and are not used after the signal handling is
 	// complete.
 
-	frame->cs = signalFrameData->context.uc_mcontext.xregs.state.new_format.cs;
-	frame->ds = signalFrameData->context.uc_mcontext.xregs.state.new_format.ds;
-	frame->es = signalFrameData->context.uc_mcontext.xregs.state.new_format.es;
-	frame->fs = signalFrameData->context.uc_mcontext.xregs.state.new_format.fs;
-	frame->gs = signalFrameData->context.uc_mcontext.xregs.state.new_format.gs;
-	frame->user_ss = signalFrameData->context.uc_mcontext.xregs.state.new_format.ss;
+	// The segment selectors are not restored. They come from userland, and
+	// the kernel pops them and IRETs with them on the way back. A kernel CS
+	// would make IRET return to the given EIP in kernel mode, and a selector
+	// the CPU refuses faults there. The frame already holds the user
+	// selectors the thread entered this syscall with, and those are kept.
 
 	x86_frstor((void*)(&signalFrameData->context.uc_mcontext.xregs));
 

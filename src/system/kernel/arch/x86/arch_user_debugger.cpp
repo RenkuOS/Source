@@ -134,7 +134,17 @@ set_iframe_registers(iframe* frame, const debug_cpu_state* cpuState)
 	frame->cx = cpuState->rcx;
 	frame->bx = cpuState->rbx;
 	frame->ax = cpuState->rax;
-	frame->ip = cpuState->rip;
+
+	// The debugger can set any RIP, but IRET faults in kernel mode on one
+	// that is not a user address, so keep the old one in that case. CS is
+	// not settable, so the frame's own CS decides what is valid.
+	if (x86_64_is_user_ip(frame->cs, cpuState->rip))
+		frame->ip = cpuState->rip;
+	else {
+		dprintf("set_iframe_registers(): ignoring invalid rip %#" B_PRIx64
+			"\n", cpuState->rip);
+	}
+
 	frame->flags = (frame->flags & ~X86_EFLAGS_USER_SETTABLE_FLAGS)
 		| (cpuState->rflags & X86_EFLAGS_USER_SETTABLE_FLAGS);
 	frame->sp = cpuState->rsp;

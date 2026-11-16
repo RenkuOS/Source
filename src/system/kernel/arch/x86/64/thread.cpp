@@ -441,10 +441,45 @@ arch_setup_signal_frame(Thread* thread, struct sigaction* action,
 }
 
 
+/*!	Returns whether \a ip is a user address that IRET may load into RIP when
+	it returns to the user code segment \a cs. IRET raises #GP in kernel mode
+	when RIP is non-canonical (Intel SDM Vol. 2A, IRET, "64-Bit Mode
+	Exceptions"), so an instruction pointer that comes from userland must
+	pass this check before it is written into an iframe.
+*/
+bool
+x86_64_is_user_ip(uint64 cs, uint64 ip)
+{
+	if (cs == USER32_CODE_SELECTOR)
+		return ip <= 0xffffffff;
+
+	return ip <= USER_TOP;
+}
+
+
 int64
 arch_restore_signal_frame(struct signal_frame_data* signalFrameData)
 {
 	iframe* frame = x86_get_current_iframe();
+	Thread* thread = thread_get_current_thread();
+
+	// CS, SS, and RIP come from userland, and IRET loads them on the way
+	// back. IRET faults in kernel mode on a value it refuses, after the user
+	// GS base has already been swapped back in, so check them before any of
+	// the frame is changed. The kernel only ever stores these values in a
+	// signal frame, so a program that returns the frame it was given always
+	// passes.
+	const uint16 cs = signalFrameData->context.uc_mcontext.fpu.fp_fxsave.cs;
+	const uint16 ss = signalFrameData->context.uc_mcontext.fpu.fp_fxsave.ss;
+	const uint64 ip = signalFrameData->context.uc_mcontext.rip;
+	if ((cs != USER_CODE_SELECTOR && cs != USER32_CODE_SELECTOR)
+		|| ss != USER_DATA_SELECTOR || !x86_64_is_user_ip(cs, ip)) {
+		dprintf("arch_restore_signal_frame(): thread %" B_PRId32 ": invalid "
+			"cs %#x, ss %#x, or rip %#" B_PRIx64 ". Killing thread...\n",
+			thread->id, cs, ss, ip);
+		kill_thread(thread->id);
+		return B_BAD_VALUE;
+	}
 
 	frame->orig_rax = signalFrameData->syscall_restart_return_value;
 	frame->ax = signalFrameData->context.uc_mcontext.rax;
@@ -463,7 +498,7 @@ arch_restore_signal_frame(struct signal_frame_data* signalFrameData)
 	frame->r14 = signalFrameData->context.uc_mcontext.r14;
 	frame->r15 = signalFrameData->context.uc_mcontext.r15;
 	frame->user_sp = signalFrameData->context.uc_mcontext.rsp;
-	frame->ip = signalFrameData->context.uc_mcontext.rip;
+	frame->ip = ip;
 	frame->flags = (frame->flags & ~(uint64)X86_EFLAGS_USER_FLAGS)
 		| (signalFrameData->context.uc_mcontext.rflags & X86_EFLAGS_USER_FLAGS);
 
@@ -471,10 +506,8 @@ arch_restore_signal_frame(struct signal_frame_data* signalFrameData)
 	// handler for information purposes only, and are not used after the signal handling is
 	// complete.
 
-	frame->cs = signalFrameData->context.uc_mcontext.fpu.fp_fxsave.cs;
-	frame->ss = signalFrameData->context.uc_mcontext.fpu.fp_fxsave.ss;
-
-	Thread* thread = thread_get_current_thread();
+	frame->cs = cs;
+	frame->ss = ss;
 
 	memcpy(thread->arch_info.user_fpu_state,
 		(void*)&signalFrameData->context.uc_mcontext.fpu, min_c(gFPUSaveLength, sizeof(savefpu)));
