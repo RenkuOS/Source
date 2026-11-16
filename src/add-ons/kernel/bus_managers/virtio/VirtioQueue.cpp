@@ -15,6 +15,16 @@ round_to_pagesize(uint32 size)
 }
 
 
+/*!	The used ring's index, which the device advances as it completes
+	requests.
+*/
+static inline uint16
+used_index(const struct vring& ring)
+{
+	return *(volatile uint16*)&ring.used->idx;
+}
+
+
 area_id
 alloc_mem(void **virt, phys_addr_t *phy, size_t size, uint32 protection,
 	const char *name)
@@ -244,11 +254,25 @@ VirtioQueue::Interrupt()
 	CALLED();
 
 	DisableInterrupt();
+	const uint16 usedIndex = used_index(fRing);
 
 	if (fCallback != NULL)
 		fCallback(Device()->DriverCookie(), fCookie);
 
 	EnableInterrupt();
+
+	// The device raises no interrupt for a request it completes while
+	// interrupts are disabled. Such a completion would go unnoticed until a
+	// later interrupt, and a driver that waits for it may never cause one.
+	// So look at the used ring again now. The device writes the used index
+	// before it reads the flags, and EnableInterrupt() wrote the flags before
+	// this reads the index: either the device sees interrupts enabled and
+	// raises one, or this sees the new index. The callback may then find
+	// nothing left to do, as it already may on a shared interrupt.
+	memory_full_barrier();
+	if (used_index(fRing) != usedIndex && fCallback != NULL)
+		fCallback(Device()->DriverCookie(), fCookie);
+
 	return B_OK;
 }
 
