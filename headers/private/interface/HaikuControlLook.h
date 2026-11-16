@@ -21,6 +21,7 @@ namespace BPrivate {
 class HaikuControlLook : public BControlLook {
 public:
 								HaikuControlLook();
+								HaikuControlLook(BControlLook* outer);
 	virtual						~HaikuControlLook();
 
 	virtual BAlignment			DefaultLabelAlignment() const;
@@ -571,6 +572,9 @@ protected:
 			bool				_RadioButtonAndCheckBoxMarkColor(
 									const rgb_color& base, rgb_color& color,
 									uint32 flags) const;
+
+private:
+			BControlLook*		_Outer() const;
 
 private:
 			bool				fCachedOutline;
