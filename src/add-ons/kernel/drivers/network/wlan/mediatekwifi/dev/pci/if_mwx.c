@@ -402,6 +402,9 @@ struct mwx_softc {
 	int			sc_coredump_cnt;
 	int8_t			sc_resetting;
 	int8_t			sc_fw_loaded;
+#ifdef __HAIKU__
+	thread_id		sc_reset_thread;	/* running mwx_reset_task */
+#endif
 
 	enum ieee80211_state	sc_ns_state;
 	int			sc_ns_arg;
@@ -953,6 +956,16 @@ mwx_init(struct ifnet *ifp)
 
 	ieee80211_begin_scan(ifp);
 
+#ifdef __HAIKU__
+	/*
+	 * mwx_reset_task() runs on the same single taskq thread as
+	 * mwx_newstate_task(), so waiting there always times out and stops
+	 * the interface again.  The queued newstate task runs afterwards.
+	 */
+	if (sc->sc_reset_thread == find_thread(NULL))
+		return 0;
+#endif
+
 	/*
 	 * ieee80211_begin_scan() ends up scheduling mwx_newstate_task().
 	 * Wait until the transition to SCAN state has completed.
@@ -984,7 +997,13 @@ mwx_stop(struct ifnet *ifp)
 	task_del(sc->sc_nswq, &sc->sc_bgscan_done_task);
 	task_del(sc->sc_nswq, &sc->sc_setkey_task);
 	task_del(sc->sc_nswq, &sc->sc_scan_task);
-	task_del(sc->sc_nswq, &sc->sc_reset_task);
+	/*
+	 * Cancelling a queued reset must drop the guard, or mwx_reset() is
+	 * disabled for good.  From mwx_reset_task() itself task_del()
+	 * returns 0 and the guard stays.
+	 */
+	if (task_del(sc->sc_nswq, &sc->sc_reset_task))
+		sc->sc_resetting = 0;
 #ifdef __HAIKU__
 	task_del(sc->sc_nswq, &sc->sc_ba_task);
 	sc->sc_ba_start = sc->sc_ba_stop = 0;
@@ -2123,6 +2142,7 @@ mwx_attach(struct device *parent, struct device *self, void *aux)
 	timeout_set(&sc->sc_reset_to, mwx_reset_timeo, sc);
 
 #ifdef __HAIKU__
+	sc->sc_reset_thread = -1;
 	/*
 	 * The boot volume is mounted before network drivers load. As with
 	 * config_mountroot() upstream, a failure does not fail the attach:
@@ -2340,8 +2360,15 @@ mwx_reset_task(void *arg)
 	if (ifp->if_flags & IFF_RUNNING)
 		mwx_stop(ifp);
 
-	if (!fatal && (ifp->if_flags & (IFF_UP | IFF_RUNNING)) == IFF_UP)
+	if (!fatal && (ifp->if_flags & (IFF_UP | IFF_RUNNING)) == IFF_UP) {
+#ifdef __HAIKU__
+		sc->sc_reset_thread = find_thread(NULL);
+#endif
 		mwx_init(ifp);
+#ifdef __HAIKU__
+		sc->sc_reset_thread = -1;
+#endif
+	}
 	sc->sc_resetting = 0;
 	sc->sc_coredump_cnt = 0;
 }
