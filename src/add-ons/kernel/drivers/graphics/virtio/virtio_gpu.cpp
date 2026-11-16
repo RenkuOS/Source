@@ -673,6 +673,12 @@ virtio_gpu_setup_display(virtio_gpu_driver_info* info)
 	{
 		MutexLocker commandLocker(&info->commandLock);
 
+		// so we can fit every mode
+		info->framebufferWidth = 3840;
+		info->framebufferHeight = 2160;
+		info->sharedInfo->max_width = info->framebufferWidth;
+		info->sharedInfo->max_height = info->framebufferHeight;
+
 		status = virtio_gpu_get_display_info(info, info->displayWidth,
 			info->displayHeight, enabled);
 		if (status == B_OK && !enabled) {
@@ -684,10 +690,6 @@ virtio_gpu_setup_display(virtio_gpu_driver_info* info)
 
 		if ((info->features & VIRTIO_GPU_F_EDID) != 0)
 			virtio_gpu_get_edids(info, 0);
-
-		// so we can fit every mode
-		info->framebufferWidth = 3840;
-		info->framebufferHeight = 2160;
 
 		// create framebuffer area
 		info->framebufferSize = 4 * info->framebufferWidth * info->framebufferHeight;

@@ -28,6 +28,9 @@ struct virtio_gpu_shared_info {
 
 	char			name[32];
 	uint32			vram_size;
+
+	uint32			max_width;			// the framebuffer's size, which
+	uint32			max_height;			// limits the display modes
 };
 
 //----------------- ioctl() interface ----------------
