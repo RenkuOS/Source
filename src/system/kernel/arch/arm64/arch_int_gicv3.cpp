@@ -57,7 +57,11 @@ GICv3InterruptController::GICv3InterruptController(phys_addr_t gicd_phys_addr,
 
 	uint32_t typer = GICD_TYPER;
 	fMaxInt = static_cast<int32_t>((typer & 0x1f) + 1) * 32;
-	reserve_io_interrupt_vectors(fMaxInt, 0, INTERRUPT_TYPE_IRQ);
+	// SGIs and PPIs (0 - 31) belong to each CPU, as the generic timer does:
+	// they cannot be routed, so the scheduler must not try to move them, as
+	// on x86 the local APIC timer. Only the SPIs are I/O interrupts.
+	reserve_io_interrupt_vectors(32, 0, INTERRUPT_TYPE_LOCAL_IRQ);
+	reserve_io_interrupt_vectors(fMaxInt - 32, 32, INTERRUPT_TYPE_IRQ);
 
 	dprintf("GICv3 detected: rev %u, max interrupts %u, TYPER %#x\n", rev, fMaxInt, typer);
 	// disable the distributor
