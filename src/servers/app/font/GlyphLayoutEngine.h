@@ -22,6 +22,7 @@
 #include <SupportDefs.h>
 
 #include <ctype.h>
+#include <string.h>
 
 class FontCacheReference {
 public:
@@ -415,15 +416,21 @@ GlyphLayoutEngine::PopulateFallbacks(
 	// course the fallback font should a) contain the missing glyphs at all
 	// and b) be similar to the original font. So there should be a mapping
 	// of some kind to know the most suitable fallback font.
+	// "Noto Color Emoji" (the noto_emoji_color package) comes before the
+	// symbol fonts, which have some emoji too, and is taken in any style:
+	// it has only one, and bold text would otherwise get the black and white
+	// "Noto Emoji" first.
 	static const char* fallbacks[] = {
 		"Noto Sans",
 		"Noto Sans Thai",
 		"Noto Sans CJK JP",
 		"Noto Sans Cherokee",
+		"Noto Color Emoji",
 		"Noto Sans Symbols",
 		"Noto Sans Symbols 2",
 		"Noto Emoji",
 	};
+	static const char* kAnyStyleFallback = "Noto Color Emoji";
 
 	if (!gFontManager->Lock())
 		return;
@@ -443,7 +450,11 @@ GlyphLayoutEngine::PopulateFallbacks(
 		for (int i = 0; i < nFallbacks; i++) {
 
 			FontStyle* fallbackStyle;
-			if (degradeLevel != acceptAnyStyle) {
+			if (strcmp(fallbacks[i], kAnyStyleFallback) == 0) {
+				if (degradeLevel != 0)
+					continue;
+				fallbackStyle = gFontManager->GetStyleByIndex(fallbacks[i], 0);
+			} else if (degradeLevel != acceptAnyStyle) {
 				fallbackStyle = gFontManager->GetStyle(fallbacks[i], fontStyle);
 			} else {
 				// At this point we'll just take whatever we are given
