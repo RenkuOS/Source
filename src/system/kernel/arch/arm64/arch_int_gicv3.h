@@ -34,6 +34,7 @@ private:
 	int32_t fMaxInt;
 	uint64_t fGicrStride;
 	uint32_t fNumCpus;
+	int32 fGicrIndex[SMP_MAX_CPUS]; // redistributor of each CPU
 
 	// Register accessors.
 	// All register offsets are given in the spec (and in gicv3_regs.h) at byte offsets.
