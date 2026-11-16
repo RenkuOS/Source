@@ -148,6 +148,7 @@ AddNewDriversToPackage gpio :
 	baytrail_gpio@x86,x86_64
 	;
 AddNewDriversToPackage graphics :
+	hyperv_video@x86,x86_64,arm64
 	virtio_gpu
 	;
 AddNewDriversToPackage power
@@ -397,6 +398,8 @@ AddBootModuleSymlinksToPackage
 # add-ons
 AddFilesToPackage add-ons accelerants :
 	framebuffer.accelerant
+	vesa.accelerant@arm64
+		# hyperv_video uses it; x86 gets it from SYSTEM_ADD_ONS_ACCELERANTS
 	virtio_gpu.accelerant
 	$(SYSTEM_ADD_ONS_ACCELERANTS) ;
 AddFilesToPackage add-ons locale catalogs :
