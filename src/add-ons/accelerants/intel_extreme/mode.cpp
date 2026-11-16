@@ -149,17 +149,11 @@ set_frame_buffer_registers(uint32 offset, uint32 hStart)
 //			|| sharedInfo.device_type.InGroup(INTEL_GROUP_SKY)
 			|| sharedInfo.device_type.InGroup(INTEL_GROUP_ALD)) {
 			uint32 offsetValue = ((uint32)mode.v_display_start << 16) | hStart;
-			TRACE("%s: writing OFFSET_HAS-style register at +0x%" B_PRIx32
-				": 0x%08" B_PRIx32 " (v_display_start=%d, "
-				"hStart=%" B_PRIu32 ")\n", __func__, offset, offsetValue,
-				mode.v_display_start, hStart);
 			write32(INTEL_DISPLAY_A_OFFSET_HAS + offset, offsetValue);
 			read32(INTEL_DISPLAY_A_OFFSET_HAS + offset);
 		} else {
 			uint32 baseValue = mode.v_display_start * sharedInfo.bytes_per_row
 				+ hStart * bytes_per_pixel;
-			TRACE("%s: writing legacy BASE-style register at +0x%" B_PRIx32
-				": 0x%08" B_PRIx32 "\n", __func__, offset, baseValue);
 			write32(INTEL_DISPLAY_A_BASE + offset, baseValue);
 			read32(INTEL_DISPLAY_A_BASE + offset);
 		}
