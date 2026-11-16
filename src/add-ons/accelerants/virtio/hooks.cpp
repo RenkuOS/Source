@@ -50,6 +50,14 @@ get_accelerant_hook(uint32 feature, void* data)
 			return (void*)virtio_gpu_get_frame_buffer_config;
 		case B_GET_PIXEL_CLOCK_LIMITS:
 			return (void*)virtio_gpu_get_pixel_clock_limits;
+
+		/* cursor managment */
+		case B_SET_CURSOR_BITMAP:
+			return (void*)virtio_gpu_set_cursor_bitmap;
+		case B_MOVE_CURSOR:
+			return (void*)virtio_gpu_move_cursor;
+		case B_SHOW_CURSOR:
+			return (void*)virtio_gpu_show_cursor;
 	}
 
 	return NULL;

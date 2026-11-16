@@ -207,3 +207,50 @@ virtio_gpu_display_change_semaphore()
 	return gInfo->shared_info->display_change_sem;
 }
 
+
+//	#pragma mark - cursor
+
+
+/*!	Hands the cursor to the host, which draws it on its own. Fails for cursors
+	the device cannot show, app_server then draws them itself.
+*/
+status_t
+virtio_gpu_set_cursor_bitmap(uint16 width, uint16 height, uint16 hotX, uint16 hotY,
+	color_space colorSpace, uint16 bytesPerRow, const uint8* bitmapData)
+{
+	if (colorSpace != B_RGBA32 || width > VIRTIO_GPU_CURSOR_SIZE
+		|| height > VIRTIO_GPU_CURSOR_SIZE || hotX >= width || hotY >= height)
+		return B_BAD_VALUE;
+
+	virtio_gpu_cursor_image* cursor
+		= (virtio_gpu_cursor_image*)calloc(1, sizeof(virtio_gpu_cursor_image));
+	if (cursor == NULL)
+		return B_NO_MEMORY;
+	MemoryDeleter cursorDeleter(cursor);
+
+	cursor->hot_x = hotX;
+	cursor->hot_y = hotY;
+	for (uint16 y = 0; y < height; y++) {
+		memcpy(cursor->bits + y * VIRTIO_GPU_CURSOR_SIZE, bitmapData + y * bytesPerRow,
+			width * 4);
+	}
+
+	if (ioctl(gInfo->device, VIRTIO_GPU_SET_CURSOR, cursor, sizeof(*cursor)) != 0)
+		return errno;
+	return B_OK;
+}
+
+
+void
+virtio_gpu_move_cursor(uint16 x, uint16 y)
+{
+	virtio_gpu_cursor_position position = { x, y };
+	ioctl(gInfo->device, VIRTIO_GPU_MOVE_CURSOR, &position, sizeof(position));
+}
+
+
+void
+virtio_gpu_show_cursor(bool isVisible)
+{
+	ioctl(gInfo->device, VIRTIO_GPU_SHOW_CURSOR, &isVisible, sizeof(isVisible));
+}

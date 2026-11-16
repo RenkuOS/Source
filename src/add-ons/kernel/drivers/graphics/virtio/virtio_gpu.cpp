@@ -40,6 +40,13 @@ typedef struct {
 	uint64					fenceId;
 
 	::virtio_queue			cursorQueue;
+	mutex					cursorLock;
+	area_id					cursorArea;
+	addr_t					cursorImage;
+		// VIRTIO_GPU_CURSOR_SIZE² pixels, then the cursor queue command
+	phys_addr_t				cursorPhysAddr;
+	struct virtio_gpu_update_cursor cursor;
+		// last cursor state sent to the host
 
 	int						displayResourceId;
 	uint32					framebufferWidth;
@@ -72,6 +79,10 @@ typedef struct {
 #include <fs/devfs.h>
 
 #define ROUND_TO_PAGE_SIZE(x) (((x) + (B_PAGE_SIZE) - 1) & ~((B_PAGE_SIZE) - 1))
+
+#define CURSOR_RESOURCE_ID		0x10000000
+	// display resources count up from 1
+#define CURSOR_IMAGE_SIZE		(VIRTIO_GPU_CURSOR_SIZE * VIRTIO_GPU_CURSOR_SIZE * 4)
 
 
 #define DEVICE_NAME				"virtio_gpu"
@@ -233,7 +244,8 @@ virtio_gpu_get_edids(virtio_gpu_driver_info* info, int scanout)
 
 
 status_t
-virtio_gpu_create_2d(virtio_gpu_driver_info* info, int resourceId, int width, int height)
+virtio_gpu_create_2d(virtio_gpu_driver_info* info, int resourceId, int width, int height,
+	uint32 format = VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM)
 {
 	CALLED();
 	struct virtio_gpu_resource_create_2d resource = {};
@@ -241,7 +253,7 @@ virtio_gpu_create_2d(virtio_gpu_driver_info* info, int resourceId, int width, in
 
 	resource.hdr.type = VIRTIO_GPU_CMD_RESOURCE_CREATE_2D;
 	resource.resource_id = resourceId;
-	resource.format = VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM;
+	resource.format = format;
 	resource.width = width;
 	resource.height = height;
 
@@ -278,7 +290,8 @@ virtio_gpu_unref(virtio_gpu_driver_info* info, int resourceId)
 
 
 status_t
-virtio_gpu_attach_backing(virtio_gpu_driver_info* info, int resourceId)
+virtio_gpu_attach_backing(virtio_gpu_driver_info* info, int resourceId, addr_t address,
+	size_t size)
 {
 	CALLED();
 	struct virtio_gpu_resource_attach_backing_entries {
@@ -288,7 +301,7 @@ virtio_gpu_attach_backing(virtio_gpu_driver_info* info, int resourceId)
 	struct virtio_gpu_ctrl_hdr response = {};
 
 	physical_entry entries[16] = {};
-	status_t status = get_memory_map((void*)info->framebuffer, info->framebufferSize, entries, 16);
+	status_t status = get_memory_map((void*)address, size, entries, 16);
 	if (status != B_OK) {
 		ERROR("virtio_gpu_attach_backing get_memory_map failed: %s\n", strerror(status));
 		return status;
@@ -444,6 +457,51 @@ virtio_gpu_handle_display_event(virtio_gpu_driver_info* info)
 }
 
 
+/*!	Sends the cursor state in info->cursor on the cursor queue. The host shows
+	that cursor on its own, so the pointer does not wait for the framebuffer
+	updates. Must be called with the cursor lock held.
+*/
+static status_t
+virtio_gpu_send_cursor(virtio_gpu_driver_info* info, uint32 type)
+{
+	// the previous command shares our buffer, wait until the host is done
+	bigtime_t timeout = system_time() + 100000;
+	while (!info->virtio->queue_is_empty(info->cursorQueue)) {
+		if (info->virtio->queue_dequeue(info->cursorQueue, NULL, NULL))
+			continue;
+		if (system_time() > timeout)
+			return B_TIMED_OUT;
+		spin(10);
+	}
+
+	info->cursor.hdr.type = type;
+	memcpy((void*)(info->cursorImage + CURSOR_IMAGE_SIZE), &info->cursor,
+		sizeof(info->cursor));
+	physical_entry entry = { info->cursorPhysAddr + CURSOR_IMAGE_SIZE, sizeof(info->cursor) };
+	return info->virtio->queue_request_v(info->cursorQueue, &entry, 1, 0, NULL);
+}
+
+
+static status_t
+virtio_gpu_set_cursor(virtio_gpu_driver_info* info, const virtio_gpu_cursor_image& cursor)
+{
+	{
+		MutexLocker commandLocker(&info->commandLock);
+		memcpy((void*)info->cursorImage, cursor.bits, CURSOR_IMAGE_SIZE);
+		status_t status = virtio_gpu_transfer_to_host_2d(info, CURSOR_RESOURCE_ID,
+			VIRTIO_GPU_CURSOR_SIZE, VIRTIO_GPU_CURSOR_SIZE);
+		if (status != B_OK)
+			return status;
+	}
+
+	MutexLocker cursorLocker(&info->cursorLock);
+	info->cursor.resource_id = CURSOR_RESOURCE_ID;
+	info->cursor.hot_x = cursor.hot_x;
+	info->cursor.hot_y = cursor.hot_y;
+	return virtio_gpu_send_cursor(info, VIRTIO_GPU_CMD_UPDATE_CURSOR);
+}
+
+
 status_t
 virtio_update_thread(void *arg)
 {
@@ -480,7 +538,8 @@ virtio_gpu_set_display_mode(virtio_gpu_driver_info* info, display_mode *mode)
 	if (status != B_OK)
 		return status;
 
-	status = virtio_gpu_attach_backing(info, newResourceId);
+	status = virtio_gpu_attach_backing(info, newResourceId, info->framebuffer,
+		info->framebufferSize);
 	if (status != B_OK)
 		return status;
 
@@ -569,6 +628,7 @@ virtio_gpu_init_device(void* _info, void** _cookie)
 
 	info->commandPhysAddr = entry.address;
 	mutex_init(&info->commandLock, "virtiogpu command lock");
+	mutex_init(&info->cursorLock, "virtiogpu cursor lock");
 
 	// Setup interrupt
 	status = info->virtio->setup_interrupt(info->virtio_device,
@@ -605,6 +665,7 @@ virtio_gpu_uninit_device(void* _cookie)
 	info->virtio->free_interrupts(info->virtio_device);
 
 	mutex_destroy(&info->commandLock);
+	mutex_destroy(&info->cursorLock);
 
 	delete_area(info->commandArea);
 	info->commandArea = -1;
@@ -628,6 +689,7 @@ virtio_gpu_open(void* _info, const char* path, int openMode, void** _cookie)
 
 	info->sharedArea = -1;
 	info->framebufferArea = -1;
+	info->cursorArea = -1;
 
 	info->commandDone = create_sem(1, "virtio_gpu_command");
 	if (info->commandDone < B_OK)
@@ -679,7 +741,8 @@ virtio_gpu_open(void* _info, const char* path, int openMode, void** _cookie)
 	if (status != B_OK)
 		goto error;
 
-	status = virtio_gpu_attach_backing(info, info->displayResourceId);
+	status = virtio_gpu_attach_backing(info, info->displayResourceId, info->framebuffer,
+		info->framebufferSize);
 	if (status != B_OK)
 		goto error;
 
@@ -697,6 +760,24 @@ virtio_gpu_open(void* _info, const char* path, int openMode, void** _cookie)
 		sharedInfo.current_mode.virtual_height = info->displayHeight;
 		sharedInfo.current_mode.space = B_RGB32;
 	}
+	// The cursor is optional: without it, app_server draws it in the framebuffer.
+	info->cursorArea = create_area("virtio_gpu cursor", (void**)&info->cursorImage,
+		B_ANY_KERNEL_ADDRESS, ROUND_TO_PAGE_SIZE(CURSOR_IMAGE_SIZE + sizeof(info->cursor)),
+		B_FULL_LOCK | B_CONTIGUOUS, B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA);
+	if (info->cursorArea >= B_OK) {
+		physical_entry entry;
+		if (get_memory_map((void*)info->cursorImage, B_PAGE_SIZE, &entry, 1) != B_OK
+			|| virtio_gpu_create_2d(info, CURSOR_RESOURCE_ID, VIRTIO_GPU_CURSOR_SIZE,
+				VIRTIO_GPU_CURSOR_SIZE, VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM) != B_OK
+			|| virtio_gpu_attach_backing(info, CURSOR_RESOURCE_ID, info->cursorImage,
+				CURSOR_IMAGE_SIZE) != B_OK) {
+			delete_area(info->cursorArea);
+			info->cursorArea = -1;
+		} else
+			info->cursorPhysAddr = entry.address;
+	}
+	memset(&info->cursor, 0, sizeof(info->cursor));
+
 	info->displayEvent = 1;
 		// acknowledges an event still pending from before we opened
 	info->updateThreadRunning = true;
@@ -714,6 +795,8 @@ virtio_gpu_open(void* _info, const char* path, int openMode, void** _cookie)
 error:
 	delete_area(info->framebufferArea);
 	info->framebufferArea = -1;
+	delete_area(info->cursorArea);
+	info->cursorArea = -1;
 	if (info->sharedArea >= 0)
 		delete_sem(info->sharedInfo->display_change_sem);
 	delete_area(info->sharedArea);
@@ -754,6 +837,8 @@ virtio_gpu_free(void* cookie)
 	virtio_gpu_drain_queues(info);
 	delete_area(info->framebufferArea);
 	info->framebufferArea = -1;
+	delete_area(info->cursorArea);
+	info->cursorArea = -1;
 	delete_area(info->sharedArea);
 	info->sharedArea = -1;
 	free(handle);
@@ -841,6 +926,61 @@ virtio_gpu_ioctl(void* cookie, uint32 op, void* buffer, size_t length)
 
 			return virtio_gpu_set_display_mode(info, &mode);
 		}
+
+		case VIRTIO_GPU_SET_CURSOR:
+		{
+			if (info->cursorArea < 0)
+				return B_UNSUPPORTED;
+			if (length != sizeof(virtio_gpu_cursor_image))
+				return B_BAD_VALUE;
+
+			virtio_gpu_cursor_image* cursor
+				= (virtio_gpu_cursor_image*)malloc(sizeof(virtio_gpu_cursor_image));
+			if (cursor == NULL)
+				return B_NO_MEMORY;
+			status_t status = user_memcpy(cursor, buffer, sizeof(*cursor));
+			if (status != B_OK)
+				status = B_BAD_ADDRESS;
+			else if (cursor->hot_x >= VIRTIO_GPU_CURSOR_SIZE
+				|| cursor->hot_y >= VIRTIO_GPU_CURSOR_SIZE)
+				status = B_BAD_VALUE;
+			else
+				status = virtio_gpu_set_cursor(info, *cursor);
+			free(cursor);
+			return status;
+		}
+
+		case VIRTIO_GPU_MOVE_CURSOR:
+		{
+			virtio_gpu_cursor_position position;
+			if (info->cursorArea < 0)
+				return B_UNSUPPORTED;
+			if (length != sizeof(position))
+				return B_BAD_VALUE;
+			if (user_memcpy(&position, buffer, sizeof(position)) != B_OK)
+				return B_BAD_ADDRESS;
+
+			MutexLocker cursorLocker(&info->cursorLock);
+			info->cursor.pos.x = position.x;
+			info->cursor.pos.y = position.y;
+			return virtio_gpu_send_cursor(info, VIRTIO_GPU_CMD_MOVE_CURSOR);
+		}
+
+		case VIRTIO_GPU_SHOW_CURSOR:
+		{
+			bool visible;
+			if (info->cursorArea < 0)
+				return B_UNSUPPORTED;
+			if (length != sizeof(visible))
+				return B_BAD_VALUE;
+			if (user_memcpy(&visible, buffer, sizeof(visible)) != B_OK)
+				return B_BAD_ADDRESS;
+
+			// resource 0 hides the cursor
+			MutexLocker cursorLocker(&info->cursorLock);
+			info->cursor.resource_id = visible ? CURSOR_RESOURCE_ID : 0;
+			return virtio_gpu_send_cursor(info, VIRTIO_GPU_CMD_UPDATE_CURSOR);
+		}
 		default:
 			ERROR("ioctl: unknown message %" B_PRIx32 "\n", op);
 			break;
@@ -907,6 +1047,7 @@ virtio_gpu_init_driver(device_node* node, void** cookie)
 	memset(info, 0, sizeof(*info));
 
 	info->framebufferArea = -1;
+	info->cursorArea = -1;
 	info->sharedArea = -1;
 
 	info->node = node;

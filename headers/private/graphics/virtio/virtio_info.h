@@ -41,6 +41,23 @@ enum {
 	VIRTIO_GPU_GET_PRIVATE_DATA = B_DEVICE_OP_CODES_END + 1,
 	VIRTIO_GPU_GET_DEVICE_NAME,
 	VIRTIO_GPU_SET_DISPLAY_MODE,
+	VIRTIO_GPU_SET_CURSOR,		// virtio_gpu_cursor_image
+	VIRTIO_GPU_MOVE_CURSOR,		// virtio_gpu_cursor_position
+	VIRTIO_GPU_SHOW_CURSOR,		// bool
+};
+
+#define VIRTIO_GPU_CURSOR_SIZE	64
+
+struct virtio_gpu_cursor_image {
+	uint16			hot_x;
+	uint16			hot_y;
+	uint32			bits[VIRTIO_GPU_CURSOR_SIZE * VIRTIO_GPU_CURSOR_SIZE];
+		// B_RGBA32, unused pixels transparent
+};
+
+struct virtio_gpu_cursor_position {
+	uint16			x;					// hot spot position
+	uint16			y;
 };
 
 

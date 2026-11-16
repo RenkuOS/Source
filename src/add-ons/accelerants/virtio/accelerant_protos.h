@@ -36,6 +36,13 @@ status_t virtio_gpu_get_frame_buffer_config(frame_buffer_config *config);
 status_t virtio_gpu_get_pixel_clock_limits(display_mode *dm, uint32 *low,
 	uint32 *high);
 
+// cursor
+status_t virtio_gpu_set_cursor_bitmap(uint16 width, uint16 height, uint16 hotX,
+	uint16 hotY, color_space colorSpace, uint16 bytesPerRow,
+	const uint8 *bitmapData);
+void virtio_gpu_move_cursor(uint16 x, uint16 y);
+void virtio_gpu_show_cursor(bool isVisible);
+
 #ifdef __cplusplus
 }
 #endif
