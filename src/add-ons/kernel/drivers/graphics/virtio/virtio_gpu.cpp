@@ -46,7 +46,9 @@ typedef struct {
 		// VIRTIO_GPU_CURSOR_SIZE² pixels, then the cursor queue command
 	phys_addr_t				cursorPhysAddr;
 	struct virtio_gpu_update_cursor cursor;
-		// last cursor state sent to the host
+		// latest cursor state for the host
+	uint32					cursorPending;
+		// command type of a cursor state not sent yet, or 0
 
 	int						displayResourceId;
 	uint32					framebufferWidth;
@@ -460,21 +462,29 @@ virtio_gpu_handle_display_event(virtio_gpu_driver_info* info)
 /*!	Sends the cursor state in info->cursor on the cursor queue. The host shows
 	that cursor on its own, so the pointer does not wait for the framebuffer
 	updates. Must be called with the cursor lock held.
+
+	Never waits: app_server calls this for every mouse move while holding its
+	exclusive lock, which stops all drawing. While the host has not finished
+	the previous command, which shares our buffer, the command is only marked
+	pending, and the update thread sends the latest state on its next cycle.
+	\a type 0 just retries a pending command.
 */
 static status_t
 virtio_gpu_send_cursor(virtio_gpu_driver_info* info, uint32 type)
 {
-	// the previous command shares our buffer, wait until the host is done
-	bigtime_t timeout = system_time() + 100000;
-	while (!info->virtio->queue_is_empty(info->cursorQueue)) {
-		if (info->virtio->queue_dequeue(info->cursorQueue, NULL, NULL))
-			continue;
-		if (system_time() > timeout)
-			return B_TIMED_OUT;
-		spin(10);
-	}
+	// UPDATE_CURSOR carries the position too, so it supersedes a pending move
+	if (info->cursorPending != VIRTIO_GPU_CMD_UPDATE_CURSOR && type != 0)
+		info->cursorPending = type;
+	if (info->cursorPending == 0)
+		return B_OK;
 
-	info->cursor.hdr.type = type;
+	while (info->virtio->queue_dequeue(info->cursorQueue, NULL, NULL))
+		;
+	if (!info->virtio->queue_is_empty(info->cursorQueue))
+		return B_OK;
+
+	info->cursor.hdr.type = info->cursorPending;
+	info->cursorPending = 0;
 	memcpy((void*)(info->cursorImage + CURSOR_IMAGE_SIZE), &info->cursor,
 		sizeof(info->cursor));
 	physical_entry entry = { info->cursorPhysAddr + CURSOR_IMAGE_SIZE, sizeof(info->cursor) };
@@ -509,6 +519,11 @@ virtio_update_thread(void *arg)
 
 	while (info->updateThreadRunning) {
 		bigtime_t start = system_time();
+		{
+			MutexLocker cursorLocker(&info->cursorLock);
+			virtio_gpu_send_cursor(info, 0);
+		}
+
 		MutexLocker commandLocker(&info->commandLock);
 		if (atomic_get_and_set(&info->displayEvent, 0) != 0)
 			virtio_gpu_handle_display_event(info);
@@ -777,6 +792,7 @@ virtio_gpu_open(void* _info, const char* path, int openMode, void** _cookie)
 			info->cursorPhysAddr = entry.address;
 	}
 	memset(&info->cursor, 0, sizeof(info->cursor));
+	info->cursorPending = 0;
 
 	info->displayEvent = 1;
 		// acknowledges an event still pending from before we opened
