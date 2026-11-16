@@ -239,7 +239,9 @@ InterfaceView::_Update(bool updateWirelessNetworks)
 	else if (!fNetworkMenuField->IsHidden(fNetworkMenuField) && !isWireless)
 		fNetworkMenuField->Hide();
 
-	if (isWireless && updateWirelessNetworks) {
+	// Don't touch the network menu while it is open (it has a window then)
+	if (isWireless && updateWirelessNetworks
+		&& fNetworkMenuField->Menu()->Window() == NULL) {
 		// Rebuild network menu
 		BMenu* menu = fNetworkMenuField->Menu();
 		int32 count = menu->CountItems();
@@ -303,7 +305,9 @@ InterfaceView::_Update(bool updateWirelessNetworks)
 
 			bool networkFound = false;
 			for (uint32 i = 0; i < networksCount; i++) {
-				if (networkItem->Network() == networks[i]) {
+				// Not operator==, which also compares the ever-changing
+				// signal strength.
+				if (networkItem->Network().address == networks[i].address) {
 					networkFound = true;
 					break;
 				}
@@ -311,7 +315,9 @@ InterfaceView::_Update(bool updateWirelessNetworks)
 
 			if (!networkFound) {
 				menu->RemoveItem(networkItem);
+				delete networkItem;
 				count--;
+				index--;
 			}
 		}
 
@@ -327,9 +333,10 @@ InterfaceView::_Update(bool updateWirelessNetworks)
 				if (networkItem == NULL)
 					break;
 
-				if (networkItem->Network() == network) {
-					// found it
+				if (networkItem->Network().address == network.address) {
+					// found it, refresh signal/label in place
 					networkFound = true;
+					networkItem->SetNetwork(network);
 					if (associated.find(network.address) != associated.end())
 						networkItem->SetMarked(true);
 					break;

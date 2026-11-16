@@ -21,9 +21,17 @@
 WirelessNetworkMenuItem::WirelessNetworkMenuItem(wireless_network network,
 	BMessage* message)
 	:
-	BMenuItem(network.name, message),
-	fNetwork(network)
+	BMenuItem(network.name, message)
 {
+	SetNetwork(network);
+}
+
+
+void
+WirelessNetworkMenuItem::SetNetwork(const wireless_network& network)
+{
+	fNetwork = network;
+
 	// Append authentication mode to label
 	BString label = B_TRANSLATE("%name% (%authenticationMode%)");
 	label.Replace("%name%", network.name, 1);

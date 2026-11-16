@@ -18,6 +18,7 @@ public:
 	virtual						~WirelessNetworkMenuItem();
 
 			wireless_network	Network() const { return fNetwork; }
+			void				SetNetwork(const wireless_network& network);
 
 			BString 			AuthenticationName(int32 mode);
 
