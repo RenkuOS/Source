@@ -29,7 +29,7 @@ static const uint8 kInvalidExceptionLevel = 0xFFu;
 
 
 #define	AARCH64_CHECK_ACCESS(operand, address)						\
-	__asm __volatile("at	" #operand ", %0" : : "r"((uint64_t)address))
+	__asm __volatile("at	" #operand ", %0\n\tisb" : : "r"((uint64_t)address))
 
 #define	AARCH64_BREAK(id)						\
 	__asm __volatile("brk	" #id)
