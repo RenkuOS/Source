@@ -1667,7 +1667,8 @@ mwx_rx(struct mwx_softc *sc, struct mbuf *m, struct mbuf_list *ml)
 		rv = mt7925_mac_fill_rx(sc, m, &rxi);
 	else
 		rv = mt7921_mac_fill_rx(sc, m, &rxi);
-	if (rv == -1) {
+	/* fill_rx also fails with -EINVAL */
+	if (rv != 0) {
 		ifp->if_ierrors++;
 		m_freem(m);
 		return;
@@ -2800,7 +2801,7 @@ int
 mwx_queue_fill(struct mwx_softc *sc, struct mwx_queue *q)
 {
 	u_int idx, last;
-	int rv;
+	int rv = 0;
 
 	if (q->mq_desc == NULL)
 		return 0;
@@ -2816,7 +2817,8 @@ mwx_queue_fill(struct mwx_softc *sc, struct mwx_queue *q)
 		if (rv != 0) {
 			printf("%s: could not fill data, slot %d err %d\n",
 			    DEVNAME(sc), idx, rv);
-			return rv;
+			/* commit the slots filled so far, or they leak */
+			break;
 		}
 		idx = (idx + 1) % q->mq_count;
 	}
@@ -2827,7 +2829,7 @@ mwx_queue_fill(struct mwx_softc *sc, struct mwx_queue *q)
 	q->mq_prod = idx;
 	mwx_write(sc, q->mq_regbase + MT_DMA_CPU_IDX, q->mq_prod);
 
-	return 0;
+	return rv;
 }
 
 int
@@ -3043,6 +3045,25 @@ mwx_dma_txwi_enqueue(struct mwx_softc *sc, struct mwx_queue *q,
 	mwx_write(sc, q->mq_regbase + MT_DMA_CPU_IDX, q->mq_prod);
 }
 
+/*
+ * DMA_IDX comes from the device and reads 0xffffffff when it is asleep
+ * or gone; never use it to index a ring without this check.
+ */
+static int
+mwx_dma_idx_valid(struct mwx_softc *sc, struct mwx_queue *q, uint32_t idx)
+{
+	static int logged;
+
+	if (idx < q->mq_count)
+		return 1;
+	if (!logged) {
+		logged = 1;
+		printf("%s: bogus DMA index %x, ring %x size %u\n",
+		    DEVNAME(sc), idx, q->mq_regbase, q->mq_count);
+	}
+	return 0;
+}
+
 void
 mwx_dma_tx_cleanup(struct mwx_softc *sc, struct mwx_queue *q)
 {
@@ -3055,7 +3076,7 @@ mwx_dma_tx_cleanup(struct mwx_softc *sc, struct mwx_queue *q)
 	idx = q->mq_cons;
 	last = mwx_read(sc, q->mq_regbase + MT_DMA_DMA_IDX);
 
-	if (idx == last)
+	if (idx == last || !mwx_dma_idx_valid(sc, q, last))
 		return;
 
 	bus_dmamap_sync(sc->sc_dmat, q->mq_map, 0, q->mq_map->dm_mapsize,
@@ -3087,8 +3108,11 @@ mwx_dma_tx_cleanup(struct mwx_softc *sc, struct mwx_queue *q)
 
 		/* check if more data made it in */
 		/* XXX should we actually do that? */
-		if (idx == last)
+		if (idx == last) {
 			last = mwx_read(sc, q->mq_regbase + MT_DMA_DMA_IDX);
+			if (!mwx_dma_idx_valid(sc, q, last))
+				break;
+		}
 	}
 
 	bus_dmamap_sync(sc->sc_dmat, q->mq_map, 0, q->mq_map->dm_mapsize,
@@ -3185,7 +3209,7 @@ mwx_dma_rx_dequeue(struct mwx_softc *sc, struct mwx_queue *q,
 	idx = q->mq_cons;
 	last = mwx_read(sc, q->mq_regbase + MT_DMA_DMA_IDX);
 
-	if (idx == last)
+	if (idx == last || !mwx_dma_idx_valid(sc, q, last))
 		return;
 
 	bus_dmamap_sync(sc->sc_dmat, q->mq_map, 0, q->mq_map->dm_mapsize,
@@ -3195,10 +3219,14 @@ mwx_dma_rx_dequeue(struct mwx_softc *sc, struct mwx_queue *q,
 	mtail = q->mq_mtail;
 
 	while (idx != last) {
-		uint32_t ctrl;
+		uint32_t ctrl, len;
 
 		md = &q->mq_data[idx];
 		desc = &q->mq_desc[idx];
+
+		/* skip a slot mwx_queue_fill() could not fill */
+		if (md->md_mbuf == NULL)
+			goto next;
 
 		bus_dmamap_sync(sc->sc_dmat, md->md_map, 0,
 		    md->md_map->dm_mapsize, BUS_DMASYNC_POSTREAD);
@@ -3210,7 +3238,15 @@ mwx_dma_rx_dequeue(struct mwx_softc *sc, struct mwx_queue *q,
 
 		/* only buf0 is used on RX rings */
 		ctrl = le32toh(desc->ctrl);
-		m->m_len = MT_DNA_CTL_SD_GET_LEN0(ctrl);
+		len = MT_DNA_CTL_SD_GET_LEN0(ctrl);
+		/* drop a bogus length and the frame it is part of */
+		if (len > MT_RX_BUF_SIZE) {
+			m_freem(m);
+			m_freem(m0);
+			m0 = mtail = NULL;
+			goto next;
+		}
+		m->m_len = len;
 
 		if (m0 == NULL) {
 			m0 = mtail = m;
@@ -3230,12 +3266,16 @@ mwx_dma_rx_dequeue(struct mwx_softc *sc, struct mwx_queue *q,
 			mtail = NULL;
 		}
 
+ next:
 		idx = (idx + 1) % q->mq_count;
 
 		/* check if more data made it in */
 		/* XXX should we actually do that? */
-		if (idx == last)
+		if (idx == last) {
 			last = mwx_read(sc, q->mq_regbase + MT_DMA_DMA_IDX);
+			if (!mwx_dma_idx_valid(sc, q, last))
+				break;
+		}
 	}
 
 	q->mq_mbuf = m0;
@@ -3254,10 +3294,11 @@ mwx_dma_rx_done(struct mwx_softc *sc, struct mwx_queue *q)
 
 	mwx_dma_rx_dequeue(sc, q, &ml);
 
+	/* refill even if every dequeued slot was dropped */
+	mwx_queue_fill(sc, q);	/* TODO what if it fails, run timer? */
+
 	if (ml_empty(&ml))
 		return;
-
-	mwx_queue_fill(sc, q);	/* TODO what if it fails, run timer? */
 
 	mwx_dma_rx_process(sc, &ml);
 }
@@ -6307,7 +6348,9 @@ mt7921_mac_fill_rx(struct mwx_softc *sc, struct mbuf *m,
 		chain[3] = rcpi_to_rssi(MT_PRXV_RCPI3_SHIFT, v1);
 
 		signal = -128;
-		for (i = 0; i < sc->sc_capa.num_streams; i++) {
+		/* num_streams comes from the firmware, bound it */
+		for (i = 0; i < sc->sc_capa.num_streams &&
+		    i < nitems(chain); i++) {
 			if (!(sc->sc_capa.antenna_mask & (1U << i)))
 				continue;
 			if (chain[i] >= 0)
@@ -6653,7 +6696,9 @@ mt7925_mac_fill_rx(struct mwx_softc *sc, struct mbuf *m,
 		chain[3] = rcpi_to_rssi(MT_PRXV_RCPI3_SHIFT, v3);
 
 		signal = -128;
-		for (i = 0; i < sc->sc_capa.num_streams; i++) {
+		/* num_streams comes from the firmware, bound it */
+		for (i = 0; i < sc->sc_capa.num_streams &&
+		    i < nitems(chain); i++) {
 			if (!(sc->sc_capa.antenna_mask & (1U << i)))
 				continue;
 			if (chain[i] >= 0)
