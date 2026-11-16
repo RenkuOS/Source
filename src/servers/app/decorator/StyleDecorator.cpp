@@ -69,6 +69,10 @@ StyleDecorAddOn::InitCheck() const
 }
 
 
+// The first version of the style interface that isn't a draft.
+static const uint32 kFirstFinalVersion = 3;
+
+
 /*static*/ const decor_style*
 StyleDecorAddOn::StyleOf(image_id image)
 {
@@ -83,8 +87,17 @@ StyleDecorAddOn::StyleOf(image_id image)
 	if (style == NULL)
 		return NULL;
 
+	// Styles built against the drafts of the interface lay its structures
+	// out differently, and would crash app_server.
+	if (style->api_version < kFirstFinalVersion) {
+		syslog(LOG_WARNING, "app_server: decorator style \"%s\" was built for "
+			"a draft of the style interface; it needs to be built again",
+			style->name != NULL ? style->name : "");
+		return NULL;
+	}
+
 	// a style built for a later version may rely on what this one lacks
-	if (style->api_version == 0 || style->api_version > DECOR_STYLE_API_VERSION
+	if (style->api_version > DECOR_STYLE_API_VERSION
 		|| style->size < offsetof(decor_style, footprint)
 		|| style->layout == NULL || style->draw_frame == NULL
 		|| style->draw_tab == NULL || style->draw_button == NULL) {
