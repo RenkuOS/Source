@@ -43,14 +43,6 @@ VMBus::VMBus(device_node* node)
 {
 	CALLED();
 
-	// Allocate an executable page for hypercall usage
-	fHyperCallArea = _AllocateBuffer("hypercall", HV_PAGE_SIZE,
-		B_KERNEL_READ_AREA | B_KERNEL_EXECUTE_AREA, &fHypercallPage, &fHyperCallPhys);
-	if (fHyperCallArea < B_OK) {
-		fStatus = fHyperCallArea;
-		return;
-	}
-
 	// Hyper-V is able to send targeted interrupts to a specific CPU, each requires its
 	// own set of event data
 	fCPUCount = smp_get_num_cpus();
@@ -147,7 +139,8 @@ VMBus::~VMBus()
 	delete_area(fVMBusDataArea);
 	delete_area(fCPUMessagesArea);
 	delete_area(fCPUEventFlagsArea);
-	delete_area(fHyperCallArea);
+	if (fHyperCallArea > 0)
+		delete_area(fHyperCallArea);
 	delete[] fCPUData;
 
 	VMBusRequestList::Iterator iterator = fRequestList.GetIterator();
@@ -525,7 +518,10 @@ VMBus::_EnableInterrupts()
 	if (fIRQ < 0)
 		return B_IO_ERROR;
 
-	fInterruptVector = fIRQ + ARCH_INTERRUPT_BASE;
+	status = _SetInterruptVector();
+	if (status != B_OK)
+		return status;
+
 	TRACE("VMBus irq interrupt line: %" B_PRId32 ", vector: %u\n", fIRQ, fInterruptVector);
 	status = install_io_interrupt_handler(fIRQ, _InterruptHandler, this, 0);
 	if (status != B_OK) {
