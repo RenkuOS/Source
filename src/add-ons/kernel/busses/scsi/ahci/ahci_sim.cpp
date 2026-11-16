@@ -5,13 +5,119 @@
 
 #include "ahci_controller.h"
 
+#include <ACPI.h>
 #include <KernelExport.h>
 #include <string.h>
 #include <new>
 
+#include "acpi.h"
+
 #define TRACE(a...) dprintf("ahci: " a)
 //#define FLOW(a...)	dprintf("ahci: " a)
 #define FLOW(a...)
+
+
+//	#pragma mark - ACPI resources
+
+
+struct ahci_acpi_crs {
+	phys_addr_t	address;
+	size_t		length;
+	uint32		irq;
+};
+
+
+static acpi_status
+ahci_acpi_parse_crs(ACPI_RESOURCE *resource, void *context)
+{
+	ahci_acpi_crs *crs = (ahci_acpi_crs *)context;
+	switch (resource->Type) {
+		case ACPI_RESOURCE_TYPE_FIXED_MEMORY32:
+			if (crs->address == 0) {
+				crs->address = resource->Data.FixedMemory32.Address;
+				crs->length = resource->Data.FixedMemory32.AddressLength;
+			}
+			break;
+		case ACPI_RESOURCE_TYPE_ADDRESS32:
+			if (crs->address == 0
+				&& resource->Data.Address32.ResourceType == ACPI_MEMORY_RANGE) {
+				crs->address = resource->Data.Address32.Address.Minimum;
+				crs->length = resource->Data.Address32.Address.AddressLength;
+			}
+			break;
+		case ACPI_RESOURCE_TYPE_ADDRESS64:
+			if (crs->address == 0
+				&& resource->Data.Address64.ResourceType == ACPI_MEMORY_RANGE) {
+				crs->address = resource->Data.Address64.Address.Minimum;
+				crs->length = resource->Data.Address64.Address.AddressLength;
+			}
+			break;
+		case ACPI_RESOURCE_TYPE_IRQ:
+			if (crs->irq == 0 && resource->Data.Irq.InterruptCount > 0)
+				crs->irq = resource->Data.Irq.Interrupts[0];
+			break;
+		case ACPI_RESOURCE_TYPE_EXTENDED_IRQ:
+			if (crs->irq == 0 && resource->Data.ExtendedIrq.InterruptCount > 0)
+				crs->irq = resource->Data.ExtendedIrq.Interrupts[0];
+			break;
+	}
+	return B_OK;
+}
+
+
+/*!	\brief Reads the HBA register window and interrupt of an AHCI controller
+		enumerated by ACPI (a platform device without PCI config space).
+	\param acpiNode The ACPI device node the AHCI driver attached to.
+	\param _address Set to the physical base of the HBA registers.
+	\param _size Set to the size of the register window.
+	\param _irq Set to the controller's interrupt (GSI, used as the vector).
+	\return B_OK, B_DEVICE_NOT_FOUND if _CRS lacks a memory window or IRQ, or
+		its window does not hold the host control registers and one port,
+		or B_NOT_SUPPORTED if _CCA says the controller is not cache coherent.
+*/
+status_t
+ahci_get_acpi_resources(device_node *acpiNode, phys_addr_t *_address,
+	size_t *_size, uint32 *_irq)
+{
+	acpi_device_module_info *acpi;
+	acpi_device device;
+	if (gDeviceManager->get_driver(acpiNode, (driver_module_info **)&acpi,
+			(void **)&device) != B_OK)
+		return B_DEVICE_NOT_FOUND;
+
+	ahci_acpi_crs crs = {};
+	if (acpi->walk_resources(device, (ACPI_STRING)"_CRS", ahci_acpi_parse_crs,
+			&crs) != B_OK || crs.address == 0 || crs.irq == 0) {
+		TRACE("ACPI: missing AHCI resources\n");
+		return B_DEVICE_NOT_FOUND;
+	}
+	if (crs.length < offsetof(ahci_hba, port) + sizeof(ahci_port)) {
+		dprintf("ahci: ACPI controller at %#" B_PRIxPHYSADDR ": register "
+			"window of %#" B_PRIxSIZE " bytes is too small\n", crs.address,
+			crs.length);
+		return B_DEVICE_NOT_FOUND;
+	}
+
+	// The driver allocates its DMA buffers cached and never flushes them.
+	acpi_object_type object;
+	acpi_data buffer;
+	buffer.pointer = &object;
+	buffer.length = sizeof(object);
+	if (acpi->evaluate_method(device, "_CCA", NULL, &buffer) != B_OK
+		|| object.object_type != ACPI_TYPE_INTEGER) {
+		dprintf("ahci: ACPI controller at %#" B_PRIxPHYSADDR " has no _CCA, "
+			"assuming it is cache coherent\n", crs.address);
+	} else if (object.integer.integer == 0) {
+		dprintf("ahci: ACPI controller at %#" B_PRIxPHYSADDR " is not cache "
+			"coherent (_CCA 0), not supported\n", crs.address);
+		return B_NOT_SUPPORTED;
+	}
+
+	*_address = crs.address;
+	*_size = crs.length;
+	*_irq = crs.irq;
+	return B_OK;
+}
 
 
 //	#pragma mark - SIM module interface
@@ -127,21 +233,38 @@ ahci_sim_init_bus(device_node *node, void **_cookie)
 {
 	TRACE("ahci_sim_init_bus\n");
 
-	// get the PCI device from our parent's parent
+	// get the PCI or ACPI device from our parent's parent
 	device_node *parent = gDeviceManager->get_parent_node(node);
 	device_node *pciParent = gDeviceManager->get_parent_node(parent);
 	gDeviceManager->put_node(parent);
 
-	pci_device_module_info *pci;
-	pci_device *pciDevice;
-	gDeviceManager->get_driver(pciParent, (driver_module_info **)&pci,
-		(void **)&pciDevice);
-	gDeviceManager->put_node(pciParent);
+	pci_device_module_info *pci = NULL;
+	pci_device *pciDevice = NULL;
+	phys_addr_t regsAddress = 0;
+	size_t regsSize = 0;
+	uint32 irq = 0;
 
-	TRACE("ahci_sim_init_bus: pciDevice %p\n", pciDevice);
+	const char *bus;
+	if (gDeviceManager->get_attr_string(pciParent, B_DEVICE_BUS, &bus, false)
+			== B_OK && strcmp(bus, "acpi") == 0) {
+		status_t status = ahci_get_acpi_resources(pciParent, &regsAddress,
+			&regsSize, &irq);
+		gDeviceManager->put_node(pciParent);
+		if (status != B_OK)
+			return status;
+		TRACE("ahci_sim_init_bus: ACPI registers %#" B_PRIxPHYSADDR
+			", size %#" B_PRIxSIZE ", irq %" B_PRIu32 "\n", regsAddress,
+			regsSize, irq);
+	} else {
+		gDeviceManager->get_driver(pciParent, (driver_module_info **)&pci,
+			(void **)&pciDevice);
+		gDeviceManager->put_node(pciParent);
+
+		TRACE("ahci_sim_init_bus: pciDevice %p\n", pciDevice);
+	}
 
 	AHCIController *controller =  new(std::nothrow) AHCIController(node, pci,
-		pciDevice);
+		pciDevice, regsAddress, regsSize, irq);
 	if (!controller)
 		return B_NO_MEMORY;
 	status_t status = controller->Init();

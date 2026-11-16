@@ -319,6 +319,8 @@ typedef struct {
 
 status_t get_device_info(uint16 vendorID, uint16 deviceID, const char **name,
 	uint32 *flags);
+status_t ahci_get_acpi_resources(device_node *acpiNode, phys_addr_t *_address,
+	size_t *_size, uint32 *_irq);
 
 
 extern scsi_sim_interface gAHCISimInterface;
