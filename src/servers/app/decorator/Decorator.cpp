@@ -217,6 +217,23 @@ Decorator::SetTopTab(int32 tab)
 }
 
 
+void
+Decorator::GetShape(std::vector<ShapeRect>& shape) const
+{
+	ShapeRect frame = { fBorderRect.IsValid() ? fBorderRect : fFrame,
+		0, 0, 0, 0 };
+	shape.push_back(frame);
+
+	for (int32 i = 0; i < fTabList.CountItems(); i++) {
+		const BRect& tabRect = fTabList.ItemAt(i)->tabRect;
+		if (tabRect.IsValid()) {
+			ShapeRect tab = { tabRect, 0, 0, 0, 0 };
+			shape.push_back(tab);
+		}
+	}
+}
+
+
 /*!	\brief Assigns a display driver to the decorator
 	\param driver A valid DrawingEngine object
 */
