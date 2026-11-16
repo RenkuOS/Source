@@ -46,6 +46,9 @@ typedef struct {
 	uint32		num_cacheable_memory_ranges;
 	addr_range	cacheable_memory_range[MAX_CACHEABLE_MEMORY_RANGES];
 
+	// Virtual timer interrupt (GIC INTID) from the ACPI GTDT, 0 if unknown
+	uint32		timer_interrupt;
+
 } _PACKED arch_kernel_args;
 
 #endif	/* KERNEL_ARCH_ARM64_KERNEL_ARGS_H */

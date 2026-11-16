@@ -94,6 +94,14 @@ arch_handle_acpi()
 		arm64_handle_acpi_fadt(fadt->arm_boot_arch);
 	}
 
+	// The virtual timer is not always PPI 27: Hyper-V uses 20.
+	acpi_gtdt* gtdt = (acpi_gtdt*)acpi_find_table(ACPI_GTDT_SIGNATURE);
+	if (gtdt != NULL && gtdt->header.length >= sizeof(acpi_gtdt)) {
+		gKernelArgs.arch_args.timer_interrupt = gtdt->virtual_el1_gsiv;
+		dprintf("discovered virtual timer from acpi: interrupt=%u\n",
+			gKernelArgs.arch_args.timer_interrupt);
+	}
+
 	acpi_madt *madt = (acpi_madt*)acpi_find_table(ACPI_MADT_SIGNATURE);
 	if (madt != NULL) {
 		uint64 gicc_base = 0;

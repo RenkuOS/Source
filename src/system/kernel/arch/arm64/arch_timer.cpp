@@ -20,7 +20,10 @@ static bigtime_t sTimerMaxInterval;
 #define TIMER_IMASK (2)
 #define TIMER_ISTATUS (4)
 
-#define TIMER_IRQ 27
+// Virtual timer PPI: from the ACPI GTDT when the loader found one, else the
+// usual 27 (QEMU virt, device tree boot)
+#define TIMER_IRQ_DEFAULT 27
+static int32 sTimerIrq = TIMER_IRQ_DEFAULT;
 
 
 void
@@ -55,8 +58,12 @@ arch_init_timer(kernel_args *args)
 	sTimerTicksUS = READ_SPECIALREG(CNTFRQ_EL0) / 1000000;
 	sTimerMaxInterval = INT32_MAX / sTimerTicksUS;
 
+	if (args->arch_args.timer_interrupt != 0)
+		sTimerIrq = args->arch_args.timer_interrupt;
+	dprintf("arm64 timer: virtual timer interrupt %" B_PRId32 "\n", sTimerIrq);
+
 	WRITE_SPECIALREG(CNTV_CTL_EL0, TIMER_DISABLED);
-	install_io_interrupt_handler(TIMER_IRQ, &arch_timer_interrupt, NULL, 0);
+	install_io_interrupt_handler(sTimerIrq, &arch_timer_interrupt, NULL, 0);
 
 	return B_OK;
 }
@@ -71,7 +78,7 @@ arm64_timer_per_cpu_init()
 		return B_ERROR;
 
 	WRITE_SPECIALREG(CNTV_CTL_EL0, TIMER_DISABLED);
-	ic->EnableInterrupt(TIMER_IRQ);
+	ic->EnableInterrupt(sTimerIrq);
 
 	return B_OK;
 }

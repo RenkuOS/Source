@@ -15,6 +15,7 @@
 #define ACPI_SPCR_SIGNATURE		"SPCR"
 #define ACPI_DBG2_SIGNATURE		"DBG2"
 #define ACPI_FADT_SIGNATURE		"FACP"
+#define ACPI_GTDT_SIGNATURE		"GTDT"
 
 #define ACPI_LOCAL_APIC_ENABLED	0x01
 
@@ -393,6 +394,20 @@ enum {
 	ACPI_DBG2_PORT_SUBTYPE_16550 = 0,
 	ACPI_DBG2_PORT_SUBTYPE_PL011 = 3,
 };
+
+// Generic Timer Description Table, see ACPI Spec 6.6 section 5.2.25.
+// Fields after the virtual EL1 timer omitted.
+typedef struct acpi_gtdt {
+	acpi_descriptor_header header;
+	uint64 cnt_control_base;
+	uint32 reserved;
+	uint32 secure_el1_gsiv;
+	uint32 secure_el1_flags;
+	uint32 non_secure_el1_gsiv;
+	uint32 non_secure_el1_flags;
+	uint32 virtual_el1_gsiv;
+	uint32 virtual_el1_flags;
+} _PACKED acpi_gtdt;
 
 
 /* The following definitions are adapted from acpica/include/acrestyp.h */
