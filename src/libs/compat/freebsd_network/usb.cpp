@@ -342,12 +342,17 @@ struct usb_xfer {
 
 	struct task invoker;
 	struct timeout_task idle;
+	struct timeout_task unstall;
 	struct cv condition;
 	bool idling;
+	bool stalled;		// the driver asked to clear a stall
+	bool unstalling;	// submitted, waiting for the stall to be cleared
 };
 
 
 static void usbd_invoker(void* arg, int pending);
+static void usbd_unstall(void* arg, int pending);
+static void usbd_queue(struct usb_xfer* xfer);
 
 extern "C" usb_error_t
 usbd_transfer_setup(struct freebsd_usb_device* udev,
@@ -434,6 +439,9 @@ usbd_transfer_setup(struct freebsd_usb_device* udev,
 		cv_init(&xfer->condition, "FreeBSD USB transfer");
 		TIMEOUT_TASK_INIT(sUSBTaskqueue, &xfer->idle, 0, usbd_invoker, xfer);
 		xfer->idling = false;
+		TIMEOUT_TASK_INIT(sUSBTaskqueue, &xfer->unstall, 0, usbd_unstall, xfer);
+		xfer->stalled = false;
+		xfer->unstalling = false;
 
 		if (xfer->flags.proxy_buffer)
 			panic("not yet supported");
@@ -600,7 +608,8 @@ usbd_m_copy_in(struct usb_page_cache* cache, usb_frlength_t dst_offset,
 extern "C" void
 usbd_xfer_set_stall(struct usb_xfer *xfer)
 {
-	// Not needed?
+	// as FreeBSD: the next submission clears the stall first
+	xfer->stalled = true;
 }
 
 
@@ -664,6 +673,25 @@ usbd_transfer_submit(struct usb_xfer* xfer)
 		return;
 	}
 
+	if (xfer->stalled) {
+		// A driver asks for the stall of an endpoint to be cleared and
+		// submits again right away, as run(4) does after any error. Clearing
+		// it, as FreeBSD does, takes a request and a pause: without it the
+		// halted endpoint failed again at once, thousands of times a minute,
+		// and the Wi-Fi of a Toshiba AC100 stayed dead until a restart.
+		xfer->stalled = false;
+		xfer->unstalling = true;
+		taskqueue_enqueue_timeout(sUSBTaskqueue, &xfer->unstall, hz / 20);
+		return;
+	}
+
+	usbd_queue(xfer);
+}
+
+
+static void
+usbd_queue(struct usb_xfer* xfer)
+{
 	status_t status = B_NOT_SUPPORTED;
 	switch (xfer->type) {
 	case UE_BULK:
@@ -683,6 +711,23 @@ usbd_transfer_submit(struct usb_xfer* xfer)
 
 	if (status != B_OK)
 		usbd_callback(xfer, status, NULL, 0);
+}
+
+
+/*!	The pause after a stall is over: clears it and queues the transfer, unless
+	it was stopped meanwhile (usbd_transfer_stop() completed it then).
+*/
+static void
+usbd_unstall(void* arg, int pending)
+{
+	struct usb_xfer* xfer = (struct usb_xfer*)arg;
+	mtx_lock(xfer->mutex);
+	if (xfer->unstalling) {
+		xfer->unstalling = false;
+		sUSB->clear_feature(xfer->pipe, USB_FEATURE_ENDPOINT_HALT);
+		usbd_queue(xfer);
+	}
+	mtx_unlock(xfer->mutex);
 }
 
 
@@ -706,6 +751,17 @@ usbd_transfer_stop(struct usb_xfer* xfer)
 			TASK_INIT(&xfer->invoker, 0, usbd_invoker, xfer);
 			taskqueue_enqueue(sUSBTaskqueue, &xfer->invoker);
 		}
+		return;
+	}
+
+	if (xfer->unstalling) {
+		// waiting for its stall to be cleared, nothing queued yet; if
+		// usbd_unstall() runs anyway, it finds this and does nothing
+		xfer->unstalling = false;
+		taskqueue_cancel_timeout(sUSBTaskqueue, &xfer->unstall, NULL);
+		xfer->result = B_CANCELED;
+		TASK_INIT(&xfer->invoker, 0, usbd_invoker, xfer);
+		taskqueue_enqueue(sUSBTaskqueue, &xfer->invoker);
 		return;
 	}
 
