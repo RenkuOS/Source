@@ -280,6 +280,11 @@ AVCodecEncoder::_Setup()
 		avcodec_free_context(&fCodecContext);
 	}
 
+	if (fSwsContext != NULL) {
+		sws_freeContext(fSwsContext);
+		fSwsContext = NULL;
+	}
+
 	fCodecContext = avcodec_alloc_context3(fCodec);
 	if (fCodecContext == NULL)
 		return B_NO_INIT;
@@ -533,10 +538,6 @@ AVCodecEncoder::_EncodeAudio(const void* _buffer, int64 frameCount,
 		// Encoded audio. Things work differently from raw audio. We need
 		// the fAudioFifo to pipe data.
 #if LIBAVCODEC_VERSION_MAJOR >= 60
-		if (av_fifo_grow2(fAudioFifo, bufferSize) < 0) {
-			TRACE("  av_fifo_grow2() failed\n");
-			return B_NO_MEMORY;
-		}
 		av_fifo_write(fAudioFifo, const_cast<uint8*>(buffer), bufferSize);
 #else
 		if (av_fifo_realloc2(fAudioFifo, av_fifo_size(fAudioFifo) + bufferSize) < 0) {
