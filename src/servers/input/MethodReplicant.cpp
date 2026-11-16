@@ -33,6 +33,23 @@
 #endif
 
 
+/*!	BMenu::SetTargetForItems() only reaches the items of the menu itself, so
+	the items of a method's submenus would be left without a target and their
+	messages would never reach the method.
+*/
+static void
+set_targets_recursively(BMenu* menu, const BMessenger& messenger)
+{
+	for (int32 i = 0; i < menu->CountItems(); i++) {
+		BMenuItem* item = menu->ItemAt(i);
+		if (item->Submenu() != NULL)
+			set_targets_recursively(item->Submenu(), messenger);
+		else
+			item->SetTarget(messenger);
+	}
+}
+
+
 MethodReplicant::MethodReplicant(const char* signature)
 	:
 	BView(BRect(0, 0, 15, 15), REPLICANT_CTL_NAME, B_FOLLOW_ALL, B_WILL_DRAW),
@@ -250,6 +267,14 @@ MethodReplicant::UpdateMethodIcon(BMessage* message)
 	}
 
 	item->SetIcon(data);
+
+	// The replicant shows the icon of the active method, so a method that
+	// changes its icon (to show its input mode, for example) must be redrawn.
+	if (item->IsMarked()) {
+		fSegments->SetBits(item->Icon(), kRemoteWidth * kRemoteHeight, 0,
+			kRemoteColorSpace);
+		Invalidate();
+	}
 }
 
 
@@ -280,7 +305,7 @@ MethodReplicant::UpdateMethodMenu(BMessage* message)
 	if (menu == NULL) {
 		PRINT(("can't instantiate menu\n"));
 	} else
-		menu->SetTargetForItems(messenger);
+		set_targets_recursively(menu, messenger);
 
 	MethodMenuItem* item = FindItemByCookie(cookie);
 	if (item == NULL) {
@@ -384,7 +409,7 @@ MethodReplicant::AddMethod(BMessage* message)
 	if (menu == NULL) {
 		PRINT(("can't instantiate menu\n"));
 	} else
-		menu->SetTargetForItems(messenger);
+		set_targets_recursively(menu, messenger);
 
 	MethodMenuItem* item = FindItemByCookie(cookie);
 	if (item != NULL) {
