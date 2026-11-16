@@ -31,6 +31,7 @@
 // Synthetic registers (x86 MSR in brackets); bit layouts are the same as x86
 #define HV_REG_GUEST_OS_ID						0x00090002	// 0x40000000
 #define HV_REG_VP_INDEX							0x00090003	// 0x40000002
+#define HV_REG_TIME_REF_COUNT					0x00090004	// 0x40000020
 #define HV_REG_SINT0							0x000A0000	// 0x40000090
 #define HV_REG_SCONTROL							0x000A0010	// 0x40000080
 #define HV_REG_SIEFP							0x000A0012	// 0x40000082
@@ -62,6 +63,7 @@
 #define HV_REG_FEATURES							0x00000201
 
 // Low dword of HV_REG_PRIVILEGES_AND_FEATURES (x86: CPUID 0x40000003 eax)
+#define HV_CPUID_FEATURE_TIME_REF_COUNTER		(1 << 1)
 #define HV_CPUID_FEATURE_SYNIC					(1 << 2)
 
 // High dword of HV_REG_PRIVILEGES_AND_FEATURES (x86: CPUID 0x40000003 ebx)

@@ -12,12 +12,21 @@
 status_t
 VMBusDevice::GetReferenceCounter(uint64* _counter)
 {
-	return B_NOT_SUPPORTED;
+	if (!fReferenceCounterSupported)
+		return B_NOT_SUPPORTED;
+
+	uint64 low, high;
+	if (hv_get_vpreg(HV_REG_TIME_REF_COUNT, &low, &high) != 0)
+		return B_ERROR;
+
+	*_counter = low;
+	return B_OK;
 }
 
 
 bool
 VMBusDevice::_IsReferenceCounterSupported()
 {
-	return false;
+	return (hv_get_vpreg64(HV_REG_PRIVILEGES_AND_FEATURES)
+		& HV_CPUID_FEATURE_TIME_REF_COUNTER) != 0;
 }
