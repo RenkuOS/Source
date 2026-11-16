@@ -50,6 +50,51 @@ arch_convert_kernel_args(void)
 }
 
 
+/*!	Reads the EFI clock as seconds since 1970, or 0 if there's no valid time.
+	Like the CMOS clock on x86, the clock is in whatever time the
+	RTC_time_settings say (local or GMT).
+*/
+static uint64
+read_efi_clock()
+{
+	efi_time time;
+	efi_status status = kRuntimeServices->GetTime(&time, NULL);
+	if (status != EFI_SUCCESS) {
+		dprintf("EFI GetTime failed: %#lx\n", status);
+		return 0;
+	}
+	dprintf("EFI time: %04u-%02u-%02u %02u:%02u:%02u, time zone %d, "
+		"daylight %#x\n", time.Year, time.Month, time.Day, time.Hour,
+		time.Minute, time.Second, time.TimeZone, time.Daylight);
+
+	static const uint8 kDaysInMonth[12]
+		= {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+	bool leapYear = (time.Year % 4 == 0 && time.Year % 100 != 0)
+		|| time.Year % 400 == 0;
+	if (time.Year < 1970 || time.Month < 1 || time.Month > 12 || time.Day < 1
+		|| time.Day > kDaysInMonth[time.Month - 1]
+			+ (time.Month == 2 && leapYear ? 1 : 0)
+		|| time.Hour > 23 || time.Minute > 59 || time.Second > 59) {
+		dprintf("EFI time is invalid, ignoring it\n");
+		return 0;
+	}
+
+	// Julian day number, as rtc_tm_to_secs() in the kernel computes it
+	int year = time.Year, month = time.Month;
+	int days = time.Day - 32075 - 2440588
+		+ 1461 * (year + 4800 + (month - 14) / 12) / 4
+		+ 367 * (month - 2 - 12 * ((month - 14) / 12)) / 12
+		- 3 * ((year + 4900 + (month - 14) / 12) / 100) / 4;
+	int64 seconds = (int64)days * 86400 + time.Hour * 3600 + time.Minute * 60
+		+ time.Second;
+
+	// TimeZone is ignored: the kernel takes this as RTC time, and would
+	// apply the zone offset again if RTC_time_settings say local time.
+
+	return seconds > 0 ? seconds : 0;
+}
+
+
 void
 arm64_common_cpu_startup(uint32 cpu)
 {
@@ -104,6 +149,12 @@ arm64_common_cpu_startup(uint32 cpu)
 void
 arch_start_kernel(addr_t kernelEntry)
 {
+	// There's no RTC driver in the kernel; EFI is our only clock.
+	gKernelArgs.rtc_boot_seconds = read_efi_clock();
+	// main() trimmed kernel_args to v1 as there's no microcode; the clock
+	// is past that, so pass all of it.
+	gKernelArgs.kernel_args_size = sizeof(kernel_args);
+
 	// Prepare to exit EFI boot services.
 	// Read the memory map.
 	// First call is to determine the buffer size.

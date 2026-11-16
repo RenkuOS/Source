@@ -9,9 +9,21 @@
 #include <smp.h>
 
 
+// There is no RTC driver: the boot loader reads the EFI clock once, and the
+// clock counts on from there with system_time().
+static uint64 sBootSeconds;
+static bigtime_t sBootSystemTime;
+
+
 status_t
 arch_rtc_init(kernel_args *args, struct real_time_data *data)
 {
+	sBootSeconds = args->rtc_boot_seconds;
+	sBootSystemTime = system_time();
+		// Later than the loader's GetTime(), so the clock starts that much
+		// behind (the time spent in ExitBootServices() and early kernel init).
+	if (sBootSeconds == 0)
+		dprintf("arch_rtc_init: no time from the firmware, starting at 1970\n");
 	return B_OK;
 }
 
@@ -19,13 +31,17 @@ arch_rtc_init(kernel_args *args, struct real_time_data *data)
 uint64
 arch_rtc_get_hw_time(void)
 {
-	return 0;
+	if (sBootSeconds == 0)
+		return 0;
+	return sBootSeconds + (system_time() - sBootSystemTime) / 1000000;
 }
 
 
 void
 arch_rtc_set_hw_time(uint64 seconds)
 {
+	// The kernel doesn't call EFI runtime services (the loader passes it no
+	// system table), so there is no SetTime() and the clock isn't written.
 }
 
 
