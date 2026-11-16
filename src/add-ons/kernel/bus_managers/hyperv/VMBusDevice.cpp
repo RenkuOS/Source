@@ -277,7 +277,8 @@ VMBusDevice::ReadPacket(void* buffer, uint32* bufferLength, uint32* _headerLengt
 
 	// Signal Hyper-V if required; signaling is only needed if the RX ring buffer was previously
 	// completely full, and there is now enough space to write pending data (if supported)
-	memory_read_barrier();
+	// Full barrier: the read index store must not pass the loads below (StoreLoad)
+	memory_full_barrier();
 	if (fRXRing->features.pending_send_size_supported) {
 		uint32 pendingSendLength = atomic_get((int32*)&fRXRing->pending_send_size);
 		if (pendingSendLength > 0) {
@@ -394,7 +395,8 @@ VMBusDevice::_WriteTXData(const iovec txData[], size_t txDataCount)
 	// Signal Hyper-V if required; signaling is only needed if the ring buffer is changing state
 	// from empty to having some amount of data. It does not need a signal if the buffer already
 	// has some amount of data, and we are just adding more
-	memory_read_barrier();
+	// Full barrier: the write index store must not pass the loads below (StoreLoad)
+	memory_full_barrier();
 	if (fTXRing->interrupt_mask == 0
 			&& writeIndexOld == (uint32)atomic_get((int32*)&fTXRing->read_index)) {
 		atomic_add64((int64*)&fTXRing->guest_to_host_interrupt_count, 1);
