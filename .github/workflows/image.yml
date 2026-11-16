@@ -54,6 +54,7 @@ jobs:
           #   secondary  the secondary architecture of a hybrid, or empty
           #   target     the jam build profile
           #   image      the file jam writes, and ext the extension of the published one
+          #   iso        jam arguments for a second, ISO build after target, or empty
           #   apt        the QEMU packages the boot check installs
           #   banner     seconds the boot check waits for the boot banner
           #   settle     seconds the guest must then run without failing
@@ -66,15 +67,16 @@ jobs:
           all='[
             {"arch":"x86_64","packaging":"x86_64","triple":"x86_64-unknown-haiku",
              "secondary":"","secondary_triple":"",
-             "target":"@nightly-anyboot","image":"*anyboot*.iso","ext":"iso",
+             "target":"@nightly-anyboot","image":"*anyboot*.iso","ext":"iso","iso":"",
              "qemu":"qemu-system-x86_64","apt":"qemu-system-x86","banner":120,"settle":60},
             {"arch":"x86_gcc2h","packaging":"x86_gcc2","triple":"i586-pc-haiku",
              "secondary":"x86","secondary_triple":"i586-pc-haiku",
-             "target":"@nightly-anyboot","image":"*anyboot*.iso","ext":"iso",
+             "target":"@nightly-anyboot","image":"*anyboot*.iso","ext":"iso","iso":"",
              "qemu":"qemu-system-i386","apt":"qemu-system-x86","banner":120,"settle":60},
             {"arch":"arm64","packaging":"arm64","triple":"aarch64-unknown-haiku",
              "secondary":"","secondary_triple":"",
              "target":"@nightly-mmc","image":"haiku-mmc.image","ext":"img.zst",
+             "iso":"@nightly-anyboot build haiku-boot-cd haiku-anyboot-image",
              "qemu":"qemu-system-aarch64","apt":"qemu-system-arm qemu-efi-aarch64",
              "banner":300,"settle":180}
           ]'
@@ -209,12 +211,13 @@ jobs:
           SECONDARY: ${{ matrix.secondary }}
           SECONDARY_TRIPLE: ${{ matrix.secondary_triple }}
           TARGET: ${{ matrix.target }}
+          ISO_TARGET: ${{ matrix.iso }}
           NO_DOWNLOADS: ${{ matrix.arch == 'arm64' && '--no-downloads' || '' }}
         run: |
           set -euo pipefail
           docker run --rm -v "${PWD}:/src" -w /src \
             -e ARCH -e PACKAGING -e TRIPLE -e SECONDARY -e SECONDARY_TRIPLE \
-            -e TARGET -e NO_DOWNLOADS \
+            -e TARGET -e ISO_TARGET -e NO_DOWNLOADS \
             -e HOME=/tmp -e TERM=dumb \
             -e HAIKU_REVISION -e HAIKU_IMAGE_LABEL -e RENKUOS_BUILD \
             "${IMAGE}" \
@@ -240,6 +243,13 @@ jobs:
               fi
               ../configure "$@" --distro-compatibility default ${NO_DOWNLOADS}
               jam -q -j"$(nproc)" "${TARGET}"
+              # arm64 also ships an ISO, from the same objects. The CD boot
+              # image is a jam temporary that is not rebuilt once removed, so
+              # it is named explicitly (see the TODO in AnybootImage).
+              if [ -n "${ISO_TARGET}" ]; then
+                # shellcheck disable=SC2086
+                jam -q -j"$(nproc)" ${ISO_TARGET}
+              fi
               # The package repository: repo, repo.info, repo.sha256 and the
               # system hpkgs. This is what pkgman and HaikuDepot would update
               # from, as opposed to the ISO which is for installing. Built as
@@ -255,17 +265,32 @@ jobs:
         id: iso
         run: |
           set -euo pipefail
-          SRC="$(find "generated.${{ matrix.arch }}" -maxdepth 1 -name '${{ matrix.image }}' | head -1)"
-          NAME="RenkuOS-${{ matrix.arch }}-${{ steps.brand.outputs.date }}-${{ steps.brand.outputs.build }}.${{ matrix.ext }}"
+          # So a failure inside ship's $(...) fails the step.
+          shopt -s inherit_errexit
           mkdir -p out
-          # The arm64 disk image is mostly empty space, so it ships compressed.
-          case "${NAME}" in
-            *.zst) zstd -q -T0 -10 --rm "${SRC}" -o "out/${NAME}" ;;
-            *) mv "${SRC}" "out/${NAME}" ;;
-          esac
-          ( cd out && sha256sum "${NAME}" > "${NAME}.sha256" )
+          # Moves jam's output file matching $1 to out/ as the published name
+          # with extension $2, plus its .sha256, and prints the name.
+          ship() {
+            local src name
+            src="$(find "generated.${{ matrix.arch }}" -maxdepth 1 -name "$1" | head -1)"
+            [ -n "${src}" ] || { echo "::error::jam wrote no $1" >&2; return 1; }
+            name="RenkuOS-${{ matrix.arch }}-${{ steps.brand.outputs.date }}-${{ steps.brand.outputs.build }}.$2"
+            # The arm64 disk image is mostly empty space, so it ships compressed.
+            case "${name}" in
+              *.zst) zstd -q -T0 -10 --rm "${src}" -o "out/${name}" ;;
+              *) mv "${src}" "out/${name}" ;;
+            esac
+            ( cd out && sha256sum "${name}" > "${name}.sha256" )
+            echo "${name}"
+          }
+          NAME="$(ship '${{ matrix.image }}' '${{ matrix.ext }}')"
           echo "name=${NAME}" >> "$GITHUB_OUTPUT"
           echo "size=$(du -h "out/${NAME}" | cut -f1)" >> "$GITHUB_OUTPUT"
+          if [ -n "${{ matrix.iso }}" ]; then
+            ISO="$(ship '*anyboot*.iso' iso)"
+            echo "iso_name=${ISO}" >> "$GITHUB_OUTPUT"
+            echo "iso_size=$(du -h "out/${ISO}" | cut -f1)" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Collect the package repository
         id: repo
@@ -310,6 +335,9 @@ jobs:
             echo "| | |"
             echo "|---|---|"
             echo "| Image | ${{ steps.iso.outputs.name || 'not produced' }} (${{ steps.iso.outputs.size || '-' }}) |"
+            if [ -n "${{ steps.iso.outputs.iso_name }}" ]; then
+              echo "| ISO | ${{ steps.iso.outputs.iso_name }} (${{ steps.iso.outputs.iso_size }}) |"
+            fi
             echo "| Revision | \`${{ steps.brand.outputs.revision }}\` |"
             echo "| Package repo | ${{ steps.repo.outputs.packages || '0' }} packages, ${{ steps.repo.outputs.size || '-' }} |"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -325,11 +353,19 @@ jobs:
     # skip the boot of every other arch, and so stop its nightly.
     if: ${{ !cancelled() && needs.plan.result == 'success' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # arm64 boots two images in turn, each up to banner + settle.
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.boot) }}
     steps:
+      # Only for the boot check script. Before the download, because checkout
+      # empties the workspace.
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
       - uses: actions/download-artifact@v4
         with:
           name: image-${{ matrix.arch }}
@@ -343,51 +379,47 @@ jobs:
         env:
           BANNER_TIMEOUT: ${{ matrix.banner }}
           SETTLE_SECONDS: ${{ matrix.settle }}
+          QEMU: ${{ matrix.qemu }}
         run: |
           set -uo pipefail
-          ISO="$(find . -maxdepth 2 -name 'RenkuOS-*' ! -name '*.sha256' | head -1)"
-          if [ -z "${ISO}" ]; then
+          IMAGES="$(find . -maxdepth 2 -name 'RenkuOS-*' ! -name '*.sha256' | sort)"
+          if [ -z "${IMAGES}" ]; then
             echo "::error::No RenkuOS image in the artifact."; find . -maxdepth 2 -type f | head; exit 1
           fi
-          : > serial.log
-          case "${ISO}" in
-            *.img.zst)
-              # The setup that reached the arm64 desktop locally: the EDK2
-              # firmware, a virtio disk, and ramfb for the boot loader. The
-              # runner's EDK2 2025.11 hangs before its boot manager with
-              # -cpu max, so name a CPU model.
-              zstd -q -d "${ISO}" -o disk.img
-              ${{ matrix.qemu }} -M virt -cpu cortex-a72 -smp 4 -m 2048 \
-                -bios /usr/share/qemu-efi-aarch64/QEMU_EFI.fd \
-                -drive file=disk.img,format=raw,if=none,id=d0 -device virtio-blk-device,drive=d0 \
-                -device ramfb -display none -serial file:serial.log -no-reboot & ;;
-            *)
-              ${{ matrix.qemu }} -machine pc -accel tcg,thread=multi -smp "$(nproc)" \
-                -m 2048 -cdrom "${ISO}" -boot d -display none \
-                -serial file:serial.log -no-reboot & ;;
-          esac
-          QEMU=$!
-          # shellcheck disable=SC2064
-          trap "kill ${QEMU} 2>/dev/null || true" EXIT
-          fail_re='Kernel Debugging Land|^PANIC:|error starting "|main2: find_directory\(\) failed'
-          seen=0; at=0; t=0
-          while :; do
-            if grep -qE "${fail_re}" serial.log 2>/dev/null; then
-              echo "::error::Guest failed:"; grep -nE "${fail_re}" serial.log | head -20; exit 1
-            fi
-            if [ "${seen}" -eq 0 ] && grep -qF 'Haiku revision:' serial.log 2>/dev/null; then
-              seen=1; at=${t}; echo "banner at ${at}s"
-            fi
-            if [ "${seen}" -eq 1 ] && [ $(( t - at )) -ge "${SETTLE_SECONDS}" ]; then
-              echo "booted cleanly"; exit 0
-            fi
-            if ! kill -0 "${QEMU}" 2>/dev/null; then
-              echo "::error::QEMU exited after ${t}s."; tail -40 serial.log; exit 1
-            fi
-            if [ "${seen}" -eq 0 ] && [ "${t}" -ge "${BANNER_TIMEOUT}" ]; then
-              echo "::error::No banner within ${BANNER_TIMEOUT}s."; tail -40 serial.log; exit 1
-            fi
-            sleep 5; t=$(( t + 5 ))
+          # arm64 ships a disk image and an ISO; each must boot on its own.
+          for IMG in ${IMAGES}; do
+            echo "::group::${IMG}"
+            REQUIRE=""
+            case "${{ matrix.arch }}:${IMG}" in
+              arm64:*.img.zst)
+                # The setup that reached the arm64 desktop locally: the EDK2
+                # firmware, a virtio disk, and ramfb for the boot loader. The
+                # runner's EDK2 2025.11 hangs before its boot manager with
+                # -cpu max, so name a CPU model.
+                LOG=serial-disk.log
+                zstd -q -d -f "${IMG}" -o disk.img || exit 1
+                set -- -drive file=disk.img,format=raw,if=none,id=d0 \
+                  -device virtio-blk-device,drive=d0 ;;
+              arm64:*.iso)
+                # The ISO as the only boot medium, on a CD. The loader must
+                # find its boot partition on it, not just reach the kernel.
+                LOG=serial-iso.log
+                REQUIRE="Mounted boot partition"
+                set -- -device virtio-scsi-pci,id=scsi0 \
+                  -drive "file=${IMG},if=none,id=cd0,media=cdrom,format=raw,readonly=on" \
+                  -device scsi-cd,drive=cd0,bus=scsi0.0 ;;
+              *)
+                LOG=serial.log
+                set -- -machine pc -accel tcg,thread=multi -smp "$(nproc)" \
+                  -m 2048 -cdrom "${IMG}" -boot d ;;
+            esac
+            case "${{ matrix.arch }}" in
+              arm64) set -- -M virt -cpu cortex-a72 -smp 4 -m 2048 \
+                       -bios /usr/share/qemu-efi-aarch64/QEMU_EFI.fd -device ramfb "$@" ;;
+            esac
+            REQUIRE="${REQUIRE}" .github/scripts/boot-check.sh "${LOG}" \
+              "${QEMU}" "$@" -display none -no-reboot || exit 1
+            echo "::endgroup::"
           done
 
       # A pass marker, so the publish job can ship the arches that booted
@@ -406,5 +438,5 @@ jobs:
         if: always()
         with:
           name: serial-${{ matrix.arch }}
-          path: serial.log
+          path: serial*.log
           retention-days: 7
