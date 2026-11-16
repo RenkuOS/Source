@@ -1927,14 +1927,22 @@ mwx_attach(struct device *parent, struct device *self, void *aux)
 		break;
 	default:
 		printf(": unknown chip id 0x%04x\n", PCI_PRODUCT(pa->pa_id));
+#ifdef __FreeBSD_version
+		goto fail;	/* free the ifnet and the DMA tag */
+#else
 		MWX_ATTACH_RETURN(ENXIO);
+#endif
 	}
 
 	memtype = pci_mapreg_type(pa->pa_pc, pa->pa_tag, PCI_MAPREG_START);
 	if (pci_mapreg_map(pa, PCI_MAPREG_START, memtype, 0,
 	    &sc->sc_st, &sc->sc_memh, NULL, &sc->sc_mems, 0)) {
 		printf("%s: can't map mem space\n", DEVNAME(sc));
+#ifdef __FreeBSD_version
+		goto fail;
+#else
 		MWX_ATTACH_RETURN(ENXIO);
+#endif
 	}
 
 #ifdef __HAIKU__
@@ -1950,8 +1958,12 @@ mwx_attach(struct device *parent, struct device *self, void *aux)
 	    pci_intr_map(pa, &ih)) {
 #endif
 		printf("%s: can't map interrupt\n", DEVNAME(sc));
+#ifdef __FreeBSD_version
+		goto fail;
+#else
 		bus_space_unmap(sc->sc_st, sc->sc_memh, sc->sc_mems);
 		MWX_ATTACH_RETURN(ENXIO);
+#endif
 	}
 
 	if (mwx_mcu_fw_pmctrl(sc) != 0 || mwx_mcu_drv_pmctrl(sc) != 0)
@@ -1981,6 +1993,10 @@ mwx_attach(struct device *parent, struct device *self, void *aux)
 
 	sc->sc_ih = pci_intr_establish(pa->pa_pc, ih, IPL_NET,
 	    mwx_intr, sc, DEVNAME(sc));
+	if (sc->sc_ih == NULL) {
+		printf("%s: can't establish interrupt\n", DEVNAME(sc));
+		goto fail;
+	}
 
 	if ((error = mwx_txwi_alloc(sc, MWX_TXWI_MAX)) != 0) {
 		printf("%s: failed to allocate DMA resources %d\n",
@@ -2130,13 +2146,32 @@ fail:
 #ifdef __HAIKU__
 	printf("%s: attach failed\n", DEVNAME(sc));
 #endif
+#ifdef __FreeBSD_version
+	/*
+	 * Undo in mwx_detach() order: remove the interrupt before the rings
+	 * it touches and stop DMA before freeing them.
+	 */
+	if (sc->sc_ih != NULL)
+		pci_intr_disestablish(pa->pa_pc, sc->sc_ih);
+	pci_release_msi(dev);
+	if (sc->sc_memh != 0) {
+		mwx_write(sc, MT_WFDMA0_HOST_INT_ENA, 0);
+		mwx_write(sc, MT_PCIE_MAC_INT_ENABLE, 0);
+		if (sc->sc_txq.mq_desc != NULL)
+			mwx_dma_disable(sc, 1);
+	}
+	mwx_txwi_free(sc);
+	mwx_dma_free(sc);
+	if (sc->sc_memh != 0)
+		bus_space_unmap(sc->sc_st, sc->sc_memh, sc->sc_mems);
+	bus_dma_tag_destroy(sc->sc_dmat);
+	if_free_inplace(ifp);
+#else
 	mwx_txwi_free(sc);
 	mwx_dma_free(sc);
 	if (sc->sc_ih != NULL)
 		pci_intr_disestablish(pa->pa_pc, sc->sc_ih);
 	bus_space_unmap(sc->sc_st, sc->sc_memh, sc->sc_mems);
-#ifdef __FreeBSD_version
-	if_free_inplace(ifp);
 #endif
 	MWX_ATTACH_RETURN(ENXIO);
 }
