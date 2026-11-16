@@ -92,6 +92,27 @@ configureArgs="--build-cross-tools $ARCH --cross-tools-source $TOP/buildtools"
 if [ -n "$SECONDARY_ARCH" ]; then
 	configureArgs="$configureArgs --build-cross-tools $SECONDARY_ARCH"
 fi
+
+# RenkuOS: the arm64 packages come from the RenkuOSPorts arm64-packages release,
+# as in .github/workflows/image.yml. jam cannot download from that repository,
+# because its download URL holds the SHA-256 of the pins file, so the packages
+# go into jam's download directory, the pins are written from them, and jam
+# runs with --no-downloads. The pins file is marked unchanged, so that the
+# revision jam takes from git describe --dirty does not end in "+dirty".
+if [ "$ARCH" = arm64 ]; then
+	release=https://github.com/RenkuOS/RenkuOSPorts/releases/download/arm64-packages
+	mkdir -p $OUTPUT/download $TOP/arm64-packages
+	(cd $TOP/arm64-packages &&
+		curl -fsSL --retry 5 -O $release/renkuosports-arm64-repo.tar &&
+		curl -fsSL --retry 5 -O $release/renkuosports-arm64-repo.tar.sha256 &&
+		sha256sum -c renkuosports-arm64-repo.tar.sha256 &&
+		tar -xf renkuosports-arm64-repo.tar packages)
+	mv $TOP/arm64-packages/packages/*.hpkg $OUTPUT/download/
+	rm -rf $TOP/arm64-packages
+	$HAIKU/.github/scripts/arm64-pins.sh $OUTPUT/download > $HAIKU/build/jam/repositories/HaikuPorts/arm64
+	git -C $HAIKU update-index --assume-unchanged build/jam/repositories/HaikuPorts/arm64
+	configureArgs="$configureArgs --no-downloads"
+fi
 $HAIKU/configure $configureArgs
 
 # Set up sysroot to redirect to /system
@@ -139,7 +160,20 @@ if [ -n "$SECONDARY_ARCH" ]; then
 	package extract -C $PACKAGE_ROOT $OUTPUT/objects/haiku/$ARCH/packaging/packages/haiku_${SECONDARY_ARCH}.hpkg
 	package extract -C $PACKAGE_ROOT $OUTPUT/objects/haiku/$ARCH/packaging/packages/haiku_${SECONDARY_ARCH}_devel.hpkg
 fi
-find $OUTPUT/download/ -name '*.hpkg' -exec package extract -C $PACKAGE_ROOT {} \;
+if [ "$ARCH" = arm64 ]; then
+	# The download directory holds the whole arm64 release. Extract only the
+	# packages the build used: jam unpacks each one, and its _devel package,
+	# into build_packages/<name>-<version>-<revision>-<arch>.
+	for used in $OUTPUT/build_packages/*/; do
+		used=$(basename "$used")
+		for hpkg in $used ${used%%-*}_devel-${used#*-}; do
+			hpkg=$OUTPUT/download/$hpkg.hpkg
+			if [ -f "$hpkg" ]; then package extract -C $PACKAGE_ROOT "$hpkg"; fi
+		done
+	done
+else
+	find $OUTPUT/download/ -name '*.hpkg' -exec package extract -C $PACKAGE_ROOT {} \;
+fi
 
 # Clean up
 rm -rf $BUILDTOOLS
