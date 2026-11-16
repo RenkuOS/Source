@@ -34,6 +34,36 @@ class RenderingBuffer;
 class ServerBitmap;
 
 
+// RenkuOS: collects the parts of the screen that changed, for a client that
+// copies the screen, such as a remote desktop server. HWInterface adds to it
+// from Invalidate(). It is only touched with HWInterface's observer lock
+// held.
+class ScreenObserver {
+public:
+								ScreenObserver() : fAll(true) {}
+
+			void				Include(const BRect& frame)
+									{
+										if (fAll)
+											return;
+										fDirty.Include(frame);
+										// A reader that falls behind gets
+										// one larger rectangle instead of
+										// an ever longer list.
+										if (fDirty.CountRects() > 256)
+											fDirty.Set(fDirty.Frame());
+									}
+			void				IncludeAll()
+									{ fAll = true; fDirty.MakeEmpty(); }
+
+private:
+	friend class HWInterface;
+
+			BRegion				fDirty;
+			bool				fAll;
+};
+
+
 class HWInterfaceListener {
 public:
 								HWInterfaceListener();
@@ -173,6 +203,20 @@ public:
 			bool				AddListener(HWInterfaceListener* listener);
 			void				RemoveListener(HWInterfaceListener* listener);
 
+	// RenkuOS: screen observers. TakeScreenChanges() moves what changed
+	// since the last call into region, or sets all when the whole screen
+	// has to be read again.
+			bool				AddScreenObserver(ScreenObserver* observer);
+			void				RemoveScreenObserver(ScreenObserver* observer);
+			void				TakeScreenChanges(ScreenObserver* observer,
+									BRegion& region, bool& all);
+			void				IncludeAllScreenChanges(
+									ScreenObserver* observer);
+			// Changes whenever the cursor shape changes.
+			int32				CursorGeneration() const
+									{ return atomic_get(
+										(int32*)&fCursorGeneration); }
+
 protected:
 	// implement this in derived classes
 	virtual	void				_DrawCursor(IntRect area) const;
@@ -244,7 +288,15 @@ protected:
 			int					fVGADevice;
 
 private:
+			void				_ScreenChanged(const BRect& frame);
+			void				_WholeScreenChanged();
+
 			BList				fListeners;
+
+			BLocker				fScreenObserverLock;
+			BList				fScreenObservers;
+			int32				fScreenObserverCount;
+			int32				fCursorGeneration;
 };
 
 #endif // HW_INTERFACE_H

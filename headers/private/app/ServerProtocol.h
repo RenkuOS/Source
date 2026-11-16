@@ -371,6 +371,15 @@ enum {
 	AS_LAST_CODE
 };
 
+// RenkuOS: screen observer codes. They have fixed values outside the
+// sequential range above, so that a client can try them on any app_server.
+// One that does not know them replies B_ERROR.
+enum {
+	AS_SCREEN_OBSERVER_START	= 'RSos',
+	AS_SCREEN_OBSERVER_STOP		= 'RSoe',
+	AS_SCREEN_OBSERVER_READ		= 'RSor',
+};
+
 // bitmap allocation flags
 enum {
 	kAllocator			= 0x1,

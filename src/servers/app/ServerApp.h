@@ -30,6 +30,7 @@ class BMessage;
 class BList;
 class Desktop;
 class DrawingEngine;
+class ScreenObserver;
 class ServerPicture;
 class ServerCursor;
 class ServerBitmap;
@@ -111,6 +112,10 @@ private:
 
 			bool				_AddBitmap(ServerBitmap* bitmap);
 			void				_DeleteBitmap(ServerBitmap* bitmap);
+			status_t			_SetScreenObserverArea(area_id source,
+									bool& changed);
+			void				_DeleteScreenObserverArea();
+			void				_StopScreenObserver();
 			ServerBitmap*		_FindBitmap(int32 token) const;
 
 			ServerPicture*		_FindPicture(int32 token) const;
@@ -163,6 +168,11 @@ private:
 			BReference<ClientMemoryAllocator> fMemoryAllocator;
 
 			AppFontManager*		fAppFontManager;
+
+			ScreenObserver*		fScreenObserver;
+			area_id				fScreenObserverSourceArea;
+			area_id				fScreenObserverArea;
+			uint8*				fScreenObserverBits;
 };
 
 
