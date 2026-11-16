@@ -11,6 +11,7 @@
 #include <CheckBox.h>
 #include <LayoutBuilder.h>
 #include <Locale.h>
+#include <Slider.h>
 #include <Window.h>
 
 #include <AppServerLink.h>
@@ -28,12 +29,16 @@ static const int32 kMsgComposited = 'cmps';
 static const int32 kMsgShadows = 'cmpw';
 static const int32 kMsgRoundedCorners = 'cmpr';
 static const int32 kMsgDragTransparency = 'cmpt';
+static const int32 kMsgWobbly = 'cmpo';
+static const int32 kMsgWobbliness = 'cmpl';
 
 // What app_server uses until it is told otherwise
 static const bool kDefaultComposited = false;
 static const bool kDefaultShadows = true;
 static const bool kDefaultRoundedCorners = true;
 static const bool kDefaultDragTransparency = false;
+static const bool kDefaultWobbly = false;
+static const int32 kDefaultWobbliness = 50;
 
 
 CompositorSettingsView::CompositorSettingsView(const char* name)
@@ -46,6 +51,8 @@ CompositorSettingsView::CompositorSettingsView(const char* name)
 		kDefaultRoundedCorners);
 	fSavedDragTransparency = _Get(AS_GET_COMPOSITED_DRAG_TRANSPARENCY,
 		kDefaultDragTransparency);
+	fSavedWobbly = _Get(AS_GET_COMPOSITED_WOBBLY_WINDOWS, kDefaultWobbly);
+	fSavedWobbliness = _GetWobbliness();
 
 	fCompositedCheckBox = new BCheckBox("composited",
 		B_TRANSLATE("Compositor (after a restart)"),
@@ -58,10 +65,21 @@ CompositorSettingsView::CompositorSettingsView(const char* name)
 	fDragTransparencyCheckBox = new BCheckBox("drag transparency",
 		B_TRANSLATE("See-through windows while dragging"),
 		new BMessage(kMsgDragTransparency));
+	fWobblyCheckBox = new BCheckBox("wobbly",
+		B_TRANSLATE("Wobbly windows"),
+		new BMessage(kMsgWobbly));
+	fWobblinessSlider = new BSlider("wobbliness", B_TRANSLATE("Wobbliness"),
+		new BMessage(kMsgWobbliness), 0, 100, B_HORIZONTAL);
+	fWobblinessSlider->SetLimitLabels(B_TRANSLATE("Less"),
+		B_TRANSLATE("More"));
+	fWobblinessSlider->SetHashMarks(B_HASH_MARKS_BOTTOM);
+	fWobblinessSlider->SetHashMarkCount(5);
 
 	fShadowsCheckBox->SetValue(fSavedShadows);
 	fRoundedCornersCheckBox->SetValue(fSavedRoundedCorners);
 	fDragTransparencyCheckBox->SetValue(fSavedDragTransparency);
+	fWobblyCheckBox->SetValue(fSavedWobbly);
+	fWobblinessSlider->SetValue(fSavedWobbliness);
 	_SetComposited(fSavedComposited);
 
 	BLayoutBuilder::Group<>(this, B_VERTICAL, B_USE_DEFAULT_SPACING)
@@ -70,6 +88,11 @@ CompositorSettingsView::CompositorSettingsView(const char* name)
 			.Add(fShadowsCheckBox)
 			.Add(fRoundedCornersCheckBox)
 			.Add(fDragTransparencyCheckBox)
+			.Add(fWobblyCheckBox)
+			.AddGroup(B_VERTICAL)
+				.Add(fWobblinessSlider)
+				.SetInsets(B_USE_WINDOW_SPACING, 0, 0, 0)
+				.End()
 			.SetInsets(B_USE_WINDOW_SPACING, 0, 0, 0)
 			.End()
 		.AddGlue()
@@ -91,6 +114,8 @@ CompositorSettingsView::AttachedToWindow()
 	fShadowsCheckBox->SetTarget(this);
 	fRoundedCornersCheckBox->SetTarget(this);
 	fDragTransparencyCheckBox->SetTarget(this);
+	fWobblyCheckBox->SetTarget(this);
+	fWobblinessSlider->SetTarget(this);
 }
 
 
@@ -124,6 +149,18 @@ CompositorSettingsView::MessageReceived(BMessage* message)
 			Window()->PostMessage(kMsgUpdate);
 			break;
 
+		case kMsgWobbly:
+			_Set(AS_SET_COMPOSITED_WOBBLY_WINDOWS,
+				fWobblyCheckBox->Value() == B_CONTROL_ON);
+			_UpdateWobbliness();
+			Window()->PostMessage(kMsgUpdate);
+			break;
+
+		case kMsgWobbliness:
+			_SetWobbliness(fWobblinessSlider->Value());
+			Window()->PostMessage(kMsgUpdate);
+			break;
+
 		default:
 			BView::MessageReceived(message);
 			break;
@@ -140,7 +177,9 @@ CompositorSettingsView::IsDefaultable()
 		|| (fRoundedCornersCheckBox->Value() == B_CONTROL_ON)
 			!= kDefaultRoundedCorners
 		|| (fDragTransparencyCheckBox->Value() == B_CONTROL_ON)
-			!= kDefaultDragTransparency;
+			!= kDefaultDragTransparency
+		|| (fWobblyCheckBox->Value() == B_CONTROL_ON) != kDefaultWobbly
+		|| fWobblinessSlider->Value() != kDefaultWobbliness;
 }
 
 
@@ -154,6 +193,10 @@ CompositorSettingsView::SetDefaults()
 		kDefaultRoundedCorners);
 	_SetOption(fDragTransparencyCheckBox,
 		AS_SET_COMPOSITED_DRAG_TRANSPARENCY, kDefaultDragTransparency);
+	_SetOption(fWobblyCheckBox, AS_SET_COMPOSITED_WOBBLY_WINDOWS,
+		kDefaultWobbly);
+	_SetWobbliness(kDefaultWobbliness);
+	_UpdateWobbliness();
 }
 
 
@@ -165,7 +208,9 @@ CompositorSettingsView::IsRevertable()
 		|| (fRoundedCornersCheckBox->Value() == B_CONTROL_ON)
 			!= fSavedRoundedCorners
 		|| (fDragTransparencyCheckBox->Value() == B_CONTROL_ON)
-			!= fSavedDragTransparency;
+			!= fSavedDragTransparency
+		|| (fWobblyCheckBox->Value() == B_CONTROL_ON) != fSavedWobbly
+		|| fWobblinessSlider->Value() != fSavedWobbliness;
 }
 
 
@@ -182,6 +227,10 @@ CompositorSettingsView::Revert()
 		fSavedRoundedCorners);
 	_SetOption(fDragTransparencyCheckBox,
 		AS_SET_COMPOSITED_DRAG_TRANSPARENCY, fSavedDragTransparency);
+	_SetOption(fWobblyCheckBox, AS_SET_COMPOSITED_WOBBLY_WINDOWS,
+		fSavedWobbly);
+	_SetWobbliness(fSavedWobbliness);
+	_UpdateWobbliness();
 }
 
 
@@ -209,6 +258,8 @@ CompositorSettingsView::_SetComposited(bool composited)
 	fShadowsCheckBox->SetEnabled(composited);
 	fRoundedCornersCheckBox->SetEnabled(composited);
 	fDragTransparencyCheckBox->SetEnabled(composited);
+	fWobblyCheckBox->SetEnabled(composited);
+	_UpdateWobbliness();
 }
 
 
@@ -218,6 +269,27 @@ CompositorSettingsView::_SetOption(BCheckBox* checkBox, int32 code,
 {
 	_Set(code, value);
 	checkBox->SetValue(value);
+}
+
+
+void
+CompositorSettingsView::_SetWobbliness(int32 wobbliness)
+{
+	BPrivate::AppServerLink link;
+	link.StartMessage(AS_SET_COMPOSITED_WOBBLINESS);
+	link.Attach<uint8>((uint8)wobbliness);
+	link.Flush();
+
+	fWobblinessSlider->SetValue(wobbliness);
+}
+
+
+//!	The slider only matters while windows wobble.
+void
+CompositorSettingsView::_UpdateWobbliness()
+{
+	fWobblinessSlider->SetEnabled(fCompositedCheckBox->Value() == B_CONTROL_ON
+		&& fWobblyCheckBox->Value() == B_CONTROL_ON);
 }
 
 
@@ -231,6 +303,20 @@ CompositorSettingsView::_Get(int32 code, bool defaultValue)
 	bool value = defaultValue;
 	if (link.FlushWithReply(status) == B_OK && status == B_OK)
 		link.Read<bool>(&value);
+	return value;
+}
+
+
+/*static*/ uint8
+CompositorSettingsView::_GetWobbliness()
+{
+	BPrivate::AppServerLink link;
+	link.StartMessage(AS_GET_COMPOSITED_WOBBLINESS);
+
+	int32 status;
+	uint8 value = kDefaultWobbliness;
+	if (link.FlushWithReply(status) == B_OK && status == B_OK)
+		link.Read<uint8>(&value);
 	return value;
 }
 

@@ -91,6 +91,8 @@ DesktopSettingsPrivate::_SetDefaults()
 	fCompositedShadows = COMPOSITED_SHADOWS_DEFAULT;
 	fCompositedRoundedCorners = COMPOSITED_ROUNDED_CORNERS_DEFAULT;
 	fCompositedDragTransparency = COMPOSITED_DRAG_TRANSPARENCY_DEFAULT;
+	fCompositedWobblyWindows = COMPOSITED_WOBBLY_WINDOWS_DEFAULT;
+	fCompositedWobbliness = COMPOSITED_WOBBLINESS_DEFAULT;
 	gDefaultHintingMode = HINTING_MODE_ON;
 	gSubpixelAverageWeight = 120;
 	gSubpixelOrderingRGB = true;
@@ -318,6 +320,18 @@ DesktopSettingsPrivate::_Load()
 				fCompositedDragTransparency = dragTransparency;
 			}
 
+			bool wobbly;
+			if (settings.FindBool("composited wobbly windows", &wobbly)
+					== B_OK) {
+				fCompositedWobblyWindows = wobbly;
+			}
+
+			int8 wobbliness;
+			if (settings.FindInt8("composited wobbliness", &wobbliness)
+					== B_OK && wobbliness >= 0 && wobbliness <= 100) {
+				fCompositedWobbliness = wobbliness;
+			}
+
 			int8 averageWeight;
 			if (settings.FindInt8("subpixel average weight", &averageWeight)
 					== B_OK) {
@@ -488,6 +502,9 @@ DesktopSettingsPrivate::Save(uint32 mask)
 				fCompositedRoundedCorners);
 			settings.AddBool("composited drag transparency",
 				fCompositedDragTransparency);
+			settings.AddBool("composited wobbly windows",
+				fCompositedWobblyWindows);
+			settings.AddInt8("composited wobbliness", fCompositedWobbliness);
 			settings.AddInt8("subpixel average weight", gSubpixelAverageWeight);
 			settings.AddBool("subpixel ordering", gSubpixelOrderingRGB);
 
@@ -837,6 +854,36 @@ DesktopSettingsPrivate::CompositedDragTransparency() const
 
 
 void
+DesktopSettingsPrivate::SetCompositedWobblyWindows(bool wobbly)
+{
+	fCompositedWobblyWindows = wobbly;
+	Save(kAppearanceSettings);
+}
+
+
+bool
+DesktopSettingsPrivate::CompositedWobblyWindows() const
+{
+	return fCompositedWobblyWindows;
+}
+
+
+void
+DesktopSettingsPrivate::SetCompositedWobbliness(uint8 wobbliness)
+{
+	fCompositedWobbliness = wobbliness;
+	Save(kAppearanceSettings);
+}
+
+
+uint8
+DesktopSettingsPrivate::CompositedWobbliness() const
+{
+	return fCompositedWobbliness;
+}
+
+
+void
 DesktopSettingsPrivate::SetSubpixelAntialiasing(bool subpix)
 {
 	gSubpixelAntialiasing = subpix;
@@ -1066,6 +1113,20 @@ DesktopSettings::CompositedDragTransparency() const
 
 
 bool
+DesktopSettings::CompositedWobblyWindows() const
+{
+	return fSettings->CompositedWobblyWindows();
+}
+
+
+uint8
+DesktopSettings::CompositedWobbliness() const
+{
+	return fSettings->CompositedWobbliness();
+}
+
+
+bool
 DesktopSettings::SubpixelAntialiasing() const
 {
 	return fSettings->SubpixelAntialiasing();
@@ -1219,6 +1280,20 @@ void
 LockedDesktopSettings::SetCompositedDragTransparency(bool transparent)
 {
 	fSettings->SetCompositedDragTransparency(transparent);
+}
+
+
+void
+LockedDesktopSettings::SetCompositedWobblyWindows(bool wobbly)
+{
+	fSettings->SetCompositedWobblyWindows(wobbly);
+}
+
+
+void
+LockedDesktopSettings::SetCompositedWobbliness(uint8 wobbliness)
+{
+	fSettings->SetCompositedWobbliness(wobbliness);
 }
 
 

@@ -105,6 +105,7 @@ Application app_server :
 	WindowBuffer.cpp
 	WindowList.cpp
 	WindowShape.cpp
+	WindowWobble.cpp
 	Workspace.cpp
 	WorkspacesView.cpp
 

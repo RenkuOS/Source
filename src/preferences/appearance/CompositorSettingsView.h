@@ -12,6 +12,9 @@
 class BCheckBox;
 
 
+class BSlider;
+
+
 class CompositorSettingsView : public BView {
 public:
 								CompositorSettingsView(const char* name);
@@ -31,20 +34,27 @@ private:
 			void				_SetComposited(bool composited);
 			void				_SetOption(BCheckBox* checkBox, int32 code,
 									bool value);
+			void				_SetWobbliness(int32 wobbliness);
+			void				_UpdateWobbliness();
 
 	static	bool				_Get(int32 code, bool defaultValue);
 	static	void				_Set(int32 code, bool value);
+	static	uint8				_GetWobbliness();
 
 private:
 			BCheckBox*			fCompositedCheckBox;
 			BCheckBox*			fShadowsCheckBox;
 			BCheckBox*			fRoundedCornersCheckBox;
 			BCheckBox*			fDragTransparencyCheckBox;
+			BCheckBox*			fWobblyCheckBox;
+			BSlider*			fWobblinessSlider;
 
 			bool				fSavedComposited;
 			bool				fSavedShadows;
 			bool				fSavedRoundedCorners;
 			bool				fSavedDragTransparency;
+			bool				fSavedWobbly;
+			int32				fSavedWobbliness;
 };
 
 
