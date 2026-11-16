@@ -26,6 +26,7 @@
 #include "displayport.h"
 #include "encoder.h"
 #include "gpu.h"
+#include "hdmi.h"
 #include "pll.h"
 #include "utility.h"
 
@@ -239,6 +240,11 @@ radeon_set_display_mode(display_mode* mode)
 	radeon_dpms_set(crtcID, B_DPMS_ON);
 	display_crtc_lock(crtcID, ATOM_DISABLE);
 	encoder_output_lock(false);
+
+	if (display_get_encoder_mode(connectorIndex) == ATOM_ENCODER_MODE_HDMI) {
+		hdmi_avi_infoframe_program(crtcID, mode);
+		hdmi_registers_dump(crtcID);
+	}
 
 	#ifdef TRACE_MODE
 	// for debugging

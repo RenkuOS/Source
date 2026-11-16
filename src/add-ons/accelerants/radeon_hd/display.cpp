@@ -482,8 +482,19 @@ display_get_encoder_mode(uint32 connectorIndex)
 			else
 				return ATOM_ENCODER_MODE_CRT;
 			break;
-		case VIDEO_CONNECTOR_DVID:
 		case VIDEO_CONNECTOR_HDMIA:
+			// From DCE 4 on, hdmi.cpp sends the AVI infoframe that HDMI mode
+			// needs. Linux uses HDMI mode only with audio, but the infoframe
+			// is valid without it. A sink whose EDID has no extension block
+			// is a DVI device (HDMI 1.4a section 8.3.5, p. 151) and must not
+			// get data islands.
+			// TODO: also check the CEA extension for the HDMI vendor block,
+			// once the extension blocks are read.
+			if (gInfo->shared_info->dceMajor >= 4 && crtcID != -1
+				&& gDisplay[crtcID]->edidData.num_sections > 0)
+				return ATOM_ENCODER_MODE_HDMI;
+			return ATOM_ENCODER_MODE_DVI;
+		case VIDEO_CONNECTOR_DVID:
 		default:
 			// TODO: if audio detected on edid and DCE4, ATOM_ENCODER_MODE_DVI
 			//        if audio detected on edid not DCE4, ATOM_ENCODER_MODE_HDMI
