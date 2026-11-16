@@ -403,6 +403,7 @@ struct mwx_softc {
 	int8_t			sc_resetting;
 	int8_t			sc_fw_loaded;
 #ifdef __HAIKU__
+	int8_t			sc_preinit_done;	/* mwx_preinit() succeeded */
 	thread_id		sc_reset_thread;	/* running mwx_reset_task */
 #endif
 
@@ -864,7 +865,15 @@ mwx_init(struct ifnet *ifp)
 	struct mwx_node *mn;
 	int rv;
 
+#ifdef __HAIKU__
+	/*
+	 * Preinit runs at attach and can fail after the firmware is loaded;
+	 * retry it until it has completed, not only until the firmware is up.
+	 */
+	if (!sc->sc_preinit_done) {
+#else
 	if (!sc->sc_fw_loaded) {
+#endif
 		rv = mwx_preinit(sc);
 		if (rv)
 			return rv;
@@ -1843,6 +1852,9 @@ mwx_preinit(struct mwx_softc *sc)
 #endif
 
 	ieee80211_media_init(ifp, mwx_media_change, ieee80211_media_status);
+#ifdef __HAIKU__
+	sc->sc_preinit_done = 1;
+#endif
 
 	DPRINTF("%s: preinit done\n", DEVNAME(sc));
 	return 0;
@@ -4100,9 +4112,13 @@ mwx_load_firmware(struct mwx_softc *sc)
 		fw = MT7925_FIRMWARE_WM;
 		break;
 	}
-	if ((rv = loadfirmware(rompatch, &buf, &buflen)) != 0 ||
-	    (rv = loadfirmware(fw, &fwbuf, &fwlen)) != 0) {
+	if ((rv = loadfirmware(rompatch, &buf, &buflen)) != 0) {
 		printf("%s: loadfirmware error %d\n", DEVNAME(sc), rv);
+		return rv;
+	}
+	if ((rv = loadfirmware(fw, &fwbuf, &fwlen)) != 0) {
+		printf("%s: loadfirmware error %d\n", DEVNAME(sc), rv);
+		free(buf, M_DEVBUF, buflen);
 		return rv;
 	}
 
@@ -4247,7 +4263,8 @@ out:
 	if (mwx_poll(sc, MT_CONN_ON_MISC, MT_TOP_MISC2_FW_N9_RDY,
 	    MT_TOP_MISC2_FW_N9_RDY, 1500) != 0) {
 		DPRINTF("%s: Timeout initializing firmware\n", DEVNAME(sc));
-		return EIO;
+		rv = EIO;
+		goto fail;
 	}
 
 	DPRINTF("%s: firmware loaded\n", DEVNAME(sc));
