@@ -5,6 +5,7 @@
 
 
 #include <new>
+#include <stddef.h>
 
 #include <graphic_driver.h>
 
@@ -12,6 +13,7 @@
 #include <virtio.h>
 #include <virtio_info.h>
 
+#include <team.h>
 #include <util/AutoLock.h>
 
 #include "viogpu.h"
@@ -50,6 +52,8 @@ typedef struct {
 
 	thread_id				updateThread;
 	bool					updateThreadRunning;
+	int32					displayEvent;
+		// set by the config change interrupt, handled by the update thread
 
 	area_id					sharedArea;
 	virtio_gpu_shared_info* sharedInfo;
@@ -86,6 +90,7 @@ static device_manager_info* sDeviceManager;
 
 
 static void virtio_gpu_vqwait(void* driverCookie, void* cookie);
+static void virtio_gpu_config_changed(void* cookie);
 
 
 const char*
@@ -192,10 +197,12 @@ virtio_gpu_get_display_info(virtio_gpu_driver_info* info)
 		return B_BAD_VALUE;
 	}
 
-	info->displayWidth = displayInfo.pmodes[0].r.width;
-	info->displayHeight = displayInfo.pmodes[0].r.height;
+	info->sharedInfo->preferred_width
+		= min_c(displayInfo.pmodes[0].r.width, info->framebufferWidth);
+	info->sharedInfo->preferred_height
+		= min_c(displayInfo.pmodes[0].r.height, info->framebufferHeight);
 	TRACE("virtio_gpu_get_display_info width %" B_PRIu32 " height %" B_PRIu32 "\n",
-		info->displayWidth, info->displayHeight);
+		displayInfo.pmodes[0].r.width, displayInfo.pmodes[0].r.height);
 
 	return B_OK;
 }
@@ -407,6 +414,36 @@ virtio_gpu_flush_resource(virtio_gpu_driver_info* info, int resourceId, uint32 w
 }
 
 
+/*!	Handles a VIRTIO_GPU_EVENT_DISPLAY (the host resized its window): acknowledges
+	it, re-reads the host's display size and, when it changed, releases the
+	display change semaphore so app_server switches to the new preferred mode.
+	Must be called with the command lock held.
+*/
+static void
+virtio_gpu_handle_display_event(virtio_gpu_driver_info* info)
+{
+	uint32 events = 0;
+	info->virtio->read_device_config(info->virtio_device,
+		offsetof(struct virtio_gpu_config, events_read), &events, sizeof(events));
+	if ((events & VIRTIO_GPU_EVENT_DISPLAY) == 0)
+		return;
+	info->virtio->write_device_config(info->virtio_device,
+		offsetof(struct virtio_gpu_config, events_clear), &events, sizeof(events));
+
+	uint32 width = info->sharedInfo->preferred_width;
+	uint32 height = info->sharedInfo->preferred_height;
+	if (virtio_gpu_get_display_info(info) != B_OK
+		|| (width == info->sharedInfo->preferred_width
+			&& height == info->sharedInfo->preferred_height)) {
+		return;
+	}
+
+	dprintf(DEVICE_NAME ": host display size now %" B_PRIu32 "x%" B_PRIu32 "\n",
+		info->sharedInfo->preferred_width, info->sharedInfo->preferred_height);
+	release_sem_etc(info->sharedInfo->display_change_sem, 1, B_DO_NOT_RESCHEDULE);
+}
+
+
 status_t
 virtio_update_thread(void *arg)
 {
@@ -415,6 +452,8 @@ virtio_update_thread(void *arg)
 	while (info->updateThreadRunning) {
 		bigtime_t start = system_time();
 		MutexLocker commandLocker(&info->commandLock);
+		if (atomic_get_and_set(&info->displayEvent, 0) != 0)
+			virtio_gpu_handle_display_event(info);
 		virtio_gpu_transfer_to_host_2d(info, info->displayResourceId, info->displayWidth,
 			info->displayHeight);
 		virtio_gpu_flush_resource(info, info->displayResourceId, info->displayWidth, info->displayHeight);
@@ -445,6 +484,13 @@ virtio_gpu_set_display_mode(virtio_gpu_driver_info* info, display_mode *mode)
 	if (status != B_OK)
 		return status;
 
+	// Scan out the new resource before releasing the old one, as Linux does,
+	// so the host never scans out a resource that is gone.
+	status = virtio_gpu_set_scanout(info, 0, newResourceId, mode->virtual_width,
+		mode->virtual_height);
+	if (status != B_OK)
+		return status;
+
 	status = virtio_gpu_unref(info, info->displayResourceId);
 	if (status != B_OK)
 		return status;
@@ -452,14 +498,6 @@ virtio_gpu_set_display_mode(virtio_gpu_driver_info* info, display_mode *mode)
 	info->displayResourceId = newResourceId;
 	info->displayWidth = mode->virtual_width;
 	info->displayHeight = mode->virtual_height;
-
-	status = virtio_gpu_set_scanout(info, 0, 0, 0, 0);
-	if (status != B_OK)
-		return status;
-
-	status = virtio_gpu_set_scanout(info, 0, info->displayResourceId, info->displayWidth, info->displayHeight);
-	if (status != B_OK)
-		return status;
 
 	status = virtio_gpu_transfer_to_host_2d(info, info->displayResourceId, info->displayWidth, info->displayHeight);
 	if (status != B_OK)
@@ -533,7 +571,8 @@ virtio_gpu_init_device(void* _info, void** _cookie)
 	mutex_init(&info->commandLock, "virtiogpu command lock");
 
 	// Setup interrupt
-	status = info->virtio->setup_interrupt(info->virtio_device, NULL, info);
+	status = info->virtio->setup_interrupt(info->virtio_device,
+		virtio_gpu_config_changed, info);
 	if (status != B_OK) {
 		ERROR("interrupt setup failed (%s)\n", strerror(status));
 		goto err3;
@@ -602,18 +641,27 @@ virtio_gpu_open(void* _info, const char* path, int openMode, void** _cookie)
 		goto error;
 	memset(info->sharedInfo, 0, sizeof(virtio_gpu_shared_info));
 
-	commandLocker.SetTo(&info->commandLock, false, true);
-
-	status = virtio_gpu_get_display_info(info);
-	if (status != B_OK)
+	// The opener (app_server) waits on this sem, userland can only acquire
+	// semaphores its team owns.
+	info->sharedInfo->display_change_sem = create_sem(0, "virtio_gpu display change");
+	if (info->sharedInfo->display_change_sem < B_OK)
 		goto error;
+	set_sem_owner(info->sharedInfo->display_change_sem, team_get_current_team_id());
 
-	if ((info->features & VIRTIO_GPU_F_EDID) != 0)
-		virtio_gpu_get_edids(info, 0);
+	commandLocker.SetTo(&info->commandLock, false, true);
 
 	// so we can fit every mode
 	info->framebufferWidth = 3840;
 	info->framebufferHeight = 2160;
+
+	status = virtio_gpu_get_display_info(info);
+	if (status != B_OK)
+		goto error;
+	info->displayWidth = info->sharedInfo->preferred_width;
+	info->displayHeight = info->sharedInfo->preferred_height;
+
+	if ((info->features & VIRTIO_GPU_F_EDID) != 0)
+		virtio_gpu_get_edids(info, 0);
 
 	// create framebuffer area
 	info->framebufferSize = 4 * info->framebufferWidth * info->framebufferHeight;
@@ -649,6 +697,8 @@ virtio_gpu_open(void* _info, const char* path, int openMode, void** _cookie)
 		sharedInfo.current_mode.virtual_height = info->displayHeight;
 		sharedInfo.current_mode.space = B_RGB32;
 	}
+	info->displayEvent = 1;
+		// acknowledges an event still pending from before we opened
 	info->updateThreadRunning = true;
 	info->updateThread = spawn_kernel_thread(virtio_update_thread, "virtio_gpu update",
 		B_DISPLAY_PRIORITY, info);
@@ -664,6 +714,8 @@ virtio_gpu_open(void* _info, const char* path, int openMode, void** _cookie)
 error:
 	delete_area(info->framebufferArea);
 	info->framebufferArea = -1;
+	if (info->sharedArea >= 0)
+		delete_sem(info->sharedInfo->display_change_sem);
 	delete_area(info->sharedArea);
 	info->sharedArea = -1;
 	delete_sem(info->commandDone);
@@ -683,6 +735,7 @@ virtio_gpu_close(void* cookie)
 	info->updateThreadRunning = false;
 	delete_sem(info->commandDone);
 	info->commandDone  = -1;
+	delete_sem(info->sharedInfo->display_change_sem);
 
 	return B_OK;
 }
@@ -705,6 +758,17 @@ virtio_gpu_free(void* cookie)
 	info->sharedArea = -1;
 	free(handle);
 	return B_OK;
+}
+
+
+/*!	Config change interrupt: only flags it, the update thread queries the
+	device, as that needs the command lock.
+*/
+static void
+virtio_gpu_config_changed(void* cookie)
+{
+	virtio_gpu_driver_info* info = (virtio_gpu_driver_info*)cookie;
+	atomic_set(&info->displayEvent, 1);
 }
 
 
@@ -765,6 +829,13 @@ virtio_gpu_ioctl(void* cookie, uint32 op, void* buffer, size_t length)
 			display_mode mode;
 			if (user_memcpy(&mode, buffer, sizeof(display_mode)) != B_OK)
 				return B_BAD_ADDRESS;
+
+			// the resource is backed by the framebuffer, it must not exceed it
+			if (mode.virtual_width == 0 || mode.virtual_height == 0
+				|| mode.virtual_width > info->framebufferWidth
+				|| mode.virtual_height > info->framebufferHeight) {
+				return B_BAD_VALUE;
+			}
 
 			MutexLocker commandLocker(&info->commandLock);
 

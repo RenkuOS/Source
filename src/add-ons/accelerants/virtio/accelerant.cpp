@@ -200,3 +200,10 @@ virtio_gpu_accelerant_retrace_semaphore()
 	return -1;
 }
 
+
+sem_id
+virtio_gpu_display_change_semaphore()
+{
+	return gInfo->shared_info->display_change_sem;
+}
+

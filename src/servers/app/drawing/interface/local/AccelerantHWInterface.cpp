@@ -150,6 +150,8 @@ AccelerantHWInterface::AccelerantHWInterface()
 	fInitialModeSwitch(true),
 
 	fRetraceSemaphore(-1),
+	fDisplayChangeSemaphore(-1),
+	fDisplayChangeThread(-1),
 
 	fRectParams(new (nothrow) fill_rect_params[kDefaultParamsCount]),
 	fRectParamsCount(kDefaultParamsCount),
@@ -202,8 +204,21 @@ AccelerantHWInterface::Initialize()
 			close(fCardFD);
 			// _OpenAccelerant() failed, try to open next graphics card
 		}
+		if (fCardFD < 0)
+			return fCardFD;
 
-		return fCardFD >= 0 ? B_OK : fCardFD;
+		accelerant_retrace_semaphore displayChangeSemaphore
+			= (accelerant_retrace_semaphore)fAccelerantHook(
+				B_DISPLAY_CHANGE_SEMAPHORE, NULL);
+		if (displayChangeSemaphore != NULL)
+			fDisplayChangeSemaphore = displayChangeSemaphore();
+		if (fDisplayChangeSemaphore >= 0) {
+			fDisplayChangeThread = spawn_thread(_DisplayChangeThread,
+				"display change watcher", B_NORMAL_PRIORITY, this);
+			if (fDisplayChangeThread >= 0)
+				resume_thread(fDisplayChangeThread);
+		}
+		return B_OK;
 	}
 	return ret;
 }
@@ -440,6 +455,12 @@ AccelerantHWInterface::_UpdateHooksAfterModeChange()
 status_t
 AccelerantHWInterface::Shutdown()
 {
+	if (fDisplayChangeThread >= 0) {
+		delete_sem(fDisplayChangeSemaphore);
+		wait_for_thread(fDisplayChangeThread, NULL);
+		fDisplayChangeThread = -1;
+	}
+
 	if (fAccelerantHook != NULL) {
 		uninit_accelerant uninitAccelerant
 			= (uninit_accelerant)fAccelerantHook(B_UNINIT_ACCELERANT, NULL);
@@ -460,6 +481,36 @@ AccelerantHWInterface::Shutdown()
 	}
 
 	return B_OK;
+}
+
+
+/*!	Waits for the accelerant's display change semaphore and tells the
+	listeners (the Desktop) that the preferred mode changed, once it has been
+	quiet for a moment, so that dragging a VM window edge doesn't cause a mode
+	switch per pixel. Exits when the semaphore is deleted.
+*/
+/*static*/ status_t
+AccelerantHWInterface::_DisplayChangeThread(void* data)
+{
+	AccelerantHWInterface* interface = (AccelerantHWInterface*)data;
+	const bigtime_t kQuietTime = 250000;
+
+	while (true) {
+		status_t status = acquire_sem(interface->fDisplayChangeSemaphore);
+		if (status == B_INTERRUPTED)
+			continue;
+		if (status != B_OK)
+			return status;
+
+		do {
+			status = acquire_sem_etc(interface->fDisplayChangeSemaphore, 1,
+				B_RELATIVE_TIMEOUT, kQuietTime);
+		} while (status == B_OK || status == B_INTERRUPTED);
+		if (status != B_TIMED_OUT)
+			return status;
+
+		interface->_NotifyScreenChanged();
+	}
 }
 
 

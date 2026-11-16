@@ -109,7 +109,12 @@ status_t
 virtio_gpu_get_preferred_mode(display_mode* _mode)
 {
 	TRACE(("virtio_gpu_get_preferred_mode()\n"));
-	*_mode = gInfo->shared_info->current_mode;
+	// the host's display (window) size, which may not be in the mode list
+	uint32 width = gInfo->shared_info->preferred_width;
+	uint32 height = gInfo->shared_info->preferred_height;
+	compute_display_timing(width, height, 60, false, &_mode->timing);
+	fill_display_mode(width, height, _mode);
+	_mode->space = gInfo->shared_info->current_mode.space;
 
 	return B_OK;
 }

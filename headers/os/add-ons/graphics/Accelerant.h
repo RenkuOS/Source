@@ -54,6 +54,11 @@ enum {
 	B_GET_EDID_INFO,					/* optional */
 	B_SET_BRIGHTNESS,                   /* optional */
 	B_GET_BRIGHTNESS,                   /* optional */
+	B_DISPLAY_CHANGE_SEMAPHORE,			/* optional: an accelerant_retrace_
+										   semaphore style hook; its sem is
+										   released whenever the preferred
+										   display mode changes, e.g. when a
+										   virtual machine window is resized */
 
 	/* cursor managment */
 	B_MOVE_CURSOR = 0x200,				/* optional */

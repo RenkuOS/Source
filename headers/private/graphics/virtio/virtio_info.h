@@ -28,6 +28,10 @@ struct virtio_gpu_shared_info {
 
 	char			name[32];
 	uint32			vram_size;
+
+	uint32			preferred_width;	// host's display size, clamped to
+	uint32			preferred_height;	// the framebuffer
+	sem_id			display_change_sem;	// released when it changes
 };
 
 //----------------- ioctl() interface ----------------

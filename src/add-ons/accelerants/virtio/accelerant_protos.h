@@ -23,6 +23,7 @@ status_t virtio_gpu_clone_accelerant(void *data);
 void virtio_gpu_uninit_accelerant(void);
 status_t virtio_gpu_get_accelerant_device_info(accelerant_device_info *adi);
 sem_id virtio_gpu_accelerant_retrace_semaphore(void);
+sem_id virtio_gpu_display_change_semaphore(void);
 
 // modes & constraints
 uint32 virtio_gpu_accelerant_mode_count(void);
