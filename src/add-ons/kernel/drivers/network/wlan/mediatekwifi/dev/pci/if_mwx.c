@@ -3299,6 +3299,8 @@ mwx_mcu_set_len(struct mbuf *m, void *end)
 	m_adj(m, -adj);
 }
 
+#define	MWX_MCU_ENQ_RETRIES	50	/* times 100 ms */
+
 int
 mwx_mcu_send_mbuf(struct mwx_softc *sc, uint32_t cmd, struct mbuf *m, int *seqp)
 {
@@ -3306,7 +3308,7 @@ mwx_mcu_send_mbuf(struct mwx_softc *sc, uint32_t cmd, struct mbuf *m, int *seqp)
 	struct mwx_mcu_txd *mcu_txd;
 	struct mwx_queue *q;
 	uint32_t *txd, val;
-	int s, rv, mcu_cmd = cmd & MCU_CMD_FIELD_ID_MASK;
+	int s, rv, retry, mcu_cmd = cmd & MCU_CMD_FIELD_ID_MASK;
 	int tot_len, txd_len, len = m->m_pkthdr.len;
 	uint8_t seq = 0;	/* not used for MCU_CMD_FW_SCATTER */
 
@@ -3326,6 +3328,8 @@ mwx_mcu_send_mbuf(struct mwx_softc *sc, uint32_t cmd, struct mbuf *m, int *seqp)
 	tot_len = txd_len + len;
 	KASSERT(m_leadingspace(m) >= txd_len);
 	m = m_prepend(m, txd_len, M_DONTWAIT);
+	if (m == NULL)		/* m_prepend() freed the chain */
+		return ENOMEM;
 	txd = mtod(m, uint32_t *);
 	memset(txd, 0, txd_len);
 
@@ -3397,14 +3401,18 @@ printf("%s: %s: cmd %08x\n", DEVNAME(sc), __func__, cmd);
 #endif
 
 	s = splnet();
-	while (1) {
+	/* give up after about 5 s instead of waiting forever */
+	for (retry = 0; ; retry++) {
 		rv = mwx_dma_tx_enqueue(sc, q, m);
-		if (rv != EBUSY)
+		if (rv != EBUSY || retry >= MWX_MCU_ENQ_RETRIES)
 			break;
 		q->mq_wakeme = 1;
 		tsleep_nsec(q, 0, "mwxq", MSEC_TO_NSEC(100));
 	}
 	splx(s);
+	if (rv == EBUSY)
+		printf("%s: mcu queue full, cmd %08x dropped\n",
+		    DEVNAME(sc), cmd);
 	if (rv != 0) {
 		/* only clear the wait slot this call armed */
 		if (seqp != NULL)
@@ -7618,7 +7626,7 @@ mwx_alloc_sta_req_tlv(int len)
 	return m;
 }
 
-void
+struct mbuf *
 mwx_fill_sta_req_hdr(struct mbuf *m, struct mwx_vif *mvif,
     uint8_t muar_idx, uint16_t wcid, uint16_t tlvnum)
 {
@@ -7626,6 +7634,8 @@ mwx_fill_sta_req_hdr(struct mbuf *m, struct mwx_vif *mvif,
 
 	KASSERT(m_leadingspace(m) >= sizeof(*hdr));
 	m = m_prepend(m, sizeof(*hdr), M_DONTWAIT);
+	if (m == NULL)		/* m_prepend() freed the chain */
+		return NULL;
 	hdr = mtod(m, struct sta_req_hdr *);
 	memset(hdr, 0, sizeof(*hdr));
 
@@ -7635,6 +7645,7 @@ mwx_fill_sta_req_hdr(struct mbuf *m, struct mwx_vif *mvif,
 	hdr->muar_idx = muar_idx;
 	hdr->is_tlv_append = 1;
 	hdr->tlv_num = htole16(tlvnum);
+	return m;
 }
 
 void *
@@ -7974,8 +7985,10 @@ mt7921_mac_sta_update(struct mwx_softc *sc, struct ieee80211_node *ni,
 	wtbl->tlv_num = htole16(wnum);
 	wtbl->len = htole16(le16toh(wtbl->len) + wlen);
 
-	mwx_fill_sta_req_hdr(m, mvif, mn ? mvif->omac_idx : 0,
+	m = mwx_fill_sta_req_hdr(m, mvif, mn ? mvif->omac_idx : 0,
 	    mn ? mn->wcid : 0, tlvnum);
+	if (m == NULL)
+		return ENOMEM;
 	return mwx_mcu_send_mbuf_wait(sc, MCU_UNI_CMD_STA_REC_UPDATE, m);
 }
 
@@ -8111,7 +8124,9 @@ mt7921_mcu_rx_ba(struct mwx_softc *sc, struct ieee80211_node *ni,
 	wtbl->tlv_num = htole16(wnum);
 	wtbl->len = htole16(le16toh(wtbl->len) + sizeof(*wba));
 
-	mwx_fill_sta_req_hdr(m, mvif, mvif->omac_idx, mn->wcid, tlvnum);
+	m = mwx_fill_sta_req_hdr(m, mvif, mvif->omac_idx, mn->wcid, tlvnum);
+	if (m == NULL)
+		return ENOMEM;
 	rv = mwx_mcu_send_mbuf_wait(sc, MCU_UNI_CMD_STA_REC_UPDATE, m);
 	if (rv != 0)
 		return rv;
@@ -8130,7 +8145,9 @@ mt7921_mcu_rx_ba(struct mwx_softc *sc, struct ieee80211_node *ni,
 	ba->ssn = htole16(ssn);
 	ba->winsize = htole16(winsize);
 
-	mwx_fill_sta_req_hdr(m, mvif, mvif->omac_idx, mn->wcid, tlvnum);
+	m = mwx_fill_sta_req_hdr(m, mvif, mvif->omac_idx, mn->wcid, tlvnum);
+	if (m == NULL)
+		return ENOMEM;
 	return mwx_mcu_send_mbuf_wait(sc, MCU_UNI_CMD_STA_REC_UPDATE, m);
 }
 #endif
@@ -8193,8 +8210,10 @@ mt7925_mac_sta_update(struct mwx_softc *sc, struct ieee80211_node *ni, int add)
 	hdr_trans->to_ds = 1;
 	hdr_trans->dis_rx_hdr_tran = 1;
 
-	mwx_fill_sta_req_hdr(m, mvif, mn ? mvif->omac_idx : 0,
+	m = mwx_fill_sta_req_hdr(m, mvif, mn ? mvif->omac_idx : 0,
 	    mn ? mn->wcid : 0, tlvnum);
+	if (m == NULL)
+		return ENOMEM;
 
 	return mwx_mcu_send_mbuf_wait(sc, MCU_UNI_CMD_STA_REC_UPDATE, m);
 }
@@ -8346,7 +8365,9 @@ mwx_mcu_sta_key_update(struct mwx_softc *sc, struct ieee80211_node *ni,
 		mt7925_mcu_add_key_tlv(m, &tlvnum, k, ni, wcid, 1);
 	else
 		mt7921_mcu_add_key_tlv(m, &tlvnum, k, 1);
-	mwx_fill_sta_req_hdr(m, mvif, muar_idx, wcid, tlvnum);
+	m = mwx_fill_sta_req_hdr(m, mvif, muar_idx, wcid, tlvnum);
+	if (m == NULL)
+		return ENOMEM;
 
 	rv = mwx_mcu_send_mbuf_wait(sc, MCU_UNI_CMD_STA_REC_UPDATE, m);
 	if (rv != 0)
@@ -8400,7 +8421,9 @@ mwx_mcu_sta_key_delete(struct mwx_softc *sc, struct ieee80211_node *ni,
 		mt7925_mcu_add_key_tlv(m, &tlvnum, k, ni, wcid, 0);
 	else
 		mt7921_mcu_add_key_tlv(m, &tlvnum, k, 0);
-	mwx_fill_sta_req_hdr(m, mvif, muar_idx, wcid, tlvnum);
+	m = mwx_fill_sta_req_hdr(m, mvif, muar_idx, wcid, tlvnum);
+	if (m == NULL)
+		return;
 
 	mwx_mcu_send_mbuf(sc, MCU_UNI_CMD_STA_REC_UPDATE, m, NULL);
 }
