@@ -10,6 +10,7 @@ Application Appearance :
 	AppearanceWindow.cpp
 	Colors.cpp
 	ColorsView.cpp
+	CompositorSettingsView.cpp
 	FakeScrollBar.cpp
 	FontSelectionView.cpp
 	FontView.cpp
@@ -24,6 +25,7 @@ DoCatalogs Appearance :
 	:
 	AntialiasingSettingsView.cpp
 	ColorsView.cpp
+	CompositorSettingsView.cpp
 	AppearanceWindow.cpp
 	Colors.cpp
 	LookAndFeelSettingsView.cpp

@@ -18,6 +18,7 @@
 #include <TabView.h>
 
 class ColorsView;
+class CompositorSettingsView;
 class AntialiasingSettingsView;
 class FontView;
 class LookAndFeelSettingsView;
@@ -38,6 +39,7 @@ private:
 		BButton*					fRevertButton;
 
 		AntialiasingSettingsView* 	fAntialiasingSettings;
+		CompositorSettingsView*		fCompositorSettings;
 		FontView*					fFontSettings;
 		LookAndFeelSettingsView*	fLookAndFeelSettings;
 };
