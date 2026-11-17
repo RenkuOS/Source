@@ -29,8 +29,6 @@ public:
 
 protected:
 	virtual	void				LastReferenceReleased();
-	virtual	void				FirstAdded();
-	virtual	void				LastRemoved();
 };
 
 
@@ -69,24 +67,6 @@ void
 NetNotificationService::LastReferenceReleased()
 {
 	// don't delete us here
-}
-
-
-void
-NetNotificationService::FirstAdded()
-{
-	// The reference counting doesn't work for us, as we'll have to
-	// ensure our module stays loaded.
-	module_info* dummy;
-	get_module(NET_NOTIFICATIONS_MODULE_NAME, &dummy);
-}
-
-
-void
-NetNotificationService::LastRemoved()
-{
-	// Give up the reference _AddListener()
-	put_module(NET_NOTIFICATIONS_MODULE_NAME);
 }
 
 
@@ -169,7 +149,14 @@ notifications_std_ops(int32 op, ...)
 net_notifications_module_info sNotificationsModule = {
 	{
 		NET_NOTIFICATIONS_MODULE_NAME,
-		0,
+		// Never unloaded. It used to take a module reference while it had
+		// listeners, by calling get_module() from inside its own generic
+		// syscall. That deadlocked against an unload already in progress:
+		// put_module() held the module lock and waited in
+		// unregister_generic_syscall() for the syscall to return, while the
+		// syscall waited for the module lock (net_server and launch_daemon
+		// at boot).
+		B_KEEP_LOADED,
 		notifications_std_ops
 	},
 
