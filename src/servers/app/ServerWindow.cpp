@@ -4450,6 +4450,13 @@ ServerWindow::HandleDirectConnection(int32 bufferState, int32 driverState)
 	STRACE(("HandleDirectConnection(bufferState = %" B_PRId32 ", driverState = "
 		"%" B_PRId32 ")\n", bufferState, driverState));
 
+	// The application is about to draw there: what is still waiting to reach
+	// the screen must not end up on top of it.
+	if ((bufferState & B_DIRECT_MODE_MASK) != B_DIRECT_STOP) {
+		if (Compositor* compositor = fDesktop->GetCompositor())
+			compositor->FlushLocked();
+	}
+
 	BRegion onScreenContent;
 	fWindow->GetOnScreenContentRegion(&onScreenContent);
 

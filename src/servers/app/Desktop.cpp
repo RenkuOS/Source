@@ -473,6 +473,9 @@ Desktop::Desktop(uid_t userID, const char* targetScreen)
 
 Desktop::~Desktop()
 {
+	// its thread uses the desktop
+	fCompositor.Unset();
+
 	delete_area(fSharedReadOnlyArea);
 	delete_port(fMessagePort);
 
@@ -535,6 +538,8 @@ Desktop::Init()
 	if (fSettings->CompositedDesktop() && HWInterface()->IsDoubleBuffered()
 		&& !_IsSafeMode()) {
 		fCompositor.SetTo(new(std::nothrow) Compositor(this));
+		if (fCompositor.IsSet() && fCompositor->InitCheck() != B_OK)
+			fCompositor.Unset();
 	}
 	debug_printf("app_server: desktop is %scomposited\n",
 		fCompositor.IsSet() ? "" : "not ");
@@ -1021,8 +1026,11 @@ Desktop::LockDirectScreen(team_id team)
 	// which would make this method superfluous.
 
 	status_t status = fDirectScreenLock.LockWithTimeout(1000000L);
-	if (status == B_OK)
+	if (status == B_OK) {
 		fDirectScreenTeam = team;
+		if (fCompositor.IsSet())
+			fCompositor->ScreenTaken();
+	}
 
 	return status;
 }
@@ -1034,6 +1042,8 @@ Desktop::UnlockDirectScreen(team_id team)
 	if (fDirectScreenTeam == team) {
 		fDirectScreenLock.Unlock();
 		fDirectScreenTeam = -1;
+		if (fCompositor.IsSet())
+			fCompositor->ScreenReleased();
 		return B_OK;
 	}
 

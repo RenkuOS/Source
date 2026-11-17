@@ -323,6 +323,7 @@ void
 Window::SetBufferInterface(WindowBufferHWInterface* interface)
 {
 	fBufferInterface.SetTo(interface);
+	interface->SetWindow(this);
 }
 
 
