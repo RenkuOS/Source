@@ -64,6 +64,7 @@ struct eqos_dma_desc {
 struct eqos_bufmap {
 	bus_dmamap_t		map;
 	struct mbuf		*mbuf;
+	bus_addr_t		paddr;		/* RX: loaded buffer address */
 };
 
 struct eqos_ring {
@@ -74,6 +75,7 @@ struct eqos_ring {
 
 	bus_dma_tag_t		buf_tag;
 	struct eqos_bufmap	buf_map[EQOS_DMA_DESC_COUNT];
+	bus_dmamap_t		spare_map;	/* RX only */
 
 	u_int			head;
 	u_int			tail;
@@ -91,6 +93,7 @@ struct eqos_softc {
 	uint32_t		hw_feature[4];
 	bool			link_up;
 	int			tx_watchdog;
+	struct timeval		intr_print_last;	/* eqos_intr() log limit */
 
 	bool			thresh_dma_mode;
 	bool			pblx8;

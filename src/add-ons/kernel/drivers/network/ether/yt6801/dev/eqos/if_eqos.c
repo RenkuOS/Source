@@ -104,6 +104,8 @@
 #define	RX_DESC_COUNT		EQOS_DMA_DESC_COUNT
 #define	RX_DESC_SIZE		(RX_DESC_COUNT * DESC_ALIGN)
 #define	RX_NEXT(n)		(((n) + 1) % RX_DESC_COUNT)
+/* Buffers start ETHER_ALIGN into the cluster; 16 = largest RBSZ granule */
+#define	EQOS_RX_BUF_SIZE	rounddown(MCLBYTES - ETHER_ALIGN, 16)
 
 #define	MII_BUSY_RETRY		1000
 #define	WATCHDOG_TIMEOUT_SECS	3
@@ -119,6 +121,8 @@
 
 
 static void eqos_tick(void *softc);
+
+static const struct timeval eqos_intr_print_interval = { 1, 0 };
 
 
 int
@@ -365,6 +369,7 @@ eqos_setup_rxbuf(struct eqos_softc *sc, int index, struct mbuf *m)
 	    BUS_DMASYNC_PREREAD);
 
 	sc->rx.buf_map[index].mbuf = m;
+	sc->rx.buf_map[index].paddr = seg.ds_addr;
 	eqos_setup_rxdesc(sc, index, seg.ds_addr);
 
 	return (0);
@@ -378,6 +383,55 @@ eqos_alloc_mbufcl(struct eqos_softc *sc)
 	if ((m = m_getcl(M_NOWAIT, MT_DATA, M_PKTHDR)))
 		m->m_pkthdr.len = m->m_len = m->m_ext.ext_size;
 	return (m);
+}
+
+/* Give the slot's current buffer back to the hardware. */
+static void
+eqos_recycle_rxbuf(struct eqos_softc *sc, int index)
+{
+	struct eqos_bufmap *bmap = &sc->rx.buf_map[index];
+
+	bus_dmamap_sync(sc->rx.buf_tag, bmap->map, BUS_DMASYNC_PREREAD);
+	eqos_setup_rxdesc(sc, index, bmap->paddr);
+}
+
+/*
+ * Load a fresh cluster into the spare map first; only if that works,
+ * swap it into the slot, re-arm the descriptor and return the filled
+ * mbuf. Returns NULL (slot untouched) if no replacement is available.
+ */
+static struct mbuf *
+eqos_replace_rxbuf(struct eqos_softc *sc, int index)
+{
+	struct eqos_bufmap *bmap = &sc->rx.buf_map[index];
+	struct bus_dma_segment seg;
+	struct mbuf *m, *old;
+	bus_dmamap_t map;
+	int nsegs;
+
+	if ((m = eqos_alloc_mbufcl(sc)) == NULL)
+		return (NULL);
+	m_adj(m, ETHER_ALIGN);
+	if (bus_dmamap_load_mbuf_sg(sc->rx.buf_tag, sc->rx.spare_map, m,
+	    &seg, &nsegs, 0) != 0) {
+		m_freem(m);
+		return (NULL);
+	}
+
+	bus_dmamap_sync(sc->rx.buf_tag, bmap->map, BUS_DMASYNC_POSTREAD);
+	bus_dmamap_unload(sc->rx.buf_tag, bmap->map);
+	old = bmap->mbuf;
+
+	map = bmap->map;
+	bmap->map = sc->rx.spare_map;
+	sc->rx.spare_map = map;
+
+	bus_dmamap_sync(sc->rx.buf_tag, bmap->map, BUS_DMASYNC_PREREAD);
+	bmap->mbuf = m;
+	bmap->paddr = seg.ds_addr;
+	eqos_setup_rxdesc(sc, index, seg.ds_addr);
+
+	return (old);
 }
 
 static void
@@ -410,15 +464,23 @@ eqos_bitrev32(uint32_t x)
 	return ((x >> 16) | (x << 16));
 }
 
+struct eqos_hash_ctx {
+	uint32_t	hash[8];	/* up to 256 bins */
+	u_int		nbits;		/* log2(bins), 0 = no hash table */
+};
+
 static u_int
 eqos_hash_maddr(void *arg, struct sockaddr_dl *sdl, u_int cnt)
 {
-	uint32_t crc, *hash = arg;
+	struct eqos_hash_ctx *ctx = arg;
+	uint32_t crc;
+
+	if (ctx->nbits == 0)
+		return (1);
 
 	crc = ether_crc32_le(LLADDR(sdl), ETHER_ADDR_LEN);
-	crc &= 0x7f;
-	crc = eqos_bitrev32(~crc) >> 26;
-	hash[crc >> 5] |= 1 << (crc & 0x1f);
+	crc = eqos_bitrev32(~crc) >> (32 - ctx->nbits);
+	ctx->hash[crc >> 5] |= 1U << (crc & 0x1f);
 	return (1);
 }
 
@@ -426,18 +488,26 @@ static void
 eqos_setup_rxfilter(struct eqos_softc *sc)
 {
 	if_t ifp = sc->ifp;
-	uint32_t pfil, hash[2];
+	struct eqos_hash_ctx ctx;
+	uint32_t pfil;
 	const uint8_t *eaddr;
 	uint32_t val;
+	u_int i, nregs;
 
 	EQOS_ASSERT_LOCKED(sc);
+
+	/* HASHTBLSZ: 0 = none, 1 = 64, 2 = 128, 3 = 256 bins */
+	val = (sc->hw_feature[1] & GMAC_MAC_HW_FEATURE1_HASHTBLSZ_MASK) >>
+	    GMAC_MAC_HW_FEATURE1_HASHTBLSZ_SHIFT;
+	ctx.nbits = (val != 0) ? val + 5 : 0;
+	nregs = (val != 0) ? (1U << val) : 0;
 
 	pfil = RD4(sc, GMAC_MAC_PACKET_FILTER);
 	pfil &= ~(GMAC_MAC_PACKET_FILTER_PR |
 	    GMAC_MAC_PACKET_FILTER_PM |
 	    GMAC_MAC_PACKET_FILTER_HMC |
 	    GMAC_MAC_PACKET_FILTER_PCF_MASK);
-	hash[0] = hash[1] = 0xffffffff;
+	memset(ctx.hash, 0xff, sizeof(ctx.hash));
 
 	if ((if_getflags(ifp) & IFF_PROMISC)) {
 		pfil |= GMAC_MAC_PACKET_FILTER_PR |
@@ -445,9 +515,15 @@ eqos_setup_rxfilter(struct eqos_softc *sc)
 	} else if ((if_getflags(ifp) & IFF_ALLMULTI)) {
 		pfil |= GMAC_MAC_PACKET_FILTER_PM;
 	} else {
-		hash[0] = hash[1] = 0;
-		pfil |= GMAC_MAC_PACKET_FILTER_HMC;
-		if_foreach_llmaddr(ifp, eqos_hash_maddr, hash);
+		memset(ctx.hash, 0, sizeof(ctx.hash));
+		if (ctx.nbits != 0) {
+			pfil |= GMAC_MAC_PACKET_FILTER_HMC;
+			if_foreach_llmaddr(ifp, eqos_hash_maddr, &ctx);
+		} else if (if_foreach_llmaddr(ifp, eqos_hash_maddr,
+		    &ctx) != 0) {
+			/* No hash table: pass all multicast if any group */
+			pfil |= GMAC_MAC_PACKET_FILTER_PM;
+		}
 	}
 
 	/* Write our unicast address */
@@ -458,8 +534,8 @@ eqos_setup_rxfilter(struct eqos_softc *sc)
 	WR4(sc, GMAC_MAC_ADDRESS0_LOW, val);
 
 	/* Multicast hash filters */
-	WR4(sc, GMAC_MAC_HASH_TABLE_REG0, hash[0]);
-	WR4(sc, GMAC_MAC_HASH_TABLE_REG1, hash[1]);
+	for (i = 0; i < nregs; i++)
+		WR4(sc, GMAC_MAC_HASH_TABLE_REG(i), ctx.hash[i]);
 
 	/* Packet filter config */
 	WR4(sc, GMAC_MAC_PACKET_FILTER, pfil);
@@ -481,6 +557,56 @@ eqos_reset(struct eqos_softc *sc)
 	return (ETIMEDOUT);
 }
 
+/*
+ * Put both rings into the state the hardware will be pointed at by
+ * eqos_init_rings(): TX empty and cleared, every RX slot owned by the
+ * hardware, all indices at 0.
+ */
+static void
+eqos_reset_rings(struct eqos_softc *sc)
+{
+	struct eqos_bufmap *bmap;
+	struct mbuf *m;
+	int i;
+
+	EQOS_ASSERT_LOCKED(sc);
+
+	for (i = 0; i < TX_DESC_COUNT; i++) {
+		bmap = &sc->tx.buf_map[i];
+		if (bmap->mbuf != NULL) {
+			bus_dmamap_sync(sc->tx.buf_tag, bmap->map,
+			    BUS_DMASYNC_POSTWRITE);
+			bus_dmamap_unload(sc->tx.buf_tag, bmap->map);
+			m_freem(bmap->mbuf);
+			bmap->mbuf = NULL;
+		}
+		eqos_setup_txdesc(sc, i, 0, 0, 0, 0);
+	}
+	sc->tx.head = sc->tx.tail = 0;
+	sc->tx_watchdog = 0;
+
+	for (i = 0; i < RX_DESC_COUNT; i++) {
+		if (sc->rx.buf_map[i].mbuf != NULL) {
+			eqos_recycle_rxbuf(sc, i);
+			continue;
+		}
+		if ((m = eqos_alloc_mbufcl(sc)) == NULL) {
+			device_printf(sc->dev, "cannot allocate RX mbuf\n");
+			continue;
+		}
+		if (eqos_setup_rxbuf(sc, i, m) != 0) {
+			m_freem(m);
+			device_printf(sc->dev, "cannot create RX buffer\n");
+		}
+	}
+	sc->rx.head = 0;
+
+	bus_dmamap_sync(sc->tx.desc_tag, sc->tx.desc_map,
+	    BUS_DMASYNC_PREWRITE);
+	bus_dmamap_sync(sc->rx.desc_tag, sc->rx.desc_map,
+	    BUS_DMASYNC_PREWRITE);
+}
+
 static void
 eqos_init_rings(struct eqos_softc *sc)
 {
@@ -490,6 +616,9 @@ eqos_init_rings(struct eqos_softc *sc)
 	WR4(sc, GMAC_DMA_CHAN0_TX_BASE_ADDR,
 	    (uint32_t)sc->tx.desc_ring_paddr);
 	WR4(sc, GMAC_DMA_CHAN0_TX_RING_LEN, TX_DESC_COUNT - 1);
+	/* Tail == base: TX DMA idles until eqos_start_locked() advances it */
+	WR4(sc, GMAC_DMA_CHAN0_TX_END_ADDR,
+	    (uint32_t)sc->tx.desc_ring_paddr);
 
 	WR4(sc, GMAC_DMA_CHAN0_RX_BASE_ADDR_HI,
 	    (uint32_t)(sc->rx.desc_ring_paddr >> 32));
@@ -514,6 +643,7 @@ eqos_init(void *if_softc)
 
 	EQOS_LOCK(sc);
 
+	eqos_reset_rings(sc);
 	eqos_init_rings(sc);
 
 	eqos_setup_rxfilter(sc);
@@ -537,7 +667,7 @@ eqos_init(void *if_softc)
 	if (sc->rxpbl > 0)
 		val |= (sc->rxpbl << GMAC_DMA_CHAN0_TXRX_PBL_SHIFT);
 	val &= ~GMAC_DMA_CHAN0_RX_CONTROL_RBSZ_MASK;
-	val |= (MCLBYTES << GMAC_DMA_CHAN0_RX_CONTROL_RBSZ_SHIFT);
+	val |= (EQOS_RX_BUF_SIZE << GMAC_DMA_CHAN0_RX_CONTROL_RBSZ_SHIFT);
 	val |= GMAC_DMA_CHAN0_RX_CONTROL_START;
 	WR4(sc, GMAC_DMA_CHAN0_RX_CONTROL, val);
 
@@ -581,7 +711,6 @@ eqos_init(void *if_softc)
 	val = RD4(sc, GMAC_MAC_CONFIGURATION);
 	val |= GMAC_MAC_CONFIGURATION_BE;
 	val |= GMAC_MAC_CONFIGURATION_JD;
-	val |= GMAC_MAC_CONFIGURATION_JE;
 	val |= GMAC_MAC_CONFIGURATION_DCRS;
 	val |= GMAC_MAC_CONFIGURATION_TE;
 	val |= GMAC_MAC_CONFIGURATION_RE;
@@ -623,7 +752,9 @@ eqos_start_locked(if_t ifp)
 
 		if (eqos_setup_txbuf(sc, m)) {
 			if_sendq_prepend(ifp, m);
-			if_setdrvflagbits(ifp, IFF_DRV_OACTIVE, 0);
+			/* Only a TX completion clears OACTIVE; else the tick retries */
+			if (TX_QUEUED(sc->tx.head, sc->tx.tail) != 0)
+				if_setdrvflagbits(ifp, IFF_DRV_OACTIVE, 0);
 			break;
 		}
 		BPF_MTAP(ifp, m);
@@ -679,6 +810,17 @@ eqos_stop(struct eqos_softc *sc)
 	val &= ~GMAC_DMA_CHAN0_TX_CONTROL_START;
 	WR4(sc, GMAC_DMA_CHAN0_TX_CONTROL, val);
 
+	/* Wait (~10 ms max) for both DMA engines to idle: rings may be freed */
+	for (retry = 1000; retry > 0; retry--) {
+		val = RD4(sc, GMAC_DMA_DEBUG_STATUS0);
+		if (GMAC_DMA_DEBUG_STATUS0_RX_IDLE(val) &&
+		    GMAC_DMA_DEBUG_STATUS0_TX_IDLE(val))
+			break;
+		DELAY(10);
+	}
+	if (!retry)
+		device_printf(sc->dev, "timeout stopping DMA (0x%08x)\n", val);
+
 	/* Flush data in the TX FIFO */
 	val = RD4(sc, GMAC_MTL_TXQ0_OPERATION_MODE);
 	val |= GMAC_MTL_TXQ0_OPERATION_MODE_FTQ;
@@ -708,24 +850,38 @@ eqos_rxintr(struct eqos_softc *sc)
 	if_t ifp = sc->ifp;
 	struct mbuf *m;
 	uint32_t rdes3;
-	int error, length;
+	int length;
 
 	while (true) {
 		rdes3 = le32toh(sc->rx.desc_ring[sc->rx.head].des3);
 		if ((rdes3 & EQOS_RDES3_OWN))
 			break;
 
-		if (rdes3 & (EQOS_RDES3_OE | EQOS_RDES3_RE))
-			printf("Receive error rdes3=%08x\n", rdes3);
-
-		bus_dmamap_sync(sc->rx.buf_tag,
-		    sc->rx.buf_map[sc->rx.head].map, BUS_DMASYNC_POSTREAD);
-		bus_dmamap_unload(sc->rx.buf_tag,
-		    sc->rx.buf_map[sc->rx.head].map);
-
 		length = rdes3 & EQOS_RDES3_LENGTH_MASK;
-		if (length) {
-			m = sc->rx.buf_map[sc->rx.head].mbuf;
+		m = NULL;
+
+		/*
+		 * The MTL forwards error and undersized frames; frames must
+		 * fit one buffer and context descriptors are not expected.
+		 */
+		if ((rdes3 & (EQOS_RDES3_ES | EQOS_RDES3_CTXT)) != 0 ||
+		    (rdes3 & (EQOS_RDES3_FD | EQOS_RDES3_LD)) !=
+		    (EQOS_RDES3_FD | EQOS_RDES3_LD) ||
+		    length <= ETHER_CRC_LEN) {
+			if_inc_counter(ifp, IFCOUNTER_IERRORS, 1);
+			eqos_recycle_rxbuf(sc, sc->rx.head);
+		} else if ((m = eqos_replace_rxbuf(sc, sc->rx.head)) == NULL) {
+			/* No replacement buffer: drop, keep the old one */
+			if_inc_counter(ifp, IFCOUNTER_IQDROPS, 1);
+			eqos_recycle_rxbuf(sc, sc->rx.head);
+		}
+
+		WR4(sc, GMAC_DMA_CHAN0_RX_END_ADDR,
+		    (uint32_t)sc->rx.desc_ring_paddr + DESC_OFFSET(sc->rx.head));
+
+		sc->rx.head = RX_NEXT(sc->rx.head);
+
+		if (m != NULL) {
 			m->m_pkthdr.rcvif = ifp;
 			m->m_pkthdr.len = length;
 			m->m_len = length;
@@ -734,23 +890,12 @@ eqos_rxintr(struct eqos_softc *sc)
 			/* Remove trailing FCS */
 			m_adj(m, -ETHER_CRC_LEN);
 
+			if_inc_counter(ifp, IFCOUNTER_IPACKETS, 1);
+
 			EQOS_UNLOCK(sc);
 			if_input(ifp, m);
 			EQOS_LOCK(sc);
 		}
-
-		if ((m = eqos_alloc_mbufcl(sc))) {
-			if ((error = eqos_setup_rxbuf(sc, sc->rx.head, m)))
-				printf("ERROR: Hole in RX ring!!\n");
-		} else
-			if_inc_counter(ifp, IFCOUNTER_IERRORS, 1);
-
-		if_inc_counter(ifp, IFCOUNTER_IPACKETS, 1);
-
-		WR4(sc, GMAC_DMA_CHAN0_RX_END_ADDR,
-		    (uint32_t)sc->rx.desc_ring_paddr + DESC_OFFSET(sc->rx.head));
-
-		sc->rx.head = RX_NEXT(sc->rx.head);
 	}
 }
 
@@ -832,7 +977,6 @@ eqos_tick(void *softc)
 {
 	struct eqos_softc *sc = softc;
 	struct mii_data *mii = device_get_softc(sc->miibus);
-	bool link_status;
 
 	EQOS_ASSERT_LOCKED(sc);
 
@@ -842,9 +986,9 @@ eqos_tick(void *softc)
 			eqos_txintr(sc);
 		}
 
-	link_status = sc->link_up;
 	mii_tick(mii);
-	if (sc->link_up && !link_status)
+	/* Also retries a packet left queued by a failed TX load */
+	if (sc->link_up)
 		eqos_start_locked(sc->ifp);
 
 	callout_reset(&sc->callout, hz, eqos_tick, sc);
@@ -855,11 +999,14 @@ eqos_intr(void *arg)
 {
 	struct eqos_softc *sc = arg;
 	uint32_t mac_status, mtl_status, dma_status, rx_tx_status;
+	bool running;
 
 	mac_status = RD4(sc, GMAC_MAC_INTERRUPT_STATUS);
 	mac_status &= RD4(sc, GMAC_MAC_INTERRUPT_ENABLE);
 
-	if (mac_status)
+	/* Rate-limited: an empty pass per coalesced MSI must not flood the log */
+	if (mac_status && ratecheck(&sc->intr_print_last,
+	    &eqos_intr_print_interval))
 		device_printf(sc->dev, "MAC interrupt\n");
 
 	if ((mtl_status = RD4(sc, GMAC_MTL_INTERRUPT_STATUS)))
@@ -879,16 +1026,26 @@ eqos_intr(void *arg)
 	if (dma_status & GMAC_DMA_CHAN0_STATUS_TI)
 		eqos_txintr(sc);
 
+	running = (if_getdrvflags(sc->ifp) & IFF_DRV_RUNNING) != 0;
+
 	EQOS_UNLOCK(sc);
 
-	if (!(mac_status | mtl_status | dma_status)) {
+	/* MSI raced eqos_stop() masking DMA intrs: ack the raw stop bits quietly */
+	if (!(mac_status | mtl_status | dma_status) && !running) {
+		WR4(sc, GMAC_DMA_CHAN0_STATUS, RD4(sc, GMAC_DMA_CHAN0_STATUS));
+		return;
+	}
+
+	if (!(mac_status | mtl_status | dma_status) &&
+	    ratecheck(&sc->intr_print_last, &eqos_intr_print_interval)) {
 		device_printf(sc->dev,
 		    "spurious interrupt mac=%08x mtl=%08x dma=%08x\n",
 		    RD4(sc, GMAC_MAC_INTERRUPT_STATUS),
 		    RD4(sc, GMAC_MTL_INTERRUPT_STATUS),
 		    RD4(sc, GMAC_DMA_CHAN0_STATUS));
 	}
-	if ((rx_tx_status = RD4(sc, GMAC_MAC_RX_TX_STATUS)))
+	if ((rx_tx_status = RD4(sc, GMAC_MAC_RX_TX_STATUS)) &&
+	    ratecheck(&sc->intr_print_last, &eqos_intr_print_interval))
 		device_printf(sc->dev, "RX/TX status interrupt\n");
 }
 
@@ -898,19 +1055,16 @@ eqos_ioctl(if_t ifp, u_long cmd, caddr_t data)
 	struct eqos_softc *sc = if_getsoftc(ifp);
 	struct ifreq *ifr = (struct ifreq *)data;
 	struct mii_data *mii;
-	int flags, mask;
+	int mask;
 	int error = 0;
 
 	switch (cmd) {
 	case SIOCSIFFLAGS:
 		if (if_getflags(ifp) & IFF_UP) {
 			if (if_getdrvflags(ifp) & IFF_DRV_RUNNING) {
-				flags = if_getflags(ifp);
-				if ((flags & (IFF_PROMISC|IFF_ALLMULTI))) {
-					EQOS_LOCK(sc);
-					eqos_setup_rxfilter(sc);
-					EQOS_UNLOCK(sc);
-				}
+				EQOS_LOCK(sc);
+				eqos_setup_rxfilter(sc);
+				EQOS_UNLOCK(sc);
 			} else {
 				eqos_init(sc);
 			}
@@ -927,6 +1081,14 @@ eqos_ioctl(if_t ifp, u_long cmd, caddr_t data)
 			eqos_setup_rxfilter(sc);
 			EQOS_UNLOCK(sc);
 		}
+		break;
+
+	case SIOCSIFMTU:
+		/* RX buffers are MCLBYTES: no jumbo frames */
+		if (ifr->ifr_mtu < ETHERMIN || ifr->ifr_mtu > ETHERMTU)
+			error = EINVAL;
+		else
+			if_setmtu(ifp, ifr->ifr_mtu);
 		break;
 
 	case SIOCSIFMEDIA:
@@ -1060,7 +1222,7 @@ eqos_setup_dma(struct eqos_softc *sc)
 			device_printf(sc->dev, "cannot create TX buffer map\n");
 			return (error);
 		}
-		eqos_setup_txdesc(sc, i, EQOS_TDES3_OWN, 0, 0, 0);
+		eqos_setup_txdesc(sc, i, 0, 0, 0, 0);
 	}
 
 	/* Set up RX descriptor ring, descriptors, dma maps, and mbufs */
@@ -1132,6 +1294,11 @@ eqos_setup_dma(struct eqos_softc *sc)
 			device_printf(sc->dev, "cannot create RX buffer\n");
 			return (error);
 		}
+	}
+	if ((error = bus_dmamap_create(sc->rx.buf_tag, BUS_DMA_COHERENT,
+	    &sc->rx.spare_map))) {
+		device_printf(sc->dev, "cannot create RX spare map\n");
+		return (error);
 	}
 
 	if (bootverbose)
@@ -1316,6 +1483,7 @@ eqos_detach(device_t dev)
 			bus_dmamap_destroy(sc->rx.buf_tag,
 			    sc->rx.buf_map[i].map);
 		}
+		bus_dmamap_destroy(sc->rx.buf_tag, sc->rx.spare_map);
 		bus_dma_tag_destroy(sc->rx.buf_tag);
 	}
 	/* Leak ledger: ring mbufs freed here (RX should be the full ring) */
