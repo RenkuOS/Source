@@ -79,6 +79,8 @@ public:
 	// cursor handling
 	virtual	void				SetCursor(ServerCursor* cursor);
 	virtual	void				SetCursorVisible(bool visible);
+	virtual	void				SetDragBitmap(const ServerBitmap* bitmap,
+									const BPoint& offsetFromCursor);
 	virtual	void				MoveCursorTo(float x, float y);
 
 	// frame buffer access
