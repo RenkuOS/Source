@@ -101,3 +101,16 @@ The partition %s is already mounted.	MainWindow		พาร์ติชัน%s �
 Size	PartitionList		ขนาด
 Creation of the partition has failed.	MainWindow		การสร้างพาร์ติชันล้มเหลว
 Mount	MainWindow		เชื่อมต่อ
+Disk image	MainWindow		ดิสก์อิมเมจ
+Register disk image…	MainWindow		ลงทะเบียนดิสก์อิมเมจ…
+Unregister disk image	MainWindow		ยกเลิกการลงทะเบียนดิสก์อิมเมจ
+Save image…	MainWindow		บันทึกอิมเมจ…
+Write image…	MainWindow		เขียนอิมเมจ…
+%appname%: Register disk image	MainWindow		%appname%: ลงทะเบียนดิสก์อิมเมจ
+%appname%: Select disk image	MainWindow		%appname%: เลือกดิสก์อิมเมจ
+%appname%: Save disk image	MainWindow		%appname%: บันทึกดิสก์อิมเมจ
+Disk image has been added.	MainWindow		เพิ่มดิสก์อิมเมจแล้ว
+Disk image has been removed.	MainWindow		ลบดิสก์อิมเมจแล้ว
+Creating disk image	MainWindow		กำลังสร้างดิสก์อิมเมจ
+Disk image successfully created.	MainWindow		สร้างดิสก์อิมเมจสำเร็จ
+Disk image successfully written to the target.	MainWindow		เขียนดิสก์อิมเมจไปยังปลายทางสำเร็จ

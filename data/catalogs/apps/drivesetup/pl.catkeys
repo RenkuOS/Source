@@ -107,3 +107,16 @@ The partition %s is already mounted.	MainWindow		Partycja %s jest już zamontowa
 Size	PartitionList		Rozmiar
 Creation of the partition has failed.	MainWindow		Próba utworzenia partycji nie powiodła się.
 Mount	MainWindow		Montuj
+Disk image	MainWindow		Obraz dysku
+Register disk image…	MainWindow		Zarejestruj obraz dysku…
+Unregister disk image	MainWindow		Wyrejestruj obraz dysku
+Save image…	MainWindow		Zapisz obraz…
+Write image…	MainWindow		Wgraj obraz…
+%appname%: Register disk image	MainWindow		%appname%: Zarejestruj obraz dysku
+%appname%: Select disk image	MainWindow		%appname%: Wybierz obraz dysku
+%appname%: Save disk image	MainWindow		%appname%: Zapisz obraz dysku
+Disk image has been added.	MainWindow		Obraz dysku został dodany.
+Disk image has been removed.	MainWindow		Obraz dysku został usunięty.
+Creating disk image	MainWindow		Tworzenie obrazu dysku
+Disk image successfully created.	MainWindow		Obraz dysku został utworzony.
+Disk image successfully written to the target.	MainWindow		Obraz dysku został wgrany na nośnik docelowy.

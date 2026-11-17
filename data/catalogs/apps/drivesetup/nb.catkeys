@@ -129,3 +129,8 @@ The partition %s is already mounted.	MainWindow		Partisjonen %s er allerede mont
 Size	PartitionList		Størrelse
 Creation of the partition has failed.	MainWindow		Opprettelse av partisjonen feilet.
 Mount	MainWindow		Monter
+Write image…	MainWindow		Skriv bilde…
+%appname%: Register disk image	MainWindow		%appname%: Registrer diskbilde
+%appname%: Select disk image	MainWindow		%appname%: Velg diskbilde
+Disk image has been removed.	MainWindow		Diskbilde har blitt fjernet.
+Disk image successfully written to the target.	MainWindow		Diskbildet ble skrevet til målet.
