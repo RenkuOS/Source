@@ -14,6 +14,11 @@
 
 #define MMC_BUS_MODULE_NAME "bus_managers/mmc/driver_v1"
 
+// The largest data transfer that a single command may move. The bus manager
+// and the controller drivers copy the data through a bounce buffer of this
+// size, so a larger transfer has to be split by the caller.
+#define MMC_MAX_TRANSFER_SIZE	(32 * 1024)
+
 
 struct IOOperation;
 
@@ -172,8 +177,9 @@ typedef struct mmc_bus_interface {
 	status_t (*transfer_io)(void* controller, uint32_t argument,
 		bool isWrite, void* buffer, uint32_t blockCount, uint32_t blockSize);
 		// Execute an SDIO CMD53 (IO_RW_EXTENDED) with the given argument and
-		// its data phase: blockCount blocks of blockSize bytes, at most one
-		// page in total. In byte mode, blockCount is 1. May be NULL.
+		// its data phase: blockCount blocks of blockSize bytes, at most
+		// MMC_MAX_TRANSFER_SIZE bytes in total. In byte mode, blockCount is
+		// 1. May be NULL.
 	void (*set_card_interrupt)(void* controller, void (*handler)(void*),
 		void* cookie);
 		// Enable the SDIO card interrupt and call handler(cookie) from the
@@ -221,8 +227,8 @@ typedef struct mmc_device_interface {
 		uint32_t blockSize);
 		// CMD53 (IO_RW_EXTENDED). blockCount 0 is byte mode: blockSize bytes
 		// (1 to 512). Otherwise block mode, with the block size that is set
-		// in the FBR of the function (blockSize must match it). At most one
-		// page per call.
+		// in the FBR of the function (blockSize must match it). At most
+		// MMC_MAX_TRANSFER_SIZE bytes per call.
 	status_t (*sdio_set_interrupt_handler)(device_node* controller,
 		void* cookie, void (*handler)(void*), void* data);
 		// See mmc_bus_interface::set_card_interrupt
