@@ -1053,7 +1053,14 @@ View::Draw(DrawingEngine* drawingEngine, const BRegion* effectiveClipping,
 		return;
 	}
 
-	if (fViewBitmap != NULL || fViewColor != B_TRANSPARENT_COLOR) {
+	// In a transparent window, the window itself and the views without a
+	// view color start out clear, unless they let their parent draw behind
+	// them.
+	bool clear = fWindow != NULL && fWindow->IsTransparent()
+		&& (fParent == NULL || (fViewColor == B_TRANSPARENT_COLOR
+			&& (fFlags & B_TRANSPARENT_BACKGROUND) == 0));
+
+	if (fViewBitmap != NULL || fViewColor != B_TRANSPARENT_COLOR || clear) {
 		// we can only draw within our own area
 		BRegion* redraw;
 		if ((fFlags & B_DRAW_ON_CHILDREN) != 0) {
@@ -1158,7 +1165,9 @@ View::Draw(DrawingEngine* drawingEngine, const BRegion* effectiveClipping,
 
 		}
 
-		if (fViewColor != B_TRANSPARENT_COLOR) {
+		if (clear && overlayCookie == NULL) {
+			drawingEngine->FillRegion(*redraw, (rgb_color){ 0, 0, 0, 0 });
+		} else if (fViewColor != B_TRANSPARENT_COLOR) {
 			// fill visible region with view color,
 			// this version of FillRegion ignores any
 			// clipping, that's why "redraw" needs to
