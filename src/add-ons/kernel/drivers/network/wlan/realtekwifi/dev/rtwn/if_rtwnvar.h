@@ -224,6 +224,20 @@ struct rtwn_softc {
 #ifndef D4054
 	struct callout		sc_watchdog_to;
 	int			sc_tx_timer;
+	uint32_t		sc_rx_transfers;	/* received frames */
+	uint32_t		sc_rx_seen;
+	int			sc_rx_silence;		/* seconds */
+	int			sc_rx_flowing;
+	int			sc_rx_silent_linked;	/* silence began on a link */
+	int			rx_silence_limit;	/* seconds; 0: not watched */
+	/*
+	 * Set by the bus code when a block transfer failed: the chip may have
+	 * stopped answering. The watchdog then restarts it unless frames come
+	 * within RTWN_IO_FAULT_LIMIT seconds. Counts the seconds after 1.
+	 */
+	int			sc_io_fault;
+	uint32_t		sc_io_fault_rx;		/* sc_rx_transfers then */
+#define RTWN_IO_FAULT_LIMIT	5
 #endif
 
 	struct mtx		sc_mtx;
@@ -358,6 +372,8 @@ struct rtwn_softc {
 			    uint8_t *, int);
 	int		(*sc_check_frame)(struct rtwn_softc *, struct mbuf *);
 	void		(*sc_temp_measure)(struct rtwn_softc *);
+	/* Optional: periodic gain control and the like, every 2 seconds. */
+	void		(*sc_dm_watchdog)(struct rtwn_softc *);
 	uint8_t		(*sc_temp_read)(struct rtwn_softc *);
 	void		(*sc_init_tx_agg)(struct rtwn_softc *);
 	void		(*sc_init_rx_agg)(struct rtwn_softc *);
