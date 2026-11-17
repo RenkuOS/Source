@@ -215,8 +215,26 @@ Window::SetClipping(BRegion* stillAvailableOnScreen)
 		bool wasReady = fBufferReady;
 
 		fCompositeRegion = fVisibleRegion;
-		fOnScreenRegion = fVisibleRegion;
-		fOnScreenRegion.IntersectWith(stillAvailableOnScreen);
+
+		// A window with direct access draws to its buffer itself, in screen
+		// coordinates, so its buffer is laid out like the screen.
+		int32 screenWidth = 0;
+		int32 screenHeight = 0;
+		if (ServerWindow()->HasDirectFrameBufferAccess()) {
+			RenderingBuffer* screen = fDesktop->HWInterface()->FrontBuffer();
+			screenWidth = screen->Width();
+			screenHeight = screen->Height();
+		}
+		const WindowBuffer& buffer = fBufferInterface->Buffer();
+		bool relaidOut = buffer.ScreenWidth() != screenWidth
+			|| buffer.ScreenHeight() != screenHeight;
+		if (relaidOut) {
+			// As in ReleaseBuffer(), the Painter has to let go of the memory.
+			fDrawingEngine->SetHWInterface(NULL);
+			fBufferInterface->SetScreenLayout(screenWidth, screenHeight);
+			fDrawingEngine->SetHWInterface(fBufferInterface.Get());
+			fBufferReady = false;
+		}
 
 		BRect frame = fCompositeRegion.Frame();
 		bool hasBuffer = fBufferInterface->SetFrame(frame) == B_OK;
@@ -255,9 +273,14 @@ Window::SetClipping(BRegion* stillAvailableOnScreen)
 		}
 
 		// The buffer can't be drawn to above or left of the screen, but other
-		// windows don't matter anymore: the window draws everything else.
-		BRegion drawable(BRect(0, 0, 65535, 65535));
+		// windows don't matter anymore: the window draws everything else. In
+		// the screen layout, it ends where the screen does.
+		BRegion drawable(BRect(0, 0,
+			screenWidth > 0 ? screenWidth - 1 : 65535,
+			screenHeight > 0 ? screenHeight - 1 : 65535));
 		fVisibleRegion.IntersectWith(&drawable);
+		if (relaidOut)
+			ProcessDirtyRegion(fVisibleRegion);
 
 		if (!hasBuffer) {
 			// There is no memory for the window's buffer: nothing can draw
@@ -306,19 +329,6 @@ Window::SetClipping(BRegion* stillAvailableOnScreen)
 
 	fVisibleContentRegionValid = false;
 	fEffectiveDrawingRegionValid = false;
-}
-
-
-void
-Window::GetOnScreenContentRegion(BRegion* region)
-{
-	if (!fBufferInterface.IsSet()) {
-		*region = VisibleContentRegion();
-		return;
-	}
-
-	GetContentRegion(region);
-	region->IntersectWith(&fOnScreenRegion);
 }
 
 

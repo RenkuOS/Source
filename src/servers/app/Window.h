@@ -122,9 +122,6 @@ public:
 	inline	BRegion&			VisibleRegion() { return fVisibleRegion; }
 			BRegion&			VisibleContentRegion();
 
-			// The part of the content that can really be seen on screen.
-			void				GetOnScreenContentRegion(BRegion* region);
-
 			// When compositing, the window's own buffer. It takes ownership.
 			void				SetBufferInterface(
 									WindowBufferHWInterface* interface);
@@ -497,7 +494,6 @@ private:
 								fBufferInterface;
 			BRegion				fCompositeRegion;
 			WindowShape			fShape;
-			BRegion				fOnScreenRegion;
 			BPoint				fBufferOffset;
 			bool				fBufferReady;
 			bool				fBufferLost;

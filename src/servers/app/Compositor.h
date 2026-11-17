@@ -44,8 +44,6 @@ public:
 			// Draws what is due right now, for reading back what is on the
 			// screen. No window lock may be held.
 			void				Flush();
-			// The same, for those who hold the window lock already.
-			void				FlushLocked();
 
 			// An application has taken over the screen, and this returns when
 			// nothing will touch it anymore. What happens from now on is drawn

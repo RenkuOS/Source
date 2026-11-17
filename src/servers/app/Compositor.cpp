@@ -104,13 +104,6 @@ Compositor::Flush()
 
 
 void
-Compositor::FlushLocked()
-{
-	_CompositeDamage();
-}
-
-
-void
 Compositor::ScreenTaken()
 {
 	// _Composite() looks at the owner of the screen with this held.
@@ -204,7 +197,27 @@ Compositor::_CompositeDamage(BRegion* present)
 		fDamage.MakeEmpty();
 		fWakePending = false;
 	}
+
+	// A window with direct access draws to its buffer on its own, and doesn't
+	// say when: while it may, its contents are put on the screen every frame.
+	BRegion direct;
+	WindowList& windows = fDesktop->CurrentWindows();
+	int32 workspace = fDesktop->CurrentWorkspace();
+	for (Window* window = windows.FirstWindow(); window != NULL;
+			window = window->NextWindow(workspace)) {
+		if (!window->IsHidden()
+			&& window->ServerWindow()->IsDirectlyAccessing()) {
+			BRegion content;
+			window->GetContentRegion(&content);
+			direct.Include(&content);
+		}
+	}
+	damage.Include(&direct);
+
 	_Composite(damage, present);
+
+	// and again in the next one
+	Composite(direct);
 }
 
 
@@ -347,19 +360,6 @@ Compositor::_Composite(const BRegion& damage, BRegion* present)
 			_Copy(target, layer->window, opaque);
 		else
 			_Blend(target, layer->window, opaque, layer->alpha);
-	}
-
-	// A direct window draws straight to the screen, and its buffer is stale:
-	// copying it there would cover what the application has just drawn. A
-	// shadow or a see-through window over it is left out there instead.
-	for (Window* window = windows.FirstWindow(); window != NULL;
-			window = window->NextWindow(workspace)) {
-		if (!window->IsHidden()
-			&& window->ServerWindow()->IsDirectlyAccessing()) {
-			BRegion content;
-			window->GetOnScreenContentRegion(&content);
-			screenDamage.Exclude(&content);
-		}
 	}
 
 	if (present != NULL)

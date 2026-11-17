@@ -12,6 +12,7 @@
 #include <Accelerant.h>
 #include <OS.h>
 #include <Region.h>
+#include <vm_defs.h>
 
 #include "Compositor.h"
 #include "Window.h"
@@ -42,7 +43,11 @@ WindowBuffer::WindowBuffer()
 	fLeft(0),
 	fTop(0),
 	fWidth(0),
-	fHeight(0)
+	fHeight(0),
+	fScreenWidth(0),
+	fScreenHeight(0),
+	fFrameLeft(0),
+	fFrameTop(0)
 {
 }
 
@@ -71,6 +76,9 @@ WindowBuffer::ColorSpace() const
 void*
 WindowBuffer::Bits() const
 {
+	if (HasScreenLayout())
+		return fPixels;
+
 	// This address is outside of the allocation, but nothing ever accesses a
 	// pixel outside of Frame(): all drawing is clipped to the window.
 	return fPixels - (intptr_t)fTop * BytesPerRow() - (intptr_t)fLeft * 4;
@@ -90,6 +98,8 @@ WindowBuffer::Width() const
 	// Without memory, there is nothing to draw to.
 	if (fPixels == NULL)
 		return 0;
+	if (HasScreenLayout())
+		return fScreenWidth;
 	return max_c(fLeft + fWidth, 1);
 }
 
@@ -99,6 +109,8 @@ WindowBuffer::Height() const
 {
 	if (fPixels == NULL)
 		return 0;
+	if (HasScreenLayout())
+		return fScreenHeight;
 	return max_c(fTop + fHeight, 1);
 }
 
@@ -108,6 +120,34 @@ WindowBuffer::SetFrame(const BRect& frame)
 {
 	if (!frame.IsValid())
 		return false;
+
+	if (HasScreenLayout()) {
+		BRect onScreen = frame & BRect(0, 0, fScreenWidth - 1,
+			fScreenHeight - 1);
+		if (!onScreen.IsValid())
+			onScreen.Set(0, 0, -1, -1);
+
+		bool changed = false;
+		if (fPixels == NULL) {
+			if (!_AllocateScreen())
+				return false;
+			changed = true;
+		} else if (fWidth > 0 && fHeight > 0) {
+			// The window moved: its pixels go along.
+			int32 x = (int32)frame.left - fFrameLeft;
+			int32 y = (int32)frame.top - fFrameTop;
+			if (x != 0 || y != 0)
+				_MovePixels(Frame(), x, y);
+		}
+
+		fFrameLeft = (int32)frame.left;
+		fFrameTop = (int32)frame.top;
+		fLeft = (int32)onScreen.left;
+		fTop = (int32)onScreen.top;
+		fWidth = onScreen.IsValid() ? onScreen.IntegerWidth() + 1 : 0;
+		fHeight = onScreen.IsValid() ? onScreen.IntegerHeight() + 1 : 0;
+		return changed;
+	}
 
 	int32 left = (int32)frame.left;
 	int32 top = (int32)frame.top;
@@ -160,8 +200,73 @@ WindowBuffer::Frame() const
 const uint8*
 WindowBuffer::PixelAt(int32 x, int32 y) const
 {
+	if (HasScreenLayout())
+		return fPixels + (intptr_t)y * BytesPerRow() + (intptr_t)x * 4;
+
 	return fPixels + (intptr_t)(y - fTop) * BytesPerRow()
 		+ (intptr_t)(x - fLeft) * 4;
+}
+
+
+bool
+WindowBuffer::SetScreenLayout(int32 width, int32 height)
+{
+	if (width == fScreenWidth && height == fScreenHeight)
+		return false;
+
+	// What was drawn isn't kept: the window draws again.
+	Release();
+	fScreenWidth = width;
+	fScreenHeight = height;
+	return true;
+}
+
+
+/*!	Allocates the memory for the screen layout. Only the pages that are
+	drawn to are used, so the memory isn't committed up front.
+*/
+bool
+WindowBuffer::_AllocateScreen()
+{
+	uint8* pixels;
+	size_t size = (size_t)fScreenWidth * fScreenHeight * 4;
+	area_id area = create_area("window buffer", (void**)&pixels,
+		B_ANY_ADDRESS, (size + B_PAGE_SIZE - 1) & ~(size_t)(B_PAGE_SIZE - 1),
+		B_NO_LOCK, B_READ_AREA | B_WRITE_AREA | B_OVERCOMMITTING_AREA);
+	if (area < 0)
+		return false;
+
+	fArea = area;
+	fPixels = pixels;
+	fCapacityWidth = fScreenWidth;
+	fCapacityHeight = fScreenHeight;
+	return true;
+}
+
+
+/*!	In the screen layout, moves the pixels of \a from by \a x and \a y, as far
+	as they stay on the screen.
+*/
+void
+WindowBuffer::_MovePixels(const BRect& from, int32 x, int32 y)
+{
+	BRect screen(0, 0, fScreenWidth - 1, fScreenHeight - 1);
+	BRect to = from.OffsetByCopy(x, y) & screen;
+	if (!to.IsValid())
+		return;
+
+	int32 left = (int32)to.left;
+	int32 top = (int32)to.top;
+	int32 bottom = (int32)to.bottom;
+	size_t bytes = (size_t)(to.IntegerWidth() + 1) * 4;
+	uint32 bytesPerRow = BytesPerRow();
+
+	// Rows are moved in the order that doesn't overwrite any still to move.
+	for (int32 i = 0; i <= bottom - top; i++) {
+		int32 row = y > 0 ? bottom - i : top + i;
+		memmove(fPixels + (size_t)row * bytesPerRow + left * 4,
+			fPixels + (size_t)(row - y) * bytesPerRow + (left - x) * 4, bytes);
+	}
 }
 
 
@@ -255,6 +360,14 @@ WindowBufferHWInterface::SetFrame(const BRect& frame)
 			frame.IntegerWidth() + 1, frame.IntegerHeight() + 1);
 	}
 	return status;
+}
+
+
+void
+WindowBufferHWInterface::SetScreenLayout(int32 width, int32 height)
+{
+	if (fBuffer.SetScreenLayout(width, height))
+		_NotifyFrameBufferChanged();
 }
 
 
@@ -409,9 +522,4 @@ void
 WindowBufferHWInterface::_Damaged(const BRegion& region)
 {
 	fCompositor->Composite(region);
-
-	// An application with direct access draws to the screen on its own. What
-	// the window draws must get there first, as it isn't redrawn on top.
-	if (fWindow != NULL && fWindow->ServerWindow()->IsDirectlyAccessing())
-		fCompositor->FlushLocked();
 }

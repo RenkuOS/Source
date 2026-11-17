@@ -4450,20 +4450,37 @@ ServerWindow::HandleDirectConnection(int32 bufferState, int32 driverState)
 	STRACE(("HandleDirectConnection(bufferState = %" B_PRId32 ", driverState = "
 		"%" B_PRId32 ")\n", bufferState, driverState));
 
-	// The application is about to draw there: what is still waiting to reach
-	// the screen must not end up on top of it.
-	if ((bufferState & B_DIRECT_MODE_MASK) != B_DIRECT_STOP) {
-		if (Compositor* compositor = fDesktop->GetCompositor())
-			compositor->FlushLocked();
+	status_t status;
+	WindowBuffer* buffer = NULL;
+	if (fWindow->BufferInterface() != NULL) {
+		buffer = const_cast<WindowBuffer*>(
+			&fWindow->BufferInterface()->Buffer());
 	}
+	if (buffer != NULL && buffer->HasScreenLayout() && buffer->Area() >= 0) {
+		// When compositing, the application draws to the window's buffer,
+		// which is laid out like the screen, and the compositor puts that on
+		// the screen like everything else. Everything else is as without
+		// compositing, screen coordinates included.
+		BRegion clip;
+		fWindow->GetContentRegion(&clip);
+		BRegion screen(BRect(0, 0, buffer->ScreenWidth() - 1,
+			buffer->ScreenHeight() - 1));
+		clip.IntersectWith(&screen);
 
-	BRegion onScreenContent;
-	fWindow->GetOnScreenContentRegion(&onScreenContent);
-
-	status_t status = fDirectWindowInfo->SetState(
-		(direct_buffer_state)bufferState, (direct_driver_state)driverState,
-		fDesktop->HWInterface()->FrontBuffer(), fWindow->Frame(),
-		onScreenContent);
+		status = fDirectWindowInfo->SetState(
+			(direct_buffer_state)bufferState, (direct_driver_state)driverState,
+			buffer, fWindow->Frame(), clip, buffer->Area());
+	} else if (buffer != NULL
+		&& (bufferState & B_DIRECT_MODE_MASK) != B_DIRECT_STOP) {
+		// There is nothing to draw to yet: the buffer gets its layout when
+		// the clipping is rebuilt, which comes first.
+		return;
+	} else {
+		status = fDirectWindowInfo->SetState(
+			(direct_buffer_state)bufferState, (direct_driver_state)driverState,
+			fDesktop->HWInterface()->FrontBuffer(), fWindow->Frame(),
+			fWindow->VisibleContentRegion());
+	}
 
 	if (status != B_OK) {
 		char errorString[256];

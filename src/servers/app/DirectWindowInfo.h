@@ -25,11 +25,15 @@ public:
 			status_t			GetSyncData(
 									direct_window_sync_data& data) const;
 
+			// With \a bitsArea, the pixels are in that area, starting with
+			// the left top pixel of the coordinates used. Otherwise, the area
+			// is found from the buffer's Bits().
 			status_t			SetState(direct_buffer_state bufferState,
 									direct_driver_state driverState,
 									RenderingBuffer* renderingBuffer,
 									const BRect& windowFrame,
-									const BRegion& clipRegion);
+									const BRegion& clipRegion,
+									area_id bitsArea = -1);
 
 			void				EnableFullScreen(const BRect& frame,
 									window_feel feel);
