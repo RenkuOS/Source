@@ -23,6 +23,7 @@
 
 extern driver_t* DRIVER_MODULE_NAME(rtwn_pci, pci);
 extern driver_t* DRIVER_MODULE_NAME(rtwn_usb, uhub);
+extern driver_t* DRIVER_MODULE_NAME(rtwn_sdio, sdio);
 
 HAIKU_FBSD_WLAN_DRIVERS_GLUE(realtekwifi)
 HAIKU_DRIVER_REQUIREMENTS(FBSD_WLAN);
@@ -35,6 +36,7 @@ HAIKU_FIRMWARE_NAME_MAP({
 	{"rtwn-rtl8192cfwU", "rtwn-rtl8192cfwU.ucode"},
 	{"rtwn-rtl8192cfwT", "rtwn-rtl8192cfwT.ucode"},
 	{"rtwn-rtl8192eufw", "rtwn-rtl8192eufw.ucode"},
+	{"rtwn-rtl8723bsfw", "rtw8723b_fw.bin"},
 	{"rtwn-rtl8812aufw", "rtwn-rtl8812aufw.ucode"},
 	{"rtwn-rtl8821aufw", "rtwn-rtl8821aufw.ucode"},
 });
@@ -54,8 +56,13 @@ __haiku_init_hardware()
 		DRIVER_MODULE_NAME(rtwn_usb, uhub),
 		NULL
 	};
+	driver_t *sdio_drivers[] = {
+		DRIVER_MODULE_NAME(rtwn_sdio, sdio),
+		NULL
+	};
 	_fbsd_init_hardware_pci(pci_drivers);
 	_fbsd_init_hardware_uhub(usb_drivers);
+	_fbsd_init_hardware_sdio(sdio_drivers);
 }
 
 

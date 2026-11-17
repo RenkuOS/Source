@@ -16,6 +16,7 @@ UseHeaders [ FDirName $(SUBDIR) ] : true ;
 SEARCH_SOURCE += [ FDirName $(SUBDIR) dev rtwn ] ;
 SEARCH_SOURCE += [ FDirName $(SUBDIR) dev rtwn pci ] ;
 SEARCH_SOURCE += [ FDirName $(SUBDIR) dev rtwn usb ] ;
+SEARCH_SOURCE += [ FDirName $(SUBDIR) dev rtwn sdio ] ;
 SEARCH_SOURCE += [ FDirName $(SUBDIR) dev rtwn rtl8188e ] ;
 SEARCH_SOURCE += [ FDirName $(SUBDIR) dev rtwn rtl8188e pci ] ;
 SEARCH_SOURCE += [ FDirName $(SUBDIR) dev rtwn rtl8188e usb ] ;
@@ -24,6 +25,8 @@ SEARCH_SOURCE += [ FDirName $(SUBDIR) dev rtwn rtl8192c pci ] ;
 SEARCH_SOURCE += [ FDirName $(SUBDIR) dev rtwn rtl8192c usb ] ;
 SEARCH_SOURCE += [ FDirName $(SUBDIR) dev rtwn rtl8192e ] ;
 SEARCH_SOURCE += [ FDirName $(SUBDIR) dev rtwn rtl8192e usb ] ;
+SEARCH_SOURCE += [ FDirName $(SUBDIR) dev rtwn rtl8723b ] ;
+SEARCH_SOURCE += [ FDirName $(SUBDIR) dev rtwn rtl8723b sdio ] ;
 SEARCH_SOURCE += [ FDirName $(SUBDIR) dev rtwn rtl8812a ] ;
 SEARCH_SOURCE += [ FDirName $(SUBDIR) dev rtwn rtl8812a usb ] ;
 SEARCH_SOURCE += [ FDirName $(SUBDIR) dev rtwn rtl8821a ] ;
@@ -54,6 +57,12 @@ KernelAddon realtekwifi :
 	rtwn_usb_reg.c
 	rtwn_usb_rx.c
 	rtwn_usb_tx.c
+
+	# sdio/
+	rtwn_sdio_attach.c
+	rtwn_sdio_reg.c
+	rtwn_sdio_rx.c
+	rtwn_sdio_tx.c
 
 	# rtl8188e/
 	r88e_beacon.c
@@ -118,6 +127,16 @@ KernelAddon realtekwifi :
 	r92eu_attach.c
 	r92eu_init.c
 
+	# rtl8723b/
+	r8723b_calib.c
+	r8723b_dm.c
+	r8723b_init.c
+	r8723b_rom.c
+
+	# rtl8723b/sdio/
+	r8723bs_attach.c
+	r8723bs_init.c
+
 	# rtl8812a/
 	r12a_beacon.c
 	r12a_calib.c
@@ -154,6 +173,7 @@ KernelAddon realtekwifi :
 	:
 	freebsd_wlan.a
 	freebsd_usb.a
+	freebsd_sdio.a
 	libfreebsd_network.a
 	;
 

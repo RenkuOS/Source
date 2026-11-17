@@ -77,7 +77,8 @@ extended_io(struct sdio_func* func, bool isWrite, uint32_t address,
 		uint32 chunk;
 		if (blockSize > 0 && length >= blockSize) {
 			// block mode, as many whole blocks as fit into one call
-			blockCount = std::min((size_t)(B_PAGE_SIZE / blockSize),
+			blockCount = std::min(
+				(size_t)(MMC_MAX_TRANSFER_SIZE / blockSize),
 				length / blockSize);
 			if (blockCount > 511)
 				blockCount = 511;
