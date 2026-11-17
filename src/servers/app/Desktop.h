@@ -254,6 +254,7 @@ public:
 									{ return MarkDirty(region, region); }
 			void				Redraw();
 			void				RedrawBackground();
+			void				WindowShapesChanged();
 
 			bool				ReloadDecor(DecorAddOn* oldDecor);
 

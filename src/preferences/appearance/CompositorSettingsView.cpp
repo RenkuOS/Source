@@ -25,9 +25,13 @@
 
 
 static const int32 kMsgComposited = 'cmps';
+static const int32 kMsgShadows = 'cmpw';
+static const int32 kMsgRoundedCorners = 'cmpr';
 
 // What app_server uses until it is told otherwise
 static const bool kDefaultComposited = false;
+static const bool kDefaultShadows = true;
+static const bool kDefaultRoundedCorners = true;
 
 
 CompositorSettingsView::CompositorSettingsView(const char* name)
@@ -35,15 +39,30 @@ CompositorSettingsView::CompositorSettingsView(const char* name)
 	BView(name, 0)
 {
 	fSavedComposited = _Get(AS_GET_COMPOSITED_DESKTOP, kDefaultComposited);
+	fSavedShadows = _Get(AS_GET_COMPOSITED_SHADOWS, kDefaultShadows);
+	fSavedRoundedCorners = _Get(AS_GET_COMPOSITED_ROUNDED_CORNERS,
+		kDefaultRoundedCorners);
 
 	fCompositedCheckBox = new BCheckBox("composited",
 		B_TRANSLATE("Compositor (after a restart)"),
 		new BMessage(kMsgComposited));
+	fShadowsCheckBox = new BCheckBox("shadows",
+		B_TRANSLATE("Window shadows"), new BMessage(kMsgShadows));
+	fRoundedCornersCheckBox = new BCheckBox("rounded corners",
+		B_TRANSLATE("Rounded window corners"),
+		new BMessage(kMsgRoundedCorners));
 
+	fShadowsCheckBox->SetValue(fSavedShadows);
+	fRoundedCornersCheckBox->SetValue(fSavedRoundedCorners);
 	_SetComposited(fSavedComposited);
 
 	BLayoutBuilder::Group<>(this, B_VERTICAL, B_USE_DEFAULT_SPACING)
 		.Add(fCompositedCheckBox)
+		.AddGroup(B_VERTICAL, B_USE_SMALL_SPACING)
+			.Add(fShadowsCheckBox)
+			.Add(fRoundedCornersCheckBox)
+			.SetInsets(B_USE_WINDOW_SPACING, 0, 0, 0)
+			.End()
 		.AddGlue()
 		.SetInsets(B_USE_WINDOW_SPACING);
 }
@@ -60,6 +79,8 @@ CompositorSettingsView::AttachedToWindow()
 	AdoptParentColors();
 
 	fCompositedCheckBox->SetTarget(this);
+	fShadowsCheckBox->SetTarget(this);
+	fRoundedCornersCheckBox->SetTarget(this);
 }
 
 
@@ -75,6 +96,18 @@ CompositorSettingsView::MessageReceived(BMessage* message)
 			_OfferRestart();
 			break;
 
+		case kMsgShadows:
+			_Set(AS_SET_COMPOSITED_SHADOWS,
+				fShadowsCheckBox->Value() == B_CONTROL_ON);
+			Window()->PostMessage(kMsgUpdate);
+			break;
+
+		case kMsgRoundedCorners:
+			_Set(AS_SET_COMPOSITED_ROUNDED_CORNERS,
+				fRoundedCornersCheckBox->Value() == B_CONTROL_ON);
+			Window()->PostMessage(kMsgUpdate);
+			break;
+
 		default:
 			BView::MessageReceived(message);
 			break;
@@ -86,7 +119,10 @@ bool
 CompositorSettingsView::IsDefaultable()
 {
 	return (fCompositedCheckBox->Value() == B_CONTROL_ON)
-		!= kDefaultComposited;
+			!= kDefaultComposited
+		|| (fShadowsCheckBox->Value() == B_CONTROL_ON) != kDefaultShadows
+		|| (fRoundedCornersCheckBox->Value() == B_CONTROL_ON)
+			!= kDefaultRoundedCorners;
 }
 
 
@@ -95,13 +131,19 @@ CompositorSettingsView::SetDefaults()
 {
 	_Set(AS_SET_COMPOSITED_DESKTOP, kDefaultComposited);
 	_SetComposited(kDefaultComposited);
+	_SetOption(fShadowsCheckBox, AS_SET_COMPOSITED_SHADOWS, kDefaultShadows);
+	_SetOption(fRoundedCornersCheckBox, AS_SET_COMPOSITED_ROUNDED_CORNERS,
+		kDefaultRoundedCorners);
 }
 
 
 bool
 CompositorSettingsView::IsRevertable()
 {
-	return (fCompositedCheckBox->Value() == B_CONTROL_ON) != fSavedComposited;
+	return (fCompositedCheckBox->Value() == B_CONTROL_ON) != fSavedComposited
+		|| (fShadowsCheckBox->Value() == B_CONTROL_ON) != fSavedShadows
+		|| (fRoundedCornersCheckBox->Value() == B_CONTROL_ON)
+			!= fSavedRoundedCorners;
 }
 
 
@@ -113,6 +155,9 @@ CompositorSettingsView::Revert()
 
 	_Set(AS_SET_COMPOSITED_DESKTOP, fSavedComposited);
 	_SetComposited(fSavedComposited);
+	_SetOption(fShadowsCheckBox, AS_SET_COMPOSITED_SHADOWS, fSavedShadows);
+	_SetOption(fRoundedCornersCheckBox, AS_SET_COMPOSITED_ROUNDED_CORNERS,
+		fSavedRoundedCorners);
 }
 
 
@@ -130,10 +175,24 @@ CompositorSettingsView::_OfferRestart()
 }
 
 
+/*!	The options only apply to a composited desktop, so they are greyed out
+	without it, and keep their settings.
+*/
 void
 CompositorSettingsView::_SetComposited(bool composited)
 {
 	fCompositedCheckBox->SetValue(composited);
+	fShadowsCheckBox->SetEnabled(composited);
+	fRoundedCornersCheckBox->SetEnabled(composited);
+}
+
+
+void
+CompositorSettingsView::_SetOption(BCheckBox* checkBox, int32 code,
+	bool value)
+{
+	_Set(code, value);
+	checkBox->SetValue(value);
 }
 
 

@@ -29,14 +29,20 @@ public:
 private:
 			void				_OfferRestart();
 			void				_SetComposited(bool composited);
+			void				_SetOption(BCheckBox* checkBox, int32 code,
+									bool value);
 
 	static	bool				_Get(int32 code, bool defaultValue);
 	static	void				_Set(int32 code, bool value);
 
 private:
 			BCheckBox*			fCompositedCheckBox;
+			BCheckBox*			fShadowsCheckBox;
+			BCheckBox*			fRoundedCornersCheckBox;
 
 			bool				fSavedComposited;
+			bool				fSavedShadows;
+			bool				fSavedRoundedCorners;
 };
 
 
