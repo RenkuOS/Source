@@ -29,4 +29,21 @@
 
 #define CAR_mmDC_GPIO_HPD_A                                                         0x488d
 
+/* Line buffer, DCP0 (dword offsets; the same in DCE 8). At 0x1ac1, where
+ * Evergreen had DESKTOP_HEIGHT, DCE 8 and later have LB_MEMORY_CTRL. */
+#define CAR_mmLB_MEMORY_CTRL                                                        0x1ac1
+#define CAR_mmLB_DESKTOP_HEIGHT                                                     0x1ac3
+
+/* GRPH_CONTROL fields (the same in DCE 8) */
+#define CAR_GRPH_CONTROL__GRPH_DEPTH_MASK                                          0x3
+#define CAR_GRPH_CONTROL__GRPH_FORMAT_MASK                                         0x700
+#define CAR_GRPH_CONTROL__GRPH_ARRAY_MODE_MASK                                     0xf00000
+#define CAR_GRPH_CONTROL__GRPH_ARRAY_MODE__SHIFT                                   0x14
+#define CAR_ARRAY_LINEAR_ALIGNED                                                   0x1
+
+/* Memory power of the display pipe's front end (not in DCE 8) */
+#define CAR_mmDCFE_MEM_PWR_CTRL                                                     0x1b03
+#define CAR_DCFE_MEM_PWR_CTRL__DCP_LUT_MEM_PWR_FORCE_MASK                           0x3
+#define CAR_DCFE_MEM_PWR_CTRL__DCP_LUT_MEM_PWR_DIS_MASK                             0x4
+
 #endif /* DCE_11_0_D_H */
