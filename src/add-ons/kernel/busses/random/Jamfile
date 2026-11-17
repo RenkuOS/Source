@@ -1,5 +1,6 @@
 SubDir HAIKU_TOP src add-ons kernel busses random ;
 
 SubInclude HAIKU_TOP src add-ons kernel busses random ccp ;
+SubInclude HAIKU_TOP src add-ons kernel busses random jh7110_trng ;
 SubInclude HAIKU_TOP src add-ons kernel busses random virtio ;
 

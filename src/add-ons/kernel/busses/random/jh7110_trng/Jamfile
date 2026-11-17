@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: MIT
+
+SubDir HAIKU_TOP src add-ons kernel busses random jh7110_trng ;
+
+UsePrivateHeaders drivers ;
+UsePrivateKernelHeaders ;
+
+KernelAddon jh7110_trng :
+	jh7110_trng.cpp
+;
