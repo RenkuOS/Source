@@ -75,6 +75,7 @@ public:
 			bool				CompositedDesktop() const;
 			bool				CompositedShadows() const;
 			bool				CompositedRoundedCorners() const;
+			bool				CompositedDragTransparency() const;
 			uint8				Hinting() const;
 			uint8				SubpixelAverageWeight() const;
 			bool				IsSubpixelOrderingRegular() const;
@@ -112,6 +113,8 @@ public:
 			void				SetCompositedDesktop(bool composited);
 			void				SetCompositedShadows(bool shadows);
 			void				SetCompositedRoundedCorners(bool rounded);
+			void				SetCompositedDragTransparency(
+									bool transparent);
 			void				SetHinting(uint8 hinting);
 			void				SetSubpixelAverageWeight(uint8 averageWeight);
 			void				SetSubpixelOrderingRegular(

@@ -305,10 +305,12 @@ Compositor::_Composite(const BRegion& damage, BRegion* present)
 		}
 
 		layer->window = window;
+		layer->alpha = window->CompositeAlpha();
 		layerCount++;
 
 		// Only what hides everything behind it ends the search here.
-		remaining.Exclude(&shape.OpaqueRegion());
+		if (layer->alpha == 255)
+			remaining.Exclude(&shape.OpaqueRegion());
 	}
 
 	// Then draw them from the back to the front.
@@ -327,9 +329,12 @@ Compositor::_Composite(const BRegion& damage, BRegion* present)
 
 			BRegion edge(layer->region);
 			edge.IntersectWith(&shape.EdgeRegion());
-			_BlendEdges(target, layer->window, edge);
+			_BlendEdges(target, layer->window, edge, layer->alpha);
 		}
-		_Copy(target, layer->window, opaque);
+		if (layer->alpha == 255)
+			_Copy(target, layer->window, opaque);
+		else
+			_Blend(target, layer->window, opaque, layer->alpha);
 	}
 
 	// A direct window draws straight to the screen, and its buffer is stale:
@@ -487,11 +492,51 @@ Compositor::_Copy(RenderingBuffer* target, Window* window,
 }
 
 
-/*!	Mixes a window's corner pixels with what has been drawn behind them.
+/*!	Mixes a window that can be seen through with what has been drawn behind
+	it.
+*/
+void
+Compositor::_Blend(RenderingBuffer* target, Window* window,
+	const BRegion& region, uint8 alpha)
+{
+	const WindowBuffer& buffer = window->BufferInterface()->Buffer();
+	if (buffer.InitCheck() != B_OK)
+		return;
+
+	BRect bufferFrame = buffer.Frame();
+	uint8* bits = (uint8*)target->Bits();
+	uint32 bytesPerRow = target->BytesPerRow();
+	const uint32 inverse = 255 - alpha;
+
+	int32 count = region.CountRects();
+	for (int32 i = 0; i < count; i++) {
+		clipping_rect rect = region.RectAtInt(i);
+		rect.left = max_c(rect.left, (int32)bufferFrame.left);
+		rect.top = max_c(rect.top, (int32)bufferFrame.top);
+		rect.right = min_c(rect.right, (int32)bufferFrame.right);
+		rect.bottom = min_c(rect.bottom, (int32)bufferFrame.bottom);
+
+		for (int32 y = rect.top; y <= rect.bottom; y++) {
+			const uint8* src = buffer.PixelAt(rect.left, y);
+			uint8* dst = bits + y * bytesPerRow + rect.left * 4;
+			for (int32 x = rect.left; x <= rect.right; x++) {
+				dst[0] = (src[0] * alpha + dst[0] * inverse + 127) / 255;
+				dst[1] = (src[1] * alpha + dst[1] * inverse + 127) / 255;
+				dst[2] = (src[2] * alpha + dst[2] * inverse + 127) / 255;
+				src += 4;
+				dst += 4;
+			}
+		}
+	}
+}
+
+
+/*!	Mixes a window's corner pixels with what has been drawn behind them. The
+	window's own \a alpha is applied on top of the coverage of the corners.
 */
 void
 Compositor::_BlendEdges(RenderingBuffer* target, Window* window,
-	const BRegion& region)
+	const BRegion& region, uint8 alpha)
 {
 	const WindowBuffer& buffer = window->BufferInterface()->Buffer();
 	if (buffer.InitCheck() != B_OK)
@@ -530,11 +575,12 @@ Compositor::_BlendEdges(RenderingBuffer* target, Window* window,
 						column = corner.radius - 1 - column;
 					}
 
-					uint32 alpha = coverage[row * corner.radius + column];
-					uint32 inverse = 255 - alpha;
-					dst[0] = (src[0] * alpha + dst[0] * inverse + 127) / 255;
-					dst[1] = (src[1] * alpha + dst[1] * inverse + 127) / 255;
-					dst[2] = (src[2] * alpha + dst[2] * inverse + 127) / 255;
+					uint32 cover = coverage[row * corner.radius + column]
+						* alpha / 255;
+					uint32 inverse = 255 - cover;
+					dst[0] = (src[0] * cover + dst[0] * inverse + 127) / 255;
+					dst[1] = (src[1] * cover + dst[1] * inverse + 127) / 255;
+					dst[2] = (src[2] * cover + dst[2] * inverse + 127) / 255;
 					src += 4;
 					dst += 4;
 				}

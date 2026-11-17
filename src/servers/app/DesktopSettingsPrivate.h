@@ -92,6 +92,9 @@ public:
 			bool				CompositedShadows() const;
 			void				SetCompositedRoundedCorners(bool rounded);
 			bool				CompositedRoundedCorners() const;
+			void				SetCompositedDragTransparency(
+									bool transparent);
+			bool				CompositedDragTransparency() const;
 			void				SetHinting(uint8 hinting);
 			uint8				Hinting() const;
 			void				SetSubpixelAverageWeight(uint8 averageWeight);
@@ -128,6 +131,7 @@ private:
 			bool				fCompositedDesktop;
 			bool				fCompositedShadows;
 			bool				fCompositedRoundedCorners;
+			bool				fCompositedDragTransparency;
 			BString				fControlLook;
 
 			server_read_only_memory& fShared;

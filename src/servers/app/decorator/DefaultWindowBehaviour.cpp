@@ -41,6 +41,10 @@
 // The span between mouse down
 static const bigtime_t kWindowActivationTimeout = 500000LL;
 
+// How much of a window that is being dragged covers what is behind it, when
+// the compositor makes it see-through
+static const uint8 kDraggedWindowAlpha = 192;
+
 
 // #pragma mark - State
 
@@ -215,8 +219,15 @@ struct DefaultWindowBehaviour::DragState : MouseTrackingState {
 		bool activateOnMouseUp, bool minimizeCheckOnMouseUp)
 		:
 		MouseTrackingState(behavior, where, activateOnMouseUp,
-			minimizeCheckOnMouseUp)
+			minimizeCheckOnMouseUp),
+		fSeeThrough(false)
 	{
+	}
+
+	virtual void ExitState(State* nextState)
+	{
+		if (fSeeThrough)
+			fWindow->SetCompositeAlpha(255);
 	}
 
 	virtual bool MouseDown(BMessage* message, BPoint where, bool& _unhandled)
@@ -244,9 +255,21 @@ struct DefaultWindowBehaviour::DragState : MouseTrackingState {
 
 			// constrain delta to true change in position
 			delta = fWindow->Frame().LeftTop() - oldLeftTop;
+
+			// Only once the window really moves, as a click on the tab also
+			// starts a drag.
+			if (!fSeeThrough && delta != BPoint(0, 0)
+				&& fDesktop->GetCompositor() != NULL
+				&& DesktopSettings(fDesktop).CompositedDragTransparency()) {
+				fSeeThrough = true;
+				fWindow->SetCompositeAlpha(kDraggedWindowAlpha);
+			}
 		} else
 			delta = BPoint(0, 0);
 	}
+
+private:
+	bool	fSeeThrough;
 };
 
 

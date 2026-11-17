@@ -67,6 +67,7 @@ private:
 				Window*			window;
 				BRegion			region;
 				BRegion			shadow;
+				uint8			alpha;
 			};
 
 	static	status_t			_ThreadEntry(void* data);
@@ -81,8 +82,11 @@ private:
 									const BRegion& region, const rgb_color& color);
 			void				_Copy(RenderingBuffer* target, Window* window,
 									const BRegion& region);
+			void				_Blend(RenderingBuffer* target, Window* window,
+									const BRegion& region, uint8 alpha);
 			void				_BlendEdges(RenderingBuffer* target,
-									Window* window, const BRegion& region);
+									Window* window, const BRegion& region,
+									uint8 alpha);
 			void				_DrawShadow(RenderingBuffer* target,
 									Window* window, const BRegion& region);
 
