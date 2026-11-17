@@ -369,7 +369,8 @@ rtwn_rx_common(struct rtwn_softc *sc, struct mbuf *m, void *desc)
 
 	rxs.r_flags |= IEEE80211_R_NF | IEEE80211_R_RSSI;
 	rxs.c_nf = RTWN_NOISE_FLOOR;
-	rxs.c_rssi = rssi - rxs.c_nf;
+	/* net80211 counts in half dB above the noise floor; se_rssi is 8 bits */
+	rxs.c_rssi = MIN((rssi - rxs.c_nf) * 2, 127);
 	(void) ieee80211_add_rx_params(m, &rxs);
 
 	if (ieee80211_radiotap_active(ic)) {
