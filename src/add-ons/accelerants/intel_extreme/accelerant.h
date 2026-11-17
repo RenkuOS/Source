@@ -70,6 +70,9 @@ struct accelerant_info {
 	int				device;
 	uint8			head_mode;
 	bool			is_clone;
+
+	// Screen preferences "swap displays": pipe B shows the left half in combine mode
+	bool			swap_heads;
 };
 
 
@@ -111,6 +114,8 @@ extern void setup_ring_buffer(ring_buffer &ringBuffer, const char* name);
 extern void wait_for_vblank(void);
 extern void set_frame_buffer_base(void);
 extern status_t create_mode_list(void);
+extern bool is_combine_mode(const display_mode& mode);
+extern uint16 pipe_x_offset(uint32 pipe);
 
 // memory.cpp
 extern void intel_free_memory(addr_t base);

@@ -258,6 +258,8 @@ const struct supported_device {
 
 	{0x4621, 0x46a6, INTEL_MODEL_ALDM, "Alder Lake-P GT2"},
 	{0x4621, 0x46d1, INTEL_MODEL_ALDM, "Alder Lake-N GT2"},
+	{0x461c, 0x46d1, INTEL_MODEL_ALDM, "Alder Lake-N GT2"},
+	{0x461c, 0x46d4, INTEL_MODEL_ALDM, "Alder Lake-N GT2"},
 	{0x4641, 0x46a6, INTEL_MODEL_ALDM, "Alder Lake-P GT2"},
 #if 0
 	{0x4601, 0x46a8, INTEL_MODEL_ALDM, "Alder Lake-UP3 GT2"},
@@ -683,10 +685,13 @@ static void
 set_gtt_entry(intel_info &info, uint32 offset, phys_addr_t physicalAddress)
 {
 	if (info.type->Generation() >= 8) {
-		// CHV + BXT
-		physicalAddress |= (physicalAddress >> 28) & 0x07f0;
-		// TODO: cache control?
-	} else if (info.type->Generation() >= 6) {
+		// 64-bit PTEs holding the plain address (Linux gen8_ggtt_pte_encode)
+		((volatile uint64*)info.gtt_base)[offset >> GTT_PAGE_SHIFT]
+			= physicalAddress | GTT_ENTRY_VALID;
+		return;
+	}
+
+	if (info.type->Generation() >= 6) {
 		// SandyBridge, IronLake, IvyBridge, Haswell
 		physicalAddress |= (physicalAddress >> 28) & 0x0ff0;
 		physicalAddress |= 0x02; // cache control, l3 cacheable
@@ -700,6 +705,17 @@ set_gtt_entry(intel_info &info, uint32 offset, phys_addr_t physicalAddress)
 	// TODO: this is not 64-bit safe!
 	write32(info.gtt_base + (offset >> GTT_PAGE_SHIFT),
 		(uint32)physicalAddress | GTT_ENTRY_VALID);
+}
+
+
+//! Read back the last GTT entry, so that all preceding writes have landed.
+static void
+flush_gtt_writes(intel_info &info)
+{
+	if (info.type->Generation() >= 8)
+		((volatile uint64*)info.gtt_base)[info.gtt_entries - 1];
+	else
+		read32(info.gtt_base + info.gtt_entries - 1);
 }
 
 
@@ -774,6 +790,9 @@ intel_map(intel_info &info)
 		}
 	} else if (info.type->InGroup(INTEL_GROUP_91x)) {
 		info.gtt_physical_base = get_pci_config(info.display, i915_GTT_BASE, 4);
+	} else if (info.type->Generation() >= 8) {
+		// GTTMMADR is 16 MB, the GGTT is its upper half (Linux gen6_gttadr_offset)
+		info.gtt_physical_base = addr + (8UL << 20);
 	} else {
 		// 945+?
 		info.gtt_physical_base = addr + (2UL << 20);
@@ -782,7 +801,8 @@ intel_map(intel_info &info)
 	size_t gttSize = determine_gtt_size(info);
 	size_t stolenSize = determine_gtt_stolen(info);
 
-	info.gtt_entries = gttSize / 4096;
+	// Gen8+: one 8 byte PTE per 4 KB page; older generations unchanged
+	info.gtt_entries = gttSize / (info.type->Generation() >= 8 ? 8 : 4096);
 	info.gtt_stolen_entries = stolenSize / 4096;
 
 	TRACE("GTT base %" B_PRIxPHYSADDR ", size %lu, entries %lu, stolen %lu\n",
@@ -870,15 +890,18 @@ intel_create_aperture(uint8 bus, uint8 device, uint8 function, size_t size,
 		INTEL_GRAPHICS_MEMORY_CONTROL, 2) | MEMORY_CONTROL_ENABLED;
 	set_pci_config(sInfo.bridge, INTEL_GRAPHICS_MEMORY_CONTROL, 2, gmchControl);
 
-	write32(sInfo.registers + INTEL_PAGE_TABLE_CONTROL,
-		sInfo.gtt_physical_base | PAGE_TABLE_ENABLED);
-	read32(sInfo.registers + INTEL_PAGE_TABLE_CONTROL);
+	// The Gen8+ GGTT location is fixed, Linux does not program PGTBL_CTL there
+	if (sInfo.type->Generation() < 8) {
+		write32(sInfo.registers + INTEL_PAGE_TABLE_CONTROL,
+			sInfo.gtt_physical_base | PAGE_TABLE_ENABLED);
+		read32(sInfo.registers + INTEL_PAGE_TABLE_CONTROL);
+	}
 
 	if (sInfo.scratch_page != 0) {
 		for (size_t i = sInfo.gtt_stolen_entries; i < sInfo.gtt_entries; i++) {
 			set_gtt_entry(sInfo, i << GTT_PAGE_SHIFT, sInfo.scratch_page);
 		}
-		read32(sInfo.gtt_base + sInfo.gtt_entries - 1);
+		flush_gtt_writes(sInfo);
 	}
 
 	asm("wbinvd;");
@@ -942,7 +965,7 @@ intel_unbind_page(void* aperture, uint32 offset)
 void
 intel_flush_tlbs(void* aperture)
 {
-	read32(sInfo.gtt_base + sInfo.gtt_entries - 1);
+	flush_gtt_writes(sInfo);
 	asm("wbinvd;");
 }
 

@@ -1150,7 +1150,7 @@ struct intel_brightness_legacy {
 #define PIPE_DDI_SELECT_PORT(x)			((x) << PIPE_DDI_SELECT_SHIFT)
 #define TGL_PIPE_DDI_SELECT_PORT(x)		((x) << TGL_PIPE_DDI_SELECT_SHIFT)
 #define PIPE_DDI_SELECT_MASK			(7 << PIPE_DDI_SELECT_SHIFT)
-#define TGL_PIPE_DDI_SELECT_MASK		(7 << TGL_PIPE_DDI_SELECT_SHIFT)
+#define TGL_PIPE_DDI_SELECT_MASK		(0xf << TGL_PIPE_DDI_SELECT_SHIFT)
 #define PIPE_DDI_PORT_NONE				0
 #define PIPE_DDI_PORT_B					1
 #define PIPE_DDI_PORT_C					2
@@ -1413,6 +1413,7 @@ struct intel_brightness_legacy {
 #define INTEL_I2C_IO_L					(0x503c | REGS_SOUTH_SHARED)
 #define INTEL_I2C_IO_M					(0x5040 | REGS_SOUTH_SHARED)
 #define INTEL_I2C_IO_N					(0x5044 | REGS_SOUTH_SHARED)
+#define INTEL_I2C_IO_O					(0x5048 | REGS_SOUTH_SHARED)
 // i2c hardware controller
 #define INTEL_GMBUS0					(0x5100 | REGS_SOUTH_SHARED)
 #define INTEL_GMBUS4					(0x5110 | REGS_SOUTH_SHARED)
@@ -1454,6 +1455,82 @@ struct intel_brightness_legacy {
 #define ICL_PWR_WELL_CTL_DDI1			(0x5450 | REGS_NORTH_SHARED)
 #define ICL_PWR_WELL_CTL_DDI2			(0x5454 | REGS_NORTH_SHARED)
 #define ICL_PWR_WELL_CTL_DDI4			(0x545c | REGS_NORTH_SHARED)
+// Alder Lake-P/N (display version 13) pipe power wells in HSW_PWR_WELL_CTL2, PW_A..PW_D
+#define XELPD_PW_CTL_IDX_PW_A			5
+
+// Gen12 transcoder clock and DP transport (per transcoder), flat register offsets
+#define TGL_TRANS_CLK_SEL(trans)		(0x46140 + 4 * (trans))
+#define TGL_TRANS_CLK_SEL_PORT(phy)		(((phy) + 1) << 28)
+#define TGL_TRANS_CLK_SEL_DISABLED		0
+#define TGL_DP_TP_CTL(trans)			(0x60540 + 0x1000 * (trans))
+#define TGL_DP_TP_STATUS(trans)			(0x60544 + 0x1000 * (trans))
+#define DP_TP_CTL_ENABLE				(1 << 31)
+#define DP_TP_CTL_MODE_SST				(0 << 27)
+#define DP_TP_CTL_ENHANCED_FRAME_ENABLE	(1 << 18)
+#define DP_TP_CTL_LINK_TRAIN_MASK		(7 << 8)
+#define DP_TP_CTL_LINK_TRAIN_PAT1		(0 << 8)
+#define DP_TP_CTL_LINK_TRAIN_PAT2		(1 << 8)
+#define DP_TP_CTL_LINK_TRAIN_IDLE		(2 << 8)
+#define DP_TP_CTL_LINK_TRAIN_NORMAL		(3 << 8)
+#define DP_TP_CTL_LINK_TRAIN_PAT3		(4 << 8)
+#define DP_TP_CTL_LINK_TRAIN_PAT4		(5 << 8)
+#define DP_TP_STATUS_IDLE_DONE			(1 << 25)
+#define PIPE_DDI_PVSYNC					(1 << 17)
+#define PIPE_DDI_PHSYNC					(1 << 16)
+#define INTEL_PIPE_MISC_A				0x70030
+#define INTEL_PIPE_MISC_BPC_MASK		(7 << 5)
+
+// ICL+ combo PHY A, B, C (flat offsets, Linux intel_combo_phy_regs.h)
+#define ICL_COMBOPHY_A					0x162000
+#define ICL_COMBOPHY_B					0x6c000
+#define ICL_COMBOPHY_C					0x160000
+#define ICL_PORT_CL_DW5					0x014
+#define ICL_PORT_CL_SUS_CLOCK_CONFIG	(3 << 0)
+#define ICL_PORT_CL_DW10				0x028
+#define ICL_PORT_CL_PWR_DOWN_LN_MASK	(0xf << 4)
+#define ICL_PORT_COMP_DW0				0x100
+#define ICL_PORT_COMP_INIT				(1 << 31)
+#define ICL_PORT_PCS_DW1_GRP			0x604
+#define ICL_PORT_PCS_DW1_LN(ln)			(0x804 + (ln) * 0x100)
+#define ICL_PORT_PCS_COMMON_KEEPER_EN	(1 << 26)
+#define ICL_PORT_TX_DW2_LN(ln)			(0x888 + (ln) * 0x100)
+#define ICL_PORT_TX_DW4_LN(ln)			(0x890 + (ln) * 0x100)
+#define ICL_PORT_TX_DW5_GRP				0x694
+#define ICL_PORT_TX_DW5_LN(ln)			(0x894 + (ln) * 0x100)
+#define ICL_PORT_TX_DW7_LN(ln)			(0x89c + (ln) * 0x100)
+#define ICL_PORT_TX_DW2_SWING_SEL_MASK	((1 << 15) | (7 << 11))
+#define ICL_PORT_TX_DW2_SWING_SEL(x)	((((x) >> 3) << 15) | (((x) & 7) << 11))
+#define ICL_PORT_TX_DW2_RCOMP_SCALAR(x)	((x) << 0)
+#define ICL_PORT_TX_DW2_RCOMP_MASK		(0xff << 0)
+#define ICL_PORT_TX_DW4_LOADGEN_SELECT	(1 << 31)
+#define ICL_PORT_TX_DW4_COEFF_MASK		(0x3ffff << 0)
+#define ICL_PORT_TX_DW4_COEFF(post1, post2, cursor) \
+	(((post1) << 12) | ((post2) << 6) | (cursor))
+#define ICL_PORT_TX_DW5_TRAINING_EN		(1 << 31)
+#define ICL_PORT_TX_DW5_TAP2_DISABLE	(1 << 30)
+#define ICL_PORT_TX_DW5_TAP3_DISABLE	(1 << 29)
+#define ICL_PORT_TX_DW5_CURSOR_PROGRAM	(1 << 26)
+#define ICL_PORT_TX_DW5_COEFF_POLARITY	(1 << 25)
+#define ICL_PORT_TX_DW5_SCALING_MODE_SEL(x)	((x) << 18)
+#define ICL_PORT_TX_DW5_SCALING_MODE_MASK	(7 << 18)
+#define ICL_PORT_TX_DW5_RTERM_SELECT(x)	((x) << 3)
+#define ICL_PORT_TX_DW5_RTERM_MASK		(7 << 3)
+#define ICL_PORT_TX_DW7_N_SCALAR(x)		((x) << 24)
+#define ICL_PORT_TX_DW7_N_SCALAR_MASK	(0x7f << 24)
+#define ICL_PHY_MISC_A					0x64c00
+#define ICL_PHY_MISC_DE_IO_COMP_PWR_DOWN	(1 << 23)
+
+// Gen12 display buffer (DBUF) and plane 1 watermarks, flat offsets per pipe (+ 0x1000)
+#define ADLP_MBUS_CTL					0x4438c
+#define ADLP_MBUS_JOIN					(1 << 31)
+#define ADLP_DBUF_CTL_S3				0x44300
+#define ADLP_DBUF_CTL_S4				0x44304
+#define ADLP_DBUF_POWER_STATE			(1 << 30)
+#define SKL_PLANE1_WM_0_A				0x70240
+#define SKL_PLANE1_WM_SAGV_TRANS_A		0x7025c
+#define SKL_PLANE1_WM_TRANS_A			0x70268
+#define SKL_PLANE1_BUF_CFG_A			0x7027c
+#define SKL_PLANE_WM_EN					(1 << 31)
 
 // gpu pll enable registers (confirmed skylake)
 #define INTEL_WRPLL_CTL_1_DPLL2			(0x6040 | REGS_NORTH_SHARED)

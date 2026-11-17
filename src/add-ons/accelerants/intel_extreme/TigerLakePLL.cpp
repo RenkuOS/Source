@@ -83,10 +83,11 @@
  *
  * @param[in] freq Desired symbol clock frequency in kHz
  * @param[out] Pdiv, Qdiv, Kdiv: dividers for the PLL
- * @param[out] bestdco Required DCO frequency, in the range 7998 to 10000, in MHz
+ * @param[out] bestdco Required DCO frequency, in the range 7998 to 10000 MHz, in kHz (exact, so
+ *             that a PLL the BIOS already set up for this clock compares equal)
  */
 bool
-ComputeHdmiDpll(int freq, int* Pdiv, int* Qdiv, int* Kdiv, float* bestdco)
+ComputeHdmiDpll(int freq, int* Pdiv, int* Qdiv, int* Kdiv, uint32* bestdco)
 {
 	int bestdiv = 0;
 	float dco = 0, dcocentrality = 0;
@@ -106,7 +107,8 @@ ComputeHdmiDpll(int freq, int* Pdiv, int* Qdiv, int* Kdiv, float* bestdco)
 	const float dcomax = 10000;
 	const float dcomid = (dcomin + dcomax) / 2;
 
-	float afeclk = (5 * freq) / 1000;
+	// freq is in kHz; keep the fraction (integer division lost up to 0.7% of the pixel clock)
+	float afeclk = 5.0f * freq / 1000.0f;
 
 	for (size_t i = 0; i < B_COUNT_OF(dividerlist); i++) {
 		int div = dividerlist[i];
@@ -116,7 +118,7 @@ ComputeHdmiDpll(int freq, int* Pdiv, int* Qdiv, int* Kdiv, float* bestdco)
 			if (dcocentrality < bestdcocentrality) {
 				bestdcocentrality = dcocentrality;
 				bestdiv = div;
-				*bestdco = dco;
+				*bestdco = 5 * freq * div;
 			}
 		}
 	}
@@ -181,33 +183,47 @@ ComputeHdmiDpll(int freq, int* Pdiv, int* Qdiv, int* Kdiv, float* bestdco)
  * for displays up to full HD, and a little more.
  *
  * TODO decide when we have to use one of the higher frequencies. See "DisplayPort Mode PLL values"
- * in IHD-OS-TGL-Vol 12-12.21, page 178. However, my machine uses a slightly different value than
- * what's in Intel datasheets (with Intel values, bestdco should be 8100 and not 8090). I'm not
- * sure why that is so, possibly they shift the fractional value in the CFGR0 register by 9 bits
- * instead of 10? But replicating what my BIOS does here allows me to skip the PLL
- * programming, a good idea, because it seems we don't yet know how to properly disable and
- * re-train displayport once it is switched off.
+ * in IHD-OS-TGL-Vol 12-12.21, page 178. The DCO for 2.7GHz is 8100MHz (Linux
+ * icl_dp_combo_pll_*_values). BIOSes with a 38.4MHz reference program half the DCO fraction
+ * (display WA #22010492432), which reads back as ~8090MHz; ProgramPLL() applies that WA.
  */
 bool
-ComputeDisplayPortDpll(int freq, int* Pdiv, int* Qdiv, int* Kdiv, float* bestdco)
+ComputeDisplayPortDpll(int freq, int* Pdiv, int* Qdiv, int* Kdiv, uint32* bestdco)
 {
 	*Pdiv = 3;
 	*Qdiv = 1;
 	*Kdiv = 2;
-	*bestdco = 8090;
+	*bestdco = 8100000;
 
 	return true;
 }
 
 
+//! Wait up to 5ms (Linux uses 1ms for power and 5ms for lock) for mask to be set or cleared.
+static bool
+wait_for_pll(uint32 reg, uint32 mask, bool set)
+{
+	for (int i = 0; i < 50; i++) {
+		if (((read32(reg) & mask) != 0) == set)
+			return true;
+		snooze(100);
+	}
+	return false;
+}
+
+
 /*! Actually program the computed values (from the functions above) into the PLL, and start it.
+ *
+ * If the PLL has to be reprogrammed, ddiClockOff (TGL_DPCLKA_CFGCR0 clock-off bits of the ports
+ * fed by it) is set first, so no port runs on the PLL while it changes. The caller turns the port
+ * clock back on.
  *
  * TODO: detect if the PLL is already running at the right frequency, and in that case, skip
  * reprogramming it altogether. In the case of DisplayPort, most often there is no need to change
  * anything once the clock has been initially set.
  */
 status_t
-ProgramPLL(int which, int Pdiv, int Qdiv, int Kdiv, float dco)
+ProgramPLL(int which, int Pdiv, int Qdiv, int Kdiv, uint32 dcoKhz, uint32 ddiClockOff)
 {
 	// Set up the registers for PLL access for the requested PLL
 	uint32 DPLL_CFGCR0;
@@ -242,14 +258,20 @@ ProgramPLL(int which, int Pdiv, int Qdiv, int Kdiv, float dco)
 	int ref_khz = gInfo->shared_info->pll_info.reference_frequency;
 
 	// There is an automatic divide-by-two in this case
-	if (ref_khz == 38400)
+	bool halfFraction = false;
+	if (ref_khz == 38400) {
 		ref_khz = 19200;
+		// Display WA #22010492432 (tgl, adl): program half of the DCO fraction
+		// (Linux ehl_combo_pll_div_frac_wa_needed)
+		halfFraction = gInfo->shared_info->device_type.Generation() >= 12;
+	}
 
-	float ref = ref_khz / 1000.0f;
-
-	// Compute the DCO divider integer and fractional parts
-	uint32 dco_int = (uint32)floorf(dco / ref);
-	uint32 dco_frac = (uint32)ceilf((dco / ref - dco_int) * (1 << 15));
+	// Compute the DCO divider integer and fractional parts in integer kHz like Linux
+	// (skl_wrpll_params_populate); with floats equal settings may compare unequal
+	uint32 dco_int = dcoKhz / ref_khz;
+	uint32 dco_frac = (uint64)(dcoKhz - dco_int * ref_khz) * (1 << 15) / ref_khz;
+	if (halfFraction)
+		dco_frac = (dco_frac + 1) / 2;
 
 	int32 dco_reg = dco_int | (dco_frac << TGL_DPLL_DCO_FRACTION_SHIFT);
 
@@ -302,16 +324,26 @@ ProgramPLL(int which, int Pdiv, int Qdiv, int Kdiv, float dco)
 		}
 	}
 
-	// Before we start, disable the PLL
+	// Stop clocking the ports fed by this PLL, then disable the PLL
+	if (ddiClockOff != 0) {
+		write32(TGL_DPCLKA_CFGCR0, read32(TGL_DPCLKA_CFGCR0) | ddiClockOff);
+		read32(TGL_DPCLKA_CFGCR0);
+	}
 	write32(DPLL_ENABLE, read32(DPLL_ENABLE) & ~TGL_DPLL_ENABLE);
-	while ((read32(DPLL_ENABLE) & TGL_DPLL_LOCK) != 0);
+	if (!wait_for_pll(DPLL_ENABLE, TGL_DPLL_LOCK, false)) {
+		ERROR("DPLL %d did not unlock\n", which);
+		return B_TIMED_OUT;
+	}
 	TRACE("PLL is unlocked\n");
 
 	// Enable PLL power
 	write32(DPLL_ENABLE, read32(DPLL_ENABLE) | TGL_DPLL_POWER_ENABLE);
 
 	// Wait for PLL to be powered up
-	while ((read32(DPLL_ENABLE) & TGL_DPLL_POWER_STATE) == 0);
+	if (!wait_for_pll(DPLL_ENABLE, TGL_DPLL_POWER_STATE, true)) {
+		ERROR("DPLL %d did not power up\n", which);
+		return B_TIMED_OUT;
+	}
 	TRACE("PLL is powered on\n");
 
 	// Deactivate spread spectrum
@@ -336,7 +368,11 @@ ProgramPLL(int which, int Pdiv, int Qdiv, int Kdiv, float dco)
 	TRACE("DPLL_ENABLE(%" B_PRIx32 ") = %" B_PRIx32 "\n", DPLL_ENABLE, read32(DPLL_ENABLE));
 
 	// Wait for PLL to be enabled
-	while ((read32(DPLL_ENABLE) & TGL_DPLL_LOCK) == 0);
+	if (!wait_for_pll(DPLL_ENABLE, TGL_DPLL_LOCK, true)) {
+		ERROR("DPLL %d did not lock: DCO %" B_PRIx32 ", dividers %" B_PRIx32 "\n", which,
+			dco_reg, dividers);
+		return B_TIMED_OUT;
+	}
 	TRACE("PLL is locked\n");
 
 	// TODO Display voltage frequency switching?

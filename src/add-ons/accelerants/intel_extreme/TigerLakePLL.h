@@ -11,10 +11,10 @@
 #include <SupportDefs.h>
 
 
-bool ComputeHdmiDpll(int freq, int* Pdiv, int* Qdiv, int* Kdiv, float* bestdco);
-bool ComputeDisplayPortDpll(int freq, int* Pdiv, int* Qdiv, int* Kdiv, float* bestdco);
+bool ComputeHdmiDpll(int freq, int* Pdiv, int* Qdiv, int* Kdiv, uint32* bestdco);
+bool ComputeDisplayPortDpll(int freq, int* Pdiv, int* Qdiv, int* Kdiv, uint32* bestdco);
 
-status_t ProgramPLL(int which, int Pdiv, int Qdiv, int Kdiv, float dco);
+status_t ProgramPLL(int which, int Pdiv, int Qdiv, int Kdiv, uint32 dcoKhz, uint32 ddiClockOff);
 
 
 #endif /* !TIGERLAKEPLL_H */

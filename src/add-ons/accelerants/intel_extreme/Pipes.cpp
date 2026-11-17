@@ -80,9 +80,10 @@ Pipe::Pipe(pipe_index pipeIndex)
 			fPlaneOffset = INTEL_PLANE_OFFSET * 2;
 			break;
 		case INTEL_PIPE_D:
+			// pipe D only exists on Gen12: a regular pipe, no longer the eDP transcoder
 			TRACE("Pipe D.\n");
-			fPipeOffset = 0xf000;
-			//no fPlaneOffset..
+			fPipeOffset = 0x3000;
+			fPlaneOffset = INTEL_PLANE_OFFSET * 3;
 			break;
 		default:
 			TRACE("Pipe A.\n");
@@ -147,7 +148,9 @@ Pipe::Configure(display_mode* mode)
 	write32(INTEL_DISPLAY_A_PIPE_CONTROL + fPipeOffset, pipeControl);
 	read32(INTEL_DISPLAY_A_PIPE_CONTROL + fPipeOffset);
 
-	if (gInfo->shared_info->device_type.Generation() >= 6) {
+	// Gen12: the transcoder may only run once its DDI clock is set up, the DDI code enables it
+	if (gInfo->shared_info->device_type.Generation() >= 6
+		&& gInfo->shared_info->device_type.Generation() < 12) {
 		// According to SandyBridge modesetting sequence, pipe must be enabled
 		// before PLL are configured.
 		addr_t pipeReg = INTEL_DISPLAY_A_PIPE_CONTROL + fPipeOffset;

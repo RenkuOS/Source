@@ -217,6 +217,7 @@ const struct supported_device {
 
 	{0x46a6, INTEL_MODEL_ALDM,  "Alder Lake-P GT2"},
 	{0x46d1, INTEL_MODEL_ALDM,  "Alder Lake-N"},
+	{0x46d4, INTEL_MODEL_ALDM,  "Alder Lake-N"},
 #if 0
 	{0x46a8, INTEL_MODEL_ALDM,  "Alder Lake-UP3 GT2"},
 #endif
