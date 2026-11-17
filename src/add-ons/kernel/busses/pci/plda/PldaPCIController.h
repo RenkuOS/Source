@@ -11,6 +11,7 @@
 #define _PLDA_PCI_CONTROLLER_H_
 
 
+#include <bus/FDT.h>
 #include <bus/PCI.h>
 #include <arch/generic/msi.h>
 
@@ -136,6 +137,16 @@ private:
 	inline status_t InitDriverInt(device_node* node);
 	status_t ReadResourceInfo();
 	status_t CheckJH7110Port();
+	status_t EnableJH7110Port(fdt_device_module_info* fdtModule,
+		fdt_device* fdtDev);
+	void SetupJH7110RootPort();
+	status_t WaitForJH7110Link(bigtime_t timeout);
+	void ConfigureJH7110Bridge();
+#ifdef TRACE_PLDA
+	void DumpJH7110Bus();
+#endif
+	void SetPerst(bool assert);
+	uint32 StgSysconReg(uint32 offset);
 	void SetAtrEntry(uint32 index, phys_addr_t srcAddr, phys_addr_t trslAddr,
 		uint64 windowSize, uint32 trslParam);
 	void DumpAtr();
@@ -156,6 +167,7 @@ private:
 	device_node* fNode {};
 	uint32 fDomain {};
 	uint8 fSecondaryBus = 1;
+	uint32 fPerstGpio {};
 
 	AreaDeleter fConfigArea;
 	phys_addr_t fConfigPhysBase {};
