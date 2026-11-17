@@ -111,9 +111,11 @@ arch_thread_enter_userspace(Thread *thread, addr_t entry, void *arg1,
 
 	addr_t commpageAdr = (addr_t)thread->team->commpage_address;
 	addr_t threadExitAddr;
-	ASSERT(user_memcpy(&threadExitAddr,
+	status_t error = user_memcpy(&threadExitAddr,
 		&((addr_t*)commpageAdr)[COMMPAGE_ENTRY_RISCV64_THREAD_EXIT],
-		sizeof(threadExitAddr)) >= B_OK);
+		sizeof(threadExitAddr));
+	if (error < B_OK)
+		return error;
 	threadExitAddr += commpageAdr;
 
 	disable_interrupts();
@@ -246,9 +248,11 @@ arch_setup_signal_frame(Thread *thread, struct sigaction *sa,
 	addr_t commpageAdr = (addr_t)thread->team->commpage_address;
 	// dprintf("  commpageAdr: 0x%" B_PRIxADDR "\n", commpageAdr);
 	addr_t signalHandlerAddr;
-	ASSERT(user_memcpy(&signalHandlerAddr,
+	res = user_memcpy(&signalHandlerAddr,
 		&((addr_t*)commpageAdr)[COMMPAGE_ENTRY_RISCV64_SIGNAL_HANDLER],
-		sizeof(signalHandlerAddr)) >= B_OK);
+		sizeof(signalHandlerAddr));
+	if (res < B_OK)
+		return res;
 	signalHandlerAddr += commpageAdr;
 
 	frame->ra = frame->epc;
