@@ -60,6 +60,7 @@
 #include "AutoDeleter.h"
 #include "BBitmapBuffer.h"
 #include "BitmapManager.h"
+#include "Compositor.h"
 #include "Desktop.h"
 #include "DirectWindowInfo.h"
 #include "DrawingEngine.h"
@@ -74,6 +75,7 @@
 #include "ServerPicture.h"
 #include "ServerProtocol.h"
 #include "Window.h"
+#include "WindowBuffer.h"
 #include "WorkspacesView.h"
 
 
@@ -4414,10 +4416,26 @@ Window*
 ServerWindow::MakeWindow(BRect frame, const char* name,
 	window_look look, window_feel feel, uint32 flags, uint32 workspace)
 {
-	// The non-offscreen ServerWindow uses the DrawingEngine instance from
-	// the desktop.
-	return new(std::nothrow) ::Window(frame, name, look, feel, flags,
-		workspace, this, fDesktop->HWInterface()->CreateDrawingEngine());
+	Compositor* compositor = fDesktop->GetCompositor();
+	if (compositor == NULL) {
+		// The non-offscreen ServerWindow uses the DrawingEngine instance from
+		// the desktop.
+		return new(std::nothrow) ::Window(frame, name, look, feel, flags,
+			workspace, this, fDesktop->HWInterface()->CreateDrawingEngine());
+	}
+
+	// When compositing, it draws to a buffer of its own.
+	ObjectDeleter<WindowBufferHWInterface> interface(
+		new(std::nothrow) WindowBufferHWInterface(compositor));
+	if (!interface.IsSet() || interface->Initialize() != B_OK)
+		return NULL;
+
+	::Window* window = new(std::nothrow) ::Window(frame, name, look, feel, flags,
+		workspace, this, interface->CreateDrawingEngine());
+	if (window != NULL)
+		window->SetBufferInterface(interface.Detach());
+
+	return window;
 }
 
 
@@ -4432,10 +4450,13 @@ ServerWindow::HandleDirectConnection(int32 bufferState, int32 driverState)
 	STRACE(("HandleDirectConnection(bufferState = %" B_PRId32 ", driverState = "
 		"%" B_PRId32 ")\n", bufferState, driverState));
 
+	BRegion onScreenContent;
+	fWindow->GetOnScreenContentRegion(&onScreenContent);
+
 	status_t status = fDirectWindowInfo->SetState(
 		(direct_buffer_state)bufferState, (direct_driver_state)driverState,
 		fDesktop->HWInterface()->FrontBuffer(), fWindow->Frame(),
-		fWindow->VisibleContentRegion());
+		onScreenContent);
 
 	if (status != B_OK) {
 		char errorString[256];
