@@ -696,10 +696,18 @@ StyleDecorator::_SyncOut()
 	fTopBorder = to_rect(fWindow.top_border);
 	fRightBorder = to_rect(fWindow.right_border);
 	fBottomBorder = to_rect(fWindow.bottom_border);
-	if (fBorderWidth > 0 && fTopBorder.IsValid() && fBottomBorder.IsValid())
-		fBorderRect = BRect(fTopBorder.LeftTop(), fBottomBorder.RightBottom());
-	else
-		fBorderRect = fFrame;
+	// Round all the borders the style has: a title bar can take the top
+	// border's place, and the sides can run past the top and the bottom.
+	// The compositor casts the window's shadow from this.
+	fBorderRect = fFrame;
+	if (fBorderWidth > 0) {
+		const BRect borders[] = { fLeftBorder, fTopBorder, fRightBorder,
+			fBottomBorder };
+		for (size_t i = 0; i < sizeof(borders) / sizeof(borders[0]); i++) {
+			if (borders[i].IsValid())
+				fBorderRect = fBorderRect | borders[i];
+		}
+	}
 	fTitleBarRect = to_rect(fWindow.title_bar);
 	fResizeRect = to_rect(fWindow.resize);
 
