@@ -364,7 +364,7 @@ SYSTEM_ADD_ONS_BUS_MANAGERS = [ FFilterByBuildFeatures
 	agp_gart@x86,x86_64
 	ata
 	hyperv@x86,x86_64,arm64
-	i2c@x86,x86_64
+	i2c@x86,x86_64,riscv64
 	isa@x86,x86_64
 	mmc
 	scsi
