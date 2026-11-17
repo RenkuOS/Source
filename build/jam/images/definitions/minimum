@@ -343,6 +343,7 @@ SYSTEM_ADD_ONS_DRIVERS_NET = [ FFilterByBuildFeatures
 	usb_davicom
 	usb_rndis
 	wb840
+	yt6801@x86_64
 ] ;
 
 SYSTEM_ADD_ONS_DRIVERS_POWER = [ FFilterByBuildFeatures

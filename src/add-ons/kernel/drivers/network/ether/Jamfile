@@ -36,6 +36,7 @@ HaikuSubInclude syskonnect ;
 HaikuSubInclude via_rhine ;
 HaikuSubInclude vmx ;
 HaikuSubInclude vt612x ;
+HaikuSubInclude yt6801 ;
 
 # OpenBSD drivers
 HaikuSubInclude rtl8125 ;
