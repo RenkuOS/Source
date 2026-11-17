@@ -104,6 +104,26 @@ arch_thread_dump_info(void *info)
 extern "C" void _eret_with_iframe(iframe *frame, uint64 kernelStackTop);
 
 
+/*!	Arms EL0 software step on this CPU only for a thread the debugger is
+	single-stepping, since MDSCR_EL1 is per CPU. Call it with interrupts
+	disabled on every return to EL0, so the thread cannot move to another
+	CPU before the eret.
+*/
+void
+arm64_sync_user_single_step(Thread* thread)
+{
+	bool singleStep = (atomic_get(&thread->debug_info.flags)
+		& B_THREAD_DEBUG_SINGLE_STEP) != 0;
+	arch_cpu_info& cpu = thread->cpu->arch;
+	if (cpu.user_single_step != singleStep) {
+		// only SS is ours; leave the other bits as the firmware set them
+		uint64 mdscr = READ_SPECIALREG(MDSCR_EL1) & ~DBG_MDSCR_SS;
+		WRITE_SPECIALREG(MDSCR_EL1, singleStep ? mdscr | DBG_MDSCR_SS : mdscr);
+		cpu.user_single_step = singleStep;
+	}
+}
+
+
 status_t
 arch_thread_enter_userspace(Thread *thread, addr_t entry,
 	void *arg1, void *arg2)
@@ -131,6 +151,9 @@ arch_thread_enter_userspace(Thread *thread, addr_t entry,
 
 	thread->arch_info.iframes.index = 0;
 
+	// interrupts stay disabled until the eret
+	disable_interrupts();
+	arm64_sync_user_single_step(thread);
 	_eret_with_iframe(&frame, thread->kernel_stack_top - 1);
 	return B_ERROR;
 }
@@ -257,5 +280,10 @@ arch_store_fork_frame(struct arch_fork_arg *arg)
 void
 arch_restore_fork_frame(struct arch_fork_arg *arg)
 {
-	_eret_with_iframe(&arg->frame, thread_get_current_thread()->kernel_stack_top - 1);
+	Thread* thread = thread_get_current_thread();
+
+	// interrupts stay disabled until the eret
+	disable_interrupts();
+	arm64_sync_user_single_step(thread);
+	_eret_with_iframe(&arg->frame, thread->kernel_stack_top - 1);
 }

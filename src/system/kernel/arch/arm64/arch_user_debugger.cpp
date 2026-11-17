@@ -37,18 +37,6 @@ arch_destroy_thread_debug_info(struct arch_thread_debug_info *info)
 }
 
 
-void
-arch_update_thread_single_step()
-{
-}
-
-
-void
-arch_set_debug_cpu_state(const debug_cpu_state *cpuState)
-{
-}
-
-
 static void
 get_cpu_state(iframe* frame, debug_cpu_state* cpuState)
 {
@@ -75,6 +63,39 @@ arm64_get_user_iframe(Thread* thread)
 	}
 
 	return NULL;
+}
+
+
+void
+arch_update_thread_single_step()
+{
+	Thread* thread = thread_get_current_thread();
+	if (iframe* frame = arm64_get_user_iframe(thread)) {
+		// SPSR.SS=1 lets exactly one instruction run after the eret; the
+		// matching MDSCR_EL1.SS is set on kernel exit (see InterruptScope)
+		if ((thread->debug_info.flags & B_THREAD_DEBUG_SINGLE_STEP) != 0)
+			frame->spsr |= PSR_SS;
+		else
+			frame->spsr &= ~(uint64)PSR_SS;
+	}
+}
+
+
+void
+arch_set_debug_cpu_state(const debug_cpu_state *cpuState)
+{
+	iframe* frame = arm64_get_user_iframe(thread_get_current_thread());
+	if (frame == NULL)
+		return;
+
+	memcpy(frame->x, cpuState->x, sizeof(frame->x));
+	frame->fp = cpuState->x[29];
+	frame->lr = cpuState->lr;
+	frame->sp = cpuState->sp;
+	frame->elr = cpuState->elr;
+	// only the condition flags; mode, mask and step bits stay the kernel's
+	frame->spsr = (frame->spsr & ~(uint64)PSR_FLAGS)
+		| (cpuState->spsr & PSR_FLAGS);
 }
 
 

@@ -5,6 +5,10 @@ UsePrivateHeaders shared ;
 
 SimpleTest advisory_locking_test : advisory_locking_test.cpp ;
 
+if $(TARGET_ARCH) = arm64 {
+	SimpleTest arm64_debugger_test : arm64_debugger_test.cpp ;
+}
+
 SimpleTest fibo_load_image : fibo_load_image.cpp ;
 SimpleTest fibo_fork : fibo_fork.cpp ;
 SimpleTest fibo_exec : fibo_exec.cpp ;
