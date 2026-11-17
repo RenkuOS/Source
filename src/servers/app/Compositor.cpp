@@ -32,6 +32,14 @@
 // 60 Hz, for screens where the driver can't tell
 static const bigtime_t kFrameInterval = 16667;
 
+// Drawing is shared out between at most this many threads, in about twice as
+// many bands, so that one that takes longer doesn't hold the others up. Waking
+// them up costs more than drawing less than kMinBandedPixels.
+static const int32 kMaxDrawThreads = 8;
+static const int32 kBandsPerThread = 2;
+static const int32 kMinBandHeight = 16;
+static const int64 kMinBandedPixels = 256 * 256;
+
 
 Compositor::Compositor(Desktop* desktop)
 	:
@@ -45,10 +53,33 @@ Compositor::Compositor(Desktop* desktop)
 	fNextFrame(0),
 	fUsesRetrace(false),
 	fReportedPacing(false),
+	fHelpSem(create_sem(0, "compositor help")),
+	fHelpDoneSem(create_sem(0, "compositor help done")),
+	fBandTarget(NULL),
+	fBandBackground(NULL),
+	fBandLayerCount(0),
+	fBandCount(0),
+	fNextBand(0),
 	fSceneBits(NULL),
 	fSceneWidth(0),
 	fSceneHeight(0)
 {
+	// The helpers can't build this at the same time.
+	WindowShape::ShadowProfile();
+
+	system_info info;
+	if (fHelpSem >= 0 && fHelpDoneSem >= 0 && get_system_info(&info) == B_OK) {
+		int32 count = min_c((int32)info.cpu_count, kMaxDrawThreads) - 1;
+		for (int32 i = 0; i < count; i++) {
+			thread_id helper = spawn_thread(&_HelperEntry, "compositor helper",
+				B_DISPLAY_PRIORITY, this);
+			if (helper < 0)
+				break;
+			fHelpers.push_back(helper);
+			resume_thread(helper);
+		}
+	}
+
 	fThread = spawn_thread(&_ThreadEntry, "compositor", B_DISPLAY_PRIORITY, this);
 	if (fThread >= 0)
 		resume_thread(fThread);
@@ -62,6 +93,14 @@ Compositor::~Compositor()
 	if (fThread >= 0) {
 		status_t result;
 		wait_for_thread(fThread, &result);
+	}
+
+	// Without their semaphore, the helpers quit.
+	delete_sem(fHelpSem);
+	delete_sem(fHelpDoneSem);
+	for (size_t i = 0; i < fHelpers.size(); i++) {
+		status_t result;
+		wait_for_thread(fHelpers[i], &result);
 	}
 
 	for (size_t i = 0; i < fLayers.size(); i++)
@@ -332,35 +371,38 @@ Compositor::_Composite(const BRegion& damage, BRegion* present)
 		}
 	}
 
-	// Then draw them from the back to the front.
-	_Fill(target, remaining, fDesktop->CurrentBackgroundColor());
-
-	for (size_t i = layerCount; i-- > 0;) {
+	// What each window is drawn with
+	for (size_t i = 0; i < layerCount; i++) {
 		Layer* layer = fLayers[i];
-		const WindowShape& shape = layer->window->Shape();
+		layer->opaque = layer->region;
+		layer->clear.MakeEmpty();
+		layer->edge.MakeEmpty();
 
-		if (layer->shadow.CountRects() > 0)
-			_DrawShadow(target, layer->window, layer->shadow);
-
-		BRegion opaque(layer->region);
-		if (layer->window->IsTransparent()) {
-			BRegion clear(layer->region);
-			clear.IntersectWith(&layer->window->TransparentRegion());
-			opaque.Exclude(&clear);
-			_BlendPixels(target, layer->window, clear, layer->alpha);
+		Window* window = layer->window;
+		const WindowShape& shape = window->Shape();
+		if (window->IsTransparent()) {
+			layer->clear = layer->region;
+			layer->clear.IntersectWith(&window->TransparentRegion());
+			layer->opaque.Exclude(&layer->clear);
 		}
 		if (shape.EdgeRegion().CountRects() > 0) {
-			opaque.Exclude(&shape.EdgeRegion());
+			layer->opaque.Exclude(&shape.EdgeRegion());
+			layer->edge = layer->region;
+			layer->edge.IntersectWith(&shape.EdgeRegion());
 
-			BRegion edge(layer->region);
-			edge.IntersectWith(&shape.EdgeRegion());
-			_BlendEdges(target, layer->window, edge, layer->alpha);
+			// The helpers can't build these at the same time.
+			const std::vector<WindowShape::Corner>& corners = shape.Corners();
+			for (size_t c = 0; c < corners.size(); c++)
+				WindowShape::CoverageFor(corners[c].radius);
 		}
-		if (layer->alpha == 255)
-			_Copy(target, layer->window, opaque);
-		else
-			_Blend(target, layer->window, opaque, layer->alpha);
 	}
+
+	// Then draw them from the back to the front.
+	fBandTarget = target;
+	fBandBackground = &remaining;
+	fBandColor = fDesktop->CurrentBackgroundColor();
+	fBandLayerCount = layerCount;
+	_DrawBands(screenDamage);
 
 	if (present != NULL)
 		present->Include(&screenDamage);
@@ -368,6 +410,129 @@ Compositor::_Composite(const BRegion& damage, BRegion* present)
 		interface->InvalidateRegion(screenDamage);
 
 	interface->UnlockParallelAccess();
+}
+
+
+/*static*/ status_t
+Compositor::_HelperEntry(void* data)
+{
+	((Compositor*)data)->_Help();
+	return B_OK;
+}
+
+
+void
+Compositor::_Help()
+{
+	std::vector<uint8> shadowColumns;
+
+	while (true) {
+		status_t status = acquire_sem(fHelpSem);
+		if (status == B_INTERRUPTED)
+			continue;
+		if (status != B_OK)
+			break;
+
+		_DrawNextBands(shadowColumns);
+		release_sem(fHelpDoneSem);
+	}
+}
+
+
+/*!	Draws the layers found by _Composite() where they are damaged: in bands,
+	together with the helpers, where it is worth it.
+*/
+void
+Compositor::_DrawBands(const BRegion& damage)
+{
+	BRect bounds = damage.Frame();
+	int32 height = bounds.IntegerHeight() + 1;
+
+	int64 pixels = 0;
+	int32 count = damage.CountRects();
+	for (int32 i = 0; i < count; i++) {
+		clipping_rect rect = damage.RectAtInt(i);
+		pixels += (int64)(rect.right - rect.left + 1)
+			* (rect.bottom - rect.top + 1);
+	}
+
+	int32 bandCount = min_c((int32)(fHelpers.size() + 1) * kBandsPerThread,
+		height / kMinBandHeight);
+	if (bandCount < 2 || pixels < kMinBandedPixels) {
+		_DrawBand(bounds, fShadowColumns);
+		return;
+	}
+
+	fBandBounds = bounds;
+	fBandCount = bandCount;
+	fNextBand = 0;
+
+	int32 helperCount = (int32)fHelpers.size();
+	release_sem_etc(fHelpSem, helperCount, 0);
+	_DrawNextBands(fShadowColumns);
+	acquire_sem_etc(fHelpDoneSem, helperCount, 0, 0);
+}
+
+
+void
+Compositor::_DrawNextBands(std::vector<uint8>& shadowColumns)
+{
+	const int32 top = (int32)fBandBounds.top;
+	const int32 height = fBandBounds.IntegerHeight() + 1;
+
+	while (true) {
+		int32 band = atomic_add(&fNextBand, 1);
+		if (band >= fBandCount)
+			return;
+
+		BRect rect(fBandBounds.left, top + height * band / fBandCount,
+			fBandBounds.right, top + height * (band + 1) / fBandCount - 1);
+		_DrawBand(rect, shadowColumns);
+	}
+}
+
+
+/*!	Draws the layers from the back to the front, within \a band. Each thread
+	only writes to the pixels of its own band.
+*/
+void
+Compositor::_DrawBand(const BRect& band, std::vector<uint8>& shadowColumns)
+{
+	RenderingBuffer* target = fBandTarget;
+	const BRegion clip(band);
+
+	BRegion part(clip);
+	part.IntersectWith(fBandBackground);
+	_Fill(target, part, fBandColor);
+
+	for (size_t i = fBandLayerCount; i-- > 0;) {
+		const Layer* layer = fLayers[i];
+		Window* window = layer->window;
+
+		part = clip;
+		part.IntersectWith(&layer->shadow);
+		if (part.CountRects() > 0)
+			_DrawShadow(target, window, part, shadowColumns);
+
+		part = clip;
+		part.IntersectWith(&layer->clear);
+		if (part.CountRects() > 0)
+			_BlendPixels(target, window, part, layer->alpha);
+
+		part = clip;
+		part.IntersectWith(&layer->edge);
+		if (part.CountRects() > 0)
+			_BlendEdges(target, window, part, layer->alpha);
+
+		part = clip;
+		part.IntersectWith(&layer->opaque);
+		if (part.CountRects() == 0)
+			continue;
+		if (layer->alpha == 255)
+			_Copy(target, window, part);
+		else
+			_Blend(target, window, part, layer->alpha);
+	}
 }
 
 
@@ -653,7 +818,7 @@ Compositor::_BlendEdges(RenderingBuffer* target, Window* window,
 */
 void
 Compositor::_DrawShadow(RenderingBuffer* target, Window* window,
-	const BRegion& region)
+	const BRegion& region, std::vector<uint8>& columns)
 {
 	const WindowShape& shape = window->Shape();
 	const std::vector<BRect>& rects = shape.ShadowRects();
@@ -677,11 +842,11 @@ Compositor::_DrawShadow(RenderingBuffer* target, Window* window,
 		int32 width = rect.right - rect.left + 1;
 
 		// Columns only need to be worked out once for the whole rectangle
-		fShadowColumns.resize((size_t)width * rects.size());
+		columns.resize((size_t)width * rects.size());
 		for (size_t k = 0; k < rects.size(); k++) {
 			int32 left = (int32)rects[k].left;
 			int32 right = (int32)rects[k].right;
-			uint8* column = &fShadowColumns[k * width];
+			uint8* column = &columns[k * width];
 			for (int32 x = 0; x < width; x++) {
 				int32 position = rect.left + x;
 				column[x] = EDGE(position - left) * EDGE(right - position) / 255;
@@ -696,7 +861,7 @@ Compositor::_DrawShadow(RenderingBuffer* target, Window* window,
 					int32 top = (int32)rects[k].top;
 					int32 bottom = (int32)rects[k].bottom;
 					uint32 rowValue = EDGE(y - top) * EDGE(bottom - y) / 255;
-					uint32 value = fShadowColumns[k * width + x] * rowValue;
+					uint32 value = columns[k * width + x] * rowValue;
 					if (value > alpha)
 						alpha = value;
 				}
