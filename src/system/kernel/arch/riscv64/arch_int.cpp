@@ -108,25 +108,48 @@ SetAccessedFlags(addr_t addr, bool isWrite)
 	if ((PAGE_PRESENT & pageFlags) == 0)
 		return false;
 
+	bool permitted;
+	uint32 neededFlags;
 	if (isWrite) {
-		if (
-			((B_WRITE_AREA | B_KERNEL_WRITE_AREA) & pageFlags) != 0
-			&& ((PAGE_ACCESSED | PAGE_MODIFIED) & pageFlags)
-				!= (PAGE_ACCESSED | PAGE_MODIFIED)
-		) {
-			map->SetFlags(addr, PAGE_ACCESSED | PAGE_MODIFIED);
-			return true;
-		}
+		permitted = ((B_WRITE_AREA | B_KERNEL_WRITE_AREA) & pageFlags) != 0;
+		neededFlags = PAGE_ACCESSED | PAGE_MODIFIED;
 	} else {
-		if (
-			((B_READ_AREA | B_KERNEL_READ_AREA) & pageFlags) != 0
-			&& (PAGE_ACCESSED & pageFlags) == 0
-		) {
-			map->SetFlags(addr, PAGE_ACCESSED);
-			return true;
-		}
+		permitted = ((B_READ_AREA | B_KERNEL_READ_AREA) & pageFlags) != 0;
+		neededFlags = PAGE_ACCESSED;
 	}
-	return false;
+	if (!permitted)
+		return false;
+
+	if ((neededFlags & pageFlags) != neededFlags) {
+		map->SetFlags(addr, neededFlags);
+		return true;
+	}
+
+	// The page is present, allowed and its accessed/modified flags are set:
+	// the fault came from a stale TLB entry of this CPU. SetFlags() only
+	// flushes the TLB of the CPU that set the flags, so another CPU can still
+	// hold the entry from before, without them (as Linux, retry after a local
+	// flush). The same fault again right away is a real one.
+	static struct {
+		addr_t		page;
+		bigtime_t	time;
+	} sLastSpuriousFault[SMP_MAX_CPUS];
+	int32 cpu = smp_get_current_cpu();
+	addr_t page = ROUNDDOWN(addr, B_PAGE_SIZE);
+	bigtime_t now = system_time();
+	if (sLastSpuriousFault[cpu].page == page
+		&& now - sLastSpuriousFault[cpu].time < 1000) {
+		sLastSpuriousFault[cpu].page = 0;
+		return false;
+	}
+	sLastSpuriousFault[cpu].page = page;
+	sLastSpuriousFault[cpu].time = now;
+
+	if (IS_KERNEL_ADDRESS(addr))
+		FlushTlbPage(addr);
+	else
+		FlushTlbPageAsid(addr, 0);
+	return true;
 }
 
 
