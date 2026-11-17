@@ -106,3 +106,16 @@ The partition %s is already mounted.	MainWindow		De partitie %s is al betrokken.
 Size	PartitionList		Grootte
 Creation of the partition has failed.	MainWindow		Creatie van de partitie is mislukt.
 Mount	MainWindow		Betrekken
+Disk image	MainWindow		Schijfkopie
+Register disk image…	MainWindow		Schijfkopie registreren…
+Unregister disk image	MainWindow		Registratie van schijfkopie opheffen
+Save image…	MainWindow		Kopie opslaan…
+Write image…	MainWindow		Kopie schrijven…
+%appname%: Register disk image	MainWindow		%appname%: Schijfkopie registreren
+%appname%: Select disk image	MainWindow		%appname%: Schijfkopie kiezen
+%appname%: Save disk image	MainWindow		%appname%: Schijfkopie opslaan
+Disk image has been added.	MainWindow		Schijfkopie is toegevoegd.
+Disk image has been removed.	MainWindow		Schijfkopie is verwijderd.
+Creating disk image	MainWindow		Schijfkopie aanmaken
+Disk image successfully created.	MainWindow		Schijfkopie is aangemaakt.
+Disk image successfully written to the target.	MainWindow		Schijfkopie is naar het doel geschreven.

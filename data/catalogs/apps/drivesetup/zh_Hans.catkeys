@@ -126,3 +126,8 @@ The partition %s is already mounted.	MainWindow		分区 %s 已经挂载。
 Size	PartitionList		大小
 Creation of the partition has failed.	MainWindow		分区创建失败。
 Mount	MainWindow		挂载
+Disk image	MainWindow		磁盘映像
+Register disk image…	MainWindow		注册磁盘映像…
+Unregister disk image	MainWindow		注销磁盘映像
+%appname%: Register disk image	MainWindow		%appname%: 注册磁盘映像
+Disk image has been added.	MainWindow		已添加磁盘映像。

@@ -140,3 +140,5 @@ The partition %s is already mounted.	MainWindow		分割區 %s 已安裝。
 Size	PartitionList		大小
 Creation of the partition has failed.	MainWindow		建立分區失敗。
 Mount	MainWindow		挂載
+Write image…	MainWindow		寫入映像…
+%appname%: Register disk image	MainWindow		%appname%: 註冊磁碟映像

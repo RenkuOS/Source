@@ -101,3 +101,16 @@ The partition %s is already mounted.	MainWindow		Partisi %s sudah terpasang.
 Size	PartitionList		Ukuran
 Creation of the partition has failed.	MainWindow		Penciptaan partisi telah gagal.
 Mount	MainWindow		Pasang
+Disk image	MainWindow		Citra diska
+Register disk image…	MainWindow		Daftarkan citra diska…
+Unregister disk image	MainWindow		Batalkan pendaftaran citra diska
+Save image…	MainWindow		Simpan citra…
+Write image…	MainWindow		Tulis citra…
+%appname%: Register disk image	MainWindow		%appname%: Daftarkan citra diska
+%appname%: Select disk image	MainWindow		%appname%: Pilih citra diska
+%appname%: Save disk image	MainWindow		%appname%: Simpan citra diska
+Disk image has been added.	MainWindow		Citra diska telah ditambahkan.
+Disk image has been removed.	MainWindow		Citra diska telah dihapus.
+Creating disk image	MainWindow		Membuat citra diska
+Disk image successfully created.	MainWindow		Citra diska berhasil dibuat.
+Disk image successfully written to the target.	MainWindow		Citra diska berhasil ditulis ke tujuan.

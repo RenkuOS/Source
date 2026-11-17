@@ -105,3 +105,16 @@ The partition %s is already mounted.	MainWindow		La subdisko %s jam estas surmet
 Size	PartitionList		Grandeco
 Creation of the partition has failed.	MainWindow		Kreado de la subdisko malsukcesis.
 Mount	MainWindow		Surmeti
+Disk image	MainWindow		Diskobildo
+Register disk image…	MainWindow		Registri diskobildon…
+Unregister disk image	MainWindow		Malregistri diskobildon
+Save image…	MainWindow		Konservi bildon…
+Write image…	MainWindow		Skribi bildon…
+%appname%: Register disk image	MainWindow		%appname%: Registri diskobildon
+%appname%: Select disk image	MainWindow		%appname%: Elekti diskobildon
+%appname%: Save disk image	MainWindow		%appname%: Konservi diskobildon
+Disk image has been added.	MainWindow		La diskobildo estis aldonita.
+Disk image has been removed.	MainWindow		La diskobildo estis forigita.
+Creating disk image	MainWindow		Kreado de diskobildo
+Disk image successfully created.	MainWindow		La diskobildo estis sukcese kreita.
+Disk image successfully written to the target.	MainWindow		La diskobildo estis sukcese skribita al la celo.

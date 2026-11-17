@@ -83,3 +83,16 @@ The partition %s is already mounted.	MainWindow		Oblasť %s je už pripojená.
 Size	PartitionList		Veľkosť
 Creation of the partition has failed.	MainWindow		Vytvorenie diskovej oblasti zlyhalo.
 Mount	MainWindow		Pripojiť
+Disk image	MainWindow		Obraz disku
+Register disk image…	MainWindow		Zaregistrovať obraz disku…
+Unregister disk image	MainWindow		Zrušiť registráciu obrazu disku
+Save image…	MainWindow		Uložiť obraz…
+Write image…	MainWindow		Zapísať obraz…
+%appname%: Register disk image	MainWindow		%appname%: Zaregistrovať obraz disku
+%appname%: Select disk image	MainWindow		%appname%: Vybrať obraz disku
+%appname%: Save disk image	MainWindow		%appname%: Uložiť obraz disku
+Disk image has been added.	MainWindow		Obraz disku bol pridaný.
+Disk image has been removed.	MainWindow		Obraz disku bol odstránený.
+Creating disk image	MainWindow		Vytvára sa obraz disku
+Disk image successfully created.	MainWindow		Obraz disku bol úspešne vytvorený.
+Disk image successfully written to the target.	MainWindow		Obraz disku bol úspešne zapísaný do cieľa.
