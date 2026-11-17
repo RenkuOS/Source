@@ -30,6 +30,14 @@
  */
 
 /*
+ * Modified for Haiku / Motorcomm YT6801: removed the FDT members and the
+ * eqos_driver class declaration; added mac_base, eaddr and phy_addr, which
+ * the bus attachment fills in; added the RX buffer bus address and an RX
+ * spare DMA map for buffer recycling and replacement; declared the core
+ * entry points that the attachment calls directly.
+ */
+
+/*
  * DesignWare Ethernet Quality-of-Service controller
  */
 
@@ -75,10 +83,9 @@ struct eqos_softc {
 	device_t		dev;
 	struct resource 	*res[EQOS_RES_COUNT];
 	void			*irq_handle;
-#ifdef FDT
-	struct syscon		*grf;
-	int			grf_offset;
-#endif
+	bus_size_t		mac_base;
+	uint8_t			eaddr[ETHER_ADDR_LEN];
+	int			phy_addr;
 	uint32_t		csr_clock;
 	uint32_t		csr_clock_range;
 	uint32_t		hw_feature[4];
@@ -101,6 +108,10 @@ struct eqos_softc {
 	struct eqos_ring	rx;
 };
 
-DECLARE_CLASS(eqos_driver);
+int	eqos_attach(device_t dev);
+int	eqos_detach(device_t dev);
+int	eqos_miibus_readreg(device_t dev, int phy, int reg);
+int	eqos_miibus_writereg(device_t dev, int phy, int reg, int val);
+void	eqos_miibus_statchg(device_t dev);
 
 #endif

@@ -30,10 +30,36 @@
  */
 
 /*
- * DesignWare Ethernet Quality-of-Service controller
+ * Modified for Haiku / Motorcomm YT6801:
+ * - MMIO accesses are relative to sc->mac_base (the MAC sits at BAR0+0x2000);
+ * - bus resources, tuning defaults, the MAC address (sc->eaddr) and the PHY
+ *   address (sc->phy_addr) come from the bus attachment, which also owns the
+ *   driver_t and calls eqos_attach()/eqos_detach() directly (no kobj
+ *   if_eqos_if interface, no FDT);
+ * - MAC version and hardware features are always logged; unknown versions
+ *   >= 0x40 are accepted with a warning;
+ * - the multicast hash honours the HW_FEATURE1 hash table size;
+ * - SIOCSIFMTU only accepts ETHERMIN..ETHERMTU; jumbo reception (JE) is no
+ *   longer enabled;
+ * - RBSZ is EQOS_RX_BUF_SIZE, which fits the ETHER_ALIGN-shifted cluster;
+ * - eqos_init() returns both rings to a known state (TX reclaimed and
+ *   cleared, RX re-armed, indices 0, TX tail = ring base) before
+ *   programming them, as Haiku stops and re-inits on every open;
+ * - RX uses replace-first refill with a spare DMA map (the old buffer is
+ *   recycled when no replacement can be had) and drops error, context and
+ *   multi-descriptor frames;
+ * - SIOCSIFFLAGS reprograms the RX filter on any flag change while running;
+ * - attach refuses a device whose MAC_VERSION reads all ones;
+ * - AXI burst/outstanding-request settings for the YT6801;
+ * - detach does not recurse on the softc lock, does not rely on
+ *   device_is_attached() (Haiku clears it before calling detach), unloads
+ *   DMA maps before destroying them and skips empty mbuf slots;
+ * - %6D replaced, bpf_mtap_if() replaced by BPF_MTAP().
  */
 
-#include "opt_platform.h"
+/*
+ * DesignWare Ethernet Quality-of-Service controller
+ */
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -61,14 +87,6 @@
 #include <dev/mii/miivar.h>
 
 #include "miibus_if.h"
-#include "if_eqos_if.h"
-
-#ifdef FDT
-#include <dev/ofw/openfirm.h>
-#include <dev/ofw/ofw_bus.h>
-#include <dev/ofw/ofw_bus_subr.h>
-#include <dev/clk/clk.h>
-#endif
 
 #include <dev/eqos/if_eqos_reg.h>
 #include <dev/eqos/if_eqos_var.h>
@@ -94,20 +112,16 @@
 #define	EQOS_UNLOCK(sc)		mtx_unlock(&(sc)->lock)
 #define	EQOS_ASSERT_LOCKED(sc)	mtx_assert(&(sc)->lock, MA_OWNED)
 
-#define	RD4(sc, o)		bus_read_4(sc->res[EQOS_RES_MEM], (o))
-#define	WR4(sc, o, v)		bus_write_4(sc->res[EQOS_RES_MEM], (o), (v))
+#define	RD4(sc, o)		\
+	bus_read_4(sc->res[EQOS_RES_MEM], sc->mac_base + (o))
+#define	WR4(sc, o, v)		\
+	bus_write_4(sc->res[EQOS_RES_MEM], sc->mac_base + (o), (v))
 
-
-static struct resource_spec eqos_spec[] = {
-	{ SYS_RES_MEMORY,	0,	RF_ACTIVE },
-	{ SYS_RES_IRQ,		0,	RF_ACTIVE },
-	{ -1, 0 }
-};
 
 static void eqos_tick(void *softc);
 
 
-static int
+int
 eqos_miibus_readreg(device_t dev, int phy, int reg)
 {
 	struct eqos_softc *sc = device_get_softc(dev);
@@ -134,12 +148,13 @@ eqos_miibus_readreg(device_t dev, int phy, int reg)
 	if (!retry) {
 		device_printf(dev, "phy read timeout, phy=%d reg=%d\n",
 		    phy, reg);
-		return (ETIMEDOUT);
+		/* Reads return data: 0xffff is what mii(4) treats as no PHY */
+		return (0xffff);
 	}
 	return (val);
 }
 
-static int
+int
 eqos_miibus_writereg(device_t dev, int phy, int reg, int val)
 {
 	struct eqos_softc *sc = device_get_softc(dev);
@@ -171,7 +186,7 @@ eqos_miibus_writereg(device_t dev, int phy, int reg, int val)
 	return (0);
 }
 
-static void
+void
 eqos_miibus_statchg(device_t dev)
 {
 	struct eqos_softc *sc = device_get_softc(dev);
@@ -217,8 +232,6 @@ eqos_miibus_statchg(device_t dev)
 		reg &= ~GMAC_MAC_CONFIGURATION_DM;
 
 	WR4(sc, GMAC_MAC_CONFIGURATION, reg);
-
-	IF_EQOS_SET_SPEED(dev, IFM_SUBTYPE(mii->mii_media_active));
 
 	WR4(sc, GMAC_MAC_1US_TIC_COUNTER, (sc->csr_clock / 1000000) - 1);
 }
@@ -613,7 +626,7 @@ eqos_start_locked(if_t ifp)
 			if_setdrvflagbits(ifp, IFF_DRV_OACTIVE, 0);
 			break;
 		}
-		bpf_mtap_if(ifp, m);
+		BPF_MTAP(ifp, m);
 		pending++;
 	}
 
@@ -947,27 +960,6 @@ eqos_ioctl(if_t ifp, u_long cmd, caddr_t data)
 }
 
 static void
-eqos_get_eaddr(struct eqos_softc *sc, uint8_t *eaddr)
-{
-	uint32_t maclo, machi;
-
-	maclo = htobe32(RD4(sc, GMAC_MAC_ADDRESS0_LOW));
-	machi = htobe16(RD4(sc, GMAC_MAC_ADDRESS0_HIGH) & 0xFFFF);
-
-	/* if no valid MAC address generate random */
-	if (maclo == 0xffffffff && machi == 0xffff) {
-		maclo = 0xf2 | (arc4random() & 0xffff0000);
-		machi = arc4random() & 0x0000ffff;
-	}
-	eaddr[0] = maclo & 0xff;
-	eaddr[1] = (maclo >> 8) & 0xff;
-	eaddr[2] = (maclo >> 16) & 0xff;
-	eaddr[3] = (maclo >> 24) & 0xff;
-	eaddr[4] = machi & 0xff;
-	eaddr[5] = (machi >> 8) & 0xff;
-}
-
-static void
 eqos_axi_configure(struct eqos_softc *sc)
 {
 	uint32_t val;
@@ -976,13 +968,14 @@ eqos_axi_configure(struct eqos_softc *sc)
 
 	/* Max Write Outstanding Req Limit */
 	val &= ~GMAC_DMA_SYSBUS_MODE_WR_OSR_LMT_MASK;
-	val |= 0x03 << GMAC_DMA_SYSBUS_MODE_WR_OSR_LMT_SHIFT;
+	val |= 0x01 << GMAC_DMA_SYSBUS_MODE_WR_OSR_LMT_SHIFT;
 
 	/* Max Read Outstanding Req Limit */
 	val &= ~GMAC_DMA_SYSBUS_MODE_RD_OSR_LMT_MASK;
-	val |= 0x07 << GMAC_DMA_SYSBUS_MODE_RD_OSR_LMT_SHIFT;
+	val |= 0x01 << GMAC_DMA_SYSBUS_MODE_RD_OSR_LMT_SHIFT;
 
 	/* Allowed Burst Length's */
+	val |= GMAC_DMA_SYSBUS_MODE_BLEN32;
 	val |= GMAC_DMA_SYSBUS_MODE_BLEN16;
 	val |= GMAC_DMA_SYSBUS_MODE_BLEN8;
 	val |= GMAC_DMA_SYSBUS_MODE_BLEN4;
@@ -1134,6 +1127,8 @@ eqos_setup_dma(struct eqos_softc *sc)
 			return (ENOMEM);
 		}
 		if ((error = eqos_setup_rxbuf(sc, i, m))) {
+			/* eqos_setup_rxbuf() does not keep m on failure */
+			m_freem(m);
 			device_printf(sc->dev, "cannot create RX buffer\n");
 			return (error);
 		}
@@ -1145,64 +1140,57 @@ eqos_setup_dma(struct eqos_softc *sc)
 	return (0);
 }
 
-static int
+int
 eqos_attach(device_t dev)
 {
 	struct eqos_softc *sc = device_get_softc(dev);
 	if_t ifp;
 	uint32_t ver;
-	uint8_t eaddr[ETHER_ADDR_LEN];
 	u_int userver, snpsver;
 	int error;
 	int n;
 
-	/* default values */
-	sc->thresh_dma_mode = false;
-	sc->pblx8 = true;
-	sc->txpbl = 0;
-	sc->rxpbl = 0;
-	sc->ttc = 0x10;
-	sc->rtc = 0;
+	/*
+	 * Resources, sc->dev, tuning values and sc->eaddr are set up by the
+	 * bus attachment.  The lock is initialised first so that
+	 * eqos_detach() can always be used to unwind a failed attach.
+	 */
+	mtx_init(&sc->lock, "eqos lock", MTX_NETWORK_LOCK, MTX_DEF);
+	callout_init_mtx(&sc->callout, &sc->lock, 0);
 
-	/* setup resources */
-	if (bus_alloc_resources(dev, eqos_spec, sc->res)) {
-		device_printf(dev, "Could not allocate resources\n");
-		bus_release_resources(dev, eqos_spec, sc->res);
+	ver  = RD4(sc, GMAC_MAC_VERSION);
+	if (ver == 0xffffffff) {
+		device_printf(dev, "device not responding\n");
 		return (ENXIO);
 	}
-
-	if ((error = IF_EQOS_INIT(dev)))
-		return (error);
-
-	sc->dev = dev;
-	ver  = RD4(sc, GMAC_MAC_VERSION);
 	userver = (ver & GMAC_MAC_VERSION_USERVER_MASK) >>
 	    GMAC_MAC_VERSION_USERVER_SHIFT;
 	snpsver = ver & GMAC_MAC_VERSION_SNPSVER_MASK;
 
-	if (snpsver != 0x51 && snpsver != 0x52) {
+	device_printf(dev, "DesignWare EQOS ver 0x%02x (0x%02x)\n",
+	    snpsver, userver);
+
+	if (snpsver < 0x40) {
 		device_printf(dev, "EQOS version 0x%02x not supported\n",
 		    snpsver);
 		return (ENXIO);
 	}
+	if (snpsver != 0x51 && snpsver != 0x52)
+		device_printf(dev, "EQOS version 0x%02x untested, "
+		    "continuing\n", snpsver);
 
 	for (n = 0; n < 4; n++)
 		sc->hw_feature[n] = RD4(sc, GMAC_MAC_HW_FEATURE(n));
 
-	if (bootverbose) {
-		device_printf(dev, "DesignWare EQOS ver 0x%02x (0x%02x)\n",
-		    snpsver, userver);
-		device_printf(dev, "hw features %08x %08x %08x %08x\n",
-		    sc->hw_feature[0], sc->hw_feature[1],
-		    sc->hw_feature[2], sc->hw_feature[3]);
-	}
+	device_printf(dev, "hw features %08x %08x %08x %08x\n",
+	    sc->hw_feature[0], sc->hw_feature[1],
+	    sc->hw_feature[2], sc->hw_feature[3]);
 
-	mtx_init(&sc->lock, "eqos lock", MTX_NETWORK_LOCK, MTX_DEF);
-	callout_init_mtx(&sc->callout, &sc->lock, 0);
-
-	eqos_get_eaddr(sc, eaddr);
 	if (bootverbose)
-		device_printf(sc->dev, "Ethernet address %6D\n", eaddr, ":");
+		device_printf(sc->dev,
+		    "Ethernet address %02x:%02x:%02x:%02x:%02x:%02x\n",
+		    sc->eaddr[0], sc->eaddr[1], sc->eaddr[2],
+		    sc->eaddr[3], sc->eaddr[4], sc->eaddr[5]);
 
 	/* Soft reset EMAC core */
 	if ((error = eqos_reset(sc))) {
@@ -1223,7 +1211,6 @@ eqos_attach(device_t dev)
 	if ((bus_setup_intr(dev, sc->res[EQOS_RES_IRQ0], EQOS_INTR_FLAGS,
 	    NULL, eqos_intr, sc, &sc->irq_handle))) {
 		device_printf(dev, "unable to setup 1st interrupt\n");
-		bus_release_resources(dev, eqos_spec, sc->res);
 		return (ENXIO);
 	}
 
@@ -1242,31 +1229,41 @@ eqos_attach(device_t dev)
 
 	/* Attach MII driver */
 	if ((error = mii_attach(sc->dev, &sc->miibus, ifp, eqos_media_change,
-	    eqos_media_status, BMSR_DEFCAPMASK, MII_PHY_ANY,
+	    eqos_media_status, BMSR_DEFCAPMASK, sc->phy_addr,
 	    MII_OFFSET_ANY, 0))) {
 		device_printf(sc->dev, "PHY attach failed\n");
 		return (ENXIO);
 	}
 
 	/* Attach ethernet interface */
-	ether_ifattach(ifp, eaddr);
+	ether_ifattach(ifp, sc->eaddr);
 
 	return (0);
 }
 
-static int
+/*
+ * Also used by the bus attachment to unwind a failed eqos_attach().
+ * Bus resources (memory, IRQ, MSI) are released by the attachment.
+ */
+int
 eqos_detach(device_t dev)
 {
 	struct eqos_softc *sc = device_get_softc(dev);
-	int i;
+	int i, rxfreed = 0, txfreed = 0;
 
-	if (device_is_attached(dev)) {
-		EQOS_LOCK(sc);
+	/*
+	 * Haiku clears DEVICE_ATTACHED before calling device_detach, so
+	 * device_is_attached() is always false here.  sc->miibus is only
+	 * non-NULL once mii_attach() succeeded, and ether_ifattach()
+	 * always follows it.  eqos_stop() takes the softc lock itself.
+	 */
+	if (sc->miibus != NULL) {
 		eqos_stop(sc);
-		EQOS_UNLOCK(sc);
 		if_setflagbits(sc->ifp, 0, IFF_UP);
 		ether_ifdetach(sc->ifp);
 	}
+	/* The callout thread may still be about to lock sc->lock */
+	callout_drain(&sc->callout);
 
 	bus_generic_detach(dev);
 
@@ -1277,10 +1274,9 @@ eqos_detach(device_t dev)
 	if (sc->ifp)
 		if_free(sc->ifp);
 
-	bus_release_resources(dev, eqos_spec, sc->res);
-
 	if (sc->tx.desc_tag) {
-		if (sc->tx.desc_map) {
+		/* desc_map is stale if bus_dmamem_alloc() failed */
+		if (sc->tx.desc_ring != NULL) {
 			bus_dmamap_unload(sc->tx.desc_tag, sc->tx.desc_map);
 			bus_dmamem_free(sc->tx.desc_tag, sc->tx.desc_ring,
 			    sc->tx.desc_map);
@@ -1289,7 +1285,12 @@ eqos_detach(device_t dev)
 	}
 	if (sc->tx.buf_tag) {
 		for (i = 0; i < TX_DESC_COUNT; i++) {
-			m_free(sc->tx.buf_map[i].mbuf);
+			bus_dmamap_unload(sc->tx.buf_tag,
+			    sc->tx.buf_map[i].map);
+			if (sc->tx.buf_map[i].mbuf != NULL) {
+				m_freem(sc->tx.buf_map[i].mbuf);
+				txfreed++;
+			}
 			bus_dmamap_destroy(sc->tx.buf_tag,
 			    sc->tx.buf_map[i].map);
 		}
@@ -1297,7 +1298,7 @@ eqos_detach(device_t dev)
 	}
 
 	if (sc->rx.desc_tag) {
-		if (sc->rx.desc_map) {
+		if (sc->rx.desc_ring != NULL) {
 			bus_dmamap_unload(sc->rx.desc_tag, sc->rx.desc_map);
 			bus_dmamem_free(sc->rx.desc_tag, sc->rx.desc_ring,
 			    sc->rx.desc_map);
@@ -1306,36 +1307,22 @@ eqos_detach(device_t dev)
 	}
 	if (sc->rx.buf_tag) {
 		for (i = 0; i < RX_DESC_COUNT; i++) {
-			m_free(sc->rx.buf_map[i].mbuf);
+			bus_dmamap_unload(sc->rx.buf_tag,
+			    sc->rx.buf_map[i].map);
+			if (sc->rx.buf_map[i].mbuf != NULL) {
+				m_freem(sc->rx.buf_map[i].mbuf);
+				rxfreed++;
+			}
 			bus_dmamap_destroy(sc->rx.buf_tag,
 			    sc->rx.buf_map[i].map);
 		}
 		bus_dma_tag_destroy(sc->rx.buf_tag);
 	}
+	/* Leak ledger: ring mbufs freed here (RX should be the full ring) */
+	device_printf(dev, "detach: freed %d/%d RX and %d TX ring mbufs\n",
+	    rxfreed, RX_DESC_COUNT, txfreed);
 
 	mtx_destroy(&sc->lock);
 
 	return (0);
 }
-
-
-static device_method_t eqos_methods[] = {
-	/* Device Interface */
-	DEVMETHOD(device_attach,	eqos_attach),
-	DEVMETHOD(device_detach,	eqos_detach),
-
-	/* MII Interface */
-	DEVMETHOD(miibus_readreg,	eqos_miibus_readreg),
-	DEVMETHOD(miibus_writereg,	eqos_miibus_writereg),
-	DEVMETHOD(miibus_statchg,	eqos_miibus_statchg),
-
-	DEVMETHOD_END
-};
-
-driver_t eqos_driver = {
-	"eqos",
-	eqos_methods,
-	sizeof(struct eqos_softc),
-};
-
-DRIVER_MODULE(miibus, eqos, miibus_driver, 0, 0);

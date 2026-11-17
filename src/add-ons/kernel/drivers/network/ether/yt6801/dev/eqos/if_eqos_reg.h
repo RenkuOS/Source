@@ -29,6 +29,12 @@
  */
 
 /*
+ * Modified for Haiku / Motorcomm YT6801: added GMAC_MAC_HASH_TABLE_REG(n),
+ * the HW_FEATURE1 HASHTBLSZ field, GMAC_DMA_SYSBUS_MODE_BLEN32 and the RX
+ * write-back bits ES, LD, FD and CTXT.
+ */
+
+/*
  * DesignWare Ethernet Quality-of-Service controller
  */
 
@@ -210,6 +216,7 @@
 #define	 GMAC_DMA_SYSBUS_MODE_RD_OSR_LMT_MASK	(0x7U << GMAC_DMA_SYSBUS_MODE_RD_OSR_LMT_SHIFT)
 #define	 GMAC_DMA_SYSBUS_MODE_MB		(1U << 14)
 #define	 GMAC_DMA_SYSBUS_MODE_EAME		(1U << 11)
+#define	 GMAC_DMA_SYSBUS_MODE_BLEN32		(1U << 4)
 #define	 GMAC_DMA_SYSBUS_MODE_BLEN16		(1U << 3)
 #define	 GMAC_DMA_SYSBUS_MODE_BLEN8		(1U << 2)
 #define	 GMAC_DMA_SYSBUS_MODE_BLEN4		(1U << 1)
