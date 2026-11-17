@@ -151,9 +151,14 @@ VMSAv8TranslationMap::~VMSAv8TranslationMap()
 		}
 	}
 
-	vm_page_reservation reservation = {};
-	FreeTable(fPageTable, 0, fInitialLevel, &reservation);
-	vm_page_unreserve_pages(&reservation);
+	// A user map gets its top-level table on the first Map() call, so one
+	// destroyed before anything was mapped -- fork_team() failing for lack
+	// of memory -- has none, and FreeTable(0) would walk physical page 0.
+	if (fPageTable != 0) {
+		vm_page_reservation reservation = {};
+		FreeTable(fPageTable, 0, fInitialLevel, &reservation);
+		vm_page_unreserve_pages(&reservation);
+	}
 }
 
 
