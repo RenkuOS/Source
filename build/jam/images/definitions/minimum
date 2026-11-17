@@ -352,6 +352,7 @@ SYSTEM_ADD_ONS_DRIVERS_POWER = [ FFilterByBuildFeatures
 		amd_thermal
 		pch_thermal
 	}@ # x86,x86_64
+	jh7110_thermal@riscv64
 ] ;
 
 SYSTEM_ADD_ONS_DRIVERS_SENSOR = [ FFilterByBuildFeatures
