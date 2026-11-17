@@ -23,6 +23,8 @@
 
 #include <new>
 
+#include "intel_gtt.h"
+
 
 #define TRACE_INTEL
 #ifdef TRACE_INTEL
@@ -257,6 +259,7 @@ const struct supported_device {
 	{0x9a26, 0x9a68, INTEL_MODEL_TGLM, "TigerLake-LP GT1"},
 
 	{0x4621, 0x46a6, INTEL_MODEL_ALDM, "Alder Lake-P GT2"},
+	{0x461c, 0x46d1, INTEL_MODEL_ALDM, "Alder Lake-N"},
 	{0x4621, 0x46d1, INTEL_MODEL_ALDM, "Alder Lake-N GT2"},
 	{0x4641, 0x46a6, INTEL_MODEL_ALDM, "Alder Lake-P GT2"},
 #if 0
@@ -338,6 +341,16 @@ static size_t
 determine_gtt_stolen(intel_info &info)
 {
 	uint16 memoryConfig = gtt_memory_config(info);
+	if (info.type->InGroup(INTEL_GROUP_ALD)) {
+		uint64_t stolenSize;
+		if (!intel_alderlake_stolen_size(memoryConfig, &stolenSize)
+			|| stolenSize == 0) {
+			return SIZE_MAX;
+		}
+		// Preserve the entire firmware mapping, including its last page.
+		return stolenSize;
+	}
+
 	size_t memorySize = 1 << 20; // 1 MB
 
 	if (info.type->InGroup(INTEL_GROUP_83x)) {
@@ -679,10 +692,14 @@ determine_gtt_size(intel_info &info)
 }
 
 
-static void
+static status_t
 set_gtt_entry(intel_info &info, uint32 offset, phys_addr_t physicalAddress)
 {
-	if (info.type->Generation() >= 8) {
+	if (info.type->InGroup(INTEL_GROUP_ALD)) {
+		return intel_gen8_gtt_write((volatile uint64_t*)info.gtt_base,
+			info.gtt_entries, info.aperture_size, info.aperture_stolen_size,
+			offset, physicalAddress) ? B_OK : B_BAD_VALUE;
+	} else if (info.type->Generation() >= 8) {
 		// CHV + BXT
 		physicalAddress |= (physicalAddress >> 28) & 0x07f0;
 		// TODO: cache control?
@@ -700,6 +717,17 @@ set_gtt_entry(intel_info &info, uint32 offset, phys_addr_t physicalAddress)
 	// TODO: this is not 64-bit safe!
 	write32(info.gtt_base + (offset >> GTT_PAGE_SHIFT),
 		(uint32)physicalAddress | GTT_ENTRY_VALID);
+	return B_OK;
+}
+
+
+static void
+read_gtt_entry(intel_info &info, size_t index)
+{
+	if (info.type->InGroup(INTEL_GROUP_ALD))
+		(void)((volatile uint64_t*)info.gtt_base)[index];
+	else
+		(void)read32(info.gtt_base + index);
 }
 
 
@@ -717,6 +745,9 @@ intel_unmap(intel_info &info)
 static status_t
 intel_map(intel_info &info)
 {
+	if (info.type->InGroup(INTEL_GROUP_ALD) && sizeof(addr_t) != 8)
+		return B_NOT_SUPPORTED;
+
 	int fbIndex = 0;
 	int mmioIndex = 1;
 	if (info.type->Generation() >= 3) {
@@ -734,8 +765,12 @@ intel_map(intel_info &info)
 	}
 
 	AreaKeeper mmioMapper;
+	uint32 registerSpec = B_ANY_KERNEL_ADDRESS;
+	if (info.type->InGroup(INTEL_GROUP_ALD))
+		registerSpec |= B_UNCACHED_MEMORY;
 	info.registers_area = mmioMapper.Map("intel GMCH mmio", addr, barSize,
-		B_ANY_KERNEL_ADDRESS, B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, (void**)&info.registers);
+		registerSpec, B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA,
+		(void**)&info.registers);
 
 	if (mmioMapper.InitCheck() < B_OK) {
 		ERROR("could not map memory I/O!\n");
@@ -761,8 +796,22 @@ intel_map(intel_info &info)
 	if (get_memory_map(scratchAddress, B_PAGE_SIZE, &entry, 1) != B_OK)
 		return B_ERROR;
 
-	// TODO: Review these
-	if (info.type->InFamily(INTEL_FAMILY_8xx)) {
+	size_t gttSize = determine_gtt_size(info);
+	size_t stolenSize = determine_gtt_stolen(info);
+	if (info.type->InGroup(INTEL_GROUP_ALD) && stolenSize == SIZE_MAX) {
+		ERROR("unsupported Alder Lake stolen-memory configuration\n");
+		return B_BAD_VALUE;
+	}
+
+	// TODO: Review the pre-Gen8 layouts.
+	if (info.type->Generation() >= 8) {
+		uint64_t gttBase;
+		if (!intel_gen8_gtt_base(addr, barSize, gttSize, &gttBase)) {
+			ERROR("invalid Gen8+ GTT range in MMIO BAR\n");
+			return B_BAD_VALUE;
+		}
+		info.gtt_physical_base = gttBase;
+	} else if (info.type->InFamily(INTEL_FAMILY_8xx)) {
 		info.gtt_physical_base = read32(info.registers
 			+ INTEL_PAGE_TABLE_CONTROL) & ~PAGE_TABLE_ENABLED;
 		if (info.gtt_physical_base == 0) {
@@ -779,10 +828,8 @@ intel_map(intel_info &info)
 		info.gtt_physical_base = addr + (2UL << 20);
 	}
 
-	size_t gttSize = determine_gtt_size(info);
-	size_t stolenSize = determine_gtt_stolen(info);
-
-	info.gtt_entries = gttSize / 4096;
+	info.gtt_entries = gttSize
+		/ (info.type->InGroup(INTEL_GROUP_ALD) ? sizeof(uint64_t) : 4096);
 	info.gtt_stolen_entries = stolenSize / 4096;
 
 	TRACE("GTT base %" B_PRIxPHYSADDR ", size %lu, entries %lu, stolen %lu\n",
@@ -790,7 +837,7 @@ intel_map(intel_info &info)
 
 	AreaKeeper gttMapper;
 	info.gtt_area = gttMapper.Map("intel GMCH gtt",
-		info.gtt_physical_base, gttSize, B_ANY_KERNEL_ADDRESS,
+		info.gtt_physical_base, gttSize, registerSpec,
 		B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, (void**)&info.gtt_base);
 	if (gttMapper.InitCheck() < B_OK) {
 		ERROR("could not map GTT!\n");
@@ -807,6 +854,16 @@ intel_map(intel_info &info)
 		}
 	} else if (info.aperture_size == 0)
 		info.aperture_size = info.display.u.h0.base_register_sizes[fbIndex];
+
+	if (info.type->InGroup(INTEL_GROUP_ALD)) {
+		uint64_t scratchPte;
+		if (!intel_gen8_gtt_layout(info.gtt_entries, info.aperture_size,
+				info.aperture_stolen_size)
+			|| !intel_gen8_gtt_pte(entry.address, &scratchPte)) {
+			ERROR("invalid Alder Lake aperture layout or scratch address\n");
+			return B_BAD_VALUE;
+		}
+	}
 
 	ERROR("detected %ld MB of stolen memory, aperture size %ld MB, "
 		"GTT size %ld KB\n", (stolenSize + (1023 << 10)) >> 20,
@@ -866,19 +923,32 @@ intel_create_aperture(uint8 bus, uint8 device, uint8 function, size_t size,
 	if (intel_map(sInfo) < B_OK)
 		return B_ERROR;
 
-	uint16 gmchControl = get_pci_config(sInfo.bridge,
-		INTEL_GRAPHICS_MEMORY_CONTROL, 2) | MEMORY_CONTROL_ENABLED;
-	set_pci_config(sInfo.bridge, INTEL_GRAPHICS_MEMORY_CONTROL, 2, gmchControl);
+	if (!sInfo.type->InGroup(INTEL_GROUP_ALD)) {
+		uint16 gmchControl = get_pci_config(sInfo.bridge,
+			INTEL_GRAPHICS_MEMORY_CONTROL, 2) | MEMORY_CONTROL_ENABLED;
+		set_pci_config(sInfo.bridge, INTEL_GRAPHICS_MEMORY_CONTROL, 2,
+			gmchControl);
 
-	write32(sInfo.registers + INTEL_PAGE_TABLE_CONTROL,
-		sInfo.gtt_physical_base | PAGE_TABLE_ENABLED);
-	read32(sInfo.registers + INTEL_PAGE_TABLE_CONTROL);
+		write32(sInfo.registers + INTEL_PAGE_TABLE_CONTROL,
+			sInfo.gtt_physical_base | PAGE_TABLE_ENABLED);
+		read32(sInfo.registers + INTEL_PAGE_TABLE_CONTROL);
+	}
+	// Alder Lake has a fixed GGTT window in GTTMMADR. Preserve firmware's
+	// setup instead of programming the legacy i830 GGC/PGTBL_CTL registers.
 
 	if (sInfo.scratch_page != 0) {
-		for (size_t i = sInfo.gtt_stolen_entries; i < sInfo.gtt_entries; i++) {
-			set_gtt_entry(sInfo, i << GTT_PAGE_SHIFT, sInfo.scratch_page);
+		// Preserve GGTT mappings outside the CPU-visible aperture.
+		size_t end = sInfo.type->InGroup(INTEL_GROUP_ALD)
+			? sInfo.aperture_size >> GTT_PAGE_SHIFT : sInfo.gtt_entries;
+		for (size_t i = sInfo.gtt_stolen_entries; i < end; i++) {
+			status_t status = set_gtt_entry(sInfo, i << GTT_PAGE_SHIFT,
+				sInfo.scratch_page);
+			if (status != B_OK) {
+				intel_unmap(sInfo);
+				return status;
+			}
 		}
-		read32(sInfo.gtt_base + sInfo.gtt_entries - 1);
+		read_gtt_entry(sInfo, end - 1);
 	}
 
 	asm("wbinvd;");
@@ -922,8 +992,7 @@ intel_bind_page(void* aperture, uint32 offset, phys_addr_t physicalAddress)
 {
 	//TRACE("bind_page(offset %lx, physical %lx)\n", offset, physicalAddress);
 
-	set_gtt_entry(sInfo, offset, physicalAddress);
-	return B_OK;
+	return set_gtt_entry(sInfo, offset, physicalAddress);
 }
 
 
@@ -933,7 +1002,7 @@ intel_unbind_page(void* aperture, uint32 offset)
 	//TRACE("unbind_page(offset %lx)\n", offset);
 
 	if (sInfo.scratch_page != 0)
-		set_gtt_entry(sInfo, offset, sInfo.scratch_page);
+		return set_gtt_entry(sInfo, offset, sInfo.scratch_page);
 
 	return B_OK;
 }
@@ -942,7 +1011,7 @@ intel_unbind_page(void* aperture, uint32 offset)
 void
 intel_flush_tlbs(void* aperture)
 {
-	read32(sInfo.gtt_base + sInfo.gtt_entries - 1);
+	read_gtt_entry(sInfo, sInfo.gtt_entries - 1);
 	asm("wbinvd;");
 }
 

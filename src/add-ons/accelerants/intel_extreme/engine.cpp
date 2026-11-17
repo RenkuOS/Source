@@ -157,6 +157,9 @@ QueueCommands::Write(uint32 data)
 void
 uninit_ring_buffer(ring_buffer &ringBuffer)
 {
+	if (gInfo->shared_info->device_type.InGroup(INTEL_GROUP_ALD))
+		return;
+
 	uninit_lock(&ringBuffer.lock);
 	write32(ringBuffer.register_base + RING_BUFFER_CONTROL, 0);
 }
@@ -165,6 +168,11 @@ uninit_ring_buffer(ring_buffer &ringBuffer)
 void
 setup_ring_buffer(ring_buffer &ringBuffer, const char* name)
 {
+	// Alder Lake requires logical contexts and a modern submission backend.
+	// Do not program or enable the legacy ring for a display-only accelerant.
+	if (gInfo->shared_info->device_type.InGroup(INTEL_GROUP_ALD))
+		return;
+
 	TRACE("Setup ring buffer %s, offset %lx, size %lx\n", name,
 		ringBuffer.offset, ringBuffer.size);
 
@@ -194,6 +202,9 @@ uint32
 intel_accelerant_engine_count(void)
 {
 	CALLED();
+	if (gInfo->shared_info->device_type.InGroup(INTEL_GROUP_ALD))
+		return 0;
+
 	return 1;
 }
 

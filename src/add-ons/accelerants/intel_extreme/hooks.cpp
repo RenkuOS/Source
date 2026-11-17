@@ -14,6 +14,29 @@
 extern "C" void*
 get_accelerant_hook(uint32 feature, void* data)
 {
+	// These hooks reach the legacy ring or claim completion without a working
+	// Alder Lake submission backend. Keep initialization/display hooks usable.
+	if (gInfo != NULL && gInfo->shared_info != NULL
+		&& gInfo->shared_info->device_type.InGroup(INTEL_GROUP_ALD)) {
+		switch (feature) {
+			case B_ACQUIRE_ENGINE:
+			case B_RELEASE_ENGINE:
+			case B_WAIT_ENGINE_IDLE:
+			case B_GET_SYNC_TOKEN:
+			case B_SYNC_TO_TOKEN:
+			case B_OVERLAY_COUNT:
+			case B_OVERLAY_SUPPORTED_SPACES:
+			case B_OVERLAY_SUPPORTED_FEATURES:
+			case B_ALLOCATE_OVERLAY_BUFFER:
+			case B_RELEASE_OVERLAY_BUFFER:
+			case B_GET_OVERLAY_CONSTRAINTS:
+			case B_ALLOCATE_OVERLAY:
+			case B_RELEASE_OVERLAY:
+			case B_CONFIGURE_OVERLAY:
+				return NULL;
+		}
+	}
+
 	switch (feature) {
 		/* general */
 		case B_INIT_ACCELERANT:
@@ -106,10 +129,19 @@ get_accelerant_hook(uint32 feature, void* data)
 
 		/* 2D acceleration */
 		case B_SCREEN_TO_SCREEN_BLIT:
-			return (void*)intel_screen_to_screen_blit;
 		case B_FILL_RECTANGLE:
-			return (void*)intel_fill_rectangle;
 		case B_INVERT_RECTANGLE:
+			// These families have no working legacy command submission or
+			// engine synchronization (see intel_wait_engine_idle()).
+			if (gInfo->shared_info->device_type.InFamily(INTEL_FAMILY_LAKE)
+				|| gInfo->shared_info->device_type.InFamily(INTEL_FAMILY_SOC0)) {
+				return NULL;
+			}
+
+			if (feature == B_SCREEN_TO_SCREEN_BLIT)
+				return (void*)intel_screen_to_screen_blit;
+			if (feature == B_FILL_RECTANGLE)
+				return (void*)intel_fill_rectangle;
 			return (void*)intel_invert_rectangle;
 		case B_FILL_SPAN:
 			return NULL;//(void*)intel_fill_span;
