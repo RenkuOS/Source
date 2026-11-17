@@ -264,6 +264,9 @@ Painter::AttachToBuffer(RenderingBuffer* buffer)
 		// will be used for stroking paths
 
 		_SetRendererColor(fPatternHandler.HighColor());
+	} else {
+		// Drawing to the previous buffer could reach memory that is gone.
+		DetachFromBuffer();
 	}
 }
 
@@ -282,7 +285,9 @@ Painter::DetachFromBuffer()
 BRect
 Painter::Bounds() const
 {
-	return BRect(0, 0, fBuffer.width() - 1, fBuffer.height() - 1);
+	// The buffer's size is unsigned: without one, it is empty.
+	return BRect(0, 0, (int32)fBuffer.width() - 1,
+		(int32)fBuffer.height() - 1);
 }
 
 

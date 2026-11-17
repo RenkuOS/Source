@@ -20,6 +20,7 @@
 #include "ServerWindow.h"
 #include "View.h"
 #include "WindowList.h"
+#include "WindowShape.h"
 
 #include <AutoDeleter.h>
 #include <ObjectList.h>
@@ -29,6 +30,7 @@
 
 
 class Window;
+class WindowBufferHWInterface;
 
 
 typedef	BObjectList<Window>	StackWindows;
@@ -115,8 +117,25 @@ public:
 			// WriteLock()ed the clipping!
 			void				SetClipping(BRegion* stillAvailableOnScreen);
 			// you need to have ReadLock()ed the clipping!
+			// When compositing, this is all the window can draw to, whether
+			// other windows are in front of it or not.
 	inline	BRegion&			VisibleRegion() { return fVisibleRegion; }
 			BRegion&			VisibleContentRegion();
+
+			// The part of the content that can really be seen on screen.
+			void				GetOnScreenContentRegion(BRegion* region);
+
+			// When compositing, the window's own buffer. It takes ownership.
+			void				SetBufferInterface(
+									WindowBufferHWInterface* interface);
+			WindowBufferHWInterface* BufferInterface() const
+									{ return fBufferInterface.Get(); }
+			// Nothing of the window can be shown until it has first been drawn.
+			bool				IsBufferReady() const { return fBufferReady; }
+			// What the compositor shows of this window, on or off screen.
+			const BRegion&		CompositeRegion() const
+									{ return fCompositeRegion; }
+			const WindowShape&	Shape() const { return fShape; }
 
 			// TODO: not protected by a lock, but no one should need this anyways
 			// make private? when used inside Window, it has the ReadLock()
@@ -450,6 +469,16 @@ private:
 			WindowStack*		_InitWindowStack();
 
 			BReference<WindowStack>		fCurrentStack;
+
+			// Only used when compositing. Last, to keep the place of the others
+			// for decorator add-ons built against older headers.
+			ObjectDeleter<WindowBufferHWInterface>
+								fBufferInterface;
+			BRegion				fCompositeRegion;
+			WindowShape			fShape;
+			BRegion				fOnScreenRegion;
+			BPoint				fBufferOffset;
+			bool				fBufferReady;
 };
 
 

@@ -41,7 +41,7 @@ if [ FIsBuildFeatureEnabled fontconfig ] {
 	SubDirC++Flags -DFONTCONFIG_ENABLED ;
 	UseBuildFeatureHeaders fontconfig ;
 	Includes [ FGristFiles AppServer.cpp BitmapManager.cpp Canvas.cpp
-	ClientMemoryAllocator.cpp Desktop.cpp DesktopSettings.cpp
+	ClientMemoryAllocator.cpp Compositor.cpp Desktop.cpp DesktopSettings.cpp
 	DrawState.cpp DrawingEngine.cpp Layer.cpp PictureBoundingBoxPlayer.cpp
 	ServerApp.cpp ServerBitmap.cpp ServerCursor.cpp ServerFont.cpp
 	ServerPicture.cpp ServerWindow.cpp View.cpp Window.cpp WindowShape.cpp WorkspacesView.cpp
@@ -50,7 +50,7 @@ if [ FIsBuildFeatureEnabled fontconfig ] {
 	  [ BuildFeatureAttribute fontconfig : headers ] ;
 } else {
 	Includes [ FGristFiles AppServer.cpp BitmapManager.cpp Canvas.cpp
-	ClientMemoryAllocator.cpp Desktop.cpp DesktopSettings.cpp
+	ClientMemoryAllocator.cpp Compositor.cpp Desktop.cpp DesktopSettings.cpp
 	DrawState.cpp DrawingEngine.cpp Layer.cpp PictureBoundingBoxPlayer.cpp
 	ServerApp.cpp ServerBitmap.cpp ServerCursor.cpp ServerFont.cpp
 	ServerPicture.cpp ServerWindow.cpp View.cpp Window.cpp WindowShape.cpp WorkspacesView.cpp
@@ -65,6 +65,7 @@ Application app_server :
 	BitmapManager.cpp
 	Canvas.cpp
 	ClientMemoryAllocator.cpp
+	Compositor.cpp
 	CursorManager.cpp
 	CursorSet.cpp
 	DelayedMessage.cpp
@@ -100,6 +101,7 @@ Application app_server :
 	View.cpp
 	VirtualScreen.cpp
 	Window.cpp
+	WindowBuffer.cpp
 	WindowList.cpp
 	WindowShape.cpp
 	Workspace.cpp

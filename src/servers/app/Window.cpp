@@ -38,6 +38,7 @@
 #include "ServerApp.h"
 #include "ServerWindow.h"
 #include "WindowBehaviour.h"
+#include "WindowBuffer.h"
 #include "Workspace.h"
 #include "WorkspacesView.h"
 
