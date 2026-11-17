@@ -35,8 +35,20 @@ SystemInfoHandler::SystemInfoHandler()
 	fMediaConnections = 0;
 	fMediaBuffers = 0;
 
-	fThermalFD = open("/dev/power/acpi_thermal/0", O_RDONLY);
-	if (fThermalFD <= 0) {
+	// the first thermal sensor that is there; all of these drivers print
+	// "Current Temperature: " in their text output
+	static const char* const kThermalDevices[] = {
+		"/dev/power/acpi_thermal/0",
+		"/dev/power/pch_thermal/0",
+		"/dev/power/amd_thermal/0",
+		"/dev/power/jh7110_thermal/0",
+	};
+	fThermalFD = -1;
+	for (size_t i = 0; i < B_COUNT_OF(kThermalDevices) && fThermalFD < 0;
+			i++) {
+		fThermalFD = open(kThermalDevices[i], O_RDONLY);
+	}
+	if (fThermalFD < 0) {
 		fThermalZoneName = B_TRANSLATE("No thermal sensor");
 		return;
 	}
