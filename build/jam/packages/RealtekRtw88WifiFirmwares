@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: MIT
+#
+# Firmware for the Realtek chips that realtekwifi drives with the help of
+# the rtw88 driver of Linux, from linux-firmware. Each file is pinned to the
+# commit that added it and checked against its SHA-256.
+local realtekFirmwarePackage = realtek_rtw88_wifi_firmwares.hpkg ;
+HaikuPackage $(realtekFirmwarePackage) ;
+
+local linuxFirmware
+	= https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain ;
+local commit = 9f04ff1e66905750cd6a89fd26f294a006ff1c54 ;
+
+# RTL8723BS (and RTL8723BU), firmware v41.0.0.
+local rtl8723bFirmware = [ DownloadFile rtw8723b_fw.bin
+	: $(linuxFirmware)/rtw88/rtw8723b_fw.bin?id=$(commit)
+	:
+	: 9ed919e9a6977b3d0cb05e7bbf5e8b1bd8edb20db6d4bc1b279273aa333ab9e4 ] ;
+local licenseFile = [ DownloadFile LICENCE.rtlwifi_firmware.txt
+	: $(linuxFirmware)/LICENSES/LICENCE.rtlwifi_firmware.txt?id=$(commit)
+	:
+	: a61351665b4f264f6c631364f85b907d8f8f41f8b369533ef4021765f9f3b62e ] ;
+
+AddFilesToPackage data firmware realtekwifi : $(rtl8723bFirmware) ;
+AddFilesToPackage data licenses : $(licenseFile) : "Realtek rtlwifi (firmware)" ;
+
+BuildHaikuPackage $(realtekFirmwarePackage) : realtek_rtw88_wifi_firmwares ;

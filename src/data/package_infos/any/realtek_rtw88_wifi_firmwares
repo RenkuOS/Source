@@ -1,0 +1,15 @@
+name			realtek_rtw88_wifi_firmwares
+version			20260726-1
+architecture	any
+summary			"Firmware for Realtek WiFi chips known from the rtw88 driver"
+description		"Firmware for Realtek WiFi chips that the realtekwifi driver supports with knowledge from the rtw88 driver of Linux: the RTL8723BS. The files come from linux-firmware."
+
+packager		"The Haiku build system"
+vendor			"Haiku Project"
+
+copyrights		"Realtek Semiconductor Corporation"
+licenses		"Realtek rtlwifi (firmware)"
+
+provides {
+	realtek_rtw88_wifi_firmwares = 20260726
+}
