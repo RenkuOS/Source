@@ -390,9 +390,26 @@ if_attach(struct ifnet *ifp)
 void
 if_detach(struct ifnet *ifp)
 {
+	struct ifmultiaddr *ifma, *next;
+
 	if (HAIKU_DRIVER_REQUIRES(FBSD_SWI_TASKQUEUE))
 		taskqueue_drain(taskqueue_swi, &ifp->if_linktask);
 
+	// Not if_freemulti(): entries may still hold references here.
+	IF_ADDR_LOCK(ifp);
+	TAILQ_FOREACH_SAFE(ifma, &ifp->if_multiaddrs, ifma_link, next) {
+		TAILQ_REMOVE(&ifp->if_multiaddrs, ifma, ifma_link);
+		free(ifma->ifma_lladdr);
+		free(ifma);
+	}
+	IF_ADDR_UNLOCK(ifp);
+
+	// NULL so a second if_detach() (if_wpi.c) does not double free.
+	_kernel_free(ifp->if_addr);
+	ifp->if_addr = NULL;
+
+	// Also free mbufs the driver dequeued into ifq_drv_* but never sent.
+	IFQ_DRV_PURGE(&ifp->if_snd);
 	ifq_uninit((struct ifqueue *) &ifp->if_snd);
 }
 
