@@ -199,7 +199,8 @@ get_cpu_vendor_string(enum cpu_vendor cpuVendor)
 	// Should match vendors in OS.h
 	static const char* vendorStrings[] = {
 		NULL, "AMD", "Cyrix", "IDT", "Intel", "National Semiconductor", "Rise",
-		"Transmeta", "VIA", "IBM", "Motorola", "NEC", "Hygon"
+		"Transmeta", "VIA", "IBM", "Motorola", "NEC", "Hygon", "Sun",
+		"Fujitsu", "SiFive"
 	};
 
 	if ((size_t)cpuVendor >= sizeof(vendorStrings) / sizeof(const char*))
@@ -310,6 +311,17 @@ get_cpu_model_string(enum cpu_platform platform, enum cpu_vendor cpuVendor,
 
 	(void)cpuVendor;
 	(void)cpuModel;
+
+	if (platform == B_CPU_RISC_V) {
+		// the model is the low 32 bits of marchid
+		if (cpuVendor == B_CPU_VENDOR_SIFIVE) {
+			switch (cpuModel) {
+				case 7:
+					return "U74";
+			}
+		}
+		return NULL;
+	}
 
 #if defined(__i386__) || defined(__x86_64__)
 	if (platform != B_CPU_x86 && platform != B_CPU_x86_64)
