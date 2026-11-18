@@ -132,6 +132,7 @@ private:
 			uint16					_HypercallPostMessage(phys_addr_t physAddr);
 			uint16					_HypercallSignalEvent(uint32 connId);
 
+			status_t				_SetInterruptVector();
 			status_t				_EnableInterrupts();
 			void					_DisableInterrupts();
 	static	void					_EnableInterruptCPUHandler(void* data, int cpu);

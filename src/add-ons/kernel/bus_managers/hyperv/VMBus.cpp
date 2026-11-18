@@ -43,14 +43,6 @@ VMBus::VMBus(device_node* node)
 {
 	CALLED();
 
-	// Allocate an executable page for hypercall usage
-	fHyperCallArea = _AllocateBuffer("hypercall", HV_PAGE_SIZE,
-		B_KERNEL_READ_AREA | B_KERNEL_EXECUTE_AREA, &fHypercallPage, &fHyperCallPhys);
-	if (fHyperCallArea < B_OK) {
-		fStatus = fHyperCallArea;
-		return;
-	}
-
 	// Hyper-V is able to send targeted interrupts to a specific CPU, each requires its
 	// own set of event data
 	fCPUCount = smp_get_num_cpus();
@@ -147,7 +139,8 @@ VMBus::~VMBus()
 	delete_area(fVMBusDataArea);
 	delete_area(fCPUMessagesArea);
 	delete_area(fCPUEventFlagsArea);
-	delete_area(fHyperCallArea);
+	if (fHyperCallArea > 0)
+		delete_area(fHyperCallArea);
 	delete[] fCPUData;
 
 	VMBusRequestList::Iterator iterator = fRequestList.GetIterator();
@@ -525,7 +518,10 @@ VMBus::_EnableInterrupts()
 	if (fIRQ < 0)
 		return B_IO_ERROR;
 
-	fInterruptVector = fIRQ + ARCH_INTERRUPT_BASE;
+	status = _SetInterruptVector();
+	if (status != B_OK)
+		return status;
+
 	TRACE("VMBus irq interrupt line: %" B_PRId32 ", vector: %u\n", fIRQ, fInterruptVector);
 	status = install_io_interrupt_handler(fIRQ, _InterruptHandler, this, 0);
 	if (status != B_OK) {
@@ -574,9 +570,15 @@ VMBus::_InterruptACPICallback(ACPI_RESOURCE* res, void* context)
 	int32* irq = static_cast<int32*>(context);
 
 	// Grab the first IRQ only. Gen1 usually has two IRQs, Gen2 just one.
-	// Only one IRQ is required for the VMBus device.
-	if (res->Type == ACPI_RESOURCE_TYPE_IRQ && *irq < 0)
+	// Only one IRQ is required for the VMBus device. arm64 gives one extended
+	// IRQ, a GIC PPI.
+	if (*irq >= 0)
+		return B_OK;
+	if (res->Type == ACPI_RESOURCE_TYPE_IRQ)
 		*irq = res->Data.Irq.Interrupt;
+	else if (res->Type == ACPI_RESOURCE_TYPE_EXTENDED_IRQ
+		&& res->Data.ExtendedIrq.InterruptCount > 0)
+		*irq = res->Data.ExtendedIrq.Interrupts[0];
 	return B_OK;
 }
 
@@ -664,11 +666,14 @@ void
 VMBus::_ProcessPendingMessage(int32_t cpu)
 {
 	volatile hv_message* hvMessage = &fCPUMessages[cpu].interrupts[VMBUS_SINT_MESSAGE];
-	if (hvMessage->message_type != HYPERV_MSGTYPE_CHANNEL
+	uint32 messageType = hvMessage->message_type;
+	// The host writes the payload before message_type: don't read it ahead (arm64)
+	memory_read_barrier();
+	if (messageType != HYPERV_MSGTYPE_CHANNEL
 			|| hvMessage->payload_size < sizeof(vmbus_msg_header)) {
 		// Ignore any spurious pending messages
-		if (hvMessage->message_type != HYPERV_MSGTYPE_NONE)
-			ERROR("Invalid VMBus Hyper-V message type %u length 0x%X\n", hvMessage->message_type,
+		if (messageType != HYPERV_MSGTYPE_NONE)
+			ERROR("Invalid VMBus Hyper-V message type %u length 0x%X\n", messageType,
 				hvMessage->payload_size);
 		_SendEndOfMessage(cpu);
 		return;

@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: MIT
+
+SubDir HAIKU_TOP src add-ons kernel bus_managers hyperv arch arm64 ;
+
+SubDirHdrs [ FDirName $(SUBDIR) $(DOTDOT) $(DOTDOT) ] ;
+
+UsePrivateKernelHeaders ;
+UsePrivateHeaders hyperv [ FDirName kernel arch arm64 ] ;
+
+SubDirHdrs $(HAIKU_TOP) src system kernel device_manager ;
+SubDirHdrs $(HAIKU_TOP) src add-ons kernel bus_managers acpi acpica include ;
+SubDirHdrs $(HAIKU_TOP) src add-ons kernel bus_managers acpi acpica include platform ;
+
+KernelStaticLibrary hyperv_arch_bus_manager :
+	VMBus_arm64.cpp
+	VMBusDevice_arm64.cpp
+	;

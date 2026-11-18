@@ -61,6 +61,12 @@ vmbus_detect_hyperv()
 status_t
 VMBus::_EnableHypercalls()
 {
+	// Allocate an executable page for hypercall usage
+	fHyperCallArea = _AllocateBuffer("hypercall", HV_PAGE_SIZE,
+		B_KERNEL_READ_AREA | B_KERNEL_EXECUTE_AREA, &fHypercallPage, &fHyperCallPhys);
+	if (fHyperCallArea < B_OK)
+		return fHyperCallArea;
+
 	// Guest ID must be set prior to enabling hypercalls
 	x86_write_msr(IA32_MSR_HV_GUEST_OS_ID, IA32_MSR_HV_GUEST_OS_ID_FREEBSD);
 
@@ -126,6 +132,14 @@ VMBus::_HypercallSignalEvent(uint32 connId)
 #endif
 
 	return (uint16)(status & 0xFFFF);
+}
+
+
+status_t
+VMBus::_SetInterruptVector()
+{
+	fInterruptVector = fIRQ + ARCH_INTERRUPT_BASE;
+	return B_OK;
 }
 
 
