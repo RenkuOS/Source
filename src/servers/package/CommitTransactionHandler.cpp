@@ -885,6 +885,21 @@ CommitTransactionHandler::_AddGlobalWritableFiles(Package* package)
 }
 
 
+/*!	A package declares a global writable file it does not contain (seen with
+	less 451 for riscv64). That is a packaging error of that one file: it is
+	skipped, rather than failing the whole transaction -- in first boot
+	processing that would leave every later package unprocessed.
+*/
+void
+CommitTransactionHandler::_WarnMissingWritableFile(Package* package,
+	const BGlobalWritableFileInfo& file)
+{
+	WARN("Package %s declares the global writable file \"%s\", which it "
+		"does not contain: skipped.\n", package->FileName().String(),
+		file.Path().String());
+}
+
+
 void
 CommitTransactionHandler::_AddGlobalWritableFile(Package* package,
 	const BGlobalWritableFileInfo& file, const BDirectory& rootDirectory,
@@ -903,6 +918,10 @@ CommitTransactionHandler::_AddGlobalWritableFile(Package* package,
 
 		status_t error = stackSourceDirectory.SetTo(
 			&extractedFilesDirectory, sourceParentPath);
+		if (error == B_ENTRY_NOT_FOUND) {
+			_WarnMissingWritableFile(package, file);
+			return;
+		}
 		if (error != B_OK) {
 			throw Exception(B_TRANSACTION_FAILED_TO_OPEN_DIRECTORY)
 				.SetPath1(_GetPath(
@@ -913,6 +932,14 @@ CommitTransactionHandler::_AddGlobalWritableFile(Package* package,
 		}
 	} else {
 		sourceDirectory = &extractedFilesDirectory;
+	}
+
+	struct stat sourceStat;
+	const char* sourceLeaf = lastSlash != NULL
+		? lastSlash + 1 : file.Path().String();
+	if (sourceDirectory->GetStatFor(sourceLeaf, &sourceStat) != B_OK) {
+		_WarnMissingWritableFile(package, file);
+		return;
 	}
 
 	// open parent directory of the target entry -- create, if necessary
