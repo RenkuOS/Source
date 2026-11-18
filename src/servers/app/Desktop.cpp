@@ -1789,6 +1789,11 @@ Desktop::AddWindow(Window *window)
 {
 	LockAllWindows();
 
+	// The decorator changed while it was being made: after it was given
+	// one, but before it was among the windows ReloadDecor() goes through.
+	if (window->DecoratorGeneration() != gDecorManager.Generation())
+		window->ReloadDecor();
+
 	fAllWindows.AddWindow(window);
 	if (!window->IsNormal())
 		fSubsetWindows.AddWindow(window);
@@ -1873,7 +1878,10 @@ Desktop::ColorUpdated(Window* window, color_which which, rgb_color color)
 {
 	AutoWriteLocker _(fWindowLock);
 
-	window->TopView()->ColorUpdated(which, color);
+	// A window just created has no views until its client sends them; they
+	// take the colors as they are by then.
+	if (window->TopView() != NULL)
+		window->TopView()->ColorUpdated(which, color);
 
 	switch (which) {
 		case B_WINDOW_TAB_COLOR:

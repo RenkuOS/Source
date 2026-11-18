@@ -128,7 +128,8 @@ Window::Window(const BRect& frame, const char *name,
 	fBufferReady(false),
 	fBufferLost(false),
 	fHasRoundedCorners(false),
-	fCompositeAlpha(255)
+	fCompositeAlpha(255),
+	fDecoratorGeneration(0)
 {
 	_InitWindowStack();
 
@@ -822,6 +823,7 @@ Window::ReloadDecor()
 	if (stack->WindowAt(0) != this)
 		return true;
 
+	fDecoratorGeneration = gDecorManager.Generation();
 	if (fLook != B_NO_BORDER_WINDOW_LOOK) {
 		// we need a new decorator
 		decorator = gDecorManager.AllocateDecorator(this);
@@ -1521,6 +1523,7 @@ Window::SetLook(window_look look, BRegion* updateRegion)
 	::Decorator* decorator = Decorator();
 	if (decorator == NULL && look != B_NO_BORDER_WINDOW_LOOK) {
 		// we need a new decorator
+		fDecoratorGeneration = gDecorManager.Generation();
 		decorator = gDecorManager.AllocateDecorator(this);
 		fCurrentStack->SetDecorator(decorator);
 		if (IsFocus())
@@ -2515,6 +2518,7 @@ Window::_InitWindowStack()
 {
 	fCurrentStack = NULL;
 	::Decorator* decorator = NULL;
+	fDecoratorGeneration = gDecorManager.Generation();
 	if (fLook != B_NO_BORDER_WINDOW_LOOK)
 		decorator = gDecorManager.AllocateDecorator(this);
 

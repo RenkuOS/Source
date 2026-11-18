@@ -18,6 +18,8 @@
 #include <Entry.h>
 #include <DecorInfo.h>
 
+#include <map>
+
 #include "Decorator.h"
 
 class Desktop;
@@ -79,8 +81,14 @@ public:
 			BString 			GetCurrentDecorator() const;
 			status_t			SetDecorator(BString path, Desktop *desktop);
 
+			// Goes up whenever the decorator changes: a window whose
+			// decorator is older gets a new one as it is added.
+			uint32				Generation() const
+									{ return fGeneration; }
+
 private:
 			DecorAddOn*			_LoadDecor(BString path, status_t &error);
+			BString				_LoadedKey(const BString& path) const;
 			bool				_LoadSettingsFromDisk();
 			bool				_SaveSettingsToDisk();
 
@@ -91,6 +99,12 @@ private:
 
 			Window*				fPreviewWindow;
 			BString				fCurrentDecorPath;
+
+			// Every add-on loaded stays loaded, as a window being made while
+			// the decorator changes may still use the old one; by file, so
+			// one built again is loaded again.
+			std::map<BString, DecorAddOn*> fLoaded;
+			volatile uint32		fGeneration;
 };
 
 extern DecorManager gDecorManager;

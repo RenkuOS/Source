@@ -109,6 +109,9 @@ public:
 									{ return fWindow->EventTarget(); }
 
 			bool				ReloadDecor();
+			// gDecorManager's generation when its decorator was made
+			uint32				DecoratorGeneration() const
+									{ return fDecoratorGeneration; }
 
 			void				SetScreen(const ::Screen* screen);
 			const ::Screen*		Screen() const;
@@ -500,6 +503,9 @@ private:
 			bool				fHasRoundedCorners;
 			uint8				fCompositeAlpha;
 			BRegion				fTransparentRegion;
+
+			// After those, for the same reason.
+			uint32				fDecoratorGeneration;
 };
 
 
