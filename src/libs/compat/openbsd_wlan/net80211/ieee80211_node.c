@@ -1489,6 +1489,11 @@ ieee80211_end_scan(struct ifnet *ifp)
 	if (ic->ic_opmode == IEEE80211_M_STA)
 		ieee80211_clean_inactive_nodes(ic, IEEE80211_INACT_SCAN);
 
+#ifdef __HAIKU__
+	/* Tell net_server a scan pass finished (drives AutoconfigLooper). */
+	ieee80211_notify_scan_done(ic);
+#endif
+
 	ni = RBT_MIN(ieee80211_tree, &ic->ic_tree);
 
 #ifndef IEEE80211_STA_ONLY

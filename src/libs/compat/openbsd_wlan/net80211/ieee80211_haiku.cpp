@@ -32,6 +32,9 @@ extern "C" {
 #undef _NET80211_IEEE80211_IOCTL_H_
 #define IEEE80211_IOCTLS_ABBREVIATED
 #include "../../freebsd_wlan/net80211/ieee80211_ioctl.h"
+
+void ieee80211_node2req(struct ieee80211com*, const struct ieee80211_node*,
+	struct ieee80211_nodereq*);
 }
 
 #include <shared.h>
@@ -210,6 +213,7 @@ wlan_control(void* cookie, uint32 op, void* arg, size_t length)
 				alloca(sizeof(struct ieee80211req_scan_result) + IEEE80211_NWID_LEN + 257);
 
 			uint16 remaining = ireq.i_len, offset = 0;
+			bool sawBss = false;
 			for (int i = 0; remaining > 0; i++) {
 				nodereq_all.na_node = &nodereq;
 				nodereq_all.na_size = sizeof(struct ieee80211_nodereq);
@@ -217,6 +221,20 @@ wlan_control(void* cookie, uint32 op, void* arg, size_t length)
 
 				IFF_LOCKGIANT(ifp);
 				status_t status = ifp->if_ioctl(ifp, SIOCG80211ALLNODES, (caddr_t)&nodereq_all);
+				const bool associated = ic->ic_opmode == IEEE80211_M_STA
+					&& ic->ic_state == IEEE80211_S_RUN;
+				if (status == B_OK && nodereq_all.na_nodes != 0 && associated
+						&& IEEE80211_ADDR_EQ(nodereq.nr_bssid, ic->ic_bss->ni_bssid))
+					sawBss = true;
+				if (status == B_OK && nodereq_all.na_nodes == 0 && associated
+						&& !sawBss) {
+					// ic_bss is not in the node table, and a background scan
+					// flushes that table (ieee80211_begin_bgscan), so the
+					// current AP can be missing; always report it.
+					ieee80211_node2req(ic, ic->ic_bss, &nodereq);
+					nodereq_all.na_nodes = 1;
+					sawBss = true;
+				}
 				IFF_UNLOCKGIANT(ifp);
 				if (status != B_OK)
 					return status;
@@ -564,20 +582,16 @@ ieee80211_rtm_80211info_task(void* arg)
 }
 
 
-#if 0
 void
-ieee80211_notify_scan_done(struct ieee80211vap* vap)
+ieee80211_notify_scan_done(struct ieee80211com* ic)
 {
-	TRACE("%s\n", __FUNCTION__);
-
 	if (sNotificationModule != NULL) {
 		char messageBuffer[512];
 		KMessage message;
 		message.SetTo(messageBuffer, sizeof(messageBuffer), B_NETWORK_MONITOR);
 		message.AddInt32("opcode", B_NETWORK_WLAN_SCANNED);
-		message.AddString("interface", vap->iv_ifp->device_name);
+		message.AddString("interface", ic->ic_if.device_name);
 
 		sNotificationModule->send_notification(&message);
 	}
 }
-#endif
