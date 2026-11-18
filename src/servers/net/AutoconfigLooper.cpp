@@ -26,6 +26,8 @@
 
 
 static const uint32 kMsgReadyToRun = 'rdyr';
+static const bigtime_t kAutoJoinTimeout = 30000000LL;
+	// 30 seconds
 
 
 AutoconfigLooper::AutoconfigLooper(BMessenger target, const char* device)
@@ -34,7 +36,8 @@ AutoconfigLooper::AutoconfigLooper(BMessenger target, const char* device)
 	fDevice(device),
 	fCurrentClient(NULL),
 	fLastMediaStatus(0),
-	fJoiningNetwork(false)
+	fJoiningNetwork(false),
+	fJoinStarted(0)
 {
 	BMessage ready(kMsgReadyToRun);
 	PostMessage(&ready);
@@ -186,6 +189,9 @@ AutoconfigLooper::_NetworkMonitorNotification(BMessage* message)
 				//_ConfigureIPv6();	// TODO: router advertisement and dhcpv6
 			} else if ((media & IFM_ACTIVE) == 0) {
 				_RemoveClient();
+				// A lost link may be re-joined on the next scan.
+				if ((fLastMediaStatus & IFM_ACTIVE) != 0)
+					fJoiningNetwork = false;
 			}
 
 			fLastMediaStatus = media;
@@ -194,18 +200,18 @@ AutoconfigLooper::_NetworkMonitorNotification(BMessage* message)
 
 		case B_NETWORK_WLAN_SCANNED:
 		{
-			if (fJoiningNetwork || (fLastMediaStatus & IFM_ACTIVE) != 0) {
+			if ((fLastMediaStatus & IFM_ACTIVE) != 0
+				|| (fJoiningNetwork
+					&& system_time() - fJoinStarted < kAutoJoinTimeout)) {
 				// We already have a link or are already joining.
 				break;
 			}
 
+			// One attempt in flight; if it has not produced a link within
+			// kAutoJoinTimeout (wrong network, supplicant gave up, ...),
+			// the next scan notification retries.
 			fJoiningNetwork = true;
-				// TODO: For now we never reset this flag. We can only do that
-				// after infrastructure has been added to discern a scan reason.
-				// If we would always auto join we would possibly interfere
-				// with active scans in the process of connecting to an AP
-				// either for the initial connection, or after connection loss
-				// to re-establish the link.
+			fJoinStarted = system_time();
 
 			BMessage message(kMsgAutoJoinNetwork);
 			message.AddString("device", fDevice);

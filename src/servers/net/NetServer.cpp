@@ -98,6 +98,7 @@ private:
 			status_t			_JoinNetwork(const BMessage& message,
 									const BNetworkAddress* address = NULL,
 									const char* name = NULL);
+			void				_RememberNetwork(const BMessage& message);
 			status_t			_LeaveNetwork(const BMessage& message);
 
 			status_t			_ConvertNetworkToSettings(BMessage& message);
@@ -214,6 +215,8 @@ NetServer::MessageReceived(BMessage* message)
 		case kMsgJoinNetwork:
 		{
 			status_t status = _JoinNetwork(*message);
+			if (status == B_OK)
+				_RememberNetwork(*message);
 
 			BMessage reply(B_REPLY);
 			reply.AddInt32("status", status);
@@ -1123,6 +1126,43 @@ NetServer::_JoinNetwork(const BMessage& message, const BNetworkAddress* address,
 		return status;
 
 	return B_OK;
+}
+
+
+/*!	Adds a name-only persistent network entry for an interactively joined
+	network, so it is auto-joined later. The password is never stored here,
+	the wpa_supplicant keeps it in the keystore.
+*/
+void
+NetServer::_RememberNetwork(const BMessage& message)
+{
+	const char* name = message.GetString("name", NULL);
+
+	wireless_network network;
+	BNetworkAddress address;
+	if (name == NULL && message.FindFlat("address", &address) == B_OK
+		&& BNetworkDevice(message.GetString("device", "")).GetNetwork(address,
+			network) == B_OK) {
+		name = network.name;
+	}
+	if (name == NULL || name[0] == '\0')
+		return;
+
+	uint32 cookie = 0;
+	BMessage existing;
+	while (fSettings.GetNextNetwork(cookie, existing) == B_OK) {
+		if (strcmp(existing.GetString("name", ""), name) == 0)
+			return;
+	}
+
+	BMessage persistent;
+	status_t status = persistent.AddString("name", name);
+	if (status == B_OK)
+		status = fSettings.AddNetwork(persistent);
+	if (status != B_OK) {
+		fprintf(stderr, "%s: could not remember network \"%s\": %s\n",
+			Name(), name, strerror(status));
+	}
 }
 
 
