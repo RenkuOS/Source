@@ -44,6 +44,8 @@ private:
 			void				_ControlThreadCleanup();
 			void				_UpdateSettings(uint32 opcode);
 			void				_UpdateLEDs();
+	static	int32				_LEDThreadEntry(void* arg);
+			int32				_LEDThread();
 			status_t			_EnqueueInlineInputMethod(int32 opcode,
 									const char* string = NULL,
 									bool confirmed = false,
@@ -55,6 +57,8 @@ private:
 			char				fPath[B_PATH_NAME_LENGTH];
 			int					fFD;
 			thread_id			fThread;
+			thread_id			fLEDThread;
+			sem_id				fLEDSem;
 			kb_settings			fSettings;
 	volatile bool				fActive;
 	volatile bool				fInputMethodStarted;
