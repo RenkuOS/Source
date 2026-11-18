@@ -444,7 +444,10 @@ SerialDevice::Select(uint8 event, uint32 ref, selectsync *sync)
 status_t
 SerialDevice::DeSelect(uint8 event, selectsync *sync)
 {
-	if (fDeviceRemoved)
+	// Also once the device is gone: the TTY outlives it until Close(), which
+	// notifies the TTY's select pool, and the entry must not stay there after
+	// the select() it belongs to has returned.
+	if (fSystemTTYCookie == NULL)
 		return B_DEV_NOT_READY;
 
 	return gTTYModule->tty_deselect(fSystemTTYCookie, event, sync);
