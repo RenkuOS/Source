@@ -1306,7 +1306,10 @@ LegacyDevice::UninitDevice()
 	if (fDriver != NULL) {
 		if (--fDriver->devices_used == 0 && fDriver->devices.IsEmpty())
 			unload_driver(fDriver);
-		fDriver = NULL;
+		// While the device is published, the next open has to count as a
+		// user of the driver again, or the driver could be reloaded under it
+		if (fRemovedFromParent)
+			fDriver = NULL;
 	}
 }
 
