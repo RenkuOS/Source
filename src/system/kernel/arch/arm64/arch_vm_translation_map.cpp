@@ -198,10 +198,10 @@ bool
 arch_vm_translation_map_is_kernel_page_accessible(addr_t va, uint32 protection)
 {
 	if (protection & B_KERNEL_WRITE_AREA) {
-		asm("at s1e1w, %0" : : "r"((uint64_t) va));
+		asm("at s1e1w, %0\n\tisb" : : "r"((uint64_t) va));
 		return (READ_SPECIALREG(PAR_EL1) & PAR_F) == 0;
 	} else {
-		asm("at s1e1r, %0" : : "r"((uint64_t) va));
+		asm("at s1e1r, %0\n\tisb" : : "r"((uint64_t) va));
 		return (READ_SPECIALREG(PAR_EL1) & PAR_F) == 0;
 	}
 }
