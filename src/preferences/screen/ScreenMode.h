@@ -27,6 +27,7 @@ struct screen_mode {
 	bool			swap_displays;
 	bool			use_laptop_panel;
 	uint32			tv_standard;
+	int32			rotation;	// in degrees clockwise
 
 	void SetTo(const display_mode& mode);
 	int32 BitsPerPixel() const;
@@ -70,14 +71,22 @@ public:
 			const display_mode&	DisplayModeAt(int32 index);
 			int32				CountModes();
 
+			int32				ModeRotation() const { return fModeRotation; }
+			void				SetModeRotation(int32 degrees);
+
 private:
 			bool				_GetDisplayMode(const screen_mode& mode,
 									display_mode& displayMode);
+			int32				_Rotation() const;
+			status_t			_SetRotation(int32 degrees);
+			void				_ToScreenOrientation(
+									display_mode& mode) const;
 
 private:
 			BWindow*			fWindow;
 			display_mode*		fModeList;
 			uint32				fModeCount;
+			int32				fModeRotation;
 
 			bool				fUpdatedModes;
 			display_mode		fOriginalDisplayMode[32];

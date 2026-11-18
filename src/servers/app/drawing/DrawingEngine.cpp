@@ -1376,7 +1376,10 @@ DrawingEngine::ReadBitmap(ServerBitmap* bitmap, bool drawCursor, BRect bounds)
 {
 	ASSERT_EXCLUSIVE_LOCKED();
 
-	RenderingBuffer* buffer = fGraphicsCard->FrontBuffer();
+	// The front buffer of a rotated screen is turned, the drawing buffer has
+	// the same contents the right way round.
+	RenderingBuffer* buffer = fGraphicsCard->Rotation() != 0
+		? fGraphicsCard->DrawingBuffer() : fGraphicsCard->FrontBuffer();
 	if (buffer == NULL)
 		return B_ERROR;
 

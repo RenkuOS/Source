@@ -15,6 +15,8 @@
 #include <Application.h>
 #include <Screen.h>
 
+#include <PrivateScreen.h>
+
 #include "ScreenMode.h"
 
 
@@ -27,6 +29,8 @@ static struct option const kLongOptions[] = {
 	{"help", no_argument, 0, 'h'},
 	{"brightness", required_argument, 0, 'b'},
 	{"get-brightness", no_argument, 0, 'B'},
+	{"rotate", required_argument, 0, 'r'},
+	{"get-rotation", no_argument, 0, 'R'},
 	{NULL}
 };
 
@@ -102,6 +106,9 @@ usage(int status)
 		"  -b  --brightness +/-f\tchange brightness by given amount.\n"
 		"  -B  --get-brightness\tprint the current brightness to stdout.\n"
 		"\t\t\tinstead of the screen mode\n"
+		"  -r  --rotate degrees\tturn the screen by 0, 90, 180 or 270 degrees\n"
+		"\t\t\tclockwise, and keep it that way.\n"
+		"  -R  --get-rotation\tprint the current rotation to stdout.\n"
 		"  -m  --modeline\taccept and print X-style modeline modes:\n"
 		"\t\t\t  <pclk> <h-display> <h-sync-start> <h-sync-end> <h-total>\n"
 		"\t\t\t  <v-disp> <v-sync-start> <v-sync-end> <v-total> [flags] "
@@ -122,6 +129,8 @@ main(int argc, char** argv)
 	bool listModes = false;
 	bool modeLine = false;
 	bool getBrightness = false;
+	bool getRotation = false;
+	int rotation = -1;
 	bool confirm = true;
 	int width = -1;
 	int height = -1;
@@ -135,7 +144,7 @@ main(int argc, char** argv)
 	// the display resolution!
 
 	int c;
-	while ((c = getopt_long(argc, argv, "shlfqmb:B", kLongOptions, NULL)) != -1) {
+	while ((c = getopt_long(argc, argv, "shlfqmb:Br:R", kLongOptions, NULL)) != -1) {
 		switch (c) {
 			case 0:
 				break;
@@ -163,6 +172,12 @@ main(int argc, char** argv)
 				break;
 			case 'B':
 				getBrightness = true;
+				break;
+			case 'r':
+				rotation = strtol(optarg, NULL, 10);
+				break;
+			case 'R':
+				getRotation = true;
 				break;
 			case 'h':
 				usage(0);
@@ -268,6 +283,37 @@ main(int argc, char** argv)
 		if (brightness < 0.f || brightness > 1.f)
 			printf("Brightness %f is out of range\n", brightness);
 		screen.SetBrightness(brightness);
+	}
+
+	if (rotation >= 0 || getRotation) {
+		BPrivate::BPrivateScreen* screen
+			= BPrivate::BPrivateScreen::Get(B_MAIN_SCREEN_ID.id);
+		if (screen == NULL) {
+			fprintf(stderr, "Could not access the screen\n");
+			return 1;
+		}
+
+		status_t status = B_OK;
+		int32 degrees = 0;
+		if (rotation >= 0)
+			status = screen->SetRotation(rotation);
+		else
+			status = screen->GetRotation(&degrees);
+		BPrivate::BPrivateScreen::Put(screen);
+
+		if (status != B_OK) {
+			fprintf(stderr, "Could not %s the rotation: %s\n",
+				rotation >= 0 ? "set" : "get", strerror(status));
+			return 1;
+		}
+		if (getRotation) {
+			if (!shortOutput)
+				printf("Rotation: ");
+			printf("%" B_PRId32 "\n", degrees);
+			return 0;
+		}
+		if (!setMode && !listModes)
+			return 0;
 	}
 
 	if (listModes) {

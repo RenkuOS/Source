@@ -74,10 +74,15 @@ private:
 			status_t	_GetModeFromSpace(uint32 space, display_mode* mode);
 			status_t	_InitClone();
 			status_t	_AssertDisplayMode(display_mode* mode);
+			status_t	_SetDisplayMode(display_mode* mode);
+			bool		_IsScreenRotated();
+			status_t	_EmulateDisplayMode(display_mode* mode);
+			void		_StopEmulation();
+			struct emulated_screen* _EmulatedScreen();
 
 private:
 			uint16		_reserved0;
-			bool		_reserved1;
+			bool		fEmulating;
 			bool		fWorkState;
 			bool		fWindowState;
 			bool		fActivateState;
@@ -107,7 +112,8 @@ private:
 	GetAccelerantHook	fGetAccelerantHook;
 	wait_engine_idle	fWaitEngineIdle;
 
-			uint32		_reserved[163];
+			area_id		fEmulationArea;
+			uint32		_reserved[162];
 };
 
 #endif

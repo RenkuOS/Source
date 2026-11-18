@@ -52,6 +52,7 @@ class DecorAddOn;
 class DrawingEngine;
 class Compositor;
 class HWInterface;
+class ScreenEmulation;
 class ServerApp;
 class Window;
 class WorkspacesView;
@@ -132,11 +133,17 @@ public:
 			void				RevertScreenModes(uint32 workspaces);
 
 			status_t			SetBrightness(int32 id, float brightness);
+			status_t			SetScreenRotation(int32 id, int32 degrees);
 
 			MultiLocker&		ScreenLocker() { return fScreenLock; }
 
 			status_t			LockDirectScreen(team_id team);
 			status_t			UnlockDirectScreen(team_id team);
+			status_t			EmulateScreen(team_id team, uint32 width,
+									uint32 height, uint32 displayWidth,
+									uint32 displayHeight, color_space space,
+									area_id* _area);
+			void				StopScreenEmulation(team_id team);
 			bool				IsDirectScreenLocked() const
 									{ return fDirectScreenTeam != -1; }
 
@@ -399,6 +406,11 @@ private:
 
 			ObjectDeleter<Compositor>
 								fCompositor;
+
+			// for a BWindowScreen that can't have the real screen
+			BLocker				fScreenEmulationLock;
+			ObjectDeleter<ScreenEmulation>
+								fScreenEmulation;
 };
 
 #endif	// DESKTOP_H

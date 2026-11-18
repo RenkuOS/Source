@@ -55,6 +55,7 @@
 #include "HWInterface.h"
 #include "InputManager.h"
 #include "Screen.h"
+#include "ScreenEmulation.h"
 #include "ScreenManager.h"
 #include "ServerApp.h"
 #include "ServerConfig.h"
@@ -529,6 +530,26 @@ Desktop::Init()
 	if (fVirtualScreen.HWInterface() == NULL) {
 		debug_printf("Could not initialize graphics output. Exiting.\n");
 		return B_ERROR;
+	}
+
+	// Restore the rotation, which belongs to the screen like the brightness
+	{
+		Screen* screen = fVirtualScreen.ScreenAt(0);
+		monitor_info info;
+		bool hasInfo = (screen->GetMonitorInfo(info) == B_OK);
+
+		screen_configuration* stored = fWorkspaces[0]
+			.StoredScreenConfiguration().BestFit(screen->ID(),
+				hasInfo ? &info : NULL);
+		if (stored != NULL && stored->rotation != 0
+			&& screen->SetRotation(stored->rotation) == B_OK) {
+			fVirtualScreen.UpdateFrame();
+
+			screen_configuration* current = fWorkspaces[0]
+				.CurrentScreenConfiguration().GetByID(screen->ID());
+			if (current != NULL)
+				current->frame = screen->Frame();
+		}
 	}
 
 	HWInterface()->SetDPMSMode(B_DPMS_ON);
@@ -1019,6 +1040,89 @@ Desktop::SetBrightness(int32 id, float brightness)
 }
 
 
+/*!	The frame of a screen in \a mode, turned by \a degrees */
+static BRect
+rotated_screen_frame(const display_mode& mode, int32 degrees)
+{
+	if (degrees == 90 || degrees == 270)
+		return BRect(0, 0, mode.virtual_height - 1, mode.virtual_width - 1);
+	return BRect(0, 0, mode.virtual_width - 1, mode.virtual_height - 1);
+}
+
+
+/*!	Turns screen \a id by \a degrees clockwise. Like the brightness, the
+	rotation belongs to the screen rather than to a workspace, and is kept for
+	the next boot in the first workspace's configuration.
+*/
+status_t
+Desktop::SetScreenRotation(int32 id, int32 degrees)
+{
+	if (!::HWInterface::IsValidRotation(degrees))
+		return B_BAD_VALUE;
+
+	AutoWriteLocker _(fWindowLock);
+
+	Screen* screen = fVirtualScreen.ScreenByID(id);
+	if (screen == NULL)
+		return B_NAME_NOT_FOUND;
+	if (screen->Rotation() == degrees)
+		return B_OK;
+
+	_SuspendDirectFrameBufferAccess();
+
+	{
+		AutoWriteLocker locker(fScreenLock);
+
+		status_t status = screen->SetRotation(degrees);
+		if (status != B_OK) {
+			locker.Unlock();
+
+			_ResumeDirectFrameBufferAccess();
+			return status;
+		}
+	}
+
+	// The screen's frame turns with it, whatever the mode in each workspace
+	for (int32 workspace = 0; workspace < kMaxWorkspaces; workspace++) {
+		screen_configuration* current = fWorkspaces[workspace]
+			.CurrentScreenConfiguration().GetByID(id);
+		if (current == NULL)
+			continue;
+
+		current->frame = rotated_screen_frame(current->mode, degrees);
+	}
+
+	monitor_info info;
+	bool hasInfo = screen->GetMonitorInfo(info) == B_OK;
+
+	ScreenConfigurations& stored = fWorkspaces[0].StoredScreenConfiguration();
+	screen_configuration* previous = stored.BestFit(id,
+		hasInfo ? &info : NULL);
+
+	display_mode mode;
+	float brightness = 1.0f;
+	if (previous != NULL) {
+		mode = previous->mode;
+		brightness = previous->brightness;
+	} else
+		screen->GetMode(mode);
+
+	if (stored.Set(id, hasInfo ? &info : NULL,
+			rotated_screen_frame(mode, degrees), mode, brightness) == B_OK) {
+		screen_configuration* configuration = stored.BestFit(id,
+			hasInfo ? &info : NULL);
+		if (configuration != NULL)
+			configuration->rotation = degrees;
+		StoreWorkspaceConfiguration(0);
+	}
+
+	_ScreenChanged(screen);
+	_ResumeDirectFrameBufferAccess();
+
+	return B_OK;
+}
+
+
 status_t
 Desktop::LockDirectScreen(team_id team)
 {
@@ -1030,6 +1134,10 @@ Desktop::LockDirectScreen(team_id team)
 		fDirectScreenTeam = team;
 		if (fCompositor.IsSet())
 			fCompositor->ScreenTaken();
+
+		BAutolock _(fScreenEmulationLock);
+		if (fScreenEmulation.IsSet() && fScreenEmulation->Team() == team)
+			fScreenEmulation->Start(HWInterface());
 	}
 
 	return status;
@@ -1040,14 +1148,83 @@ status_t
 Desktop::UnlockDirectScreen(team_id team)
 {
 	if (fDirectScreenTeam == team) {
+		bool emulated = false;
+		{
+			BAutolock _(fScreenEmulationLock);
+			if (fScreenEmulation.IsSet() && fScreenEmulation->IsRunning()) {
+				fScreenEmulation->Stop();
+				emulated = true;
+			}
+		}
+
 		fDirectScreenLock.Unlock();
 		fDirectScreenTeam = -1;
 		if (fCompositor.IsSet())
 			fCompositor->ScreenReleased();
+		else if (emulated) {
+			// The mode didn't change, nothing has redrawn the screen.
+			Redraw();
+		}
 		return B_OK;
 	}
 
 	return B_PERMISSION_DENIED;
+}
+
+
+/*!	Gives \a team, which has a BWindowScreen, a frame buffer of its own of
+	\a width by \a height pixels in \a space, to draw to in \a _area. While
+	the team has the screen, \a displayWidth by \a displayHeight of it are
+	shown on the screen, scaled to fit and turned with it. That is for a
+	rotated screen, or a mode the screen doesn't have.
+*/
+status_t
+Desktop::EmulateScreen(team_id team, uint32 width, uint32 height,
+	uint32 displayWidth, uint32 displayHeight, color_space space,
+	area_id* _area)
+{
+	BAutolock _(fScreenEmulationLock);
+
+	if (fScreenEmulation.IsSet() && fScreenEmulation->Team() != team) {
+		if (fScreenEmulation->IsRunning())
+			return B_BUSY;
+		fScreenEmulation.Unset();
+	}
+
+	if (!fScreenEmulation.IsSet()) {
+		fScreenEmulation.SetTo(new(std::nothrow) ScreenEmulation(team));
+		if (!fScreenEmulation.IsSet())
+			return B_NO_MEMORY;
+	}
+
+	status_t status = fScreenEmulation->SetMode(width, height, displayWidth,
+		displayHeight, space);
+	if (status != B_OK)
+		return status;
+
+	if (fDirectScreenTeam == team)
+		fScreenEmulation->Start(HWInterface());
+
+	*_area = fScreenEmulation->Area();
+	return B_OK;
+}
+
+
+void
+Desktop::StopScreenEmulation(team_id team)
+{
+	bool wasRunning = false;
+	{
+		BAutolock _(fScreenEmulationLock);
+		if (!fScreenEmulation.IsSet() || fScreenEmulation->Team() != team)
+			return;
+
+		wasRunning = fScreenEmulation->IsRunning();
+		fScreenEmulation.Unset();
+	}
+
+	if (wasRunning && !fCompositor.IsSet())
+		Redraw();
 }
 
 
@@ -3777,7 +3954,7 @@ Desktop::_ScreenChanged(Screen* screen)
 
 	// update our cached screen region
 	fScreenRegion.Set(screen->Frame());
-	gInputManager->UpdateScreenBounds(screen->Frame());
+	gInputManager->UpdateScreenBounds(screen->Frame(), screen->Rotation());
 
 	BRegion background;
 	_RebuildClippingForAllWindows(background);
