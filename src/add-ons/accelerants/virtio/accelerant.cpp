@@ -135,7 +135,9 @@ virtio_gpu_clone_accelerant(void *info)
 	strcpy(path, "/dev/");
 	strcat(path, (const char *)info);
 
-	int fd = open(path, B_READ_WRITE);
+	// a clone lives in an ordinary application: keep its children from
+	// inheriting the device
+	int fd = open(path, B_READ_WRITE | O_CLOEXEC);
 	if (fd < 0)
 		return errno;
 
@@ -153,7 +155,9 @@ virtio_gpu_clone_accelerant(void *info)
 	return B_OK;
 
 err2:
+	// closes fd as well, since this is a clone
 	uninit_common();
+	return status;
 err1:
 	close(fd);
 	return status;
