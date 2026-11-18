@@ -378,6 +378,7 @@ usb_disk_operation_interrupt(device_lun *lun, uint8* operation,
 		result = usb_disk_transfer_data(device, directionIn, data);
 		if (result != B_OK) {
 			TRACE("Error %s in data phase\n", strerror(result));
+			usb_disk_reset_recovery(device, _action);
 			return result;
 		}
 
@@ -446,8 +447,12 @@ usb_disk_operation_bulk(device_lun *lun, uint8 *operation, size_t operationLengt
 
 	status_t result = usb_disk_transfer_data(device, false, &command,
 		sizeof(usb_massbulk_command_block_wrapper));
-	if (result != B_OK)
+	if (result != B_OK) {
+		// The device may have taken the command block anyway; without a
+		// reset it then answers the next one with a stall.
+		usb_disk_reset_recovery(device, _action);
 		return result;
+	}
 
 	if (device->status != B_OK ||
 		device->actual_length != sizeof(usb_massbulk_command_block_wrapper)) {
@@ -462,8 +467,15 @@ usb_disk_operation_bulk(device_lun *lun, uint8 *operation, size_t operationLengt
 	if (data.vec_count != 0) {
 		// we have data to transfer in a data stage
 		result = usb_disk_transfer_data(device, directionIn, data);
-		if (result != B_OK)
+		if (result != B_OK) {
+			// Timed out and cancelled in the middle of the data phase: the
+			// device is still in this command, waiting for or holding data.
+			// Recover, or every later command fails behind it.
+			TRACE_ALWAYS("data phase failed: %s, resetting\n",
+				strerror(result));
+			usb_disk_reset_recovery(device, _action);
 			return result;
+		}
 
 		transferedData = device->actual_length;
 		if (device->status != B_OK || transferedData != *dataLength) {
@@ -1271,6 +1283,35 @@ usb_disk_device_removed(void *cookie)
 }
 
 
+// A block read or write that failed with the device reset (err_act_retry)
+// is tried again: the failure is usually transient -- under a virtual
+// machine, a host that stopped the emulated device for longer than the data
+// timeout -- and a single I/O error is fatal when it hits a journal.
+static status_t
+usb_disk_bulk_rw_with_retries(device_lun *lun, uint8 *commandBlock,
+	size_t commandLength, struct transfer_data data, size_t *length,
+	bool directionIn)
+{
+	const size_t requested = *length;
+	status_t result = B_ERROR;
+	for (int tries = 0; tries < 4; tries++) {
+		err_act action = err_act_ok;
+		*length = requested;
+		result = usb_disk_operation(lun, commandBlock, commandLength, data,
+			length, directionIn, &action);
+		if (result == B_OK || lun->device->removed
+			|| (action != err_act_retry && action != err_act_many_retries)) {
+			break;
+		}
+		dprintf("usb_disk: %s of %" B_PRIuSIZE " bytes failed (%s), retrying"
+			" after a reset (%d)\n", directionIn ? "read" : "write", requested,
+			strerror(result), tries + 1);
+		snooze(100000 * (tries + 1));
+	}
+	return result;
+}
+
+
 static status_t
 usb_disk_block_read(device_lun *lun, uint64 blockPosition, size_t blockCount,
 	struct transfer_data data, size_t *length)
@@ -1312,9 +1353,8 @@ usb_disk_block_read(device_lun *lun, uint64 blockPosition, size_t blockCount,
 		commandBlock[5] = blockPosition;
 		commandBlock[7] = blockCount >> 8;
 		commandBlock[8] = blockCount;
-		status_t result = usb_disk_operation(lun, commandBlock, 10,
+		return usb_disk_bulk_rw_with_retries(lun, commandBlock, 10,
 			data, length, true);
-		return result;
 	} else {
 		commandBlock[0] = SCSI_READ_16;
 		commandBlock[1] = 0;
@@ -1330,9 +1370,8 @@ usb_disk_block_read(device_lun *lun, uint64 blockPosition, size_t blockCount,
 		commandBlock[11] = blockCount >> 16;
 		commandBlock[12] = blockCount >> 8;
 		commandBlock[13] = blockCount;
-		status_t result = usb_disk_operation(lun, commandBlock, 16,
+		return usb_disk_bulk_rw_with_retries(lun, commandBlock, 16,
 			data, length, true);
-		return result;
 	}
 }
 
@@ -1384,7 +1423,7 @@ usb_disk_block_write(device_lun *lun, uint64 blockPosition, size_t blockCount,
 		commandBlock[5] = blockPosition;
 		commandBlock[7] = blockCount >> 8;
 		commandBlock[8] = blockCount;
-		status_t result = usb_disk_operation(lun, commandBlock, 10,
+		status_t result = usb_disk_bulk_rw_with_retries(lun, commandBlock, 10,
 			data, length, false);
 		if (result == B_OK)
 			lun->should_sync = true;
@@ -1404,7 +1443,7 @@ usb_disk_block_write(device_lun *lun, uint64 blockPosition, size_t blockCount,
 		commandBlock[11] = blockCount >> 16;
 		commandBlock[12] = blockCount >> 8;
 		commandBlock[13] = blockCount;
-		status_t result = usb_disk_operation(lun, commandBlock, 16,
+		status_t result = usb_disk_bulk_rw_with_retries(lun, commandBlock, 16,
 			data, length, false);
 		if (result == B_OK)
 			lun->should_sync = true;
