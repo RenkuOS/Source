@@ -30,9 +30,9 @@ InputApplication::InputApplication()
 	fIcons()
 {
 	BRect rect(0, 0, 600, 500);
-	InputWindow* window = new InputWindow(rect);
+	fWindow = new InputWindow(rect);
 	DeviceListItemView::SetIcons(&fIcons);
-	window->Show();
+	fWindow->Show();
 }
 
 
@@ -71,6 +71,10 @@ InputApplication::MessageReceived(BMessage* message)
 			fWindow->PostMessage(message);
 			break;
 		}
+		case kMsgSelectDevice:
+			fWindow->PostMessage(message);
+			fWindow->Activate();
+			break;
 		default:
 			BApplication::MessageReceived(message);
 	}
