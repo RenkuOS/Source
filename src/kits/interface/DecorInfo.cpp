@@ -523,7 +523,20 @@ DecorInfoUtility::CurrentDecorator()
 
 	BString name;
 	get_decorator(name);
-	return FindDecorator(name);
+	DecorInfo* decor = FindDecorator(name);
+	if (decor == NULL && name.StartsWith("/")) {
+		// A decorator outside the decorator folders, such as one that an
+		// application has in its own package
+		decor = new(std::nothrow) DecorInfo(name);
+		if (decor == NULL || decor->InitCheck() != B_OK
+			|| !fList.AddItem(decor)) {
+			delete decor;
+			decor = NULL;
+		}
+	}
+
+	// callers expect one
+	return decor != NULL ? decor : DefaultDecorator();
 }
 
 
