@@ -140,8 +140,9 @@ CommitTransactionHandler::CommitTransactionHandler(Volume* volume,
 CommitTransactionHandler::~CommitTransactionHandler()
 {
 	// Delete Package objects we created in case of error (on success
-	// fPackagesToActivate will be empty).
-	int32 count = fPackagesToActivate.CountItems();
+	// fPackagesToActivate will be empty). In first boot processing they are
+	// the ones of fVolumeState, deleted with it below.
+	int32 count = fFirstBootProcessing ? 0 : fPackagesToActivate.CountItems();
 	for (int32 i = 0; i < count; i++) {
 		Package* package = fPackagesToActivate.ItemAt(i);
 		if (fPackagesAlreadyAdded.find(package)
