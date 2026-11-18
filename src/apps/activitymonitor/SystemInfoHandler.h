@@ -34,6 +34,8 @@ public:
 
 private:
 			void		_UpdateClipboardData();
+	static	int			_OpenThermalSensor();
+	static	float		_ReadTemperature(int fd);
 
 	uint32				fRunningApps;
 	uint32				fClipboardSize;

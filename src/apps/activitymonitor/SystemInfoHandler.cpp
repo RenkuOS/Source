@@ -6,6 +6,9 @@
 
 #include "SystemInfoHandler.h"
 
+#include <dirent.h>
+#include <fcntl.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -35,19 +38,7 @@ SystemInfoHandler::SystemInfoHandler()
 	fMediaConnections = 0;
 	fMediaBuffers = 0;
 
-	// the first thermal sensor that is there; all of these drivers print
-	// "Current Temperature: " in their text output
-	static const char* const kThermalDevices[] = {
-		"/dev/power/acpi_thermal/0",
-		"/dev/power/pch_thermal/0",
-		"/dev/power/amd_thermal/0",
-		"/dev/power/jh7110_thermal/0",
-	};
-	fThermalFD = -1;
-	for (size_t i = 0; i < B_COUNT_OF(kThermalDevices) && fThermalFD < 0;
-			i++) {
-		fThermalFD = open(kThermalDevices[i], O_RDONLY);
-	}
+	fThermalFD = _OpenThermalSensor();
 	if (fThermalFD < 0) {
 		fThermalZoneName = B_TRANSLATE("No thermal sensor");
 		return;
@@ -63,7 +54,82 @@ SystemInfoHandler::SystemInfoHandler()
 
 SystemInfoHandler::~SystemInfoHandler()
 {
-	close(fThermalFD);
+	if (fThermalFD >= 0)
+		close(fThermalFD);
+}
+
+
+/*!	Opens the first device that reports a "Current Temperature": ACPI thermal
+	zones first, then the other thermal drivers in /dev/power, then the sensors
+	in /dev/sensor (as on boards without ACPI).
+*/
+/*static*/ int
+SystemInfoHandler::_OpenThermalSensor()
+{
+	int fd = open("/dev/power/acpi_thermal/0", O_RDONLY);
+	if (fd >= 0)
+		return fd;
+
+	DIR* dir = opendir("/dev/power");
+	if (dir != NULL) {
+		dirent* entry;
+		while ((entry = readdir(dir)) != NULL) {
+			size_t length = strlen(entry->d_name);
+			if (length <= 8 || strcmp(entry->d_name + length - 8, "_thermal") != 0)
+				continue;
+			BString path("/dev/power/");
+			path << entry->d_name << "/0";
+			fd = open(path.String(), O_RDONLY);
+			if (fd >= 0 && !isnan(_ReadTemperature(fd)))
+				break;
+			if (fd >= 0)
+				close(fd);
+			fd = -1;
+		}
+		closedir(dir);
+	}
+	if (fd >= 0)
+		return fd;
+
+	dir = opendir("/dev/sensor");
+	if (dir != NULL) {
+		dirent* entry;
+		while ((entry = readdir(dir)) != NULL) {
+			if (entry->d_name[0] == '.')
+				continue;
+			BString path("/dev/sensor/");
+			path << entry->d_name;
+			fd = open(path.String(), O_RDONLY);
+			if (fd >= 0 && !isnan(_ReadTemperature(fd)))
+				break;
+			if (fd >= 0)
+				close(fd);
+			fd = -1;
+		}
+		closedir(dir);
+	}
+	return fd;
+}
+
+
+/*static*/ float
+SystemInfoHandler::_ReadTemperature(int fd)
+{
+	float temperature = std::nanf("");
+	char buffer[512];
+	// TODO it would be nice to use ioctl to get direct access to the temperature instead,
+	// but that provides raw values from the sensors without the "kelvin offset" fixup, making
+	// it unusable.
+	// The ioctl reply also uses a different format for each of the *_thermal drivers.
+	ssize_t length = pread(fd, buffer, sizeof(buffer) - 1, 0);
+	if (length <= 0)
+		return temperature;
+	buffer[length] = '\0';
+
+	const char* currTemp = strstr(buffer, "Current Temperature: ");
+	if (currTemp != NULL)
+		sscanf(currTemp + strlen("Current Temperature: "), "%f", &temperature);
+	return temperature;
 }
 
 
@@ -233,23 +299,9 @@ SystemInfoHandler::MediaBuffers() const
 float
 SystemInfoHandler::Temperature() const
 {
-	float temperature = std::nanf("");
-	if (fThermalFD >= 0) {
-		char buffer[256];
-		// TODO it would be nice to use ioctl to get direct access to the temperature instead,
-		// but that provides raw values from the sensors without the "kelvin offset" fixup, making
-		// it unusable.
-		// The ioctl reply also uses a different format for each of the *_thermal drivers, so that
-		// would be a problem if ActivityMonitor is extended to collect info from these as well.
-		pread(fThermalFD, buffer, sizeof(buffer), 0);
-
-		char* currTemp = strstr(buffer, "Current Temperature: ");
-		if (currTemp != NULL)
-			sscanf(currTemp + strlen("Current Temperature: "), "%f", &temperature);
-
-	}
-
-	return temperature;
+	if (fThermalFD < 0)
+		return std::nanf("");
+	return _ReadTemperature(fThermalFD);
 }
 
 
