@@ -20,6 +20,7 @@
 #include <driver_settings.h>
 #include <Entry.h>
 #include <File.h>
+#include <OS.h>
 #include <ObjectList.h>
 #include <Path.h>
 #include <PathFinder.h>
@@ -556,6 +557,42 @@ LaunchDaemon::ReadyToRun()
 }
 
 
+// BMessageRunner (and anything else routed through BRoster::Private(),
+// which always targets the global be_roster) cannot be used here: the
+// *system* launch_daemon tells be_roster SetWithoutRegistrar(true) in its
+// own constructor, since the registrar isn't necessarily reachable yet --
+// be_roster's fMessenger is simply never pointed at it, so
+// BMessageRunner::StartSending()'s BRoster::Private().SendTo() always
+// returns B_BAD_VALUE there. A plain thread that snoozes and then posts
+// straight to this BLooper's own port has no such dependency.
+struct _DeferredRestart {
+	LaunchDaemon*	daemon;
+	BString			name;
+	bigtime_t		delay;
+};
+
+
+static status_t
+deferred_restart_thread(void* data)
+{
+	_DeferredRestart* restart = (_DeferredRestart*)data;
+
+	if (restart->delay > 0)
+		snooze(restart->delay);
+
+	BMessage message(kMsgRestartJob);
+	message.AddString("name", restart->name);
+	status_t status = restart->daemon->PostMessage(&message);
+	if (status != B_OK) {
+		fprintf(stderr, "launch_daemon: could not post deferred restart "
+			"for \"%s\": %s\n", restart->name.String(), strerror(status));
+	}
+
+	delete restart;
+	return B_OK;
+}
+
+
 void
 LaunchDaemon::MessageReceived(BMessage* message)
 {
@@ -587,8 +624,46 @@ LaunchDaemon::MessageReceived(BMessage* message)
 					status_t status = rosterPrivate.IsShutDownInProgress(
 						&inProgress);
 					if (status != B_OK || !inProgress) {
-						// TODO: take restart throttle into account
-						_LaunchJob(job);
+						// Services that exit again right after being
+						// launched (for example because something they
+						// depend on, like a network link, isn't ready yet)
+						// must not be relaunched as fast as the system can
+						// manage: with no minimum interval between
+						// attempts, a service stuck failing on every
+						// launch starves the rest of the system of CPU
+						// time in a tight respawn loop instead of a few
+						// retries a second.
+						static const bigtime_t kMinRestartInterval = 1000000;
+						bigtime_t elapsed
+							= system_time() - job->LastLaunchTime();
+						if (elapsed >= kMinRestartInterval) {
+							_LaunchJob(job);
+						} else {
+							_DeferredRestart* restart
+								= new (std::nothrow) _DeferredRestart;
+							if (restart != NULL) {
+								restart->daemon = this;
+								restart->name = job->Name();
+								restart->delay = kMinRestartInterval - elapsed;
+
+								thread_id thread = spawn_thread(
+									deferred_restart_thread,
+									"launch job restart delay",
+									B_LOW_PRIORITY, restart);
+								if (thread >= 0) {
+									resume_thread(thread);
+								} else {
+									fprintf(stderr, "launch_daemon: could "
+										"not spawn restart-delay thread for "
+										"\"%s\": %s, restarting now\n",
+										job->Name(), strerror(thread));
+									delete restart;
+									_LaunchJob(job);
+								}
+							} else {
+								_LaunchJob(job);
+							}
+						}
 					}
 				}
 			}
@@ -686,6 +761,30 @@ LaunchDaemon::MessageReceived(BMessage* message)
 		case B_GET_LAUNCH_LOG:
 			_HandleGetLaunchLog(message);
 			break;
+
+		case kMsgRestartJob:
+		{
+			// A throttled service restart (see B_SYSTEM_OBJECT_UPDATE
+			// above) is now due.
+			const char* name = message->GetString("name");
+			if (name == NULL)
+				break;
+
+			Job* job = FindJob(name);
+			if (job != NULL && !job->IsRunning()) {
+				// The throttle delay means real time passed since the
+				// B_TEAM_DELETED handler decided to defer this -- shutdown
+				// could have started in the meantime, same check as there.
+				bool inProgress = false;
+				BRoster roster;
+				BRoster::Private rosterPrivate(roster);
+				status_t status = rosterPrivate.IsShutDownInProgress(
+					&inProgress);
+				if (status != B_OK || !inProgress)
+					_LaunchJob(job);
+			}
+			break;
+		}
 
 		case kMsgEventTriggered:
 		{

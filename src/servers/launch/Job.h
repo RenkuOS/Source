@@ -81,6 +81,8 @@ public:
 
 			team_id				Team() const;
 
+			bigtime_t			LastLaunchTime() const;
+
 			const PortMap&		Ports() const;
 			port_id				Port(const char* name = NULL) const;
 
@@ -134,6 +136,7 @@ private:
 			PortMap				fPortMap;
 			status_t			fInitStatus;
 			team_id				fTeam;
+			bigtime_t			fLastLaunchTime;
 			port_id				fDefaultPort;
 			uint32				fToken;
 			status_t			fLaunchStatus;

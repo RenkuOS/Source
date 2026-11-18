@@ -10,6 +10,7 @@
 
 
 static const uint32 kMsgEventTriggered = 'ldet';
+static const uint32 kMsgRestartJob = 'ldrj';
 
 
 #endif // LAUNCH_DAEMON_H
