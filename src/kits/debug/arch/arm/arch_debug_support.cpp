@@ -15,7 +15,17 @@ status_t
 arch_debug_get_instruction_pointer(debug_context *context, thread_id thread,
 	void **ip, void **stackFrameAddress)
 {
-	return B_ERROR;
+	debug_cpu_state cpuState;
+	status_t error = debug_get_cpu_state(context, thread, NULL, &cpuState);
+	if (error != B_OK)
+		return error;
+
+	*ip = (void*)cpuState.r15;
+	*stackFrameAddress = (void*)cpuState.r11;
+		// the frame pointer in ARM state; arch_debug_get_stack_frame() does
+		// not walk the frames yet
+
+	return B_OK;
 }
 
 
