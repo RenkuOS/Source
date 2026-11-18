@@ -413,22 +413,6 @@ DefaultManager::_RescanThread()
 		if (fPhysicalAudioOut == -1)
 			_FindPhysical(&fPhysicalAudioOut, kMsgTypeAudioOut, false,
 				B_MEDIA_RAW_AUDIO);
-		else if (fUsingFallback[_TypeIndex(kMsgTypeAudioOut)]) {
-			// The saved output was not there at the first look, the output
-			// is a stand-in: a node that comes later, as a USB sound card
-			// or Bluetooth speakers, may be it. Then the mixer goes over
-			// to it, as when the output is chosen while running.
-			media_node_id saved = -1;
-			_FindPhysical(&saved, kMsgTypeAudioOut, false,
-				B_MEDIA_RAW_AUDIO);
-			if (!fUsingFallback[_TypeIndex(kMsgTypeAudioOut)]
-				&& saved != -1 && saved != fPhysicalAudioOut) {
-				syslog(LOG_NOTICE, "media_server: the default audio output "
-					"is there now, the mixer goes over to it\n");
-				fPhysicalAudioOut = saved;
-				fMixerConnected = false;
-			}
-		}
 		if (fPhysicalAudioIn == -1)
 			_FindPhysical(&fPhysicalAudioIn, kMsgTypeAudioIn, true,
 				B_MEDIA_RAW_AUDIO);
