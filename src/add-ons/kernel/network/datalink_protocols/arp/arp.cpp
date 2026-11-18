@@ -388,7 +388,10 @@ arp_update_entry(in_addr_t protocolAddress, sockaddr_dl *hardwareAddress,
 		// specific address - redefining INADDR_ANY is always allowed).
 		// Right now, you have to manually purge the ARP entries (or wait some
 		// time) to let us switch to the new address.
-		if (protocolAddress != INADDR_ANY
+		// Setting our own (local) address always overrides a learned entry.
+		const bool makeLocal = (flags & ARP_FLAG_LOCAL) != 0
+			&& (entry->flags & ARP_FLAG_LOCAL) == 0;
+		if (protocolAddress != INADDR_ANY && !makeLocal
 			&& entry->hardware_address.sdl_alen != 0
 			&& memcmp(LLADDR(&entry->hardware_address),
 				LLADDR(hardwareAddress), ETHER_ADDRESS_LENGTH)) {
@@ -397,6 +400,13 @@ arp_update_entry(in_addr_t protocolAddress, sockaddr_dl *hardwareAddress,
 				"%02x:%02x:%02x:%02x:%02x:%02x.\n", protocolAddress,
 				data[0], data[1], data[2], data[3], data[4], data[5]);
 			return B_ERROR;
+		}
+
+		if (makeLocal) {
+			// Stop the learned entry's stale timer, it is permanent now.
+			sStackModule->cancel_timer(&entry->timer);
+			entry->timer_state = ARP_NO_STATE;
+			entry->flags = (entry->flags & ~ARP_FLAG_REJECT) | flags;
 		}
 
 		entry->hardware_address = *hardwareAddress;
