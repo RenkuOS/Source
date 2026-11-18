@@ -690,6 +690,36 @@ f11_init(rmi4_device* device)
 }
 
 
+// The button a click of the pad stands for. A finger in the bottom fifth
+// presses one of movement_maker's software buttons: left, middle (the sixth
+// in the centre) or right, by where it is. That holds while another finger
+// rests elsewhere on the pad, ready to drag: counting both fingers would
+// make it a right click. Without a finger there, two fingers are a right
+// click and three a middle click.
+static uint8
+click_button(rmi4_device* device, int count)
+{
+	if (count < 2)
+		return kButtonLeft;
+
+	uint32 bottom = device->maxY / 5;
+	for (int i = 0; i < device->fingerCount; i++) {
+		if ((device->fingerMask & (1 << i)) == 0)
+			continue;
+		const rmi4_finger& finger = device->fingers[i];
+		if (finger.y >= bottom)
+			continue;
+		if (finger.x > device->maxX / 12 * 7)
+			return kButtonRight;
+		if (finger.x > device->maxX / 12 * 5)
+			return kButtonMiddle;
+		return kButtonLeft;
+	}
+
+	return count >= 3 ? kButtonMiddle : kButtonRight;
+}
+
+
 static void
 sensor_report(rmi4_device* device)
 {
@@ -752,10 +782,8 @@ sensor_report(rmi4_device* device)
 	// a middle click, but the button is chosen when the pad goes down and
 	// kept until it comes up: the fingers then change while dragging.
 	if (device->padButtons != 0) {
-		if (device->clickButton == 0) {
-			device->clickButton = count >= 3 ? kButtonMiddle
-				: count == 2 ? kButtonRight : kButtonLeft;
-		}
+		if (device->clickButton == 0)
+			device->clickButton = click_button(device, count);
 	} else
 		device->clickButton = 0;
 
