@@ -309,7 +309,10 @@ m_free(struct mbuf* memoryBuffer)
 {
 	struct mbuf* next = memoryBuffer->m_next;
 
-	if ((memoryBuffer->m_flags & (M_PKTHDR|M_NOFREE)) == (M_PKTHDR|M_NOFREE))
+	// FreeBSD's mbuf zone destructor deletes the tags of every packet header
+	// mbuf that is not M_NOFREE; there is no such zone here, and a wireless
+	// driver tags each received frame.
+	if ((memoryBuffer->m_flags & M_PKTHDR) != 0)
 		m_tag_delete_chain(memoryBuffer, NULL);
 	if (memoryBuffer->m_flags & M_EXT)
 		mb_free_ext(memoryBuffer);
