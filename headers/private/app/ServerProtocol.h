@@ -383,6 +383,10 @@ enum {
 	// Whether the desktop is composited right now
 	AS_IS_DESKTOP_COMPOSITED,
 
+	// Screen rotation, in degrees clockwise
+	AS_SCREEN_SET_ROTATION,
+	AS_SCREEN_GET_ROTATION,
+
 	AS_LAST_CODE
 };
 

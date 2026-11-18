@@ -1,5 +1,6 @@
 SubDir HAIKU_TOP src bin screenmode ;
 
+UsePrivateHeaders interface ;
 UsePrivateHeaders [ FDirName graphics common ] ;
 UsePrivateHeaders [ FDirName graphics radeon ] ;
 	# for multimon.h

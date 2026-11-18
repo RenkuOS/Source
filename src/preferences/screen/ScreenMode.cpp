@@ -18,6 +18,7 @@
 #include <InterfaceDefs.h>
 #include <String.h>
 
+#include <PrivateScreen.h>
 #include <compute_display_timing.h>
 
 
@@ -156,7 +157,8 @@ screen_mode::operator!=(const screen_mode &other) const
 		|| combine != other.combine
 		|| swap_displays != other.swap_displays
 		|| use_laptop_panel != other.use_laptop_panel
-		|| tv_standard != other.tv_standard;
+		|| tv_standard != other.tv_standard
+		|| rotation != other.rotation;
 }
 
 
@@ -177,6 +179,36 @@ screen_mode::SetTo(const display_mode& mode)
 	swap_displays = false;
 	use_laptop_panel = false;
 	tv_standard = 0;
+	rotation = 0;
+}
+
+
+/*!	Swaps what is horizontal and vertical in \a mode, as between a screen and
+	the same screen turned by 90 degrees.
+*/
+static void
+swap_mode_axes(display_mode& mode)
+{
+	std::swap(mode.virtual_width, mode.virtual_height);
+	std::swap(mode.h_display_start, mode.v_display_start);
+	std::swap(mode.timing.h_display, mode.timing.v_display);
+	std::swap(mode.timing.h_sync_start, mode.timing.v_sync_start);
+	std::swap(mode.timing.h_sync_end, mode.timing.v_sync_end);
+	std::swap(mode.timing.h_total, mode.timing.v_total);
+
+	uint32 polarity = mode.timing.flags & (B_POSITIVE_HSYNC | B_POSITIVE_VSYNC);
+	mode.timing.flags &= ~(B_POSITIVE_HSYNC | B_POSITIVE_VSYNC);
+	if ((polarity & B_POSITIVE_HSYNC) != 0)
+		mode.timing.flags |= B_POSITIVE_VSYNC;
+	if ((polarity & B_POSITIVE_VSYNC) != 0)
+		mode.timing.flags |= B_POSITIVE_HSYNC;
+}
+
+
+static bool
+is_sideways(int32 degrees)
+{
+	return degrees == 90 || degrees == 270;
 }
 
 
@@ -189,6 +221,8 @@ ScreenMode::ScreenMode(BWindow* window)
 	fUpdatedModes(false)
 {
 	memset(fHasOriginal, 0, sizeof(fHasOriginal));
+	// The screen gives its modes as it is shown, rotation included.
+	fModeRotation = _Rotation();
 
 	BScreen screen(window);
 	if (screen.GetModeList(&fModeList, &fModeCount) == B_OK) {
@@ -228,6 +262,25 @@ ScreenMode::Set(const screen_mode& mode, int32 workspace)
 	if (!_GetDisplayMode(mode, displayMode))
 		return B_ENTRY_NOT_FOUND;
 
+	// The rotation belongs to the screen, not to a workspace. The mode list is
+	// as the screen is shown with the rotation of the mode, so the screen is
+	// turned first.
+	if (mode.rotation != _Rotation()) {
+		status_t status = _SetRotation(mode.rotation);
+		if (status != B_OK) {
+			// A rotated screen only takes 32 bit modes: the mode has to be
+			// set first, as the screen is shown now.
+			if (mode.rotation == 0)
+				return status;
+
+			_ToScreenOrientation(displayMode);
+			status = screen.SetMode(workspace, &displayMode, true);
+			if (status == B_OK)
+				status = _SetRotation(mode.rotation);
+			return status;
+		}
+	}
+
 	return screen.SetMode(workspace, &displayMode, true);
 }
 
@@ -253,6 +306,7 @@ ScreenMode::Get(screen_mode& mode, int32 workspace) const
 		mode.use_laptop_panel = false;
 	if (GetTVStandard(&screen, &mode.tv_standard) != B_OK)
 		mode.tv_standard = 0;
+	mode.rotation = _Rotation();
 
 	return B_OK;
 }
@@ -312,6 +366,10 @@ ScreenMode::Revert()
 	if (!fUpdatedModes)
 		return B_ERROR;
 
+	// The original modes are as the screen was shown with its rotation
+	int32 rotation = fOriginal[current_workspace()].rotation;
+	bool rotated = _SetRotation(rotation) == B_OK;
+
 	status_t result = B_OK;
 	screen_mode current;
 	for (int32 workspace = 0; workspace < count_workspaces(); workspace++) {
@@ -335,6 +393,10 @@ ScreenMode::Revert()
 		if (result != B_OK)
 			break;
 	}
+
+	// a rotated screen needs a 32 bit mode first
+	if (!rotated && result == B_OK)
+		result = _SetRotation(rotation);
 
 	return result;
 }
@@ -369,6 +431,8 @@ ScreenMode::GetRefreshLimits(const screen_mode& mode, float& min, float& max)
 	display_mode displayMode;
 	if (!_GetDisplayMode(mode, displayMode))
 		return B_ERROR;
+
+	_ToScreenOrientation(displayMode);
 
 	BScreen screen(fWindow);
 	if (screen.GetPixelClockLimits(&displayMode, &minClock, &maxClock) < B_OK)
@@ -473,6 +537,59 @@ int32
 ScreenMode::CountModes()
 {
 	return fModeCount;
+}
+
+
+/*!	Turns the mode list as the screen will be shown with \a degrees of
+	rotation.
+*/
+void
+ScreenMode::SetModeRotation(int32 degrees)
+{
+	if (is_sideways(degrees) != is_sideways(fModeRotation)) {
+		for (uint32 i = 0; i < fModeCount; i++)
+			swap_mode_axes(fModeList[i]);
+		qsort(fModeList, fModeCount, sizeof(display_mode), compare_mode);
+	}
+	fModeRotation = degrees;
+}
+
+
+/*!	Turns \a mode from the mode list as the screen is shown right now, with
+	the rotation it has.
+*/
+void
+ScreenMode::_ToScreenOrientation(display_mode& mode) const
+{
+	if (is_sideways(fModeRotation) != is_sideways(_Rotation()))
+		swap_mode_axes(mode);
+}
+
+
+int32
+ScreenMode::_Rotation() const
+{
+	int32 degrees = 0;
+	BPrivate::BPrivateScreen* screen = BPrivate::BPrivateScreen::Get(fWindow);
+	if (screen != NULL) {
+		if (screen->GetRotation(&degrees) != B_OK)
+			degrees = 0;
+		BPrivate::BPrivateScreen::Put(screen);
+	}
+	return degrees;
+}
+
+
+status_t
+ScreenMode::_SetRotation(int32 degrees)
+{
+	BPrivate::BPrivateScreen* screen = BPrivate::BPrivateScreen::Get(fWindow);
+	if (screen == NULL)
+		return B_ERROR;
+
+	status_t status = screen->SetRotation(degrees);
+	BPrivate::BPrivateScreen::Put(screen);
+	return status;
 }
 
 
