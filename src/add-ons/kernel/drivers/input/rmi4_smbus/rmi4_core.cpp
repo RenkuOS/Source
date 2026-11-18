@@ -61,6 +61,10 @@ static const bigtime_t kHandOffWait = 120000000;
 static const bigtime_t kIdlePoll = 200000;
 static const bigtime_t kFastPoll = 12000;
 
+// A finger has to move this much (in pad units) between two reports, and
+// twice as much as the active finger, to become the active finger.
+static const int32 kFingerSwitchMove = 8;
+
 static const uint8 kButtonLeft = 0x01;
 static const uint8 kButtonRight = 0x02;
 static const uint8 kButtonMiddle = 0x04;
@@ -689,58 +693,98 @@ f11_init(rmi4_device* device)
 static void
 sensor_report(rmi4_device* device)
 {
-	// Follow the finger that moved most, so that a thumb resting on the
-	// pad does not hold the pointer back; start at the average of the
-	// fingers when the touch begins.
+	// The position reported is that of one finger, the active one. The pad
+	// tells the fingers apart, so a thumb resting on the clickpad does not
+	// move the pointer, and the finger that moves does. The active finger
+	// changes when it lifts, or when another finger clearly moves more.
 	uint32 common = device->fingerMask & device->lastFingerMask;
-	uint32 sumX = 0, sumY = 0, sumZ = 0, sumWidth = 0;
-	int32 deltaX = 0, deltaY = 0, moved = -1;
+	uint32 sumZ = 0, sumWidth = 0;
 	int count = 0;
+	int first = -1;
+	int best = -1;
+	int32 bestMoved = 0;
+	int32 activeMoved = 0;
+	int active = device->activeFinger;
+	if (active >= 0 && (device->fingerMask & (1 << active)) == 0)
+		active = -1;
+
 	for (int i = 0; i < device->fingerCount; i++) {
 		if ((device->fingerMask & (1 << i)) == 0)
 			continue;
 		const rmi4_finger& finger = device->fingers[i];
 		count++;
-		sumX += finger.x;
-		sumY += finger.y;
 		sumZ += finger.z;
 		sumWidth += finger.width;
+		if (first < 0)
+			first = i;
 
 		if ((common & (1 << i)) == 0)
 			continue;
-		int32 dx = (int32)finger.x - (int32)device->lastFingers[i].x;
-		int32 dy = (int32)finger.y - (int32)device->lastFingers[i].y;
-		if (abs(dx) + abs(dy) > moved) {
-			moved = abs(dx) + abs(dy);
-			deltaX = dx;
-			deltaY = dy;
+		int32 moved = abs((int32)finger.x - (int32)device->lastFingers[i].x)
+			+ abs((int32)finger.y - (int32)device->lastFingers[i].y);
+		if (i == active)
+			activeMoved = moved;
+		if (moved > bestMoved) {
+			bestMoved = moved;
+			best = i;
 		}
 	}
 
-	if (count > 0 && device->lastFingerMask == 0) {
-		device->positionX = sumX / count;
-		device->positionY = sumY / count;
-	} else {
-		device->positionX = min_c(max_c(device->positionX + deltaX, 0),
-			(int32)device->maxX);
-		device->positionY = min_c(max_c(device->positionY + deltaY, 0),
-			(int32)device->maxY);
+	if (active < 0)
+		active = best >= 0 ? best : first;
+	else if (best >= 0 && best != active && bestMoved > kFingerSwitchMove
+		&& bestMoved > 2 * activeMoved) {
+		active = best;
 	}
+
+	// Another finger now gives the position: report a lift first, so that
+	// movement_maker starts tracking anew instead of moving the pointer by
+	// the distance between the fingers. A held button stays held.
+	bool switched = device->activeFinger >= 0 && active >= 0
+		&& active != device->activeFinger;
+	device->activeFinger = active;
 
 	memcpy(device->lastFingers, device->fingers, sizeof(device->fingers));
 	device->lastFingerMask = device->fingerMask;
 
+	// The clickpad is one button. Like movement_maker's finger click, a
+	// click with two fingers on the pad is a right click and one with three
+	// a middle click, but the button is chosen when the pad goes down and
+	// kept until it comes up: the fingers then change while dragging.
+	if (device->padButtons != 0) {
+		if (device->clickButton == 0) {
+			device->clickButton = count >= 3 ? kButtonMiddle
+				: count == 2 ? kButtonRight : kButtonLeft;
+		}
+	} else
+		device->clickButton = 0;
+
 	touchpad_movement event;
 	memset(&event, 0, sizeof(event));
-	event.buttons = device->padButtons;
+	event.buttons = device->clickButton;
+	if (switched) {
+		event.fingerWidth = 4;
+		queue_put(device->touchpadQueue, event);
+	}
 	event.fingers = device->fingerMask;
+	if (device->clickButton != 0 && count >= 2) {
+		// While the pad is held down, a thumb pressing it and a finger
+		// moving are one drag to movement_maker: with two fingers it would
+		// scroll instead, or turn the held button into another one. The
+		// position is that of the active finger.
+		event.fingers = device->fingerMask & -device->fingerMask;
+		sumZ /= count;
+		sumWidth = 4;
+		count = 1;
+	}
 	if (count == 0) {
 		// x and y 0 is no contact; a width of 0 or 1 would mean 2 or 3
 		// fingers
 		event.fingerWidth = 4;
 	} else {
-		event.xPosition = max_c(device->positionX, 1);
-		event.yPosition = device->positionY;
+		const rmi4_finger& finger = device->fingers[active];
+		event.xPosition = max_c(finger.x, 1);
+		event.yPosition = finger.y;
 		event.zPressure = min_c(max_c(sumZ / count, 1), 254);
 		// the Synaptics width scale of movement_maker: 4 to 7 is a finger,
 		// 0 and 1 mean two and three or more fingers
@@ -1378,6 +1422,7 @@ status_t
 rmi4_device_init(rmi4_device* device)
 {
 	device->thread = -1;
+	device->activeFinger = -1;
 	device->clickSpeed = 500000;
 	device->notifySem = create_sem(0, "rmi4 host notify");
 	status_t touchpadStatus = queue_init(device->touchpadQueue,
