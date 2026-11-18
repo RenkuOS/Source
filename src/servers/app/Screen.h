@@ -45,6 +45,9 @@ public:
 			void				GetMode(uint16 &width, uint16 &height,
 									uint32 &colorspace, float &frequency) const;
 
+			status_t			SetRotation(int32 degrees);
+			int32				Rotation() const;
+
 			void				SetFrame(const BRect& rect);
 
 			BRect				Frame() const;

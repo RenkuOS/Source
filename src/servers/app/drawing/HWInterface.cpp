@@ -9,6 +9,7 @@
 
 #include "HWInterface.h"
 
+#include <algorithm>
 #include <new>
 #include <stdio.h>
 #include <string.h>
@@ -53,6 +54,7 @@ HWInterface::HWInterface()
 	fHardwareCursorEnabled(false),
 	fCursorLocation(0, 0),
 	fVGADevice(-1),
+	fRotation(0),
 	fListeners(20),
 	fScreenObserverLock("screen observer lock"),
 	fScreenObserverCount(0),
@@ -306,6 +308,46 @@ HWInterface::SetDragBitmap(const ServerBitmap* bitmap,
 		_AdoptDragBitmap();
 		fFloatingOverlaysLock.Unlock();
 	}
+}
+
+
+status_t
+HWInterface::SetRotation(int32 degrees)
+{
+	return degrees == 0 ? B_OK : B_NOT_SUPPORTED;
+}
+
+
+/*static*/ bool
+HWInterface::IsValidRotation(int32 degrees)
+{
+	return degrees == 0 || degrees == 90 || degrees == 180 || degrees == 270;
+}
+
+
+/*!	Turns \a mode between how the screen is driven and how it is shown when
+	it is rotated by \a degrees: for 90 and 270, what is horizontal becomes
+	vertical. Doing it twice gives the same mode back.
+*/
+/*static*/ void
+HWInterface::RotateMode(display_mode& mode, int32 degrees)
+{
+	if (degrees != 90 && degrees != 270)
+		return;
+
+	std::swap(mode.virtual_width, mode.virtual_height);
+	std::swap(mode.h_display_start, mode.v_display_start);
+	std::swap(mode.timing.h_display, mode.timing.v_display);
+	std::swap(mode.timing.h_sync_start, mode.timing.v_sync_start);
+	std::swap(mode.timing.h_sync_end, mode.timing.v_sync_end);
+	std::swap(mode.timing.h_total, mode.timing.v_total);
+
+	uint32 polarity = mode.timing.flags & (B_POSITIVE_HSYNC | B_POSITIVE_VSYNC);
+	mode.timing.flags &= ~(B_POSITIVE_HSYNC | B_POSITIVE_VSYNC);
+	if ((polarity & B_POSITIVE_HSYNC) != 0)
+		mode.timing.flags |= B_POSITIVE_VSYNC;
+	if ((polarity & B_POSITIVE_VSYNC) != 0)
+		mode.timing.flags |= B_POSITIVE_HSYNC;
 }
 
 
@@ -663,6 +705,11 @@ void
 HWInterface::_CopyToFront(uint8* src, uint32 srcBPR, int32 x, int32 y,
 	int32 right, int32 bottom) const
 {
+	if (fRotation != 0) {
+		_CopyToFrontRotated(src, srcBPR, x, y, right, bottom);
+		return;
+	}
+
 	RenderingBuffer* frontBuffer = FrontBuffer();
 
 	uint8* dst = (uint8*)frontBuffer->Bits();
@@ -881,6 +928,105 @@ HWInterface::_CopyToFront(uint8* src, uint32 srcBPR, int32 x, int32 y,
 			fprintf(stderr, "HWInterface::CopyBackToFront() - unsupported "
 				"front buffer format! (0x%x)\n", frontBuffer->ColorSpace());
 			break;
+	}
+}
+
+
+/*!	Like _CopyToFront(), for a rotated screen: \a x, \a y, \a right and
+	\a bottom are on the drawing buffer, which the rotation turns on the way to
+	the front buffer. A rotation is only set on a 32 bit front buffer.
+
+	Each row of the front buffer is written from left to right, as video memory
+	is fast at, while the source is read across its rows. It is read in tiles,
+	so that its cache lines are used for more than one pixel.
+*/
+void
+HWInterface::_CopyToFrontRotated(const uint8* src, uint32 srcBPR, int32 x,
+	int32 y, int32 right, int32 bottom) const
+{
+	RenderingBuffer* frontBuffer = FrontBuffer();
+	uint8* dst = (uint8*)frontBuffer->Bits();
+	uint32 dstBPR = frontBuffer->BytesPerRow();
+	int32 width = frontBuffer->Width();
+	int32 height = frontBuffer->Height();
+
+	// where the rectangle ends up on the front buffer
+	int32 left, top, dstRight, dstBottom;
+	switch (fRotation) {
+		case 90:
+			left = width - 1 - bottom;
+			top = x;
+			dstRight = width - 1 - y;
+			dstBottom = right;
+			break;
+		case 180:
+			left = width - 1 - right;
+			top = height - 1 - bottom;
+			dstRight = width - 1 - x;
+			dstBottom = height - 1 - y;
+			break;
+		case 270:
+			left = y;
+			top = height - 1 - right;
+			dstRight = bottom;
+			dstBottom = height - 1 - x;
+			break;
+		default:
+			return;
+	}
+
+	// Each tile is turned into ordinary memory first and then written to the
+	// front buffer a row at a time: write-combined video memory is slow at
+	// the short, scattered writes turning it in place would make.
+	const int32 kTileRows = 16;
+	const int32 kTileColumns = 256;
+	uint32 tile[kTileRows * kTileColumns];
+
+	for (int32 tileTop = top; tileTop <= dstBottom; tileTop += kTileRows) {
+		int32 tileBottom = min_c(tileTop + kTileRows - 1, dstBottom);
+		for (int32 tileLeft = left; tileLeft <= dstRight;
+				tileLeft += kTileColumns) {
+			int32 count = min_c(tileLeft + kTileColumns - 1, dstRight)
+				- tileLeft + 1;
+
+			for (int32 row = tileTop; row <= tileBottom; row++) {
+				// the source of the row's first pixel, and the way to the
+				// next one
+				int32 sourceX;
+				int32 sourceY;
+				ssize_t step;
+				switch (fRotation) {
+					case 90:
+						sourceX = row;
+						sourceY = width - 1 - tileLeft;
+						step = -(ssize_t)srcBPR;
+						break;
+					case 180:
+						sourceX = width - 1 - tileLeft;
+						sourceY = height - 1 - row;
+						step = -4;
+						break;
+					default:
+						sourceX = height - 1 - row;
+						sourceY = tileLeft;
+						step = srcBPR;
+						break;
+				}
+
+				const uint8* source = src + (sourceY - y) * (ssize_t)srcBPR
+					+ (sourceX - x) * 4;
+				uint32* target = tile + (row - tileTop) * kTileColumns;
+				for (int32 i = 0; i < count; i++) {
+					*target++ = *(const uint32*)source;
+					source += step;
+				}
+			}
+
+			for (int32 row = tileTop; row <= tileBottom; row++) {
+				memcpy((uint32*)(dst + row * dstBPR) + tileLeft,
+					tile + (row - tileTop) * kTileColumns, count * 4);
+			}
+		}
 	}
 }
 
