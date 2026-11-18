@@ -292,9 +292,12 @@ PNGTranslator::DerivedIdentify(BPositionIO *inSource,
 	return identify_png_header(inSource, outInfo);
 }
 
-void throw_error(png_structp ppng, png_const_charp error_msg)
+void jump_on_error(png_structp ppng, png_const_charp error_msg)
 {
-	throw std::exception();
+	// libpng is C code: an exception thrown from here cannot unwind through
+	// it when it is built without unwind tables (as on ARM), and would abort
+	// the application instead. Go back to the setjmp() of the caller.
+	png_longjmp(ppng, 1);
 }
 
 void alert_warning(png_structp ppng, png_const_charp error_msg)
@@ -311,16 +314,18 @@ PNGTranslator::translate_from_png_to_bits(BPositionIO *inSource,
 	if (identify_png_header(inSource, NULL) != B_OK)
 		return B_NO_TRANSLATOR;
 
-	status_t result = B_ERROR;
+	volatile status_t result = B_ERROR;
 		// if a libpng errors before this is set
 		// to a different value, the above is what
 		// will be returned from this function
 
 	bool bheaderonly = false, bdataonly = false;
 
-	// for storing decoded PNG row data
-	uint8 **prows = NULL, *prow = NULL;
-	png_uint_32 nalloc = 0;
+	// for storing decoded PNG row data (volatile, they are used after an error
+	// returns to setjmp())
+	uint8 ** volatile prows = NULL;
+	uint8 * volatile prow = NULL;
+	volatile png_uint_32 nalloc = 0;
 
 	png_structp ppng = NULL;
 	png_infop pinfo = NULL;
@@ -335,11 +340,11 @@ PNGTranslator::translate_from_png_to_bits(BPositionIO *inSource,
 		if (!pinfo)
 			break;
 
-		// set up erorr handling to use C++ exceptions instead of setjmp
-		png_set_error_fn(ppng, png_get_error_ptr(ppng), throw_error,
+		// set up error handling to return to the setjmp() below
+		png_set_error_fn(ppng, png_get_error_ptr(ppng), jump_on_error,
 			alert_warning);
 
-		try {
+		if (setjmp(png_jmpbuf(ppng)) == 0) {
 			// set read callback function
 			png_set_read_fn(ppng, static_cast<void *>(inSource), pngcb_read_data);
 
@@ -474,17 +479,15 @@ PNGTranslator::translate_from_png_to_bits(BPositionIO *inSource,
 						outDestination->Write(prows[i], width * kbytes);
 
 					result = B_OK;
-						// If png_read_end throws an exception, we still accept
+						// If png_read_end() fails, we still accept
 						// the image as valid.
 					png_read_end(ppng, NULL);
 				}
 
 				break;
 			}
-		} catch (std::exception& e) {
-			// An error occured, abort decoding and cleanup
-			break;
 		}
+			// after an error, the loop ends and everything is cleaned up
 	}
 
 	if (ppng) {
@@ -727,13 +730,15 @@ PNGTranslator::translate_from_bits_to_png(BPositionIO *inSource,
 {
 	TranslatorBitmap bitsHeader;
 
-	status_t result;
+	volatile status_t result;
 
 	result = identify_bits_header(inSource, NULL, &bitsHeader);
 	if (result != B_OK)
 		return result;
 
-	const color_map *pmap = NULL;
+	// volatile: these live across the setjmp() below, and must not be
+	// cached in registers that longjmp() restores
+	const color_map * volatile pmap = NULL;
 	if (bitsHeader.colors == B_CMAP8) {
 		pmap = system_colors();
 		if (!pmap)
@@ -744,8 +749,9 @@ PNGTranslator::translate_from_bits_to_png(BPositionIO *inSource,
 	width = static_cast<png_uint_32>(bitsHeader.bounds.Width() + 1);
 	height = static_cast<png_uint_32>(bitsHeader.bounds.Height() + 1);
 
-	int32 pngBytesPerPixel = 0;
-	int bit_depth, color_type, interlace_type;
+	volatile int32 pngBytesPerPixel = 0;
+	int bit_depth, interlace_type;
+	volatile int color_type;
 	bit_depth = 8;
 	switch (bitsHeader.colors) {
 		case B_RGBA32:
@@ -784,7 +790,7 @@ PNGTranslator::translate_from_bits_to_png(BPositionIO *inSource,
 	}
 	interlace_type = fSettings->SetGetInt32(PNG_SETTING_INTERLACE);
 
-	int32 bitsBytesPerPixel = 0;
+	volatile int32 bitsBytesPerPixel = 0;
 	switch (bitsHeader.colors) {
 		case B_RGBA32:
 		case B_RGBA32_BIG:
@@ -820,11 +826,12 @@ PNGTranslator::translate_from_bits_to_png(BPositionIO *inSource,
 			return B_NO_TRANSLATOR;
 	};
 
-	uint8 *pbitsrow = NULL, *prow = NULL;
+	uint8 * volatile pbitsrow = NULL;
+	uint8 * volatile prow = NULL;
 		// row buffers
 	// image buffer for writing whole png image at once
-	uint8 **prows = NULL;
-	png_uint_32 nalloc = 0;
+	uint8 ** volatile prows = NULL;
+	volatile png_uint_32 nalloc = 0;
 
 	png_structp ppng = NULL;
 	png_infop pinfo = NULL;
@@ -845,11 +852,11 @@ PNGTranslator::translate_from_bits_to_png(BPositionIO *inSource,
 			break;
 		}
 
-		// set up erorr handling to use C++ exceptions instead of setjmp
-		png_set_error_fn(ppng, png_get_error_ptr(ppng), throw_error,
+		// set up error handling to return to the setjmp() below
+		png_set_error_fn(ppng, png_get_error_ptr(ppng), jump_on_error,
 			alert_warning);
 
-		try {
+		if (setjmp(png_jmpbuf(ppng)) == 0) {
 			png_set_write_fn(ppng, static_cast<void *>(outDestination),
 				pngcb_write_data, pngcb_flush_data);
 
@@ -915,14 +922,13 @@ PNGTranslator::translate_from_bits_to_png(BPositionIO *inSource,
 				png_write_image(ppng, prows);
 			}
 			result = B_OK;
-				// If png_read_end throws an exception, we still accept
+				// If png_read_end() fails, we still accept
 				// the image as valid.
 			png_write_end(ppng, NULL);
 
 			break;
-		} catch(std::exception& e) {
-			break;
 		}
+			// after an error, the loop ends and everything is cleaned up
 	}
 
 	if (ppng) {
