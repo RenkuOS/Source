@@ -42,19 +42,25 @@ if [ FIsBuildFeatureEnabled fontconfig ] {
 	SubDirC++Flags -DFONTCONFIG_ENABLED ;
 	UseBuildFeatureHeaders fontconfig ;
 	Includes [ FGristFiles AppServer.cpp BitmapManager.cpp Canvas.cpp
-	ClientMemoryAllocator.cpp Compositor.cpp Desktop.cpp DesktopSettings.cpp
-	DrawState.cpp DrawingEngine.cpp Layer.cpp PictureBoundingBoxPlayer.cpp
-	ServerApp.cpp ServerBitmap.cpp ServerCursor.cpp ServerFont.cpp
-	ServerPicture.cpp ServerWindow.cpp View.cpp Window.cpp WindowShape.cpp WorkspacesView.cpp
+	ClientMemoryAllocator.cpp Compositor.cpp Desktop.cpp DesktopListener.cpp
+	DesktopSettings.cpp DrawState.cpp DrawingEngine.cpp EventDispatcher.cpp
+	Layer.cpp OffscreenServerWindow.cpp OffscreenWindow.cpp
+	PictureBoundingBoxPlayer.cpp ServerApp.cpp ServerBitmap.cpp
+	ServerCursor.cpp ServerFont.cpp ServerPicture.cpp ServerWindow.cpp View.cpp
+	VirtualScreen.cpp Window.cpp WindowBuffer.cpp WindowList.cpp
+	WindowShape.cpp Workspace.cpp WorkspacesView.cpp
 	$(decorator_src) $(font_src) ]
 	: [ BuildFeatureAttribute freetype : headers ]
 	  [ BuildFeatureAttribute fontconfig : headers ] ;
 } else {
 	Includes [ FGristFiles AppServer.cpp BitmapManager.cpp Canvas.cpp
-	ClientMemoryAllocator.cpp Compositor.cpp Desktop.cpp DesktopSettings.cpp
-	DrawState.cpp DrawingEngine.cpp Layer.cpp PictureBoundingBoxPlayer.cpp
-	ServerApp.cpp ServerBitmap.cpp ServerCursor.cpp ServerFont.cpp
-	ServerPicture.cpp ServerWindow.cpp View.cpp Window.cpp WindowShape.cpp WorkspacesView.cpp
+	ClientMemoryAllocator.cpp Compositor.cpp Desktop.cpp DesktopListener.cpp
+	DesktopSettings.cpp DrawState.cpp DrawingEngine.cpp EventDispatcher.cpp
+	Layer.cpp OffscreenServerWindow.cpp OffscreenWindow.cpp
+	PictureBoundingBoxPlayer.cpp ServerApp.cpp ServerBitmap.cpp
+	ServerCursor.cpp ServerFont.cpp ServerPicture.cpp ServerWindow.cpp View.cpp
+	VirtualScreen.cpp Window.cpp WindowBuffer.cpp WindowList.cpp
+	WindowShape.cpp Workspace.cpp WorkspacesView.cpp
 	$(decorator_src) $(font_src) ]
 	: [ BuildFeatureAttribute freetype : headers ] ;
 }
