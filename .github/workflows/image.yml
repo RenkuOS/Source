@@ -244,7 +244,16 @@ jobs:
               # system hpkgs. This is what pkgman and HaikuDepot would update
               # from, as opposed to the ISO which is for installing. Built as
               # an artifact only for now -- see DECISIONS.md D2 for hosting.
-              jam -q -j"$(nproc)" "<repository>Renku"
+              # Build it under the same profile. Without one, no image adds
+              # openssl3, so BuildFeatures turns SSL off and the haiku package
+              # in the repository gets a libbnetapi that cannot do HTTPS.
+              jam -q -j"$(nproc)" "${TARGET}" build "<repository>Renku"
+              # The objects tree starts empty (only download/ is cached), so a
+              # no-ssl libbnetapi means some part of this build ran with SSL off.
+              if compgen -G "objects/haiku/*/release/kits/network/libnetapi/no-ssl" > /dev/null; then
+                echo "::error::libbnetapi was built without SSL; pkgman could not use HTTPS"
+                exit 1
+              fi
             '
 
       - name: Restore ownership
