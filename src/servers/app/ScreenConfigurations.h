@@ -22,6 +22,8 @@ struct screen_configuration {
 	display_mode	mode;
 	float			brightness;
 	bool			has_info;
+	int32			rotation;
+		// in degrees clockwise; kept by ScreenConfigurations::Set()
 };
 
 

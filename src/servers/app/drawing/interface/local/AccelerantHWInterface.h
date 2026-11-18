@@ -32,6 +32,7 @@ public:
 
 	virtual	status_t			SetMode(const display_mode& mode);
 	virtual	void				GetMode(display_mode* mode);
+	virtual	status_t			SetRotation(int32 degrees);
 
 	virtual status_t			GetDeviceInfo(accelerant_device_info* info);
 
@@ -100,6 +101,7 @@ private:
 			void				_UpdateHooksAfterModeChange();
 			status_t			_UpdateModeList();
 			status_t			_UpdateFrameBufferConfig();
+			status_t			_UpdateBackBuffer();
 			void				_RegionToRectParams(/*const*/ BRegion* region,
 									uint32* count) const;
 			uint32				_NativeColor(const rgb_color& color) const;

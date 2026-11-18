@@ -23,7 +23,8 @@ virtual							~RemoteEventStream();
 virtual	bool					IsValid() { return true; }
 virtual	void					SendQuit() {}
 
-virtual	void					UpdateScreenBounds(BRect bounds);
+virtual	void					UpdateScreenBounds(BRect bounds,
+										int32 rotation);
 virtual	bool					GetNextEvent(BMessage** _event);
 virtual	status_t				InsertEvent(BMessage* event);
 virtual	BMessage*				PeekLatestMouseMoved();

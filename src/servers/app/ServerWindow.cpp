@@ -4475,6 +4475,11 @@ ServerWindow::HandleDirectConnection(int32 bufferState, int32 driverState)
 		// There is nothing to draw to yet: the buffer gets its layout when
 		// the clipping is rebuilt, which comes first.
 		return;
+	} else if (fDesktop->HWInterface()->Rotation() != 0
+		&& (bufferState & B_DIRECT_MODE_MASK) != B_DIRECT_STOP) {
+		// The frame buffer isn't turned with the screen: a window that
+		// connected before the screen was rotated stays stopped.
+		return;
 	} else {
 		status = fDirectWindowInfo->SetState(
 			(direct_buffer_state)bufferState, (direct_driver_state)driverState,
@@ -4630,6 +4635,13 @@ ServerWindow::_EnableDirectWindowMode()
 
 	if (fDesktop->HWInterface()->FrontBuffer() == NULL) {
 		// direct window mode not supported
+		return B_UNSUPPORTED;
+	}
+
+	if (fDesktop->HWInterface()->Rotation() != 0
+		&& fDesktop->GetCompositor() == NULL) {
+		// The frame buffer isn't turned, only the compositor can give the
+		// window something laid out like the screen.
 		return B_UNSUPPORTED;
 	}
 
