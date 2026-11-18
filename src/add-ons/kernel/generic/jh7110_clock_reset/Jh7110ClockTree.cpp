@@ -25,7 +25,14 @@
 enum {
 	kGate	= 1 << 0,
 	kInvert	= 1 << 1,	// only the clock polarity, nothing to manage
+	kFrac	= 1 << 2,	// divider with FRAC_BITS fractional bits
 };
+
+// The fractional dividers (UART3-5 core, TRM tables 2-202, 2-204 and 2-206):
+// 17 bits in all, 8 of them fractional; default and minimum 2560 (10.0).
+#define FRAC_BITS			8
+#define FRAC_MIN			2560
+#define FRAC_MAX			131071
 
 
 struct ClockDef {
@@ -100,11 +107,11 @@ static const ClockDef kClocks[] = {
 	DEF1(SYS, UART2_APB, kGate, 0, 0, SYS(APB0)),
 	DEF1(SYS, UART2_CORE, kGate, 0, 0, EXT(OSC)),
 	DEF1(SYS, UART3_APB, kGate, 0, 0, SYS(APB0)),
-	DEF1(SYS, UART3_CORE, kGate, 0, 8, SYS(PERH_ROOT)),
+	DEF1(SYS, UART3_CORE, kGate | kFrac, 0, 17, SYS(PERH_ROOT)),
 	DEF1(SYS, UART4_APB, kGate, 0, 0, SYS(APB0)),
-	DEF1(SYS, UART4_CORE, kGate, 0, 8, SYS(PERH_ROOT)),
+	DEF1(SYS, UART4_CORE, kGate | kFrac, 0, 17, SYS(PERH_ROOT)),
 	DEF1(SYS, UART5_APB, kGate, 0, 0, SYS(APB0)),
-	DEF1(SYS, UART5_CORE, kGate, 0, 8, SYS(PERH_ROOT)),
+	DEF1(SYS, UART5_CORE, kGate | kFrac, 0, 17, SYS(PERH_ROOT)),
 	DEF1(SYS, I2C2_APB, kGate, 0, 0, SYS(APB0)),
 	DEF1(SYS, I2C5_APB, kGate, 0, 0, SYS(APB0)),
 	DEF1(SYS, WDT_APB, kGate, 0, 0, SYS(APB0)),
@@ -344,6 +351,8 @@ Jh7110ClockTree::GetRate(jh7110_clock_ref clock)
 		& CLK_DIV_MASK & ((1u << def->divBits) - 1);
 	if (divider == 0)
 		return 0;
+	if ((def->flags & kFrac) != 0)
+		return (rate << FRAC_BITS) / divider;
 	return rate / divider;
 }
 
@@ -374,10 +383,16 @@ Jh7110ClockTree::SetRate(jh7110_clock_ref clock, int64 rate)
 	if (parentRate <= 0)
 		return parentRate < 0 ? parentRate : B_ERROR;
 
+	uint32 minDivider = 1;
 	uint32 maxDivider = (1u << def->divBits) - 1;
+	if ((def->flags & kFrac) != 0) {
+		parentRate <<= FRAC_BITS;
+		minDivider = FRAC_MIN;
+		maxDivider = FRAC_MAX;
+	}
 	uint64 divider = (parentRate + rate / 2) / rate;
-	if (divider < 1)
-		divider = 1;
+	if (divider < minDivider)
+		divider = minDivider;
 	if (divider > maxDivider)
 		divider = maxDivider;
 
