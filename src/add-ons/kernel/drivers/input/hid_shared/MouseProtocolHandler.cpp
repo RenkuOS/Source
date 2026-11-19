@@ -23,45 +23,14 @@
 #include <keyboard_mouse_driver.h>
 
 
-MouseProtocolHandler::MouseProtocolHandler(HIDReport &report,
-	HIDReportItem &xAxis, HIDReportItem &yAxis)
+MouseProtocolHandler::MouseProtocolHandler(HIDCollection &collection,
+	HIDReport &report)
 	:
 	ProtocolHandler(report.Device(), "input/mouse/" DEVICE_PATH_SUFFIX "/", 0),
 	fReport(report),
-
-	fXAxis(xAxis),
-	fYAxis(yAxis),
-	fWheel(NULL),
-	fHorizontalPan(NULL),
-
-	fLastButtons(0),
-	fClickCount(0),
-	fLastClickTime(0),
-	fClickSpeed(250000)
+	fDecoder(collection, report)
 {
-	uint32 buttonCount = 0;
-	for (uint32 i = 0; i < report.CountItems(); i++) {
-		HIDReportItem *item = report.ItemAt(i);
-		if (!item->HasData())
-			continue;
-
-		if (item->UsagePage() == B_HID_USAGE_PAGE_BUTTON
-			&& item->UsageID() - 1 < B_MAX_MOUSE_BUTTONS) {
-			fButtons[buttonCount++] = item;
-		}
-	}
-
-	fButtons[buttonCount] = NULL;
-
-	fWheel = report.FindItem(B_HID_USAGE_PAGE_GENERIC_DESKTOP,
-		B_HID_UID_GD_WHEEL);
-	fHorizontalPan = report.FindItem(B_HID_USAGE_PAGE_CONSUMER,
-		B_HID_UID_CON_AC_PAN);
-
-	TRACE("mouse device with %" B_PRIu32 " buttons %sand %swheel\n",
-		buttonCount, fHorizontalPan == NULL ? "" : ", horizontal pan ",
-		fWheel == NULL ? "no " : "");
-	TRACE("report id: %u\n", report.ID());
+	TRACE("mouse device, report id: %u\n", report.ID());
 }
 
 
@@ -114,7 +83,7 @@ MouseProtocolHandler::AddHandlers(HIDDevice &device, HIDCollection &collection,
 			continue;
 
 		ProtocolHandler *newHandler = new(std::nothrow) MouseProtocolHandler(
-			*inputReport, *xAxis, *yAxis);
+			collection, *inputReport);
 		if (newHandler == NULL) {
 			TRACE("failed to allocated mouse protocol handler\n");
 			continue;
@@ -171,13 +140,17 @@ MouseProtocolHandler::Control(uint32 *cookie, uint32 op, void *buffer,
 		}
 
 		case MS_SET_CLICKSPEED:
+		{
+			bigtime_t clickSpeed;
 			if (!IS_USER_ADDRESS(buffer)
-				|| user_memcpy(&fClickSpeed, buffer, sizeof(bigtime_t))
+				|| user_memcpy(&clickSpeed, buffer, sizeof(bigtime_t))
 					!= B_OK) {
 				return B_BAD_ADDRESS;
 			}
 
+			fDecoder.SetClickSpeed(clickSpeed);
 			return B_OK;
+		}
 	}
 
 	return B_ERROR;
@@ -188,7 +161,13 @@ status_t
 MouseProtocolHandler::_ReadReport(void *buffer, uint32 *cookie)
 {
 	status_t result = fReport.WaitForReport(B_INFINITE_TIMEOUT);
-	if (result != B_OK) {
+
+	// "busy" means that another report came in on the same input. For a mouse
+	// whose buttons are in a report of their own, that is the report to read.
+	bool ownReportArrived = result == B_OK;
+	bool otherReportArrived = result == B_BUSY && fDecoder.HasNewData();
+
+	if (!ownReportArrived && !otherReportArrived) {
 		if (fReport.Device()->IsRemoved()) {
 			TRACE("device has been removed\n");
 			return B_DEV_NOT_READY;
@@ -200,7 +179,8 @@ MouseProtocolHandler::_ReadReport(void *buffer, uint32 *cookie)
 			return B_FILE_ERROR;
 
 		if (result != B_BUSY) {
-			// "busy" happens when other reports come in on the same input as ours
+			// "busy" happens when other reports come in on the same input as
+			// ours
 			TRACE_ALWAYS("error waiting for report: %s\n", strerror(result));
 		}
 
@@ -208,62 +188,11 @@ MouseProtocolHandler::_ReadReport(void *buffer, uint32 *cookie)
 		return B_BUSY;
 	}
 
-	uint32 axisRelativeData[2];
-	axisRelativeData[0] = 0;
-	axisRelativeData[1] = 0;
+	*(mouse_movement *)buffer = fDecoder.Decode(system_time());
 
-	if (fXAxis.Extract() == B_OK && fXAxis.Valid())
-		axisRelativeData[0] = fXAxis.Data();
+	if (ownReportArrived)
+		fReport.DoneProcessing();
 
-	if (fYAxis.Extract() == B_OK && fYAxis.Valid())
-		axisRelativeData[1] = fYAxis.Data();
-
-	uint32 wheelData[2] = {0};
-	if (fWheel != NULL && fWheel->Extract() == B_OK && fWheel->Valid())
-		wheelData[0] = fWheel->Data();
-	if (fHorizontalPan != NULL && fHorizontalPan->Extract() == B_OK
-			&& fHorizontalPan->Valid())
-		wheelData[1] = fHorizontalPan->Data();
-
-	uint32 buttons = 0;
-	for (uint32 i = 0; i < B_MAX_MOUSE_BUTTONS; i++) {
-		HIDReportItem *button = fButtons[i];
-		if (button == NULL)
-			break;
-
-		if (button->Extract() == B_OK && button->Valid())
-			buttons |= (button->Data() & 1) << (button->UsageID() - 1);
-	}
-
-	fReport.DoneProcessing();
 	TRACE("got mouse report\n");
-
-	int32 clicks = 0;
-	bigtime_t timestamp = system_time();
-	if (buttons != 0) {
-		if (fLastButtons == 0) {
-			if (fLastClickTime + fClickSpeed > timestamp)
-				fClickCount++;
-			else
-				fClickCount = 1;
-		}
-
-		fLastClickTime = timestamp;
-		clicks = fClickCount;
-	}
-
-	fLastButtons = buttons;
-
-	mouse_movement *info = (mouse_movement *)buffer;
-	memset(info, 0, sizeof(mouse_movement));
-
-	info->buttons = buttons;
-	info->xdelta = axisRelativeData[0];
-	info->ydelta = -axisRelativeData[1];
-	info->clicks = clicks;
-	info->timestamp = timestamp;
-	info->wheel_ydelta = -wheelData[0];
-	info->wheel_xdelta = wheelData[1];
-
 	return B_OK;
 }

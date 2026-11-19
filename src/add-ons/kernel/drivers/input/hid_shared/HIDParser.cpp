@@ -458,6 +458,15 @@ HIDParser::MaxReportSize(uint8 type)
 }
 
 
+static bool
+is_notified_report(HIDReport *report)
+{
+	return report != NULL
+		&& (report->Type() == HID_REPORT_TYPE_INPUT
+			|| report->Type() == HID_REPORT_TYPE_FEATURE);
+}
+
+
 void
 HIDParser::SetReport(status_t status, uint8 *report, size_t length)
 {
@@ -479,16 +488,17 @@ HIDParser::SetReport(status_t status, uint8 *report, size_t length)
 	// We need to notify all input reports, as we don't know who has waiting
 	// listeners. Anyone other than the target report also waiting for a
 	// transfer to happen needs to reschedule one now.
+	// The target report gets its data first. A listener that wakes up because
+	// another report came in may want to read the target report next to its
+	// own (a mouse with its buttons in a separate report does that), so the
+	// data must be there by then.
 	for (int32 i = 0; i < fReports.Count(); i++) {
-		if (fReports[i] == NULL
-			|| (fReports[i]->Type() != HID_REPORT_TYPE_INPUT
-				&& fReports[i]->Type() != HID_REPORT_TYPE_FEATURE)) {
-			continue;
-		}
-
-		if (fReports[i]->ID() == targetID)
+		if (is_notified_report(fReports[i]) && fReports[i]->ID() == targetID)
 			fReports[i]->SetReport(status, report, length);
-		else
+	}
+
+	for (int32 i = 0; i < fReports.Count(); i++) {
+		if (is_notified_report(fReports[i]) && fReports[i]->ID() != targetID)
 			fReports[i]->SetReport(B_BUSY, NULL, 0);
 	}
 }
