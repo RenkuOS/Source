@@ -541,6 +541,9 @@ DwMmc::_CommandFlags(uint8 command, uint32* flags, bool* busy,
 		case SD_SEND_IF_COND:		// also MMC_SEND_EXT_CSD
 			*flags = kShort;
 			break;
+		case SDIO_IO_SEND_OP_COND:
+			// the bus manager probes every card for SDIO; not supported
+			return B_UNSUPPORTED;
 		default:
 			ERROR("unknown command %u\n", command);
 			return B_BAD_DATA;
