@@ -1367,7 +1367,6 @@ UVCCamDeviceAddon::~UVCCamDeviceAddon()
 const char *
 UVCCamDeviceAddon::BrandName()
 {
-	printf("UVCCamDeviceAddon::BrandName()\n");
 	return "USB Video Class";
 }
 
