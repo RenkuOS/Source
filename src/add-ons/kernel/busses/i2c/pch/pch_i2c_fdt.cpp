@@ -180,8 +180,10 @@ fdt_scan_bus(i2c_bus_cookie cookie)
 		char* cidList[1] = { NULL };
 		status_t result = gI2c->register_device(bus->info.sim,
 			(i2c_addr)address, (char*)compatible, cidList, NULL);
-		TRACE_ALWAYS("device %s at %#" B_PRIx32 ": %s\n", compatible,
-			address, strerror(result));
+		if (result != B_OK) {
+			ERROR("device %s at %#" B_PRIx32 ": %s\n", compatible, address,
+				strerror(result));
+		}
 	}
 	return B_OK;
 }
