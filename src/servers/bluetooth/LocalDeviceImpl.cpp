@@ -1385,8 +1385,8 @@ LocalDeviceImpl::CreateConnection(BMessage* message)
 	command->pkt_type &= ACL_PTYPE_MASK;
 	command->pscan_rep_mode = rdConn->pscan_rep_mode;
 	message->FindUInt8("pscan_mode", &command->pscan_mode); // Reserved in spec 2.1
-	command->clock_offset = rdConn->clock_offset;
-	command->clock_offset |= 0x8000; // substract!
+	// bit 15 is set by the client only when an inquiry gave the offset
+	command->clock_offset = B_HOST_TO_LENDIAN_INT16(rdConn->clock_offset);
 	message->FindUInt8("role_switch", &command->role_switch);
 
 

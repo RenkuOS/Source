@@ -103,7 +103,11 @@ DiscoveryListener::MessageReceived(BMessage* message)
 
 				// if not present, the default value of these fields will be used
 				message->FindUInt8("scan_mode", i, &scanMode);
-				message->FindUInt16("clock_offset", i, &clockOffset);
+				// The inquiry gives bits 16-2 of the offset in bits 14-0. Bit
+				// 15 tells the controller that the offset is valid, which a
+				// device known only by its address does not have.
+				if (message->FindUInt16("clock_offset", i, &clockOffset) == B_OK)
+					clockOffset = (clockOffset & 0x7fff) | 0x8000;
 				message->FindInt8("rssi", i, &rssi);
 				message->FindBool("friendly_name_is_complete", &friendlyNameIsComplete);
 

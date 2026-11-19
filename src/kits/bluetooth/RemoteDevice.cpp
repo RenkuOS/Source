@@ -196,7 +196,8 @@ RemoteDevice::GetBluetoothAddress()
 uint16
 RemoteDevice::GetClockOffset()
 {
-	return fClockOffset;
+	// without the bit that tells whether it is known
+	return fClockOffset & 0x7fff;
 }
 
 

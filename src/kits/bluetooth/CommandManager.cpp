@@ -148,9 +148,8 @@ buildRemoteNameRequest(bdaddr_t bdaddr, uint8 pscan_rep_mode,
 	if (command != NULL) {
 		param->bdaddr = bdaddr;
 		param->pscan_rep_mode = pscan_rep_mode;
-		// bit 15 tells the controller that the offset from the inquiry is
-		// valid
-		param->clock_offset = B_HOST_TO_LENDIAN_INT16(clock_offset | 0x8000);
+		// as given: bit 15 is set only when the offset is known
+		param->clock_offset = B_HOST_TO_LENDIAN_INT16(clock_offset);
 	}
 
 	return command;
