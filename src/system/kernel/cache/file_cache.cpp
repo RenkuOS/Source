@@ -15,6 +15,7 @@
 #include <fs_cache.h>
 
 #include <condition_variable.h>
+#include <driver_settings.h>
 #include <file_cache.h>
 #include <generic_syscall.h>
 #include <low_resource_manager.h>
@@ -1234,12 +1235,25 @@ cache_node_launched(size_t argCount, char*  const* args)
 extern "C" status_t
 file_cache_init_post_boot_device(void)
 {
-	// ToDo: get cache module out of driver settings
+	// A cache module (as file_cache/launch_speedup/v1, which no image
+	// includes) is only looked for when the kernel settings name one, with
+	// "file_cache_module <name>"
+	void* handle = load_driver_settings("kernel");
+	if (handle == NULL)
+		return B_OK;
 
-	if (get_module("file_cache/launch_speedup/v1",
-			(module_info**)&sCacheModule) == B_OK) {
-		dprintf("** opened launch speedup: %" B_PRId64 "\n", system_time());
+	// Like CACHE_SET_MODULE, only accept a cache module: any other module
+	// would be called through the cache hooks
+	const char* name = get_driver_parameter(handle, "file_cache_module", NULL,
+		NULL);
+	if (name != NULL) {
+		if (strncmp(name, CACHE_MODULES_NAME, strlen(CACHE_MODULES_NAME)) != 0)
+			dprintf("file_cache: %s is not a cache module\n", name);
+		else if (get_module(name, (module_info**)&sCacheModule) == B_OK)
+			dprintf("file_cache: using cache module %s\n", name);
 	}
+
+	unload_driver_settings(handle);
 	return B_OK;
 }
 
