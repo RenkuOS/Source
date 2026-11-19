@@ -3696,7 +3696,20 @@ Desktop::RebuildAndRedrawAfterWindowChange(Window* changedWindow,
 		// comes from the other windows' buffers.
 		// In a stack, only the top window draws.
 		changedWindow->TopLayerStackWindow()->ProcessDirtyRegion(dirty, dirty);
-		fCompositor->Composite(dirty);
+
+		// The outline may have changed without the window's frame changing,
+		// as when a tab slides along, and then the shadow around the changed
+		// part has to be drawn again as well.
+		BRegion damage;
+		const int32 margin = WindowShape::ShadowMargin();
+		const int32 offset = WindowShape::ShadowOffset();
+		for (int32 i = 0; i < dirty.CountRects(); i++) {
+			BRect rect = dirty.RectAt(i);
+			rect.InsetBy(-margin, -margin);
+			rect.bottom += offset;
+			damage.Include(rect);
+		}
+		fCompositor->Composite(damage);
 		return;
 	}
 
