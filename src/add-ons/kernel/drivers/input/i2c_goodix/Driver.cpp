@@ -40,6 +40,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <baytrail_gpio.h>
 #include <condition_variable.h>
 #include <i2c.h>
 #include <kernel.h>
@@ -166,10 +167,11 @@ is_goodix_name(const char* name)
 /*!	Configuration of the GT9271 in the Teclast X98 Air III (1536x2048).
 
 	The tablet can boot a 32-bit UEFI firmware (for Windows) or a 64-bit one
-	(for Android). With the 32-bit firmware the controller reports this
-	configuration. With the 64-bit firmware it answers, but reports an empty
-	configuration: there the Android driver sends one on every boot. When the
-	configuration is empty, the driver sends this one.
+	(for Android). With the 32-bit firmware the controller runs and reports
+	this configuration. With the 64-bit firmware it answers on the bus, but
+	its firmware does not run and all configuration registers read as zero:
+	the Android driver resets the controller itself and sends a configuration
+	on every boot. The driver then does the same, see reset_with_int_sync().
 
 	These are the registers 0x8047 to 0x80fe as read back under the 32-bit
 	firmware; the checksum (0x80ff) and the "config fresh" flag (0x8100) are
@@ -285,8 +287,53 @@ send_config(goodix_device* device, const uint8* config, size_t length)
 
 	status_t status = write_registers(device, GOODIX_REG_CONFIG_VERSION, data,
 		length + 2);
-	if (status == B_OK)
+	if (status != B_OK)
+		return status;
+
+	// the controller clears the flag once it has taken the configuration
+	snooze(100000);
+	uint8 fresh;
+	status = read_register(device, GOODIX_REG_CONFIG_VERSION + length + 1,
+		&fresh, 1);
+	if (status == B_OK && fresh != 0) {
+		ERROR("the controller did not take the configuration\n");
+		status = B_ERROR;
+	}
+	return status;
+}
+
+
+/*!	Resets the controller the way the Goodix drivers of Linux and Android do
+	for address 0x14: reset low, INT high, reset high, then INT low for 50 ms
+	("INT sync") before INT becomes an input again. Without the INT sync the
+	firmware of the controller does not start.
+
+	The ACPI tables of the Teclast X98 Air III name a wrong INT pin, so this
+	uses the pins that Android uses: reset NCORE 26, INT SUS 3.
+*/
+static status_t
+reset_with_int_sync()
+{
+	baytrail_gpio_pins_module_info* gpio;
+	status_t status = get_module(BAYTRAIL_GPIO_PINS_MODULE_NAME,
+		(module_info**)&gpio);
+	if (status != B_OK)
+		return status;
+
+	status = gpio->set_output("NCORE", 26, false);
+	if (status == B_OK) {
+		snooze(20000);
+		gpio->set_output("SUS", 3, true);
+		snooze(2000);
+		gpio->set_output("NCORE", 26, true);
+		snooze(6000);
+		gpio->set_output("SUS", 3, false);
+		snooze(50000);
+		gpio->set_input("SUS", 3);
 		snooze(100000);
+	}
+
+	put_module(BAYTRAIL_GPIO_PINS_MODULE_NAME);
 	return status;
 }
 
@@ -323,9 +370,12 @@ start_controller(goodix_device* device)
 
 	if (config[0] == 0 && device->maxX == 0 && device->maxY == 0
 		&& memcmp(id, "9271", 4) == 0) {
-		// the controller has no configuration, see kGT9271Config
-		dprintf("i2c_goodix: controller has no configuration, sending it\n");
-		status = send_config(device, kGT9271Config, sizeof(kGT9271Config));
+		// the firmware of the controller does not run, see kGT9271Config
+		dprintf("i2c_goodix: controller has no configuration, resetting it "
+			"and sending one\n");
+		status = reset_with_int_sync();
+		if (status == B_OK)
+			status = send_config(device, kGT9271Config, sizeof(kGT9271Config));
 		if (status == B_OK) {
 			status = read_register(device, GOODIX_REG_CONFIG_VERSION, config,
 				sizeof(config));
