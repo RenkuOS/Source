@@ -1,5 +1,5 @@
 /*
- * Copyright 2005-2013, Haiku, Inc.
+ * Copyright 2005-2026, Haiku, Inc.
  * Distributed under the terms of the MIT license.
  *
  * Authors:
@@ -8,6 +8,9 @@
 #ifndef _LID_MONITOR_H
 #define _LID_MONITOR_H
 
+
+#include <String.h>
+#include <StringList.h>
 
 #include "power_monitor.h"
 
@@ -22,7 +25,17 @@ public:
 	virtual	const std::set<int>&
 								FDs() const { return fFDs; }
 private:
+			void				_LidClosed();
+			void				_LidOpened();
+
 			std::set<int>		fFDs;
+			bool				fClosed;
+			bool				fLowPower;
+				// what the settings ask for when the lid closes
+			int32				fSchedulerMode;
+				// before the lid closed
+			BStringList			fInterfacesDown;
+				// the wireless interfaces taken down when it closed
 };
 
 

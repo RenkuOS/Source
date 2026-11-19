@@ -1,6 +1,6 @@
 SubDir HAIKU_TOP src servers power ;
 
-UsePrivateHeaders app ;
+UsePrivateHeaders app net shared ;
 
 AddResources power_daemon : power_daemon.rdef ;
 
@@ -11,4 +11,4 @@ Application power_daemon :
 	power_button_monitor.cpp
 	;
 
-LinkAgainst power_daemon : be [ TargetLibstdc++ TargetLibsupc++ ] ;
+LinkAgainst power_daemon : be bnetapi network [ TargetLibstdc++ TargetLibsupc++ ] ;
