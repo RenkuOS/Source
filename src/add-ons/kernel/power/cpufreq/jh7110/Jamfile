@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: MIT
+
+SubDir HAIKU_TOP src add-ons kernel power cpufreq jh7110 ;
+
+UsePrivateKernelHeaders ;
+UsePrivateHeaders i2c ;
+UseLibraryHeaders [ FDirName libfdt ] ;
+
+local libFDTSources =
+	fdt.c
+	fdt_ro.c
+	fdt_strerror.c
+;
+
+KernelAddon jh7110_cpufreq :
+	jh7110_cpufreq.cpp
+	$(libFDTSources)
+;
+
+SEARCH on [ FGristFiles $(libFDTSources) ]
+	= [ FDirName $(HAIKU_TOP) src libs libfdt ] ;
