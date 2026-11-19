@@ -16,6 +16,7 @@
 #include <unicode/uvernum.h>
 
 #include <Debug.h>
+#include <SupportDefs.h>
 
 
 //#define TRACE_CTYPE
@@ -33,6 +34,21 @@ U_NAMESPACE_USE
 
 namespace BPrivate {
 namespace Libroot {
+
+
+/*!	Stores \a value in \a address with release semantics. The __atomic
+	builtins are not available with gcc2, atomic_set() and atomic_set64() are
+	(and use them where they exist).
+*/
+static inline void
+publish_pointer(void* address, const void* value)
+{
+#if B_HAIKU_32_BIT
+	atomic_set((int32*)address, (int32)(addr_t)value);
+#else
+	atomic_set64((int64*)address, (int64)(addr_t)value);
+#endif
+}
 
 
 ICUCtypeData::ICUCtypeData(pthread_key_t tlsKey)
@@ -58,12 +74,9 @@ ICUCtypeData::Initialize(LocaleCtypeDataBridge* dataBridge)
 	memcpy(fToLowerMap, dataBridge->posixToLowerMap, sizeof(fToLowerMap));
 	memcpy(fToUpperMap, dataBridge->posixToUpperMap, sizeof(fToUpperMap));
 
-	__atomic_store_n(dataBridge->addrOfClassInfoTable, &fClassInfo[128],
-		__ATOMIC_RELEASE);
-	__atomic_store_n(dataBridge->addrOfToLowerTable, &fToLowerMap[128],
-		__ATOMIC_RELEASE);
-	__atomic_store_n(dataBridge->addrOfToUpperTable, &fToUpperMap[128],
-		__ATOMIC_RELEASE);
+	publish_pointer(dataBridge->addrOfClassInfoTable, &fClassInfo[128]);
+	publish_pointer(dataBridge->addrOfToLowerTable, &fToLowerMap[128]);
+	publish_pointer(dataBridge->addrOfToUpperTable, &fToUpperMap[128]);
 	fDataBridge = dataBridge;
 }
 

@@ -11,6 +11,8 @@
 #include <pthread.h>
 #include <string.h>
 
+#include <SupportDefs.h>
+
 
 namespace BPrivate {
 namespace Libroot {
@@ -48,6 +50,21 @@ LoadFunctions()
 }
 
 
+/*!	Stores \a value in \a address with release semantics. The __atomic
+	builtins are not available with gcc2, atomic_set() and atomic_set64() are
+	(and use them where they exist).
+*/
+static inline void
+publish_pointer(void* address, const void* value)
+{
+#if B_HAIKU_32_BIT
+	atomic_set((int32*)address, (int32)(addr_t)value);
+#else
+	atomic_set64((int64*)address, (int64)(addr_t)value);
+#endif
+}
+
+
 static void
 LoadBackend()
 {
@@ -58,7 +75,7 @@ LoadBackend()
 	LocaleBackend::CreateBackend(backend);
 	if (backend != NULL) {
 		backend->Initialize(&gGlobalLocaleDataBridge);
-		__atomic_store_n(&gGlobalLocaleBackend, backend, __ATOMIC_RELEASE);
+		publish_pointer(&gGlobalLocaleBackend, backend);
 	}
 }
 
