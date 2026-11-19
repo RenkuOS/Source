@@ -163,6 +163,38 @@ is_goodix_name(const char* name)
 }
 
 
+/*!	Configuration of the GT9271 in the Teclast X98 Air III (1536x2048).
+
+	The tablet can boot a 32-bit UEFI firmware (for Windows) or a 64-bit one
+	(for Android). With the 32-bit firmware the controller reports this
+	configuration. With the 64-bit firmware it answers, but reports an empty
+	configuration: there the Android driver sends one on every boot. When the
+	configuration is empty, the driver sends this one.
+
+	These are the registers 0x8047 to 0x80fe as read back under the 32-bit
+	firmware; the checksum (0x80ff) and the "config fresh" flag (0x8100) are
+	added when it is sent.
+*/
+static const uint8 kGT9271Config[] = {
+	0x41, 0x00, 0x06, 0x00, 0x08, 0x0a, 0x35, 0x00, 0x01, 0x0a, 0x28, 0x0f,
+	0x5a, 0x3c, 0x03, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x18,
+	0x1a, 0x1e, 0x14, 0x90, 0x30, 0xaa, 0x3a, 0x38, 0xee, 0x06, 0x00, 0x00,
+	0x00, 0x03, 0x02, 0x1d, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x1e, 0x50, 0x94, 0xc5, 0x02, 0x07, 0x00, 0x00, 0x04,
+	0xc7, 0x21, 0x00, 0xa9, 0x28, 0x00, 0x8e, 0x31, 0x00, 0x7b, 0x3b, 0x00,
+	0x6a, 0x48, 0x00, 0x6a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x22,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09,
+	0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x19, 0x1b,
+	0x1c, 0x1e, 0x1f, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28,
+	0x29, 0x2a, 0x14, 0x13, 0x12, 0x11, 0x10, 0x0f, 0x0e, 0x0d, 0x0c, 0x0a,
+	0x08, 0x07, 0x06, 0x04, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00,
+};
+
+
 //	#pragma mark - controller access
 
 
@@ -196,6 +228,69 @@ write_register(goodix_device* device, uint16 reg, uint8 value)
 }
 
 
+/*!	Writes \a length bytes to consecutive registers from \a reg on. The bus
+	driver does not wait for room in the transmit FIFO of the controller, so
+	this writes small pieces that fit in it, each as its own transfer.
+*/
+static status_t
+write_registers(goodix_device* device, uint16 reg, const void* data,
+	size_t length)
+{
+	const size_t kChunkSize = 16;
+	const uint8* bytes = (const uint8*)data;
+
+	while (length > 0) {
+		size_t chunk = min_c(length, kChunkSize);
+		uint8 cmd[2 + kChunkSize];
+		cmd[0] = (uint8)(reg >> 8);
+		cmd[1] = (uint8)reg;
+		memcpy(cmd + 2, bytes, chunk);
+
+		status_t status = device->i2c->acquire_bus(device->i2cCookie);
+		if (status != B_OK)
+			return status;
+		status = device->i2c->exec_command(device->i2cCookie,
+			I2C_OP_WRITE_STOP, cmd, 2 + chunk, NULL, 0);
+		device->i2c->release_bus(device->i2cCookie);
+		if (status != B_OK)
+			return status;
+
+		reg += chunk;
+		bytes += chunk;
+		length -= chunk;
+	}
+	return B_OK;
+}
+
+
+/*!	Sends \a config (the registers from GOODIX_REG_CONFIG_VERSION up to the
+	checksum) to the controller, followed by its checksum and the flag that
+	makes the controller apply it. The flag is written last, so it does not
+	matter that the configuration is written in pieces.
+*/
+static status_t
+send_config(goodix_device* device, const uint8* config, size_t length)
+{
+	uint8 data[sizeof(kGT9271Config) + 2];
+	if (length > sizeof(data) - 2)
+		return B_BAD_VALUE;
+
+	uint8 sum = 0;
+	for (size_t i = 0; i < length; i++)
+		sum += config[i];
+
+	memcpy(data, config, length);
+	data[length] = (uint8)(~sum + 1);
+	data[length + 1] = 1;
+
+	status_t status = write_registers(device, GOODIX_REG_CONFIG_VERSION, data,
+		length + 2);
+	if (status == B_OK)
+		snooze(100000);
+	return status;
+}
+
+
 /*!	Powers the controller up through ACPI and reads its identification and
 	resolution.
 */
@@ -225,6 +320,24 @@ start_controller(goodix_device* device)
 
 	device->maxX = config[1] | (config[2] << 8);
 	device->maxY = config[3] | (config[4] << 8);
+
+	if (config[0] == 0 && device->maxX == 0 && device->maxY == 0
+		&& memcmp(id, "9271", 4) == 0) {
+		// the controller has no configuration, see kGT9271Config
+		dprintf("i2c_goodix: controller has no configuration, sending it\n");
+		status = send_config(device, kGT9271Config, sizeof(kGT9271Config));
+		if (status == B_OK) {
+			status = read_register(device, GOODIX_REG_CONFIG_VERSION, config,
+				sizeof(config));
+		}
+		if (status != B_OK) {
+			ERROR("sending the configuration failed: %s\n", strerror(status));
+			return status;
+		}
+		device->maxX = config[1] | (config[2] << 8);
+		device->maxY = config[3] | (config[4] << 8);
+	}
+
 	if (device->maxX == 0 || device->maxY == 0) {
 		ERROR("controller reports no resolution\n");
 		return B_BAD_DATA;
