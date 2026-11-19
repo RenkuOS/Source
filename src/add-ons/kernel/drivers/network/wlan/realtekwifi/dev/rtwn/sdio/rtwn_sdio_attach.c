@@ -170,8 +170,14 @@ rtwn_sdio_attach(device_t dev)
 	uc->sc_func = sdio_get_function(dev);
 	uc->sc_poll_thread = -1;
 
+	/* In the compat layer, malloc() can return NULL even with M_WAITOK. */
 	uc->sc_rx_buf = malloc(RTWN_SDIO_RXBUFSZ, M_DEVBUF, M_WAITOK);
 	uc->sc_tx_buf = malloc(RTWN_SDIO_TXBUFSZ, M_DEVBUF, M_WAITOK);
+	if (uc->sc_rx_buf == NULL || uc->sc_tx_buf == NULL) {
+		free(uc->sc_tx_buf, M_DEVBUF);
+		free(uc->sc_rx_buf, M_DEVBUF);
+		return (ENOMEM);
+	}
 	mbufq_init(&uc->sc_tx_done, IFQ_MAXLEN);
 	TASK_INIT(&uc->sc_tx_task, 0, rtwn_sdio_tx_done_task, uc);
 
@@ -191,7 +197,11 @@ rtwn_sdio_attach(device_t dev)
 	}
 
 	rtwn_sdio_attach_methods(sc);
-	r8723bs_attach(uc);
+	error = r8723bs_attach(uc);
+	if (error != 0) {
+		device_printf(dev, "cannot allocate the chip state\n");
+		goto fail;
+	}
 
 	/*
 	 * The efuse is only readable with the chip on; rtwn_attach() reads

@@ -97,6 +97,6 @@ void		rtwn_sdio_tx_done_task(void *, int);
 void		rtwn_sdio_tx_drain(struct rtwn_sdio_softc *, int);
 
 /* rtl8723b/sdio/r8723bs_attach.c */
-void		r8723bs_attach(struct rtwn_sdio_softc *);
+int		r8723bs_attach(struct rtwn_sdio_softc *);
 
 #endif	/* RTWN_SDIO_VAR_H */

@@ -75,14 +75,17 @@
 #include <dev/rtwn/rtl8723b/sdio/r8723bs.h>
 
 
-static void
+static int
 r8723bs_attach_private(struct rtwn_softc *sc)
 {
 	struct r8723b_softc *rs;
 
 	rs = malloc(sizeof(struct r8723b_softc), M_RTWN_PRIV,
 	    M_WAITOK | M_ZERO);
+	if (rs == NULL)
+		return (ENOMEM);
 	sc->sc_priv = rs;
+	return (0);
 }
 
 
@@ -112,7 +115,7 @@ _Static_assert(R8723B_RX_DMA_BUFFER_SIZE <= RTWN_SDIO_RXBUFSZ,
     "the receive buffer must hold the whole receive FIFO");
 
 
-void
+int
 r8723bs_attach(struct rtwn_sdio_softc *uc)
 {
 	struct rtwn_softc *sc		= &uc->sc_sc;
@@ -231,5 +234,5 @@ r8723bs_attach(struct rtwn_sdio_softc *uc)
 	 */
 	sc->rx_silence_limit		= 4;
 
-	r8723bs_attach_private(sc);
+	return (r8723bs_attach_private(sc));
 }
