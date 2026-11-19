@@ -318,9 +318,9 @@ trng_init_driver(device_node* node, void** _cookie)
 
 	status = trng_command(info, TRNG_CTRL_RESEED, TRNG_ISTAT_SEED_DONE,
 		100000);
-	INFO("at %#" B_PRIx64 ": reseed %s, status %#" B_PRIx32 "\n", regs,
-		strerror(status), trng_read(info, TRNG_STAT));
 	if (status != B_OK) {
+		ERROR("at %#" B_PRIx64 ": reseed failed (%s), status %#" B_PRIx32
+			"\n", regs, strerror(status), trng_read(info, TRNG_STAT));
 		trng_free(info);
 		return status;
 	}
