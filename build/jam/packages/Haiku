@@ -175,6 +175,7 @@ AddNewDriversToPackage display :
 	;
 AddNewDriversToPackage audio hmulti :
 #	virtio_sound
+	jh7110_i2stx@riscv64
 	jh7110_pwmdac@riscv64
 	;
 AddNewDriversToPackage hyperv :
