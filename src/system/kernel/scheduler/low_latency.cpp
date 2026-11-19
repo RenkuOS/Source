@@ -116,9 +116,12 @@ rebalance(const ThreadData* threadData)
 	ASSERT(other != NULL);
 
 	// Check if the least loaded core is significantly less loaded than
-	// the current one.
-	int32 coreLoad = core->GetLoad();
-	int32 otherLoad = other->GetLoad();
+	// the current one. Without the cap at kMaxLoad: with one CPU per core a
+	// core with two busy threads would otherwise look as loaded as one with
+	// a single busy thread, and neither thread would ever move to an idle
+	// core.
+	int32 coreLoad = core->GetUncappedLoad();
+	int32 otherLoad = other->GetUncappedLoad();
 	if (other == core || otherLoad + kLoadDifference >= coreLoad)
 		return core;
 
