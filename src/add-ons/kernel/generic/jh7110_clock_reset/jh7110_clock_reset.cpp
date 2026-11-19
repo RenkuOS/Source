@@ -444,7 +444,8 @@ std_ops(int32 op, ...)
 static fdt_clock_reset_module_info sModuleInfo = {
 	{
 		JH7110_CLOCK_RESET_MODULE_NAME,
-		0,
+		B_KEEP_LOADED,
+			// mapped once, initialized once: drivers get and put it often
 		std_ops
 	},
 	get_clock,
