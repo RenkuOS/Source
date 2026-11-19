@@ -542,6 +542,28 @@ acpi_battery_free(void* cookie)
 //	#pragma mark - driver module API
 
 
+/*!	Returns whether the system has a PMIC whose own driver reports the
+	battery. On Bay Trail and Cherry Trail boards with an X-Powers AXP288
+	PMIC (INT33F4), the ACPI battery devices of the firmware read hardware
+	that is not fitted or not set up; the axp288 driver reads the fuel gauge
+	of the PMIC itself. Linux skips the ACPI battery devices on these boards
+	as well (acpi_quirk_skip_acpi_ac_and_battery()).
+*/
+static bool
+has_native_battery_pmic()
+{
+	acpi_module_info* acpi;
+	if (get_module(B_ACPI_MODULE_NAME, (module_info**)&acpi) != B_OK)
+		return false;
+
+	char path[255];
+	bool found = acpi->get_device("INT33F4", 0, path, sizeof(path)) == B_OK;
+
+	put_module(B_ACPI_MODULE_NAME);
+	return found;
+}
+
+
 static float
 acpi_battery_support(device_node *parent)
 {
@@ -567,6 +589,9 @@ acpi_battery_support(device_node *parent)
 	    || (strcmp(name, ACPI_NAME_BATTERY) && strcmp(name, "MSHW0146"))) {
 		return 0.0;
 	}
+
+	if (has_native_battery_pmic())
+		return 0.0;
 
 	return 0.6;
 }
