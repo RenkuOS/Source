@@ -97,6 +97,7 @@
 #define GICR_CTLR(i) _GicrReg32(fGicrStride*(i) + 0x0000)
 #define GICR_IIDR(i) _GicrReg32(fGicrStride*(i) + 0x0004)
 #define GICR_TYPER(i) _GicrReg64(fGicrStride*(i) + 0x0008)
+#define GICR_TYPER_LAST (1 << 4)
 #define GICR_STATUSR(i) _GicrReg32(fGicrStride*(i) + 0x0010)
 #define GICR_WAKER(i) _GicrReg32(fGicrStride*(i) + 0x0014)
 #define GICR_IGROUPR0(i) _GicrReg32(GICR_SGI_BASE + fGicrStride * (i) + 0x0080)

@@ -136,7 +136,7 @@ TableFromPa(phys_addr_t pa)
 
 
 static bool
-fixup_entry(phys_addr_t ptPa, int level, addr_t va, bool wr)
+fixup_entry(phys_addr_t ptPa, int level, addr_t va, bool wr, bool user)
 {
 	int tableBits = page_bits - 3;
 	uint64_t tableMask = (1UL << tableBits) - 1;
@@ -162,6 +162,14 @@ fixup_entry(phys_addr_t ptPa, int level, addr_t va, bool wr)
 			asm("isb");
 			return true;
 		}
+		// An EL0 write to a page without EL0 access is a real fault
+		if (wr && user && (oldPte & kAttrAPUserAccess) == 0)
+			return false;
+		// Another CPU fixed the entry after our fault (set the access flag, or
+		// made a dirty-tracked page writable): retry the access
+		if (!wr || ((oldPte & kAttrAF) != 0 && (oldPte & kAttrSWDBM) != 0
+				&& (oldPte & kAttrAPReadOnly) == 0))
+			return true;
 		if (wr && (oldPte & kAttrSWDBM) != 0 && (oldPte & kAttrAPReadOnly) != 0) {
 			uint64_t newPte = oldPte & ~kAttrAPReadOnly;
             if ((uint64_t)atomic_test_and_set64((int64*)pte, newPte, oldPte) != oldPte)
@@ -173,7 +181,7 @@ fixup_entry(phys_addr_t ptPa, int level, addr_t va, bool wr)
 			return true;
 		}
 	} else if (level < 3 && type == kPteTypeL012Table) {
-		return fixup_entry(addr, level + 1, va, wr);
+		return fixup_entry(addr, level + 1, va, wr, user);
 	}
 
 	return false;
@@ -303,7 +311,7 @@ do_sync_handler(iframe * frame)
 				case ISS_DATA_DFSC_AFF_L2:
 				case ISS_DATA_DFSC_AFF_L3:
 					known = true;
-					if (fixup_entry(ptPa, initialLevel, frame->far, false))
+					if (fixup_entry(ptPa, initialLevel, frame->far, false, isUser))
 						return;
 				break;
 
@@ -311,7 +319,7 @@ do_sync_handler(iframe * frame)
 				case ISS_DATA_DFSC_PF_L2:
 				case ISS_DATA_DFSC_PF_L3:
 					known = true;
-					if (write && fixup_entry(ptPa, initialLevel, frame->far, true))
+					if (write && fixup_entry(ptPa, initialLevel, frame->far, true, isUser))
 						return;
 				break;
 			}
