@@ -65,6 +65,7 @@ requires {
 #ifdef HAIKU_REGULAR_BUILD
 	intel_wifi_firmwares
 	mediatek_wifi_firmwares
+	realtek_rtw88_wifi_firmwares
 	ralink_wifi_firmwares
 	realtek_wifi_firmwares
 #endif
