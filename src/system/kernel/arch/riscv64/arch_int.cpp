@@ -130,9 +130,36 @@ SetAccessedFlags(addr_t addr, bool isWrite)
 }
 
 
+extern "C" void SVec();
+extern "C" void SVecRet();
+extern "C" void SVecU();
+extern "C" void SVecURet();
+
+
+/*!	A fault taken while SVec or SVecU push the trap frame cannot be recovered:
+	the nested trap has overwritten sepc, scause, stval and sstatus of the trap
+	being entered, so the outer frame records the nested fault instead.
+*/
+static void
+CheckTrapEntryFault(iframe* frame)
+{
+	addr_t pc = frame->epc;
+	if ((pc >= (addr_t)&SVec && pc < (addr_t)&SVecRet)
+		|| (pc >= (addr_t)&SVecU && pc < (addr_t)&SVecURet)) {
+		panic("fault in the trap entry code: cause %" B_PRIu64 ", tval %#"
+			B_PRIx64 ", epc %#" B_PRIx64 ", sp %#" B_PRIx64 "; the trap being "
+			"entered is lost", frame->cause, frame->tval, frame->epc,
+			frame->sp);
+	}
+}
+
+
 extern "C" void
 STrap(iframe* frame)
 {
+	if (frame->cause < 16)
+		CheckTrapEntryFault(frame);
+
 	switch (frame->cause) {
 		case causeExecPageFault:
 		case causeLoadPageFault:
