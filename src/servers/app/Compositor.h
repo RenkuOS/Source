@@ -43,6 +43,15 @@ public:
 			// anywhere, and doesn't wait for anything.
 			void				Composite(const BRegion& damage);
 
+			// The frame that will show what is passed to Composite() from now
+			// on. Windows hear about each frame through FramePresented().
+			uint32				NextFrame();
+
+			// Held while a frame is drawn: what is changed with it held is
+			// seen by the next frame as a whole.
+			bool				Lock() { return fLock.Lock(); }
+			void				Unlock() { fLock.Unlock(); }
+
 			// Draws what is due right now, for reading back what is on the
 			// screen. No window lock may be held.
 			void				Flush();
@@ -79,6 +88,7 @@ private:
 			void				_WaitForFrame();
 			void				_CompositeDamage(BRegion* present = NULL);
 			void				_Composite(const BRegion& damage,
+									const BRegion& moved,
 									BRegion* present = NULL);
 			void				_Present(const BRegion& region);
 
@@ -112,6 +122,9 @@ private:
 
 			BLocker				fDamageLock;
 			BRegion				fDamage;
+			// What changed because windows moved, appeared or went away
+			BRegion				fMoved;
+			uint32				fFrame;
 			bool				fWakePending;
 			sem_id				fWakeSem;
 			thread_id			fThread;
