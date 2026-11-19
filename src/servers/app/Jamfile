@@ -88,6 +88,7 @@ local app_server_src =
 	WindowBuffer.cpp
 	WindowList.cpp
 	WindowShape.cpp
+	WindowWobble.cpp
 	Workspace.cpp
 	WorkspacesView.cpp
 

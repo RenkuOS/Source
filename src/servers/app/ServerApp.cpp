@@ -3808,6 +3808,40 @@ ServerApp::_DispatchMessage(int32 code, BPrivate::LinkReceiver& link)
 			fLink.Flush();
 			break;
 		}
+		case AS_SET_COMPOSITED_WOBBLY_WINDOWS:
+		{
+			bool wobbly;
+			if (link.Read<bool>(&wobbly) == B_OK) {
+				LockedDesktopSettings settings(fDesktop);
+				settings.SetCompositedWobblyWindows(wobbly);
+			}
+			break;
+		}
+		case AS_GET_COMPOSITED_WOBBLY_WINDOWS:
+		{
+			DesktopSettings settings(fDesktop);
+			fLink.StartMessage(B_OK);
+			fLink.Attach<bool>(settings.CompositedWobblyWindows());
+			fLink.Flush();
+			break;
+		}
+		case AS_SET_COMPOSITED_WOBBLINESS:
+		{
+			uint8 wobbliness;
+			if (link.Read<uint8>(&wobbliness) == B_OK) {
+				LockedDesktopSettings settings(fDesktop);
+				settings.SetCompositedWobbliness(min_c(wobbliness, 100));
+			}
+			break;
+		}
+		case AS_GET_COMPOSITED_WOBBLINESS:
+		{
+			DesktopSettings settings(fDesktop);
+			fLink.StartMessage(B_OK);
+			fLink.Attach<uint8>(settings.CompositedWobbliness());
+			fLink.Flush();
+			break;
+		}
 		case AS_GET_SUBPIXEL_ANTIALIASING:
 		{
 			DesktopSettings settings(fDesktop);
