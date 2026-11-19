@@ -19,6 +19,7 @@
 #include <new>
 #include <stdio.h>
 
+#include <Autolock.h>
 #include <Debug.h>
 
 #include <DirectWindow.h>
@@ -58,6 +59,17 @@
 // IMPORTANT: nested LockSingleWindow()s are not supported (by MultiLocker)
 
 using std::nothrow;
+
+// How long the compositor keeps what the screen showed while a client redraws
+// part of its window. A client that takes longer is shown as it draws.
+static const bigtime_t kMaxUpdatingTime = 100000;
+
+// fDeferredUpdate
+enum {
+	kNoUpdateDeferred = 0,
+	kUpdateWaiting,
+	kUpdateDue
+};
 
 // if the background clearing is delayed until
 // the client draws the view, we have less flickering
@@ -129,7 +141,11 @@ Window::Window(const BRect& frame, const char *name,
 	fBufferLost(false),
 	fHasRoundedCorners(false),
 	fCompositeAlpha(255),
-	fDecoratorGeneration(0)
+	fDecoratorGeneration(0),
+	fUpdatingLock("window updating"),
+	fUpdatingSince(0),
+	fDeferredUpdate(kNoUpdateDeferred),
+	fUpdateFrame(0)
 {
 	_InitWindowStack();
 
@@ -394,6 +410,30 @@ Window::SetCompositeAlpha(uint8 alpha)
 
 
 void
+Window::GetUpdatingRegion(BRegion* region)
+{
+	BAutolock _(fUpdatingLock);
+	if (fUpdatingRegion.CountRects() == 0
+		|| system_time() - fUpdatingSince > kMaxUpdatingTime) {
+		region->MakeEmpty();
+	} else
+		*region = fUpdatingRegion;
+}
+
+
+void
+Window::FramePresented(uint32 frame)
+{
+	if (atomic_get(&fDeferredUpdate) == kUpdateWaiting
+		&& (int32)(frame - fUpdateFrame) >= 0
+		&& atomic_test_and_set(&fDeferredUpdate, kUpdateDue, kUpdateWaiting)
+			== kUpdateWaiting) {
+		ServerWindow()->RequestRedraw();
+	}
+}
+
+
+void
 Window::SetBufferInterface(WindowBufferHWInterface* interface)
 {
 	fBufferInterface.SetTo(interface);
@@ -494,6 +534,13 @@ Window::MoveBy(int32 x, int32 y, bool moveStack)
 		fCurrentUpdateSession->MoveBy(x, y);
 	if (fPendingUpdateSession->IsUsed())
 		fPendingUpdateSession->MoveBy(x, y);
+
+	// What the screen showed is somewhere else now: nothing can be kept.
+	if (fBufferInterface.IsSet()) {
+		BAutolock _(fUpdatingLock);
+		fUpdatingRegion.MakeEmpty();
+		fExposedRegion.MakeEmpty();
+	}
 
 	fEffectiveDrawingRegionValid = false;
 
@@ -974,6 +1021,11 @@ Window::ProcessDirtyRegion(const BRegion& dirtyRegion, const BRegion& exposeRegi
 void
 Window::RedrawDirtyRegion()
 {
+	if (atomic_test_and_set(&fDeferredUpdate, kNoUpdateDeferred, kUpdateDue)
+			== kUpdateDue) {
+		_SendUpdateMessage();
+	}
+
 	if (TopLayerStackWindow() != this) {
 		fDirtyRegion.MakeEmpty();
 		fExposeRegion.MakeEmpty();
@@ -2006,6 +2058,11 @@ Window::_TriggerContentRedraw(BRegion& dirty, const BRegion& expose)
 	_TransferToUpdateSession(&dirty);
 
 	if (expose.CountRects() > 0) {
+		if (fBufferInterface.IsSet()) {
+			BAutolock _(fUpdatingLock);
+			fExposedRegion.Include(&expose);
+		}
+
 		// draw exposed region background right now to avoid stamping artifacts
 		if (fDrawingEngine->LockParallelAccess()) {
 			bool copyToFrontEnabled = fDrawingEngine->CopyToFrontEnabled();
@@ -2185,6 +2242,22 @@ Window::BeginUpdate(BPrivate::PortLink& link)
 	// suppress back to front buffer copies in the drawing engine
 	fDrawingEngine->SetCopyToFrontEnabled(false);
 
+	// The background is drawn below, and the client draws on top of it. The
+	// compositor may draw the window in the meantime for other reasons, and
+	// would show the background alone: until the client is done, it keeps
+	// what was there, except where the background is new.
+	// A frame being drawn right now has to finish first.
+	Compositor* compositor = fBufferInterface.IsSet()
+		? fDesktop->GetCompositor() : NULL;
+	if (compositor != NULL && compositor->Lock()) {
+		BAutolock _(fUpdatingLock);
+		fUpdatingRegion = *dirty;
+		fUpdatingRegion.Exclude(&fExposedRegion);
+		fExposedRegion.MakeEmpty();
+		fUpdatingSince = system_time();
+		compositor->Unlock();
+	}
+
 	if (fDrawingEngine->LockParallelAccess()) {
 		fTopView->Draw(GetDrawingEngine(), dirty, &fContentRegion, true);
 
@@ -2200,7 +2273,14 @@ Window::EndUpdate()
 {
 	// NOTE: see comment in _BeginUpdate()
 
+	bool ended = fInUpdate;
+	BRegion shown;
 	if (fInUpdate) {
+		if (fBufferInterface.IsSet()) {
+			BAutolock _(fUpdatingLock);
+			fUpdatingRegion.MakeEmpty();
+		}
+
 		// re-enable copy to front
 		fDrawingEngine->SetCopyToFrontEnabled(true);
 
@@ -2211,6 +2291,7 @@ Window::EndUpdate()
 			dirty->IntersectWith(&VisibleContentRegion());
 
 			fDrawingEngine->CopyToFront(*dirty);
+			shown = *dirty;
 			fRegionPool.Recycle(dirty);
 		}
 
@@ -2219,9 +2300,24 @@ Window::EndUpdate()
 		fInUpdate = false;
 		fEffectiveDrawingRegionValid = false;
 	}
+	Compositor* compositor = fBufferInterface.IsSet()
+		? fDesktop->GetCompositor() : NULL;
 	if (fPendingUpdateSession->IsUsed()) {
-		// send this to client
-		_SendUpdateMessage();
+		if (ended && compositor != NULL && shown.CountRects() > 0) {
+			// The next update starts by clearing the window again: what was
+			// just drawn has to reach the screen first, or a window that
+			// draws all the time would never be seen.
+			fUpdateFrame = compositor->NextFrame();
+			atomic_set(&fDeferredUpdate, kUpdateWaiting);
+			// CopyToFront() has woken the compositor already, and the frame
+			// that shows what was drawn may have been presented before the
+			// update was waiting for it. This damage is only taken by a frame
+			// that starts from now on, which is at least fUpdateFrame.
+			compositor->Composite(shown);
+		} else {
+			// send this to client
+			_SendUpdateMessage();
+		}
 	} else {
 		fUpdateRequested = false;
 	}
