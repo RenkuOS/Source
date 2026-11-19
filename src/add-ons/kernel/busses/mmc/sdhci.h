@@ -132,9 +132,9 @@ class SdhciBus {
 			thread_id			fWorkerThread;
 			card_type			fCardType;
 
-			// Page 0 holds the ADMA2 descriptor table, page 1 is a bounce
-			// buffer for the self test and for ReadData(). Both are
-			// physically contiguous and below 4GB.
+			// Page 0 holds the ADMA2 descriptor table, the rest is a bounce
+			// buffer for the self test, for ReadData() and for SDIO
+			// transfers. Both are physically contiguous and below 4GB.
 			area_id				fDmaArea;
 			adma2_descriptor*	fDmaDescriptors;
 			phys_addr_t			fDmaDescriptorsPhysical;

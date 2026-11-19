@@ -108,12 +108,15 @@ SdhciBus::SdhciBus(struct registers* registers, uint8_t irq, bool poll)
 	} else
 		fStatus = B_OK;
 
-	// Memory for DMA: page 0 holds the ADMA2 descriptor table, page 1 is a
-	// bounce buffer used by the transfer self test and by ReadData(). It has
-	// to be physically contiguous, and below 4GB since we use the 32-bit
+	// Memory for DMA: page 0 holds the ADMA2 descriptor table, the rest is a
+	// bounce buffer used by the transfer self test, by ReadData() and by SDIO
+	// transfers, which may be as large as MMC_MAX_TRANSFER_SIZE bytes (the
+	// whole receive FIFO of the RTL8723BS in one CMD53). It has to be
+	// physically contiguous, and below 4GB since we use the 32-bit
 	// descriptor format and the 32-bit SDMA address register.
+	const size_t dmaSize = B_PAGE_SIZE + MMC_MAX_TRANSFER_SIZE;
 	fDmaArea = create_area("sdhci dma", (void**)&fDmaDescriptors,
-		B_ANY_KERNEL_ADDRESS, 2 * B_PAGE_SIZE, B_32_BIT_CONTIGUOUS,
+		B_ANY_KERNEL_ADDRESS, dmaSize, B_32_BIT_CONTIGUOUS,
 		B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA);
 	if (fDmaArea < 0) {
 		ERROR("Could not allocate DMA memory\n");
@@ -122,7 +125,7 @@ SdhciBus::SdhciBus(struct registers* registers, uint8_t irq, bool poll)
 	}
 
 	physical_entry entry;
-	fStatus = get_memory_map(fDmaDescriptors, 2 * B_PAGE_SIZE, &entry, 1);
+	fStatus = get_memory_map(fDmaDescriptors, dmaSize, &entry, 1);
 	if (fStatus != B_OK) {
 		ERROR("Could not get physical address of DMA memory\n");
 		return;
@@ -449,6 +452,28 @@ SdhciBus::ExecuteCommand(uint8_t command, uint32_t argument, uint32_t* response)
 
 	TRACE("Command response available\n");
 
+	// A data error that comes in while a command without a data phase runs
+	// belongs to a transfer that was given up on after an error (the card
+	// goes on sending for a moment). It says nothing about this command,
+	// which completed: Linux ignores such an interrupt too ("got data
+	// interrupt even though no data operation was in progress"). Failing
+	// the command made the driver lose the answer of a good CMD52.
+	const uint32 kCommandErrorBits = SDHCI_INT_COMMAND_TIMEOUT
+		| SDHCI_INT_COMMAND_CRC | SDHCI_INT_COMMAND_END_BIT
+		| SDHCI_INT_COMMAND_INDEX;
+	if (!dataCommand && (fCommandResult & SDHCI_INT_ERROR) != 0
+		&& (fCommandResult & SDHCI_INT_CMD_CMP) != 0
+		&& (fCommandResult & kCommandErrorBits) == 0) {
+		static int32 sStaleLogCount = 0;
+		if (atomic_add(&sStaleLogCount, 1) < 20) {
+			ERROR("command %d: ignoring stale data error %08" B_PRIx32 "\n",
+				command, fCommandResult);
+		}
+		fRegisters->interrupt_status = fCommandResult & kClearableStatusBits;
+		fRegisters->software_reset.ResetDataLine();
+		fCommandResult &= ~(SDHCI_INT_ERROR | kDataErrorBits);
+	}
+
 	if (fCommandResult & SDHCI_INT_ERROR) {
 		// TODO is it a good idea to clear interrupts here from outside the interrupt handler?
 		// Write-1-to-clear register: write only the bits to acknowledge. A
@@ -741,11 +766,14 @@ SdhciBus::_LogCardStatus(const char* when, uint32 status)
 void
 SdhciBus::_AbortTransfer(const char* reason)
 {
-	ERROR("abort (%s): state %08" B_PRIx32 ", int status %08" B_PRIx32
-		", adma error %02x, auto cmd error %04x, host control %02x\n", reason,
-		fRegisters->present_state.Bits(), fRegisters->interrupt_status,
-		fRegisters->adma_error_status, fRegisters->auto_cmd12_error_status,
-		fRegisters->host_control.Bits());
+	static int32 sAbortLogCount = 0;
+	if (atomic_add(&sAbortLogCount, 1) < 100) {
+		ERROR("abort (%s): state %08" B_PRIx32 ", int status %08" B_PRIx32
+			", adma error %02x, auto cmd error %04x, host control %02x\n", reason,
+			fRegisters->present_state.Bits(), fRegisters->interrupt_status,
+			fRegisters->adma_error_status, fRegisters->auto_cmd12_error_status,
+			fRegisters->host_control.Bits());
+	}
 
 	// Stop the controller side of the transfer
 	fRegisters->software_reset.ResetCommandAndDataLines();
@@ -763,14 +791,39 @@ SdhciBus::_AbortTransfer(const char* reason)
 		// read. A command sent meanwhile is not seen correctly, and the card
 		// and host lose step. Wait until the card let go of DAT[3:0]
 		// (present state bits 23:20) first.
-		const uint32 kDataLevelsMask = 0xF << 20;
+		// Only DAT0 (present state bit 20) tells that the card stopped
+		// sending: DAT1 is also the card interrupt line in 4 bit mode and is
+		// low whenever the card has something to report. Intel erratum
+		// VLT7 asks for 128us between an error interrupt and a software
+		// reset.
+		const uint32 kData0Level = 1 << 20;
 		bigtime_t deadline = system_time() + 5000;
-		while ((fRegisters->present_state.Bits() & kDataLevelsMask)
-				!= kDataLevelsMask && system_time() < deadline) {
+		spin(150);
+		while ((fRegisters->present_state.Bits() & kData0Level) == 0
+				&& system_time() < deadline) {
 			spin(10);
 		}
 		fRegisters->software_reset.ResetCommandAndDataLines();
 		fRegisters->interrupt_status = kClearableStatusBits;
+
+		// The controller must be out of the transfer: after the abort a
+		// next command (a CMD52) was seen to fail with the data inhibit and
+		// read transfer active bits (0x202) still set. Reset again until
+		// they are clear.
+		const uint32 kTransferBits = (1 << 1) | (1 << 2) | (1 << 9) | (1 << 8);
+		for (int attempt = 0; attempt < 3
+				&& (fRegisters->present_state.Bits() & kTransferBits) != 0;
+				attempt++) {
+			spin(150);
+			fRegisters->software_reset.ResetCommandAndDataLines();
+			fRegisters->interrupt_status = kClearableStatusBits;
+		}
+		static int32 sDirtyLogCount = 0;
+		if ((fRegisters->present_state.Bits() & kTransferBits) != 0
+				&& atomic_add(&sDirtyLogCount, 1) < 20) {
+			ERROR("abort: transfer state %08" B_PRIx32 " after reset\n",
+				fRegisters->present_state.Bits());
+		}
 
 		// No command to the card: like Linux, only the host lines are
 		// reset. An I/O abort (CCCR 06h) stopped the RTL8723BS in the
@@ -945,10 +998,11 @@ SdhciBus::_TransferChunk(uint8 command, uint32 argument, uint32 blockCount,
 		// cannot be lost by a status acknowledge, so check both.
 		const uint32 bufferEnableBit = isWrite ? (1 << 10) : (1 << 11);
 
-		// A multi-block CMD53 by PIO (after an ADMA error) is read as fast as
-		// the blocks come: a reader that comes late lets the controller stop
-		// SDCLK between the blocks, which the RTL8723BS answered with data
-		// CRC and end bit errors. Spin up to 2ms per block.
+		// A multi-block CMD53 is read as fast as the blocks come: a reader
+		// that comes late lets the controller stop SDCLK between the blocks,
+		// and under load the RTL8723BS then answered with data CRC and end
+		// bit errors (int status 0x00608000). A block of 512 bytes takes
+		// about 160us on a single data line at 25MHz, so spin up to 2ms.
 		const bool spinForBlocks = command == SDIO_IO_RW_EXTENDED
 			&& blockCount > 1;
 
@@ -987,12 +1041,12 @@ SdhciBus::_TransferChunk(uint8 command, uint32 argument, uint32 blockCount,
 
 			size_t offset = (size_t)block * blockSize;
 			if (isWrite) {
-				if (buffer != NULL)
-				{
+				if (buffer != NULL) {
+					// A byte mode CMD53 can end inside a word: clear
+					// the bytes behind the block before copying.
 					words[wordCount - 1] = 0;
 					memcpy(words, buffer + offset, blockSize);
-				}
-				else
+				} else
 					vm_memcpy_from_physical(words, physical + offset, blockSize,
 						false);
 				for (uint32 i = 0; i < wordCount; i++)
@@ -1625,7 +1679,7 @@ SdhciBus::TransferIO(uint32 argument, bool isWrite, void* buffer,
 	uint32 blockCount, uint32 blockSize)
 {
 	const size_t length = (size_t)blockCount * blockSize;
-	if (buffer == NULL || length == 0 || length > B_PAGE_SIZE)
+	if (buffer == NULL || length == 0 || length > MMC_MAX_TRANSFER_SIZE)
 		return B_BAD_VALUE;
 
 	if (isWrite)
