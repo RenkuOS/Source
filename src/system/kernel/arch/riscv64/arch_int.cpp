@@ -87,7 +87,7 @@ AfterInterrupt()
 
 
 static bool
-SetAccessedFlags(addr_t addr, bool isWrite)
+SetAccessedFlags(addr_t addr, bool isWrite, addr_t epc, uint64 cause)
 {
 	VMAddressSpacePutter addressSpace;
 	if (IS_KERNEL_ADDRESS(addr))
@@ -129,20 +129,28 @@ SetAccessedFlags(addr_t addr, bool isWrite)
 	// the fault came from a stale TLB entry of this CPU. SetFlags() only
 	// flushes the TLB of the CPU that set the flags, so another CPU can still
 	// hold the entry from before, without them (as Linux, retry after a local
-	// flush). The same fault again right away is a real one.
+	// flush). The same fault again right away -- same page, same instruction,
+	// same kind of access -- is a real one; a different fault on the page,
+	// such as a write after a read, is retried too.
 	static struct {
 		addr_t		page;
+		addr_t		epc;
+		uint64		cause;
 		bigtime_t	time;
 	} sLastSpuriousFault[SMP_MAX_CPUS];
 	int32 cpu = smp_get_current_cpu();
 	addr_t page = ROUNDDOWN(addr, B_PAGE_SIZE);
 	bigtime_t now = system_time();
 	if (sLastSpuriousFault[cpu].page == page
+		&& sLastSpuriousFault[cpu].epc == epc
+		&& sLastSpuriousFault[cpu].cause == cause
 		&& now - sLastSpuriousFault[cpu].time < 1000) {
 		sLastSpuriousFault[cpu].page = 0;
 		return false;
 	}
 	sLastSpuriousFault[cpu].page = page;
+	sLastSpuriousFault[cpu].epc = epc;
+	sLastSpuriousFault[cpu].cause = cause;
 	sLastSpuriousFault[cpu].time = now;
 
 	if (IS_KERNEL_ADDRESS(addr))
@@ -160,8 +168,10 @@ STrap(iframe* frame)
 		case causeExecPageFault:
 		case causeLoadPageFault:
 		case causeStorePageFault: {
-			if (SetAccessedFlags(Stval(), frame->cause == causeStorePageFault))
+			if (SetAccessedFlags(Stval(), frame->cause == causeStorePageFault,
+					frame->epc, frame->cause)) {
 				return;
+			}
 		}
 	}
 
