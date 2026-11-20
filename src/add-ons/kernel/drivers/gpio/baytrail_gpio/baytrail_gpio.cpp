@@ -165,6 +165,7 @@ struct gpio_controller {
 	uint32						eventCount;
 	uint32						eventMask[GPIO_INT_STATUS_WORDS];
 	int32						pending[GPIO_INT_STATUS_WORDS];
+	int32						stray[GPIO_INT_STATUS_WORDS];
 	sem_id						eventSem;
 	thread_id					eventThread;
 	volatile bool				stopEvents;
@@ -406,8 +407,29 @@ gpio_interrupt(void* data)
 
 	acquire_spinlock(&sRegisterLock);
 	for (uint32 word = 0; word < GPIO_INT_STATUS_WORDS; word++) {
-		uint32 bits = *status_register(controller, word)
-			& controller->eventMask[word];
+		uint32 status = *status_register(controller, word);
+
+		// The firmware can leave the interrupt of a pin enabled that no
+		// event and no driver handles (a jack detect line, for example).
+		// Left alone, it keeps the shared interrupt of the controller
+		// asserted and the kernel turns that off, events and all. Mask such
+		// a pin, and tell the event thread to log it.
+		uint32 stray = status & ~controller->eventMask[word];
+		if (stray != 0) {
+			for (uint32 bit = 0; bit < 32; bit++) {
+				if ((stray & (1U << bit)) != 0
+					&& pad_in_range(controller, word * 32 + bit)) {
+					volatile uint32* conf0 = pad_register(controller,
+						word * 32 + bit, PAD_CONF0);
+					*conf0 &= ~PAD_CONF0_TRIGGER_MASK;
+				}
+			}
+			*status_register(controller, word) = stray;
+			atomic_or(&controller->stray[word], (int32)stray);
+			handled = true;
+		}
+
+		uint32 bits = status & controller->eventMask[word];
 		if (bits == 0)
 			continue;
 
@@ -442,6 +464,16 @@ gpio_event_thread(void* data)
 
 	while (acquire_sem(controller->eventSem) == B_OK
 		&& !controller->stopEvents) {
+		for (uint32 word = 0; word < GPIO_INT_STATUS_WORDS; word++) {
+			uint32 stray = (uint32)atomic_and(&controller->stray[word], 0);
+			for (uint32 bit = 0; bit < 32; bit++) {
+				if ((stray & (1U << bit)) != 0) {
+					dprintf("baytrail_gpio: %s pin %" B_PRIu32 ": interrupt "
+						"without a handler, masked\n",
+						controller->community->name, word * 32 + bit);
+				}
+			}
+		}
 		for (uint32 word = 0; word < GPIO_INT_STATUS_WORDS; word++) {
 			uint32 bits = (uint32)atomic_and(&controller->pending[word], 0);
 			if (bits == 0)
