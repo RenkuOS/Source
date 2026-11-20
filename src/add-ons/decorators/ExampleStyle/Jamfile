@@ -1,0 +1,11 @@
+SubDir HAIKU_TOP src add-ons decorators ExampleStyle ;
+
+UsePublicHeaders add-ons ;
+
+AddResources ExampleStyle : resources.rdef ;
+
+# A style links with nothing of app_server's: the build's --no-undefined
+# makes sure of it.
+Addon ExampleStyle :
+	ExampleStyle.cpp
+;
