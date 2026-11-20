@@ -21,8 +21,8 @@ extern "C" {
 #define TRACE_ALWAYS(x...)	dprintf("input ready: " x)
 
 
-// Intel PCH GPIO pad configuration: PADCFG0 is the first of two 32-bit
-// registers per pad (see Linux pinctrl-intel.c).
+// Intel PCH GPIO pad configuration: PADCFG0 is the first of the registers
+// of each pad (see Linux pinctrl-intel.c).
 #define PADCFG0_GPIORXSTATE		(1U << 1)
 #define PADCFG0_GPIORXDIS		(1U << 9)
 #define PADCFG0_PMODE_MASK		(0xfU << 10)
@@ -31,26 +31,65 @@ extern "C" {
 #define AMD_PIN_STS				(1U << 16)
 #define AMD_OUTPUT_ENABLE		(1U << 23)
 
+// Intel PCH GPIO community register whose bits 15:0 hold the offset of the
+// first pad's PADCFG0 (600 and 700 Series PCH datasheet vol 2, 710279, p973).
+// The datasheet gives its default as 600h but lists the first pad at 700h
+// (p967-968), so it is read rather than assumed.
+#define INTEL_PADBAR			0x0c
+#define INTEL_PADBAR_MASK		0xffff
+
 #define MAX_COMMUNITIES			4
 
 
-struct pad_community {
-	uint16	first;
-	uint16	last;
+// A range of ACPI GPIO numbers whose pads sit back to back in one community.
+// "memory" is the index of the controller's memory resource that holds the
+// community, and "firstPad" is the index of the group's first pad within
+// that community.
+struct pad_group {
+	uint16	firstPin;
+	uint16	count;
+	uint8	memory;
+	uint16	firstPad;
 };
 
 // Sunrise Point-LP (also used by Kaby Lake-LP). Community n uses memory
 // resource n of the controller. ACPI GPIO numbers are pad numbers.
-static const pad_community kSunrisePointLPCommunities[] = {
-	{ 0, 47 },
-	{ 48, 119 },
-	{ 120, 151 },
+static const pad_group kSunrisePointLPGroups[] = {
+	{ 0, 48, 0, 0 },
+	{ 48, 72, 1, 0 },
+	{ 120, 32, 2, 0 },
+};
+
+// INTC1055: the 600 Series on-package PCH (Alder Lake-P). The firmware
+// numbers ACPI GPIOs in blocks of 32 per group, so a group's pins can end
+// before the next block starts. The memory resources are communities 0, 1,
+// 4, and 5, in that order. Groups whose pads have no ACPI number, and the
+// two community 1 groups the datasheet does not describe, are left out, but
+// their pads still count in firstPad. Taken from the GPCL table and
+// the GPI0 _CRS in the DSDT of a Dell XPS 15 9520. The pad offsets match the
+// datasheet (710279 vol 2: p968, p1025-1030, p1125-1131; PortIDs in 691222
+// vol 1, p225).
+static const pad_group kAlderLakePGroups[] = {
+	{ 0x000, 26, 0, 0 },	// GPP_B
+	{ 0x020, 16, 0, 26 },	// GPP_T
+	{ 0x040, 25, 0, 42 },	// GPP_A
+	{ 0x060, 8, 1, 0 },		// GPP_S
+	{ 0x080, 24, 1, 8 },	// GPP_H
+	{ 0x0a0, 21, 1, 32 },	// GPP_D
+	{ 0x100, 24, 2, 0 },	// GPP_C
+	{ 0x120, 25, 2, 24 },	// GPP_F
+	{ 0x140, 25, 2, 55 },	// GPP_E
+	{ 0x160, 8, 3, 0 },		// GPP_R
 };
 
 // AMD controllers have a single bank of pins, numbered from 0.
-static const pad_community kAMDCommunities[] = {
-	{ 0, 255 },
+static const pad_group kAMDGroups[] = {
+	{ 0, 256, 0, 0 },
 };
+
+// The pad configuration of a community starts at the offset in its PADBAR
+// register rather than at a fixed offset.
+#define PAD_CONFIG_FROM_PADBAR	0xffffffff
 
 enum gpio_controller_type {
 	GPIO_INTEL,
@@ -60,17 +99,17 @@ enum gpio_controller_type {
 static const struct {
 	const char*				hid;
 	gpio_controller_type	type;
-	const pad_community*	communities;
-	uint32					communityCount;
+	const pad_group*		groups;
+	uint32					groupCount;
 	uint32					padConfigOffset;
 	uint32					padConfigStride;
 } kGPIOControllers[] = {
-	{ "INT344B", GPIO_INTEL, kSunrisePointLPCommunities,
-		B_COUNT_OF(kSunrisePointLPCommunities), 0x400, 8 },
-	{ "AMD0030", GPIO_AMD, kAMDCommunities,
-		B_COUNT_OF(kAMDCommunities), 0, 4 },
-	{ "AMDI0030", GPIO_AMD, kAMDCommunities,
-		B_COUNT_OF(kAMDCommunities), 0, 4 },
+	{ "INT344B", GPIO_INTEL, kSunrisePointLPGroups,
+		B_COUNT_OF(kSunrisePointLPGroups), 0x400, 8 },
+	{ "INTC1055", GPIO_INTEL, kAlderLakePGroups,
+		B_COUNT_OF(kAlderLakePGroups), PAD_CONFIG_FROM_PADBAR, 16 },
+	{ "AMD0030", GPIO_AMD, kAMDGroups, B_COUNT_OF(kAMDGroups), 0, 4 },
+	{ "AMDI0030", GPIO_AMD, kAMDGroups, B_COUNT_OF(kAMDGroups), 0, 4 },
 };
 
 
@@ -129,6 +168,25 @@ find_controller_memory(ACPI_RESOURCE* resource, void* context)
 		return AE_OK;
 	memory->count++;
 	return AE_OK;
+}
+
+
+// Reads one 32-bit register at a physical address through a temporary
+// read-only mapping.
+static status_t
+read_physical_register(phys_addr_t address, uint32* value)
+{
+	phys_addr_t pageAddress = address & ~(phys_addr_t)(B_PAGE_SIZE - 1);
+	void* registers;
+	area_id area = map_physical_memory("i2c_hid input ready probe",
+		pageAddress, B_PAGE_SIZE, B_ANY_KERNEL_ADDRESS, B_KERNEL_READ_AREA,
+		&registers);
+	if (area < 0)
+		return area;
+
+	*value = *(volatile uint32*)((addr_t)registers + (address - pageAddress));
+	delete_area(area);
+	return B_OK;
 }
 
 
@@ -198,27 +256,47 @@ InputReadyLine::Init(acpi_module_info* acpi, acpi_handle device)
 		return B_ENTRY_NOT_FOUND;
 	}
 
-	const pad_community* communities = kGPIOControllers[type].communities;
-	int32 community = -1;
-	for (uint32 i = 0; i < kGPIOControllers[type].communityCount; i++) {
-		if (interrupt.pin >= communities[i].first
-			&& interrupt.pin <= communities[i].last) {
-			community = i;
+	const pad_group* group = NULL;
+	for (uint32 i = 0; i < kGPIOControllers[type].groupCount; i++) {
+		const pad_group& candidate = kGPIOControllers[type].groups[i];
+		if (interrupt.pin >= candidate.firstPin
+			&& interrupt.pin - candidate.firstPin < candidate.count) {
+			group = &candidate;
 			break;
 		}
 	}
-	if (community < 0 || (uint32)community >= memory.count)
-		return B_BAD_VALUE;
-
-	uint32 offset = kGPIOControllers[type].padConfigOffset
-		+ (interrupt.pin - communities[community].first)
-			* kGPIOControllers[type].padConfigStride;
-	if (memory.base[community] == 0
-		|| offset + sizeof(uint32) > memory.length[community]) {
+	if (group == NULL || group->memory >= memory.count
+		|| memory.base[group->memory] == 0) {
+		TRACE_ALWAYS("%s pin %u has no known pad\n", interrupt.controller,
+			interrupt.pin);
 		return B_BAD_VALUE;
 	}
 
-	phys_addr_t address = (phys_addr_t)memory.base[community] + offset;
+	phys_addr_t communityBase = memory.base[group->memory];
+	uint32 communityLength = memory.length[group->memory];
+
+	uint32 padConfigOffset = kGPIOControllers[type].padConfigOffset;
+	if (padConfigOffset == PAD_CONFIG_FROM_PADBAR) {
+		if (communityLength < INTEL_PADBAR + sizeof(uint32))
+			return B_BAD_VALUE;
+		status_t status = read_physical_register(communityBase + INTEL_PADBAR,
+			&padConfigOffset);
+		if (status != B_OK)
+			return status;
+		padConfigOffset &= INTEL_PADBAR_MASK;
+	}
+
+	uint32 offset = padConfigOffset
+		+ (group->firstPad + interrupt.pin - group->firstPin)
+			* kGPIOControllers[type].padConfigStride;
+	if (padConfigOffset >= communityLength || (padConfigOffset & 3) != 0
+		|| offset + sizeof(uint32) > communityLength) {
+		TRACE_ALWAYS("%s pin %u: pad offset 0x%" B_PRIx32 " is outside the "
+			"community\n", interrupt.controller, interrupt.pin, offset);
+		return B_BAD_VALUE;
+	}
+
+	phys_addr_t address = communityBase + offset;
 	phys_addr_t pageAddress = address & ~(phys_addr_t)(B_PAGE_SIZE - 1);
 	void* registers;
 	fArea = map_physical_memory("i2c_hid input ready", pageAddress,
@@ -250,8 +328,9 @@ InputReadyLine::Init(acpi_module_info* acpi, acpi_handle device)
 	}
 
 	fActiveLow = interrupt.polarity == ACPI_ACTIVE_LOW;
-	TRACE_ALWAYS("using %s pin %u\n", interrupt.controller,
-		interrupt.pin);
+	TRACE_ALWAYS("using %s pin %u (pad at 0x%" B_PRIxPHYSADDR ", 0x%08"
+		B_PRIx32 ")\n", interrupt.controller, interrupt.pin, address,
+		padConfig);
 	return B_OK;
 }
 
