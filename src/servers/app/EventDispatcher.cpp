@@ -514,6 +514,29 @@ EventDispatcher::SendFakeMouseMoved(EventTarget& target, int32 viewToken)
 }
 
 
+/*!	Takes the cursor position from a pointer event, and moves the cursor there
+	if there is no cursor thread to do it.
+*/
+void
+EventDispatcher::_UpdateCursorPosition(BMessage* event)
+{
+	BPoint where;
+	if (event->FindPoint("where", &where) == B_OK)
+		fLastCursorPosition = where;
+
+	if (!HasCursorThread()) {
+		// There is no cursor thread, we need to move the cursor
+		// ourselves
+		BAutolock _(fCursorLock);
+
+		if (fHWInterface != NULL) {
+			fHWInterface->MoveCursorTo(fLastCursorPosition.x,
+				fLastCursorPosition.y);
+		}
+	}
+}
+
+
 void
 EventDispatcher::_SendFakeMouseMoved(BMessage* message)
 {
@@ -768,23 +791,10 @@ EventDispatcher::_EventLoop()
 				break;
 			case B_MOUSE_MOVED:
 			{
-				BPoint where;
-				if (event->FindPoint("where", &where) == B_OK)
-					fLastCursorPosition = where;
+				_UpdateCursorPosition(event);
 
 				if (fDraggingMessage)
 					event->AddMessage("be:drag_message", &fDragMessage);
-
-				if (!HasCursorThread()) {
-					// There is no cursor thread, we need to move the cursor
-					// ourselves
-					BAutolock _(fCursorLock);
-
-					if (fHWInterface != NULL) {
-						fHWInterface->MoveCursorTo(fLastCursorPosition.x,
-							fLastCursorPosition.y);
-					}
-				}
 
 				// This is for B_NO_POINTER_HISTORY - we always want the
 				// latest mouse moved event in the queue only
@@ -806,6 +816,13 @@ EventDispatcher::_EventLoop()
 			case B_MOUSE_UP:
 			case B_MOUSE_IDLE:
 			{
+				// A press or release has a position of its own: a finger on a
+				// touch screen doesn't hover, so it can press where no move
+				// has taken the cursor. The window under the event's position
+				// gets it, and the position it's told has to match.
+				if (event->what == B_MOUSE_DOWN || event->what == B_MOUSE_UP)
+					_UpdateCursorPosition(event);
+
 #ifdef TRACE_EVENTS
 				if (event->what != B_MOUSE_MOVED)
 					printf("mouse up/down event, previous target = %p\n", fPreviousMouseTarget);
