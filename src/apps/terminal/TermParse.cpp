@@ -516,6 +516,11 @@ TermParse::EscParse()
 					break;
 
 				case CASE_UTF8_3BYTE:
+				case CASE_UTF8_4BYTE:
+				{
+					// Characters outside the Basic Multilingual Plane, such
+					// as most emoji, take four bytes.
+					int32 length = parsestate[c] == CASE_UTF8_4BYTE ? 4 : 3;
 					cbuf[srcLen++] = c;
 
 					do {
@@ -526,11 +531,12 @@ TermParse::EscParse()
 						}
 						cbuf[srcLen++] = c;
 
-					} while (srcLen != 3);
+					} while (srcLen != length);
 
 					if (srcLen > 0)
 						fBuffer->InsertChar(UTF8Char(cbuf, srcLen));
 					break;
+				}
 
 				case CASE_SCS_STATE:
 				{
