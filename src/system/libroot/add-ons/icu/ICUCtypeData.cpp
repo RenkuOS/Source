@@ -16,6 +16,7 @@
 #include <unicode/uvernum.h>
 
 #include <Debug.h>
+#include <SupportDefs.h>
 
 
 //#define TRACE_CTYPE
@@ -35,6 +36,21 @@ namespace BPrivate {
 namespace Libroot {
 
 
+/*!	Stores \a value in \a address with release semantics. The __atomic
+	builtins are not available with gcc2, atomic_set() and atomic_set64() are
+	(and use them where they exist).
+*/
+static inline void
+publish_pointer(void* address, const void* value)
+{
+#if B_HAIKU_32_BIT
+	atomic_set((int32*)address, (int32)(addr_t)value);
+#else
+	atomic_set64((int64*)address, (int64)(addr_t)value);
+#endif
+}
+
+
 ICUCtypeData::ICUCtypeData(pthread_key_t tlsKey)
 	:
 	inherited(tlsKey),
@@ -51,9 +67,16 @@ ICUCtypeData::~ICUCtypeData()
 void
 ICUCtypeData::Initialize(LocaleCtypeDataBridge* dataBridge)
 {
-	*dataBridge->addrOfClassInfoTable = &fClassInfo[128];
-	*dataBridge->addrOfToLowerTable = &fToLowerMap[128];
-	*dataBridge->addrOfToUpperTable = &fToUpperMap[128];
+	// Other threads may read the published tables at any time (isdigit_l()
+	// on the global locale, from vfscanf() for example), so they must hold
+	// valid POSIX data before they become visible.
+	memcpy(fClassInfo, dataBridge->posixClassInfo, sizeof(fClassInfo));
+	memcpy(fToLowerMap, dataBridge->posixToLowerMap, sizeof(fToLowerMap));
+	memcpy(fToUpperMap, dataBridge->posixToUpperMap, sizeof(fToUpperMap));
+
+	publish_pointer(dataBridge->addrOfClassInfoTable, &fClassInfo[128]);
+	publish_pointer(dataBridge->addrOfToLowerTable, &fToLowerMap[128]);
+	publish_pointer(dataBridge->addrOfToUpperTable, &fToUpperMap[128]);
 	fDataBridge = dataBridge;
 }
 

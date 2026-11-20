@@ -82,6 +82,13 @@ static void
 DestroyThreadLocale(void* ptr)
 {
 	ThreadLocale* threadLocale = (ThreadLocale*)ptr;
+	// The on_exit_thread() hooks run before the thread's pthread key
+	// destructors, and those run C++ thread_local destructors (libstdc++ has
+	// no __cxa_thread_atexit_impl here). Code in them that touches the locale
+	// (strtod(), printf(), a GL driver...) must not find the deleted object:
+	// clear the slot, so it gets the C locale state again.
+	if (tls_get(TLS_LOCALE_SLOT) == threadLocale)
+		tls_set(TLS_LOCALE_SLOT, NULL);
 	delete threadLocale;
 }
 
