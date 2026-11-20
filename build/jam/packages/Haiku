@@ -98,6 +98,7 @@ AddFilesToPackage add-ons kernel generic :
 	ata_adapter
 	bios@x86,x86_64
 	dpc
+	dw_axi_dma@riscv64
 	jh7110_clock_reset@riscv64
 	mpu401
 	scsi_periph
@@ -179,6 +180,7 @@ AddNewDriversToPackage display :
 	;
 AddNewDriversToPackage audio hmulti :
 #	virtio_sound
+	jh7110_pwmdac@riscv64
 	;
 AddNewDriversToPackage hyperv :
 	hyperv_ic@x86,x86_64,arm64
