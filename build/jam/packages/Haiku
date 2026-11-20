@@ -161,6 +161,7 @@ AddNewDriversToPackage sensor
 	: $(SYSTEM_ADD_ONS_DRIVERS_SENSOR) ;
 AddNewDriversToPackage network :
 	brcmfmac@arm64
+	dwmac@riscv64
 	genet@arm64
 	hyperv_netvsc@x86,x86_64,arm64
 	usb_ecm
