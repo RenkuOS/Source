@@ -270,6 +270,9 @@ platform_init_video(void)
 }
 
 
+uint64_t gFrameBufferAliasOffset = 0;
+
+
 extern "C" void
 platform_switch_to_logo(void)
 {
@@ -281,7 +284,7 @@ platform_switch_to_logo(void)
 
 	sGraphicsOutput->SetMode(sGraphicsOutput, sGraphicsMode);
 	gKernelArgs.frame_buffer.physical_buffer.start =
-		sGraphicsOutput->Mode->FrameBufferBase;
+		sGraphicsOutput->Mode->FrameBufferBase + gFrameBufferAliasOffset;
 	gKernelArgs.frame_buffer.physical_buffer.size =
 		sGraphicsOutput->Mode->FrameBufferSize;
 	gKernelArgs.frame_buffer.width = sGraphicsOutput->Mode->Info->HorizontalResolution;
