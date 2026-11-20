@@ -1,5 +1,6 @@
 /*
- * Copyright 2022-2026, Haiku, Inc.
+ * Copyright 2022, Haiku, Inc.
+ * Copyright 2026, The RenkuOS Authors.
  * Distributed under the terms of the MIT License.
  *
  * SPDX-License-Identifier: MIT
