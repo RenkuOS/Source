@@ -121,6 +121,7 @@ typedef struct {
 	size_t	length;
 	uint32	flags;
 	int32	error;
+	uint32	abort_source;	// IC_TX_ABRT_SOURCE of the last abort
 
 	mutex	lock;
 	status_t (*scan_bus)(i2c_bus_cookie cookie);
