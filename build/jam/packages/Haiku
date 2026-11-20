@@ -118,6 +118,7 @@ AddFilesToPackage add-ons kernel interrupt_controllers :
 AddFilesToPackage add-ons kernel power cpufreq :
 	amd_pstates@x86,x86_64
 	intel_pstates@x86,x86_64
+	jh7110_cpufreq@riscv64
 	;
 AddFilesToPackage add-ons kernel power cpuidle :
 	x86_cstates@x86,x86_64
