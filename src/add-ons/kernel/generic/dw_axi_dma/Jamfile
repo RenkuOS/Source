@@ -1,0 +1,8 @@
+SubDir HAIKU_TOP src add-ons kernel generic dw_axi_dma ;
+
+UsePrivateHeaders drivers ;
+UsePrivateKernelHeaders ;
+
+KernelAddon dw_axi_dma :
+	dw_axi_dma.cpp
+;

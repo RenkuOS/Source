@@ -1,0 +1,10 @@
+SubDir HAIKU_TOP src add-ons kernel drivers audio jh7110_pwmdac ;
+
+SubDirC++Flags -fno-rtti ;
+
+UsePrivateHeaders audio drivers ;
+UsePrivateKernelHeaders ;
+
+KernelAddon jh7110_pwmdac :
+	jh7110_pwmdac.cpp
+;
