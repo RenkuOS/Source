@@ -258,6 +258,17 @@ RISCV64VMTranslationMap::Map(addr_t virtualAddress, phys_addr_t physicalAddress,
 		.ppn = physicalAddress / B_PAGE_SIZE
 	};
 
+	if (fIsKernel) {
+		// The CPU may not set the accessed and modified bits itself; then the
+		// first access to the page faults so that the trap handler sets them.
+		// A kernel stack page must never fault like that: the first write to
+		// it can come from the trap entry code pushing a frame, and a fault
+		// there overwrites the trap CSRs (sepc, scause, stval) of the trap
+		// being entered. Set them up front, as the early kernel mappings do.
+		newPte.isAccessed = true;
+		newPte.isDirty = true;
+	}
+
 	if ((attributes & B_USER_PROTECTION) != 0) {
 		newPte.isUser = true;
 		if ((attributes & B_READ_AREA) != 0)
