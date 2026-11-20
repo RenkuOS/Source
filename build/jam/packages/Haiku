@@ -57,6 +57,7 @@ AddFilesToPackage add-ons kernel busses mmc :
 	;
 AddFilesToPackage add-ons kernel busses pci :
 	<pci>designware@riscv64
+	<pci>plda@riscv64
 	<pci>ecam@riscv64,arm,arm64
 	<pci>x86@x86,x86_64
 	;
@@ -377,6 +378,7 @@ AddBootModuleSymlinksToPackage
 	packagefs
 	pci
 	<pci>designware@riscv64
+	<pci>plda@riscv64
 	<pci>ecam@riscv64,arm,arm64
 	<pci>x86@x86,x86_64
 	fdt@riscv64,arm,arm64
