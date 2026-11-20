@@ -582,17 +582,17 @@ DefaultManager::_FindPhysical(volatile media_node_id *id, uint32 default_type,
 
 		dormant_node_info dninfo;
 		if (fRoster->GetDormantNodeFor(info[i].node, &dninfo) != B_OK) {
-			ERROR("Couldn't GetDormantNodeFor\n");
+			syslog(LOG_DEBUG, "media_server: no dormant node for \"%s\"\n",
+				info[i].name);
 			continue;
 		}
-		if (strcmp(dninfo.name, msgDninfo.name) != 0) {
-			ERROR("Doesn't match name\n");
+		if (strcmp(dninfo.name, msgDninfo.name) != 0)
 			continue;
-		}
 		BPath path;
 		if (gDormantNodeManager->FindAddOnPath(&path, dninfo.addon) != B_OK
 			|| path != msgPath) {
-			ERROR("Doesn't match : path\n");
+			syslog(LOG_DEBUG, "media_server: \"%s\" is from %s, not %s\n",
+				info[i].name, path.Path(), msgPath.Path());
 			continue;
 		}
 		if (dninfo.flavor_id == msgDninfo.flavor_id) {
