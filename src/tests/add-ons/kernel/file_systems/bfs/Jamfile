@@ -4,6 +4,10 @@ SimpleTest bfs_allocator_invalidate_largest :
 	bfs_allocator_invalidate_largest.cpp
 ;
 
+SimpleTest bfs_concurrent_grow_test :
+	bfs_concurrent_grow_test.c
+;
+
 SimpleTest bfs_attribute_iterator_test :
 	bfs_attribute_iterator_test.cpp
 	: be ;

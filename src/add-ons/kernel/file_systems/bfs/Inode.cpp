@@ -350,6 +350,7 @@ Inode::Inode(Volume* volume, ino_t id)
 		volume, id, this));
 
 	rw_lock_init(&fLock, "bfs inode");
+	rw_lock_init(&fGapLock, "bfs inode gap");
 	recursive_lock_init(&fSmallDataLock, "bfs inode small data");
 
 	if (UpdateNodeFromDisk() != B_OK) {
@@ -384,6 +385,7 @@ Inode::Inode(Volume* volume, Transaction& transaction, ino_t id, mode_t mode,
 		") @ %p\n", volume, &transaction, id, this));
 
 	rw_lock_init(&fLock, "bfs inode");
+	rw_lock_init(&fGapLock, "bfs inode gap");
 	recursive_lock_init(&fSmallDataLock, "bfs inode small data");
 
 	NodeGetter node(volume);
@@ -425,6 +427,7 @@ Inode::~Inode()
 	delete fTree;
 
 	rw_lock_destroy(&fLock);
+	rw_lock_destroy(&fGapLock);
 	recursive_lock_destroy(&fSmallDataLock);
 }
 
@@ -1601,6 +1604,19 @@ Inode::WriteAt(Transaction& transaction, off_t pos, const uint8* buffer,
 
 	locker.Unlock();
 
+	// A write that grows the file zeroes the gap between the old end and
+	// its position after it has released fLock (the file cache's I/O takes
+	// fLock itself). Another write that sees the new size must not land in
+	// that gap before it is zeroed, or the zeroes overwrite it (concurrent
+	// writers, like QEMU's I/O threads on a growing disk image, lost data
+	// that way). fGapLock keeps them apart: exclusive for a growing write,
+	// shared for the others, and always taken before fLock.
+	bool gapLockedExclusively = changeSize;
+	if (gapLockedExclusively)
+		rw_lock_write_lock(&fGapLock);
+	else
+		rw_lock_read_lock(&fGapLock);
+
 	// the transaction doesn't have to be started already
 	if (changeSize && !transaction.IsStarted())
 		transaction.Start(fVolume, BlockNumber());
@@ -1609,53 +1625,67 @@ Inode::WriteAt(Transaction& transaction, off_t pos, const uint8* buffer,
 
 	// Work around possible race condition: Someone might have shrunken the file
 	// while we had no lock.
-	if (!transaction.IsStarted()
-		&& (uint64)pos + (uint64)length > (uint64)Size()) {
-		writeLocker.Unlock();
-		transaction.Start(fVolume, BlockNumber());
-		writeLocker.Lock();
+	if ((uint64)pos + (uint64)length > (uint64)Size()) {
+		if (!gapLockedExclusively) {
+			// this write grows the file after all: it needs fGapLock
+			// exclusively, which comes before fLock
+			writeLocker.Unlock();
+			rw_lock_read_unlock(&fGapLock);
+			rw_lock_write_lock(&fGapLock);
+			gapLockedExclusively = true;
+			writeLocker.Lock();
+		}
+		if (!transaction.IsStarted()) {
+			writeLocker.Unlock();
+			transaction.Start(fVolume, BlockNumber());
+			writeLocker.Lock();
+		}
 	}
 
 	off_t oldSize = Size();
+	status_t status = B_OK;
 
 	if ((uint64)pos + (uint64)length > (uint64)oldSize) {
 		// let's grow the data stream to the size needed
-		status_t status = SetFileSize(transaction, pos + length);
+		status = SetFileSize(transaction, pos + length);
 		if (status != B_OK) {
 			*_length = 0;
-			WriteLockInTransaction(transaction);
-			RETURN_ERROR(status);
-		}
-		// TODO: In theory we would need to update the file size
-		// index here as part of the current transaction - this might just
-		// be a bit too expensive, but worth a try.
+			writeLocker.Unlock();
+		} else {
+			// TODO: In theory we would need to update the file size
+			// index here as part of the current transaction - this might
+			// just be a bit too expensive, but worth a try.
 
-		// we need to write back the inode here because it has to
-		// go into this transaction (we cannot wait until the file
-		// is closed)
-		status = WriteBack(transaction);
-		if (status != B_OK) {
-			WriteLockInTransaction(transaction);
-			return status;
+			// we need to write back the inode here because it has to
+			// go into this transaction (we cannot wait until the file
+			// is closed)
+			status = WriteBack(transaction);
+			writeLocker.Unlock();
 		}
+	} else
+		writeLocker.Unlock();
+
+	if (status == B_OK) {
+		if (oldSize < pos && gapLockedExclusively)
+			status = FillGapWithZeros(oldSize, pos);
+
+		// If we don't want to write anything, we can now return (we may
+		// just have changed the file size using the position parameter)
+		if (status == B_OK && length != 0)
+			status = file_cache_write(FileCache(), NULL, pos, buffer, _length);
 	}
 
-	writeLocker.Unlock();
-
-	if (oldSize < pos)
-		FillGapWithZeros(oldSize, pos);
-
-	// If we don't want to write anything, we can now return (we may
-	// just have changed the file size using the position parameter)
-	if (length == 0)
-		return B_OK;
-
-	status_t status = file_cache_write(FileCache(), NULL, pos, buffer, _length);
+	if (gapLockedExclusively)
+		rw_lock_write_unlock(&fGapLock);
+	else
+		rw_lock_read_unlock(&fGapLock);
 
 	if (transaction.IsStarted())
 		WriteLockInTransaction(transaction);
 
-	return status;
+	if (status != B_OK)
+		RETURN_ERROR(status);
+	return B_OK;
 }
 
 
