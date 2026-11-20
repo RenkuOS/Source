@@ -937,9 +937,17 @@ CommitTransactionHandler::_AddGlobalWritableFile(Package* package,
 	struct stat sourceStat;
 	const char* sourceLeaf = lastSlash != NULL
 		? lastSlash + 1 : file.Path().String();
-	if (sourceDirectory->GetStatFor(sourceLeaf, &sourceStat) != B_OK) {
+	status_t statError = sourceDirectory->GetStatFor(sourceLeaf, &sourceStat);
+	if (statError == B_ENTRY_NOT_FOUND) {
 		_WarnMissingWritableFile(package, file);
 		return;
+	}
+	if (statError != B_OK) {
+		throw Exception(B_TRANSACTION_FAILED_TO_ACCESS_ENTRY)
+			.SetPath1(_GetPath(FSUtils::Entry(*sourceDirectory, sourceLeaf),
+				file.Path()))
+			.SetPackageName(package->FileName())
+			.SetSystemError(statError);
 	}
 
 	// open parent directory of the target entry -- create, if necessary
