@@ -209,7 +209,7 @@ StyleDecorator::RegionAt(BPoint where, int32& tabIndex) const
 	if (fTopTab == NULL)
 		return REGION_NONE;
 
-	if (fStyle->region_at != NULL && fCanvas != NULL) {
+	if (_HasStyle() && fStyle->region_at != NULL) {
 		_SyncIn();
 		int32 tab = -1;
 		decor_point point = { where.x, where.y };
@@ -592,7 +592,9 @@ StyleDecorator::_GetFootprint(BRegion* region)
 		|| fTopTab->look == B_NO_BORDER_WINDOW_LOOK)
 		return;
 
-	if (_HasStyle() && fStyle->footprint != NULL) {
+	if (_HasStyle() && _StyleHas(offsetof(decor_style, footprint)
+			+ sizeof(fStyle->footprint))
+		&& fStyle->footprint != NULL) {
 		_SyncIn();
 		StyleRegion styleRegion(region);
 		fStyle->footprint(&fWindow, &styleRegion);
