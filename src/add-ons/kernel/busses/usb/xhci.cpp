@@ -26,6 +26,7 @@
 #include <vm/vm.h>
 
 #include "xhci.h"
+#include "xhci_isochronous.h"
 
 
 #define CALLED(x...)	TRACE_MODULE("CALLED %s\n", __PRETTY_FUNCTION__)
@@ -1370,8 +1371,21 @@ XHCI::SubmitNormalRequest(Transfer *transfer)
 			}
 		}
 
-		// TODO: We do not currently take Mult into account at all!
-		// How are we supposed to do that here?
+		// Tell the controller how many packets and bursts this interval's
+		// TRB moves, otherwise it takes it for a single packet and a camera
+		// that sends two or three per microframe gets errors.
+		const uint32 packetSize = xhci_isochronous_packet_size(maxPacketSize);
+		const uint32 burstPackets = packetSize != 0
+			? endpoint->max_burst_payload / packetSize : 1;
+		for (uint32 i = 0; i < isochronousData->packet_count; i++) {
+			uint32 burstCount, lastBurstPackets;
+			xhci_isochronous_burst(TRB_2_BYTES_GET(td->trbs[i].status),
+				packetSize, burstPackets, &burstCount, &lastBurstPackets);
+			td->trbs[i].flags |= TRB_3_TBC(burstCount)
+				| TRB_3_TLBPC(lastBurstPackets);
+		}
+
+		// TODO: Mult of SuperSpeed Plus endpoints is not handled.
 
 		// Determine the (starting) frame number: if ISO_ASAP is set,
 		// we are queueing this "right away", and so want to reset
@@ -2361,7 +2375,18 @@ XHCI::_InsertEndpointForPipe(Pipe *pipe)
 		_WriteContext(&device->input_ctx->input.addFlags,
 			(1 << endpointNum) | (1 << 0));
 
-		ConfigureEndpoint(device->input_ctx_addr, false, device->slot);
+		// The controller may refuse the endpoint, for example for lack of
+		// bandwidth. Without a controller cookie, transfers on this pipe fail
+		// right away instead of waiting for an endpoint that never runs.
+		status = ConfigureEndpoint(device->input_ctx_addr, false, device->slot);
+		if (status != B_OK) {
+			TRACE_ERROR("unable to enable endpoint %d: %s\n", id,
+				strerror(status));
+			endpointLocker.Unlock();
+			mutex_destroy(&endpoint->lock);
+			memset((void*)endpoint, 0, sizeof(xhci_endpoint));
+			return status;
+		}
 
 		TRACE("device: address 0x%x state 0x%08" B_PRIx32 "\n",
 			device->address, SLOT_3_SLOT_STATE_GET(_ReadContext(
@@ -2637,6 +2662,10 @@ XHCI::ConfigureEndpoint(xhci_endpoint* ep, uint8 slot, uint8 number, uint8 type,
 	if (speed == USB_SPEED_HIGHSPEED && (type & (USB_OBJECT_INTERRUPT_PIPE
 			| USB_OBJECT_ISO_PIPE)) != 0) {
 		maxBurst = (maxPacketSize & 0x1800) >> 11;
+
+		// Bits 11 and 12 count the additional transactions, they are not
+		// part of the packet size. (USB 2.0 § 9.6.6.)
+		maxPacketSize &= 0x7ff;
 	} else if (speed < USB_SPEED_SUPERSPEED) {
 		maxBurst = 0;
 	}
