@@ -63,7 +63,11 @@
 #include <SupportDefs.h>
 
 
-#define DECOR_STYLE_API_VERSION		1
+/*!	Versions 1 and 2 were drafts: styles were built against them, with other
+	structure layouts, before the interface settled. This is the first
+	final version, and app_server refuses anything older.
+*/
+#define DECOR_STYLE_API_VERSION		3
 
 
 #ifdef __cplusplus
