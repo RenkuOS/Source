@@ -1284,8 +1284,15 @@ LegacyDevice::InitDevice()
 	if (fDriver != NULL && fDriver->devices_used == 0
 		&& (fDriver->image < 0 || fDriver->binary_updated)) {
 		status_t status = reload_driver(fDriver);
-		if (status < B_OK)
+		if (status == B_OK && fRemovedFromParent) {
+			// the reloaded driver no longer publishes this device: its hooks
+			// belong to the image that was unloaded
+			status = ENODEV;
+		}
+		if (status < B_OK) {
+			fInitialized--;
 			return status;
+		}
 	}
 
 	if (fDriver != NULL)
