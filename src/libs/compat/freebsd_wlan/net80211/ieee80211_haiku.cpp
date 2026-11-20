@@ -62,7 +62,7 @@ extern "C" {
 #include <shared.h>
 
 
-#define TRACE_WLAN
+//#define TRACE_WLAN
 #ifdef TRACE_WLAN
 #	define TRACE(x...) dprintf(x);
 #else
