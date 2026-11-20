@@ -167,7 +167,8 @@ AddNewDriversToPackage network :
 	virtio_net
 	;
 AddNewDriversToPackage input :
-	hyperv_hid@x86,x86_64
+	hyperv_hid@x86,x86_64,arm64
+	hyperv_kbd@x86,x86_64,arm64
 	i2c_elan@x86,x86_64,arm64
 	i2c_goodix@x86,x86_64
 	i2c_hid
