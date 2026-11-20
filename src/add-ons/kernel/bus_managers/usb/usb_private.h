@@ -629,6 +629,11 @@ protected:
 		bool							fInitOK;
 
 private:
+		void							_RemoveEndpointPipes(
+											int32 interfaceIndex,
+											bool cancelTransfers);
+static	void							_CancelPipeTransfers(Pipe* pipe);
+
 		bool							fAvailable;
 		bool							fIsRootHub;
 		usb_configuration_info *		fConfigurations;
