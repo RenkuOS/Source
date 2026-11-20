@@ -104,6 +104,10 @@ rtwn_calib_cb(struct rtwn_softc *sc, union sec_param *data)
 	/* Do temperature compensation. */
 	rtwn_temp_calib(sc);
 
+	/* Chip specific dynamic mechanisms, if any. */
+	if (sc->sc_dm_watchdog != NULL)
+		sc->sc_dm_watchdog(sc);
+
 #ifndef RTWN_WITHOUT_UCODE
 	if (sc->sc_ratectl == RTWN_RATECTL_FW) {
 		/* Refresh per-node RSSI. */

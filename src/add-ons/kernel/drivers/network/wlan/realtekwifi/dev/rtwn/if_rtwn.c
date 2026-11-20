@@ -1474,6 +1474,71 @@ rtwn_watchdog(void *arg)
 		ieee80211_restart_all(ic);
 		return;
 	}
+
+	/*
+	 * A chip that has stopped receiving (see rx_silence_limit): after frames
+	 * came and then none for the limit, or every 2 minutes if a restart
+	 * didn't bring any, as there may simply be nothing around. Only a link
+	 * that is up has frames to expect: a scan spends seconds on empty
+	 * channels, the radio waits on one for the supplicant's choice after it,
+	 * and a restart would only start all that again. The 2 minutes there too.
+	 */
+	/*
+	 * A failed block transfer (see sc_io_fault). A chip that is stuck
+	 * answers the single byte commands of the receive poll but receives
+	 * nothing any more, and the silence below would only notice it after
+	 * 2 minutes when it happens during a scan. One that still works
+	 * delivers frames within a few seconds, if only beacons.
+	 */
+	if (sc->rx_silence_limit != 0 && sc->sc_io_fault != 0) {
+		if (sc->sc_io_fault == 1)
+			sc->sc_io_fault_rx = sc->sc_rx_transfers;
+		if (sc->sc_rx_transfers != sc->sc_io_fault_rx)
+			sc->sc_io_fault = 0;
+		else if (sc->sc_io_fault++ > RTWN_IO_FAULT_LIMIT) {
+			ic_printf(ic, "nothing received for %d s after a failed "
+			    "transfer, restarting\n", RTWN_IO_FAULT_LIMIT);
+			sc->sc_io_fault = 0;
+			sc->sc_rx_silence = 0;
+			sc->sc_rx_flowing = 0;
+			ieee80211_restart_all(ic);
+			return;
+		}
+	}
+
+	if (sc->rx_silence_limit != 0) {
+		struct ieee80211vap *vap = TAILQ_FIRST(&ic->ic_vaps);
+		int linked = vap != NULL && vap->iv_state == IEEE80211_S_RUN
+		    && (ic->ic_flags & IEEE80211_F_SCAN) == 0;
+
+		if (sc->sc_rx_transfers != sc->sc_rx_seen) {
+			sc->sc_rx_seen = sc->sc_rx_transfers;
+			sc->sc_rx_silence = 0;
+			sc->sc_rx_flowing = 1;
+			/*
+			 * net80211 drops a link whose beacons stop within a beacon
+			 * interval or three and starts a scan, so at the first tick
+			 * without frames the link is usually gone already: a chip that
+			 * stops receiving takes the link down with it. Take the link
+			 * state here, while frames still come, or the restart waits
+			 * the full two minutes (seen on a Teclast X98 Air III).
+			 */
+			sc->sc_rx_silent_linked = linked;
+		} else if (linked) {
+			/* The link is still up while nothing comes: it counts too. */
+			sc->sc_rx_silent_linked = 1;
+		}
+		if (sc->sc_rx_transfers == sc->sc_rx_seen
+		    && ++sc->sc_rx_silence >= (sc->sc_rx_flowing
+		    && sc->sc_rx_silent_linked ? sc->rx_silence_limit : 120)) {
+			ic_printf(ic, "nothing received for %d s, restarting\n",
+			    sc->sc_rx_silence);
+			sc->sc_rx_silence = 0;
+			sc->sc_rx_flowing = 0;
+			ieee80211_restart_all(ic);
+			return;
+		}
+	}
 	callout_reset(&sc->sc_watchdog_to, hz, rtwn_watchdog, sc);
 }
 #endif
@@ -2040,6 +2105,8 @@ rtwn_init(struct rtwn_softc *sc)
 	rtwn_start_xfers(sc);
 
 #ifndef D4054
+	/* A failed transfer of the firmware download is no fault here. */
+	sc->sc_io_fault = 0;
 	callout_reset(&sc->sc_watchdog_to, hz, rtwn_watchdog, sc);
 #endif
 
