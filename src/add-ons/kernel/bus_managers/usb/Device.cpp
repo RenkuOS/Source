@@ -683,6 +683,28 @@ Device::Unconfigure(bool atDeviceLevel)
 void
 Device::ClearEndpoints(int32 interfaceIndex)
 {
+	_RemoveEndpointPipes(interfaceIndex, false);
+}
+
+
+/*!	Stops new transfers on \a pipe and cancels the queued ones, calling their
+	callbacks. ~Pipe() cancels by force and skips the callbacks, so a caller
+	still waiting for one would wait forever. Only use this while the owner of
+	the transfers is still alive.
+*/
+void
+Device::_CancelPipeTransfers(Pipe* pipe)
+{
+	// Put the ID first and wait for submissions that already hold a reference,
+	// so that no transfer can be queued after the cancel.
+	pipe->PutUSBID(true);
+	pipe->CancelQueuedTransfers(false);
+}
+
+
+void
+Device::_RemoveEndpointPipes(int32 interfaceIndex, bool cancelTransfers)
+{
 	if (fCurrentConfiguration == NULL
 		|| fCurrentConfiguration->interface == NULL)
 		return;
@@ -699,8 +721,11 @@ Device::ClearEndpoints(int32 interfaceIndex)
 		for (size_t i = 0; i < interfaceInfo->endpoint_count; i++) {
 			usb_endpoint_info* endpoint = &interfaceInfo->endpoint[i];
 			Pipe* pipe = (Pipe*)GetStack()->GetObject(endpoint->handle);
-			if (pipe != NULL)
+			if (pipe != NULL) {
 				pipe->ReleaseReference();
+				if (cancelTransfers)
+					_CancelPipeTransfers(pipe);
+			}
 			delete pipe;
 			endpoint->handle = 0;
 		}
@@ -712,16 +737,23 @@ status_t
 Device::SetAltInterface(const usb_interface_info* interface)
 {
 	uint8 interfaceNumber = interface->descr->interface_number;
+
+	// End the transfers of the old setting before the device switches: some
+	// devices stop working when the setting changes under running isochronous
+	// transfers. The driver that asked for the change is still there, so its
+	// queued transfers get their callbacks.
+	_RemoveEndpointPipes(interfaceNumber, true);
+
 	// Tell the device to set the alternate settings
 	status_t result = fDefaultPipe->SendRequest(
 		USB_REQTYPE_INTERFACE_OUT | USB_REQTYPE_STANDARD,
 		USB_REQUEST_SET_INTERFACE,
 		interface->descr->alternate_setting, interfaceNumber, 0, NULL, 0, NULL);
-	if (result < B_OK)
+	if (result < B_OK) {
+		// The old setting stays active, give it new pipes.
+		InitEndpoints(interfaceNumber);
 		return result;
-
-	// Clear the no longer active endpoints
-	ClearEndpoints(interfaceNumber);
+	}
 
 	// Update the active pointer of the interface list
 	usb_interface_list* interfaceList
