@@ -51,6 +51,7 @@ AddFilesToPackage add-ons kernel busses i2c :
 	pch_i2c@x86,x86_64
 	;
 AddFilesToPackage add-ons kernel busses mmc :
+	designware_mmc@riscv64
 	sdhci
 	bcm2711_emmc2@arm64
 	;
@@ -381,6 +382,7 @@ AddBootModuleSymlinksToPackage
 	scsi_periph
 	silicon_image_3112
 	smbios@x86,x86_64
+	designware_mmc@riscv64
 	sdhci
 	bcm2711_emmc2@arm64
 	usb

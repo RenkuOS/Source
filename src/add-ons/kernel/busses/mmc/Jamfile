@@ -17,3 +17,5 @@ KernelAddon sdhci :
 KernelAddon bcm2711_emmc2 :
 	bcm2711_emmc2.cpp
 ;
+
+SubInclude HAIKU_TOP src add-ons kernel busses mmc designware ;
