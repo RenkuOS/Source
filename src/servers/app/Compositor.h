@@ -18,6 +18,7 @@
 class Desktop;
 class RenderingBuffer;
 class Window;
+class WindowWobble;
 
 
 /*!	Builds the screen from the windows' off-screen buffers.
@@ -58,7 +59,21 @@ public:
 			// changed since the last time, and composites these parts.
 			void				SceneChanged();
 
+			// A window is being dragged, grabbed at the given point of its
+			// frame: it wobbles until it has been let go and has come to rest.
+			// The wobbliness goes from 0 to 100.
+			void				StartWobble(Window* window, BPoint grab,
+									uint8 wobbliness);
+			void				ReleaseWobble(Window* window);
+			// The window's zoom button has been clicked: once the application
+			// has zoomed it, it wobbles into its new frame.
+			void				StartZoomWobble(Window* window,
+									uint8 wobbliness);
+			// The window is going away.
+			void				ForgetWobble(Window* window);
+
 private:
+			struct Wobble;
 			struct SceneEntry {
 				const Window*	window;
 				BRect			frame;
@@ -68,7 +83,9 @@ private:
 				BRegion			region;
 				BRegion			shadow;
 				uint8			alpha;
-				// The parts that are drawn in different ways
+				Wobble*			wobble;
+				// The parts drawn by themselves, for a window that isn't
+				// wobbling
 				BRegion			opaque;
 				BRegion			clear;
 				BRegion			edge;
@@ -106,6 +123,24 @@ private:
 									Window* window, const BRegion& region,
 									std::vector<uint8>& columns);
 
+			void				_ScheduleFrame();
+			bool				_StepWobbles();
+			Wobble*				_WobbleFor(const Window* window) const;
+			void				_InitWobble(Wobble* wobble);
+			void				_InitWobbleMasks(Wobble* wobble);
+			bool				_WobbleBufferMoved(const Wobble* wobble,
+									Window* window) const;
+			void				_UpdateWobbleArea(Wobble* wobble);
+			void				_DrawWobble(RenderingBuffer* target,
+									Window* window, const Wobble* wobble,
+									const BRegion& region, uint8 alpha);
+			void				_FillTriangle(RenderingBuffer* target,
+									const Wobble* wobble, const uint8* pixels,
+									uint32 bytesPerRow,
+									const clipping_rect& clip,
+									const BPoint* points,
+									const BPoint* sources, uint8 alpha);
+
 private:
 			Desktop*			fDesktop;
 			BLocker				fLock;
@@ -139,6 +174,9 @@ private:
 			int32				fBandCount;
 			int32				fNextBand;
 
+			BLocker				fWobbleLock;
+			std::vector<Wobble*>
+								fWobbles;
 			const void*			fSceneBits;
 			uint32				fSceneWidth;
 			uint32				fSceneHeight;
