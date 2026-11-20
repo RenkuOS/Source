@@ -78,6 +78,7 @@ int socket_bind(net_socket* socket, const struct sockaddr* address,
 int socket_setsockopt(net_socket* socket, int level, int option,
 	const void* value, int length);
 ssize_t socket_read_avail(net_socket* socket);
+bool socket_acquire(net_socket* socket);
 
 static SocketList sSocketList;
 static mutex sSocketLock;
@@ -608,8 +609,13 @@ socket_get_next_stat(uint32* _cookie, int family, struct net_stat* stat)
 			return B_ENTRY_NOT_FOUND;
 
 		// TODO: also traverse the pending connections
-		if (count == cookie)
-			break;
+		if (count == cookie) {
+			// A socket whose last reference is gone is waiting for
+			// sSocketLock to leave the list; the next one takes its place.
+			if (socket_acquire(socket))
+				break;
+			continue;
+		}
 
 		if (family == -1 || family == socket->family)
 			count++;
@@ -627,11 +633,20 @@ socket_get_next_stat(uint32* _cookie, int family, struct net_stat* stat)
 	stat->receive_queue_size = 0;
 	stat->send_queue_size = 0;
 
+	// The protocol takes its own locks to fill in its data, and it holds
+	// them while it calls back into here (a listening TCP endpoint spawns a
+	// child with its lock held, and that takes the parent socket's lock,
+	// which is held while a child leaves for the socket list). So
+	// sSocketLock must not be held across the call; the reference keeps the
+	// socket and its protocols alive instead.
+	locker.Unlock();
+
 	// fill in protocol specific data (if supported by the protocol)
 	size_t length = sizeof(net_stat);
 	socket->first_info->control(socket->first_protocol, socket->protocol,
 		NET_STAT_SOCKET, stat, &length);
 
+	socket->ReleaseReference();
 	return B_OK;
 }
 
