@@ -81,6 +81,8 @@ private:
 									const BString& groupName);
 			void				_AddUser(Package* package, const BUser& user);
 			void				_AddGlobalWritableFiles(Package* package);
+			void				_WarnMissingWritableFile(Package* package,
+									const BGlobalWritableFileInfo& file);
 			void				_AddGlobalWritableFile(Package* package,
 									const BGlobalWritableFileInfo& file,
 									const BDirectory& rootDirectory,
