@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: MIT
+
+SubDir HAIKU_TOP src add-ons kernel generic jh7110_clock_reset ;
+
+UsePrivateHeaders drivers ;
+UsePrivateKernelHeaders ;
+
+KernelAddon jh7110_clock_reset :
+	jh7110_clock_reset.cpp
+	Jh7110ClockTree.cpp
+;
