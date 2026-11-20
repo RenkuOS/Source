@@ -161,6 +161,7 @@ AddNewDriversToPackage sensor
 AddNewDriversToPackage network :
 	brcmfmac@arm64
 	genet@arm64
+	hyperv_netvsc@x86,x86_64,arm64
 	usb_ecm
 	virtio_net
 	;
