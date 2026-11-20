@@ -87,8 +87,15 @@ RemoteDevice::ParseRemoteDevice(LocalDevice* localDevice, BMessage* message)
 	message->FindData("class_of_device", B_ANY_TYPE, (const void**)&class_of_device, &size);
 	RemoteDevice* rd = new RemoteDevice(*bdaddr, class_of_device);
 
-	// TODO: we should request the remote device's name and other parameters.
-	rd->fDiscovererLocalDevice = localDevice;
+	// the name the server knows, if any
+	BString name;
+	if (message->FindString("name", &name) == B_OK && !name.IsEmpty()) {
+		rd->fFriendlyName = name;
+		rd->fFriendlyNameIsComplete = true;
+	}
+
+	rd->fDiscovererLocalDevice = localDevice != NULL
+		? localDevice : LocalDevice::GetLocalDevice();
 
 	return rd;
 }
@@ -104,10 +111,14 @@ RemoteDevice::GetFriendlyName(bool alwaysAsk)
 	}
 
 	if (fDiscovererLocalDevice == NULL)
-		return BString(B_TRANSLATE("#NoOwnerError#Not Valid name"));
+		fDiscovererLocalDevice = LocalDevice::GetLocalDevice();
 
-	if (fMessenger == NULL)
-		return BString(B_TRANSLATE("#ServerNotReady#Not Valid name"));
+	// without a name, the address is better than an error
+	BString fallback = fFriendlyName.IsEmpty()
+		? bdaddrUtils::ToString(fBdaddr) : fFriendlyName;
+
+	if (fDiscovererLocalDevice == NULL || fMessenger == NULL)
+		return fallback;
 
 	void* remoteNameCommand = NULL;
 	size_t size;
@@ -130,8 +141,11 @@ RemoteDevice::GetFriendlyName(bool alwaysAsk)
 
 	request.AddInt16("eventExpected",  HCI_EVENT_REMOTE_NAME_REQUEST_COMPLETE);
 
-
-	if (fMessenger->SendMessage(&request, &reply) == B_OK) {
+	// The answer waits for the controller, which may not give it when the
+	// link drops in the middle: the Bluetooth preferences, asking from their
+	// window, hung for good. A name request takes seconds at most.
+	if (fMessenger->SendMessage(&request, &reply, B_INFINITE_TIMEOUT,
+			20000000) == B_OK) {
 		BString name;
 		uint8 status;
 
@@ -147,14 +161,11 @@ RemoteDevice::GetFriendlyName(bool alwaysAsk)
 
 		} else {
 			// seems we got a negative event
-			if (!fFriendlyName.IsEmpty())
-				return fFriendlyName;
-
-			return BString(B_TRANSLATE("#CommandFailed#Not Valid name"));
+			return fallback;
 		}
 	}
 
-	return BString(B_TRANSLATE("#NotCompletedRequest#Not Valid name"));
+	return fallback;
 }
 
 
@@ -185,7 +196,8 @@ RemoteDevice::GetBluetoothAddress()
 uint16
 RemoteDevice::GetClockOffset()
 {
-	return fClockOffset;
+	// without the bit that tells whether it is known
+	return fClockOffset & 0x7fff;
 }
 
 
@@ -208,6 +220,12 @@ status_t
 RemoteDevice::Connect()
 {
 	CALLED();
+	// devices loaded from the paired list have no owner yet
+	if (fDiscovererLocalDevice == NULL)
+		fDiscovererLocalDevice = LocalDevice::GetLocalDevice();
+	if (fDiscovererLocalDevice == NULL || fMessenger == NULL)
+		return B_ERROR;
+
 	BMessage request(BT_REQ_CREATE_CONN);
 
 	request.AddInt32("hci_id", fDiscovererLocalDevice->ID());
@@ -218,17 +236,17 @@ RemoteDevice::Connect()
 	request.AddString("name", GetFriendlyName());
 	request.AddUInt32("record", fDeviceClass.Record());
 
-	uint16 packetType;
-	fDiscovererLocalDevice->GetProperty("packet_type", (uint32*)&packetType);
-	request.AddUInt16("packet type", packetType);
+	uint32 packetType = 0;
+	fDiscovererLocalDevice->GetProperty("packet_type", &packetType);
+	request.AddUInt16("packet type", (uint16)packetType);
 
 	request.AddUInt8("pscan_rep_mode", fPageRepetitionMode);
 	request.AddUInt8("pscan_mode", fScanMode);
 	request.AddUInt16("clock_offset", fClockOffset);
 
-	uint8 roleSwitch;
-	fDiscovererLocalDevice->GetProperty("role_switch_capable", (uint32*)&roleSwitch);
-	request.AddUInt8("role_switch", roleSwitch);
+	uint32 roleSwitch = 0;
+	fDiscovererLocalDevice->GetProperty("role_switch_capable", &roleSwitch);
+	request.AddUInt8("role_switch", roleSwitch != 0 ? 1 : 0);
 
 	if (fMessenger->SendMessage(&request) == B_OK)
 		return B_OK;
@@ -240,6 +258,12 @@ status_t
 RemoteDevice::CancelConnection()
 {
 	CALLED();
+	// devices loaded from the paired list have no owner yet
+	if (fDiscovererLocalDevice == NULL)
+		fDiscovererLocalDevice = LocalDevice::GetLocalDevice();
+	if (fDiscovererLocalDevice == NULL || fMessenger == NULL)
+		return B_ERROR;
+
 	BMessage request(BT_REQ_CANCEL_CONN);
 
 	request.AddInt32("hci_id", fDiscovererLocalDevice->ID());
@@ -257,6 +281,12 @@ status_t
 RemoteDevice::Disconnect(bool removeDevice)
 {
 	CALLED();
+	// devices loaded from the paired list have no owner yet
+	if (fDiscovererLocalDevice == NULL)
+		fDiscovererLocalDevice = LocalDevice::GetLocalDevice();
+	if (fDiscovererLocalDevice == NULL || fMessenger == NULL)
+		return B_ERROR;
+
 	BMessage request(BT_REQ_DISCONNECT);
 	if (removeDevice)
 		request.what = BT_REQ_REMOVE_DEVICE;
@@ -337,7 +367,9 @@ RemoteDevice::RemoteDevice(const bdaddr_t address, uint8 record[3])
 	:
 	BluetoothDevice(),
 	fDiscovererLocalDevice(NULL),
-	fScanMode(0)
+	fPageRepetitionMode(1),
+	fScanMode(0),
+	fClockOffset(0)
 {
 	CALLED();
 	fBdaddr = address;
@@ -350,7 +382,9 @@ RemoteDevice::RemoteDevice(const BString& address)
 	:
 	BluetoothDevice(),
 	fDiscovererLocalDevice(NULL),
-	fScanMode(0)
+	fPageRepetitionMode(1),
+	fScanMode(0),
+	fClockOffset(0)
 {
 	CALLED();
 	fBdaddr = bdaddrUtils::FromString((const char*)address.String());
