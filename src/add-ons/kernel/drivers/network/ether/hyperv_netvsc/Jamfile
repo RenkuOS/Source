@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: MIT
+
+SubDir HAIKU_TOP src add-ons kernel drivers network ether hyperv_netvsc ;
+
+UsePrivateKernelHeaders ;
+UsePrivateHeaders drivers net hyperv ;
+
+KernelAddon hyperv_netvsc :
+	Driver.cpp
+;
