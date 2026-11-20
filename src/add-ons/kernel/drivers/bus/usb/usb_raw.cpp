@@ -247,33 +247,50 @@ usb_raw_free(void *cookie)
 }
 
 
+typedef struct {
+	sem_id				notify;
+	status_t			status;
+	size_t				actual_length;
+} raw_transfer;
+
+
+static int32
+raw_status_for(status_t status)
+{
+	switch (status) {
+		case B_OK:
+			return B_USB_RAW_STATUS_SUCCESS;
+		case B_TIMED_OUT:
+			return B_USB_RAW_STATUS_TIMEOUT;
+		case B_CANCELED:
+			return B_USB_RAW_STATUS_ABORTED;
+		case B_DEV_CRC_ERROR:
+			return B_USB_RAW_STATUS_CRC_ERROR;
+		case B_DEV_STALLED:
+			return B_USB_RAW_STATUS_STALLED;
+		default:
+			return B_USB_RAW_STATUS_FAILED;
+	}
+}
+
+
+static void
+usb_raw_transfer_callback(void *cookie, status_t status, void *data,
+	size_t actualLength)
+{
+	raw_transfer *transfer = (raw_transfer *)cookie;
+	transfer->status = raw_status_for(status);
+	transfer->actual_length = actualLength;
+	release_sem(transfer->notify);
+}
+
+
 static void
 usb_raw_callback(void *cookie, status_t status, void *data, size_t actualLength)
 {
 	TRACE((DRIVER_NAME": callback()\n"));
 	raw_device *device = (raw_device *)cookie;
-
-	switch (status) {
-		case B_OK:
-			device->status = B_USB_RAW_STATUS_SUCCESS;
-			break;
-		case B_TIMED_OUT:
-			device->status = B_USB_RAW_STATUS_TIMEOUT;
-			break;
-		case B_CANCELED:
-			device->status = B_USB_RAW_STATUS_ABORTED;
-			break;
-		case B_DEV_CRC_ERROR:
-			device->status = B_USB_RAW_STATUS_CRC_ERROR;
-			break;
-		case B_DEV_STALLED:
-			device->status = B_USB_RAW_STATUS_STALLED;
-			break;
-		default:
-			device->status = B_USB_RAW_STATUS_FAILED;
-			break;
-	}
-
+	device->status = raw_status_for(status);
 	device->actual_length = actualLength;
 	release_sem(device->notify);
 }
@@ -856,39 +873,61 @@ usb_raw_ioctl(void *cookie, uint32 op, void *buffer, size_t length)
 				}
 			}
 
+			// Every transfer has its own state, and the device lock is only held
+			// while queueing. So several transfers of one device can be in
+			// flight, which a stream needs to not lose data in between.
+			raw_transfer transfer;
+			transfer.notify = create_sem(0, "usb_raw transfer notify");
+			if (transfer.notify < B_OK) {
+				command.transfer.status = B_USB_RAW_STATUS_NO_MEMORY;
+				command.transfer.length = 0;
+				break;
+			}
+
 			status_t status;
 			MutexLocker deviceLocker(device->lock);
 			if (op == B_USB_RAW_COMMAND_INTERRUPT_TRANSFER) {
 				status = gUSBModule->queue_interrupt(endpointInfo->handle,
 					transferData, command.transfer.length,
-					usb_raw_callback, device);
+					usb_raw_transfer_callback, &transfer);
 			} else if (op == B_USB_RAW_COMMAND_BULK_TRANSFER) {
 				status = gUSBModule->queue_bulk(endpointInfo->handle,
 					transferData, command.transfer.length,
-					usb_raw_callback, device);
+					usb_raw_transfer_callback, &transfer);
 			} else {
 				status = gUSBModule->queue_isochronous(endpointInfo->handle,
 					command.isochronous.data, command.isochronous.length,
 					packetDescriptors, command.isochronous.packet_count, NULL,
-					0, usb_raw_callback, device);
+					0, usb_raw_transfer_callback, &transfer);
 			}
+			deviceLocker.Unlock();
 
 			if (status < B_OK) {
+				delete_sem(transfer.notify);
 				command.transfer.status = B_USB_RAW_STATUS_FAILED;
 				command.transfer.length = 0;
 				status = B_OK;
 				break;
 			}
 
-			status = acquire_sem_etc(device->notify, 1, B_KILL_CAN_INTERRUPT, 0);
+			status = acquire_sem_etc(transfer.notify, 1, B_KILL_CAN_INTERRUPT, 0);
 			if (status != B_OK) {
-				gUSBModule->cancel_queued_transfers(endpointInfo->handle);
-				acquire_sem(device->notify);
+				// Interrupted. A transfer that has finished meanwhile, for
+				// example because another thread cancelled all transfers of
+				// the endpoint, needs no cancel of its own. Cancelling is
+				// done by one thread at a time.
+				if (acquire_sem_etc(transfer.notify, 1, B_RELATIVE_TIMEOUT, 0)
+						!= B_OK) {
+					MutexLocker cancelLocker(device->lock);
+					gUSBModule->cancel_queued_transfers(endpointInfo->handle);
+					cancelLocker.Unlock();
+					acquire_sem(transfer.notify);
+				}
 			}
+			delete_sem(transfer.notify);
 
-			command.transfer.status = device->status;
-			command.transfer.length = device->actual_length;
-			deviceLocker.Unlock();
+			command.transfer.status = transfer.status;
+			command.transfer.length = transfer.actual_length;
 
 			if (command.transfer.status == B_OK)
 				status = B_OK;
