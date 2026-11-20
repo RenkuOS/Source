@@ -23,6 +23,7 @@
 #include "WindowShape.h"
 
 #include <AutoDeleter.h>
+#include <Locker.h>
 #include <ObjectList.h>
 #include <Referenceable.h>
 #include <Region.h>
@@ -136,6 +137,13 @@ public:
 			const BRegion&		CompositeRegion() const
 									{ return fCompositeRegion; }
 			const WindowShape&	Shape() const { return fShape; }
+			// What the client is drawing again in an update right now. Until
+			// it is done, the compositor keeps what the screen showed there,
+			// rather than the background the update started with. Empty when
+			// there is no update, or it has taken too long.
+			void				GetUpdatingRegion(BRegion* region);
+			// Called by the compositor after each frame.
+			void				FramePresented(uint32 frame);
 			// When compositing, clicks go through what is cut off at a corner,
 			// and through the clear pixels of a transparent window.
 			bool				ShapeContains(const BPoint& where) const;
@@ -506,6 +514,20 @@ private:
 
 			// After those, for the same reason.
 			uint32				fDecoratorGeneration;
+
+			// What the client is redrawing right now, and since when, for
+			// GetUpdatingRegion(); the compositor reads it with the window
+			// lock held only for reading.
+			BLocker				fUpdatingLock;
+			BRegion				fUpdatingRegion;
+			bigtime_t			fUpdatingSince;
+			// The background drawn to newly exposed parts, which has to
+			// reach the screen at once.
+			BRegion				fExposedRegion;
+			// The next update waits until the compositor has shown the last
+			// one: kUpdateWaiting until frame fUpdateFrame, then kUpdateDue.
+			int32				fDeferredUpdate;
+			uint32				fUpdateFrame;
 };
 
 

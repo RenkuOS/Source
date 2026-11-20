@@ -46,6 +46,7 @@ Compositor::Compositor(Desktop* desktop)
 	fDesktop(desktop),
 	fLock("compositor"),
 	fDamageLock("compositor damage"),
+	fFrame(0),
 	fWakePending(false),
 	fWakeSem(create_sem(0, "compositor wake")),
 	fThread(-1),
@@ -129,6 +130,14 @@ Compositor::Composite(const BRegion& damage)
 		fWakePending = true;
 		release_sem(fWakeSem);
 	}
+}
+
+
+uint32
+Compositor::NextFrame()
+{
+	BAutolock _(fDamageLock);
+	return fFrame + 1;
 }
 
 
@@ -230,11 +239,16 @@ void
 Compositor::_CompositeDamage(BRegion* present)
 {
 	BRegion damage;
+	BRegion moved;
+	uint32 frame;
 	{
 		BAutolock _(fDamageLock);
 		damage = fDamage;
 		fDamage.MakeEmpty();
+		moved = fMoved;
+		fMoved.MakeEmpty();
 		fWakePending = false;
+		frame = ++fFrame;
 	}
 
 	// A window with direct access draws to its buffer on its own, and doesn't
@@ -253,7 +267,13 @@ Compositor::_CompositeDamage(BRegion* present)
 	}
 	damage.Include(&direct);
 
-	_Composite(damage, present);
+	_Composite(damage, moved, present);
+
+	WindowList& all = fDesktop->AllWindows();
+	for (Window* window = all.FirstWindow(); window != NULL;
+			window = window->NextWindow(kAllWindowList)) {
+		window->FramePresented(frame);
+	}
 
 	// and again in the next one
 	Composite(direct);
@@ -289,7 +309,8 @@ Compositor::_Present(const BRegion& region)
 	otherwise it is copied at once.
 */
 void
-Compositor::_Composite(const BRegion& damage, BRegion* present)
+Compositor::_Composite(const BRegion& damage, const BRegion& moved,
+	BRegion* present)
 {
 	if (damage.CountRects() == 0)
 		return;
@@ -312,6 +333,10 @@ Compositor::_Composite(const BRegion& damage, BRegion* present)
 
 	BRegion screenDamage(remaining);
 
+	// What windows are drawing again right now is left as it is on the screen
+	BRegion held;
+	BRegion updating;
+
 	// Going from the front to the back, find out which part of which window
 	// can be seen.
 	WindowList& windows = fDesktop->CurrentWindows();
@@ -331,6 +356,29 @@ Compositor::_Composite(const BRegion& damage, BRegion* present)
 		const WindowShape& shape = window->Shape();
 		if (!remaining.Intersects(shape.Bounds()))
 			continue;
+
+		// Where this window can be seen, and nothing in front of it is mixed
+		// with it, the screen keeps what it showed until the window has
+		// finished drawing. That includes the shadows of the windows in
+		// front, unless they have just moved.
+		if (window->CompositeAlpha() == 255 && !window->IsTransparent()) {
+			window->GetUpdatingRegion(&updating);
+			if (updating.CountRects() > 0) {
+				updating.IntersectWith(&remaining);
+				updating.IntersectWith(&window->CompositeRegion());
+				for (size_t i = 0; i < layerCount; i++) {
+					updating.Exclude(&fLayers[i]->region);
+					BRegion movedShadow(fLayers[i]->shadow);
+					movedShadow.IntersectWith(&moved);
+					updating.Exclude(&movedShadow);
+				}
+				for (size_t i = 0; i < layerCount; i++)
+					fLayers[i]->shadow.Exclude(&updating);
+				remaining.Exclude(&updating);
+				screenDamage.Exclude(&updating);
+				held.Include(&updating);
+			}
+		}
 
 		if (layerCount == fLayers.size()) {
 			Layer* layer = new(std::nothrow) Layer;
@@ -410,6 +458,10 @@ Compositor::_Composite(const BRegion& damage, BRegion* present)
 		interface->InvalidateRegion(screenDamage);
 
 	interface->UnlockParallelAccess();
+
+	// It is looked at again in the next frame. The window's own damage brings
+	// it back when it is done, and so does running out of time.
+	Composite(held);
 }
 
 
@@ -608,6 +660,10 @@ Compositor::SceneChanged()
 
 	fScene.swap(scene);
 
+	{
+		BAutolock _(fDamageLock);
+		fMoved.Include(&damage);
+	}
 	Composite(damage);
 }
 
