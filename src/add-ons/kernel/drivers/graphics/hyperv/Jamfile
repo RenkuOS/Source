@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: MIT
+
+SubDir HAIKU_TOP src add-ons kernel drivers graphics hyperv ;
+
+UsePrivateHeaders [ FDirName kernel util ] drivers device hyperv ;
+UsePrivateHeaders [ FDirName graphics common ] [ FDirName graphics vesa ] ;
+UsePrivateKernelHeaders ;
+
+KernelAddon hyperv_video :
+	Driver.cpp
+;
