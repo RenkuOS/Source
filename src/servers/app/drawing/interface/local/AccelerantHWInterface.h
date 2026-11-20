@@ -86,6 +86,10 @@ public:
 	virtual	RenderingBuffer*	BackBuffer() const;
 	virtual	bool				IsDoubleBuffered() const;
 
+	virtual	status_t			CopyBackToFront(const BRect& frame);
+	virtual	status_t			PresentRegion(const BRegion& region);
+	virtual	void				SetPageFlipping(bool enable);
+
 protected:
 	virtual	void				_CopyBackToFront(/*const*/ BRegion& region);
 
@@ -136,6 +140,7 @@ private:
 			set_cursor_bitmap		fAccSetCursorBitmap;
 			move_cursor				fAccMoveCursor;
 			show_cursor				fAccShowCursor;
+			move_display_area		fAccMoveDisplay;
 
 			// dpms hooks
 			dpms_capabilities	fAccDPMSCapabilities;
@@ -168,6 +173,20 @@ private:
 
 			display_mode		fDisplayMode;
 			bool				fInitialModeSwitch;
+
+			// Page flipping: the frame buffer has a second page below the
+			// first, and frames are copied to the one not shown.
+			BLocker				fFlipLock;
+			bool				fPageFlippingWanted;
+			bool				fHasSecondPage;
+			bool				fFlipping;
+			int32				fShownPage;
+			int32				fWritePage;
+			ObjectDeleter<AccelerantBuffer>
+								fSecondPage;
+			BRegion				fPageBehind;
+				// what the hidden page misses of the shown one
+			uint32				fKDLDepth;
 
 			sem_id				fRetraceSemaphore;
 

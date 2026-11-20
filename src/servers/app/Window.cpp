@@ -187,6 +187,9 @@ Window::~Window()
 
 	gDecorManager.CleanupForWindow(this);
 
+	if (Compositor* compositor = fDesktop->GetCompositor())
+		compositor->ForgetWobble(this);
+
 	if (fBufferInterface.IsSet())
 		fDrawingEngine->SetHWInterface(NULL);
 }

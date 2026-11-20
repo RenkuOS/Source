@@ -24,6 +24,7 @@
 
 #include "AppServer.h"
 #include "ClickTarget.h"
+#include "Compositor.h"
 #include "Desktop.h"
 #include "DefaultDecorator.h"
 #include "DrawingEngine.h"
@@ -220,7 +221,8 @@ struct DefaultWindowBehaviour::DragState : MouseTrackingState {
 		:
 		MouseTrackingState(behavior, where, activateOnMouseUp,
 			minimizeCheckOnMouseUp),
-		fSeeThrough(false)
+		fSeeThrough(false),
+		fWobbling(false)
 	{
 	}
 
@@ -228,6 +230,10 @@ struct DefaultWindowBehaviour::DragState : MouseTrackingState {
 	{
 		if (fSeeThrough)
 			fWindow->SetCompositeAlpha(255);
+		if (fWobbling) {
+			if (Compositor* compositor = fDesktop->GetCompositor())
+				compositor->ReleaseWobble(fWindow);
+		}
 	}
 
 	virtual bool MouseDown(BMessage* message, BPoint where, bool& _unhandled)
@@ -264,12 +270,25 @@ struct DefaultWindowBehaviour::DragState : MouseTrackingState {
 				fSeeThrough = true;
 				fWindow->SetCompositeAlpha(kDraggedWindowAlpha);
 			}
+
+			// The window wobbles round the point it was grabbed by.
+			if (!fWobbling && delta != BPoint(0, 0)) {
+				Compositor* compositor = fDesktop->GetCompositor();
+				DesktopSettings settings(fDesktop);
+				if (compositor != NULL && settings.CompositedWobblyWindows()) {
+					fWobbling = true;
+					compositor->StartWobble(fWindow,
+						fLastMousePosition + delta - fWindow->Frame().LeftTop(),
+						settings.CompositedWobbliness());
+				}
+			}
 		} else
 			delta = BPoint(0, 0);
 	}
 
 private:
 	bool	fSeeThrough;
+	bool	fWobbling;
 };
 
 
@@ -570,8 +589,18 @@ struct DefaultWindowBehaviour::DecoratorButtonState : State {
 
 				case Decorator::REGION_ZOOM_BUTTON:
 					decorator->SetZoom(fTab, false);
-					if (fBehavior._RegionFor(message, tab) == fButton)
+					if (fBehavior._RegionFor(message, tab) == fButton) {
+						// The window wobbles into the frame the application
+						// zooms it to.
+						Compositor* compositor = fDesktop->GetCompositor();
+						DesktopSettings settings(fDesktop);
+						if (compositor != NULL
+							&& settings.CompositedWobblyWindows()) {
+							compositor->StartZoomWobble(fWindow,
+								settings.CompositedWobbliness());
+						}
 						fWindow->ServerWindow()->NotifyZoom();
+					}
 					break;
 
 				case Decorator::REGION_MINIMIZE_BUTTON:
