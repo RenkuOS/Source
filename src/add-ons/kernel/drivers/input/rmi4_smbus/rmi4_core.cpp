@@ -1388,6 +1388,61 @@ wait_for_hand_off(rmi4_device* device)
 }
 
 
+static void
+unpublish_devices(rmi4_device* device)
+{
+	if (device->trackpointPublished) {
+		gDeviceManager->unpublish_device(device->node, RMI4_TRACKPOINT_PATH);
+		device->trackpointPublished = false;
+	}
+	if (device->touchpadPublished) {
+		gDeviceManager->unpublish_device(device->node, RMI4_TOUCHPAD_PATH);
+		device->touchpadPublished = false;
+	}
+}
+
+
+/*!	Publishes the touchpad, and the TrackPoint when there is one. Both or
+	neither: the TrackPoint is behind the pad, so the PS/2 driver can only
+	keep it working when it gets the pad back.
+*/
+static status_t
+publish_devices(rmi4_device* device)
+{
+	status_t status = gDeviceManager->publish_device(device->node,
+		RMI4_TOUCHPAD_PATH, RMI4_SMBUS_DEVICE_NAME);
+	if (status != B_OK) {
+		TRACE_ALWAYS("cannot publish the touchpad: %s\n", strerror(status));
+		return status;
+	}
+	device->touchpadPublished = true;
+
+	if (device->f03 != NULL) {
+		status = gDeviceManager->publish_device(device->node,
+			RMI4_TRACKPOINT_PATH, RMI4_SMBUS_DEVICE_NAME);
+		if (status != B_OK) {
+			TRACE_ALWAYS("cannot publish the TrackPoint: %s\n",
+				strerror(status));
+			unpublish_devices(device);
+			return status;
+		}
+		device->trackpointPublished = true;
+	}
+	return B_OK;
+}
+
+
+//!	Leaves the pad to the PS/2 driver after a failed or late take-over.
+static void
+stop_driving(rmi4_device* device)
+{
+	unpublish_devices(device);
+	if (device->hostNotify)
+		device->i2c->uninstall_host_notify(device->i2cDevice);
+	device->hostNotify = false;
+}
+
+
 static status_t
 device_thread(void* data)
 {
@@ -1407,33 +1462,30 @@ device_thread(void* data)
 		}
 	}
 
+	if (status == B_OK) {
+		if (device->f03 != NULL)
+			trackpoint_start(device);
+
+		// Publish before the PS/2 driver lets go of the pad, so that it can
+		// still take the pad back when this fails.
+		status = publish_devices(device);
+	}
+
 	if (status != B_OK) {
 		TRACE_ALWAYS("cannot drive the pad (%s), giving it back to PS/2\n",
 			strerror(status));
+		stop_driving(device);
 		reply_to_ps2(kSynapticsInterTouchFailed);
 		return status;
 	}
 	if (reply_to_ps2(kSynapticsInterTouchTaken) != B_OK) {
 		// too late: the PS/2 driver took the pad back
 		TRACE_ALWAYS("the PS/2 driver no longer waits, leaving the pad\n");
-		if (device->hostNotify)
-			device->i2c->uninstall_host_notify(device->i2cDevice);
-		device->hostNotify = false;
+		stop_driving(device);
 		return B_TIMED_OUT;
 	}
-
-	if (device->f03 != NULL)
-		trackpoint_start(device);
-
-	status = gDeviceManager->publish_device(device->node, RMI4_TOUCHPAD_PATH,
-		RMI4_SMBUS_DEVICE_NAME);
-	if (status == B_OK && device->f03 != NULL) {
-		status = gDeviceManager->publish_device(device->node,
-			RMI4_TRACKPOINT_PATH, RMI4_SMBUS_DEVICE_NAME);
-	}
-	device->published = true;
-	TRACE_ALWAYS("touchpad%s published: %s\n",
-		device->f03 != NULL ? " and TrackPoint" : "", strerror(status));
+	TRACE_ALWAYS("touchpad%s published\n",
+		device->trackpointPublished ? " and TrackPoint" : "");
 
 	event_loop(device);
 
@@ -1502,14 +1554,7 @@ rmi4_device_uninit(rmi4_device* device)
 		device->thread = -1;
 	}
 
-	if (device->published) {
-		gDeviceManager->unpublish_device(device->node, RMI4_TOUCHPAD_PATH);
-		if (device->f03 != NULL) {
-			gDeviceManager->unpublish_device(device->node,
-				RMI4_TRACKPOINT_PATH);
-		}
-		device->published = false;
-	}
+	unpublish_devices(device);
 
 	if (device->notifySem >= 0)
 		delete_sem(device->notifySem);

@@ -97,7 +97,8 @@ struct rmi4_device {
 	volatile bool			quit;
 	int32					notifications;
 	bool					hostNotify;
-	bool					published;
+	bool					touchpadPublished;
+	bool					trackpointPublished;
 
 	// from the PS/2 driver at the hand-over
 	bool					clickpad;
