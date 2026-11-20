@@ -946,6 +946,8 @@ static status_t
 intertouch_watch(void* data)
 {
 	ps2_dev* dev = (ps2_dev*)data;
+	if (sInterTouchDevice != dev)
+		return B_OK;
 
 	port_id replyPort = find_port(SYNAPTICS_INTERTOUCH_REPLY_PORT);
 	int32 code = 0;
@@ -977,15 +979,30 @@ intertouch_watch(void* data)
 }
 
 
+/*!	Keeps the pad on PS/2 after a hand-over that could not be started.
+	The pad is reset again, so it is in the same state as after a probe
+	without hand-over, whatever the failed attempt left behind;
+	synaptics_open() sets its mode and enables it.
+*/
+static void
+intertouch_keep_on_ps2(ps2_dev* dev, const char* what, status_t status)
+{
+	INFO("SYNAPTICS: cannot hand the touchpad over (%s: %s), keeping it on "
+		"PS/2\n", what, strerror(status));
+	sInterTouchDeclined = true;
+	ps2_reset_mouse(dev);
+}
+
+
 /*!	Gives the touchpad to the RMI4 SMBus driver, see
 	<synaptics_intertouch.h>. Like Linux psmouse, the pad is reset (done by
 	the probe) and disabled before its SMBus side is used, and the PS/2
-	driver does not publish it. Returns B_OK when the pad was offered.
+	driver does not publish it. Returns B_OK when the pad was offered; on
+	an error, the pad is usable on PS/2 again.
 */
 static status_t
 intertouch_hand_off(ps2_dev* dev)
 {
-
 	synaptics_intertouch_info info;
 	memset(&info, 0, sizeof(info));
 	if (sTouchpadInfo.capClickPadButtonCount == 1)
@@ -999,18 +1016,31 @@ intertouch_hand_off(ps2_dev* dev)
 	// any streaming before the SMBus side is used.
 	status_t status = ps2_dev_command(dev, PS2_CMD_DISABLE, NULL, 0, NULL, 0);
 	if (status != B_OK) {
-		INFO("SYNAPTICS: cannot disable the touchpad for the hand-over: "
-			"%s\n", strerror(status));
+		intertouch_keep_on_ps2(dev, "disable", status);
 		return status;
 	}
 
 	port_id replyPort = create_port(1, SYNAPTICS_INTERTOUCH_REPLY_PORT);
-	if (replyPort < 0)
+	if (replyPort < 0) {
+		intertouch_keep_on_ps2(dev, "reply port", replyPort);
 		return replyPort;
+	}
 	port_id handOffPort = create_port(1, SYNAPTICS_INTERTOUCH_HAND_OFF_PORT);
 	if (handOffPort < 0) {
 		delete_port(replyPort);
+		intertouch_keep_on_ps2(dev, "hand-off port", handOffPort);
 		return handOffPort;
+	}
+
+	// The watcher is created before the pad is offered: once the offer is
+	// in the port, the RMI4 driver may already be using the pad.
+	thread_id watcher = spawn_kernel_thread(&intertouch_watch,
+		"synaptics intertouch", B_LOW_PRIORITY, dev);
+	if (watcher < 0) {
+		delete_port(handOffPort);
+		delete_port(replyPort);
+		intertouch_keep_on_ps2(dev, "watcher thread", watcher);
+		return watcher;
 	}
 
 	// from here on, the PS/2 side ignores the pad
@@ -1018,15 +1048,14 @@ intertouch_hand_off(ps2_dev* dev)
 
 	status = write_port(handOffPort, kSynapticsInterTouchHandOff, &info,
 		sizeof(info));
-	thread_id watcher = status == B_OK
-		? spawn_kernel_thread(&intertouch_watch, "synaptics intertouch",
-			B_LOW_PRIORITY, dev)
-		: (thread_id)B_ERROR;
-	if (watcher < 0) {
+	if (status != B_OK) {
 		sInterTouchDevice = NULL;
 		delete_port(handOffPort);
 		delete_port(replyPort);
-		return status != B_OK ? status : watcher;
+		// nothing was offered: the watcher ends at once
+		resume_thread(watcher);
+		intertouch_keep_on_ps2(dev, "offer", status);
+		return status;
 	}
 	resume_thread(watcher);
 
