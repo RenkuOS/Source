@@ -37,17 +37,26 @@
 // Device directories published by the power drivers. Each one contains one
 // node per instance, e.g. /dev/power/acpi_battery/0.
 static const char* const kBatteryDirectory = "/dev/power/acpi_battery";
-static const char* const kThermalDirectory = "/dev/power/acpi_thermal";
 static const char* const kACDirectory = "/dev/power/acpi_ac";
 
+// Every thermal driver publishes its own directory, e.g.
+// /dev/power/acpi_thermal or /dev/power/pch_thermal, with the text interface
+// of acpi_thermal. ACPI thermal zones come first, so the CSV temperature
+// stays the same on machines that have them.
+static const char* const kPowerDirectory = "/dev/power";
+static const char* const kThermalSuffix = "_thermal";
+static const char* const kFirstThermalDriver = "acpi_thermal";
+
 static const int kMaxBatteries = 4;
-static const int kMaxThermalZones = 4;
+static const int kMaxThermalZones = 8;
+static const int kMaxThermalDrivers = 8;
 static const int kMaxACAdapters = 2;
 static const int kMaxDevices = 8;
 
 static int sBatteryFDs[kMaxBatteries];
 static int sBatteryCount = 0;
 static int sThermalFDs[kMaxThermalZones];
+static BString sThermalDrivers[kMaxThermalZones];
 static int sThermalCount = 0;
 static int sACFDs[kMaxACAdapters];
 static int sACCount = 0;
@@ -88,10 +97,26 @@ usage()
 
 
 static void
+sort_names(BString* names, int count)
+{
+	for (int index = 1; index < count; index++) {
+		BString value = names[index];
+		int position = index - 1;
+		while (position >= 0 && names[position] > value) {
+			names[position + 1] = names[position];
+			position--;
+		}
+		names[position + 1] = value;
+	}
+}
+
+
+/*!	Opens the device nodes in \a directoryPath, after the \a count ones
+	already in \a fds.
+*/
+static void
 open_devices_in(const char* directoryPath, int* fds, int maxCount, int& count)
 {
-	count = 0;
-
 	BDirectory directory(directoryPath);
 	if (directory.InitCheck() != B_OK)
 		return;
@@ -100,7 +125,7 @@ open_devices_in(const char* directoryPath, int* fds, int maxCount, int& count)
 	int nameCount = 0;
 
 	BEntry entry;
-	while (nameCount < maxCount && directory.GetNextEntry(&entry) == B_OK) {
+	while (nameCount < kMaxDevices && directory.GetNextEntry(&entry) == B_OK) {
 		if (entry.IsDirectory())
 			continue;
 
@@ -114,17 +139,9 @@ open_devices_in(const char* directoryPath, int* fds, int maxCount, int& count)
 
 	// Sort the names so that instance numbers stay stable between runs; the
 	// directory iteration order is not defined.
-	for (int index = 1; index < nameCount; index++) {
-		BString value = names[index];
-		int position = index - 1;
-		while (position >= 0 && names[position] > value) {
-			names[position + 1] = names[position];
-			position--;
-		}
-		names[position + 1] = value;
-	}
+	sort_names(names, nameCount);
 
-	for (int index = 0; index < nameCount; index++) {
+	for (int index = 0; index < nameCount && count < maxCount; index++) {
 		BPath path(directoryPath, names[index].String());
 		int fd = open(path.Path(), O_RDONLY);
 		if (fd >= 0)
@@ -134,12 +151,60 @@ open_devices_in(const char* directoryPath, int* fds, int maxCount, int& count)
 
 
 static void
+open_thermal_devices()
+{
+	BDirectory directory(kPowerDirectory);
+	if (directory.InitCheck() != B_OK)
+		return;
+
+	BString drivers[kMaxThermalDrivers];
+	int driverCount = 0;
+
+	BEntry entry;
+	while (driverCount < kMaxThermalDrivers
+		&& directory.GetNextEntry(&entry) == B_OK) {
+		char name[B_FILE_NAME_LENGTH];
+		if (!entry.IsDirectory() || entry.GetName(name) != B_OK)
+			continue;
+
+		BString driver(name);
+		if (!driver.EndsWith(kThermalSuffix))
+			continue;
+		drivers[driverCount++] = driver;
+	}
+
+	sort_names(drivers, driverCount);
+	for (int index = 1; index < driverCount; index++) {
+		if (drivers[index] == kFirstThermalDriver) {
+			BString first = drivers[index];
+			for (int position = index; position > 0; position--)
+				drivers[position] = drivers[position - 1];
+			drivers[0] = first;
+			break;
+		}
+	}
+
+	for (int index = 0; index < driverCount; index++) {
+		BPath path(kPowerDirectory, drivers[index].String());
+		int first = sThermalCount;
+		open_devices_in(path.Path(), sThermalFDs, kMaxThermalZones,
+			sThermalCount);
+		for (int zone = first; zone < sThermalCount; zone++)
+			sThermalDrivers[zone] = drivers[index];
+	}
+}
+
+
+static void
 open_devices()
 {
+	sBatteryCount = 0;
+	sThermalCount = 0;
+	sACCount = 0;
+
 	open_devices_in(kBatteryDirectory, sBatteryFDs, kMaxBatteries,
 		sBatteryCount);
-	open_devices_in(kThermalDirectory, sThermalFDs, kMaxThermalZones,
-		sThermalCount);
+	open_thermal_devices();
 	open_devices_in(kACDirectory, sACFDs, kMaxACAdapters, sACCount);
 }
 
@@ -217,9 +282,11 @@ read_thermal(int fd, float& current, float& critical)
 
 	buffer[bytesRead] = '\0';
 
-	if (!parse_temperature(buffer, "Current Temperature:", current)
-		|| !parse_temperature(buffer, "Critical Temperature:", critical))
+	if (!parse_temperature(buffer, "Current Temperature:", current))
 		return false;
+	// not every sensor has one (amd_thermal)
+	if (!parse_temperature(buffer, "Critical Temperature:", critical))
+		critical = 0.0f;
 
 	// A zone without a working _TMP reports a wrapped negative value.
 	return current > -50.0f && current < 200.0f;
@@ -496,8 +563,10 @@ print_status()
 			continue;
 		}
 
-		printf("  Thermal %d:      %.1f C (critical %.1f C)\n", index,
-			current, critical);
+		printf("  Thermal %d:      %.1f C", index, current);
+		if (critical > 0.0f)
+			printf(" (critical %.1f C)", critical);
+		printf("  [%s]\n", sThermalDrivers[index].String());
 	}
 
 	// Idle time over the next second, not since boot.
