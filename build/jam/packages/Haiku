@@ -178,6 +178,7 @@ AddNewDriversToPackage display :
 #	display_adapter@x86
 	;
 AddNewDriversToPackage audio hmulti :
+	intel_lpe@x86,x86_64
 #	virtio_sound
 	;
 AddNewDriversToPackage hyperv :
