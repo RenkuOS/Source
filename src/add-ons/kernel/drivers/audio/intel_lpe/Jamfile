@@ -4,7 +4,7 @@ SubDir HAIKU_TOP src add-ons kernel drivers audio intel_lpe ;
 
 SubDirC++Flags -fno-rtti ;
 
-UsePrivateHeaders drivers i2c ;
+UsePrivateHeaders audio drivers i2c ;
 UsePrivateKernelHeaders ;
 
 SubDirHdrs [ FDirName $(HAIKU_TOP) src add-ons kernel bus_managers acpi acpica include ] ;
