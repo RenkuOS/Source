@@ -9,6 +9,7 @@
 #define DRAW_BITMAP_BILINEAR_H
 
 #include "Painter.h"
+#include "ParallelRows.h"
 
 #include <typeinfo>
 
@@ -42,6 +43,30 @@ struct FilterData {
 
 template<class OptimizedVersion>
 struct DrawBitmapBilinearOptimized {
+	// An OptimizedVersion that sets this to true draws any range of rows of
+	// a clipping rect the same way as when drawing the whole rect, so that
+	// bands of rows can be drawn on several threads at once.
+	static const bool kParallelRows = false;
+
+	struct Band {
+		OptimizedVersion*	painter;
+		uint8*				destination;
+		int32				xIndexL;
+		int32				xIndexR;
+		int32				y1;
+	};
+
+	static void
+	DrawBand(void* cookie, int32 first, int32 count)
+	{
+		const Band& band = *(const Band*)cookie;
+		OptimizedVersion painter = *band.painter;
+		painter.fDestination = band.destination
+			+ (size_t)first * painter.fDestinationBytesPerRow;
+		painter.DrawToClipRect(band.xIndexL, band.xIndexR, band.y1 + first,
+			band.y1 + first + count - 1);
+	}
+
 	void Draw(PainterAggInterface& aggInterface, const BRect& destinationRect,
 		agg::rendering_buffer* bitmap, const FilterData& filterData)
 	{
@@ -85,6 +110,20 @@ struct DrawBitmapBilinearOptimized {
 			//printf("x: %ld - %ld\n", xIndexL, xIndexR);
 			//printf("y: %ld - %ld\n", y1, y2);
 
+			fLastRow = y2;
+
+			// large areas (video frames) on several cores
+			if (OptimizedVersion::kParallelRows) {
+				Band band = { static_cast<OptimizedVersion*>(this),
+					fDestination, xIndexL, xIndexR, y1 };
+				int32 count = y2 - y1 + 1;
+				if (parallel_rows(count,
+						(size_t)(xIndexR - xIndexL + 1) * 4 * count, DrawBand,
+						&band)) {
+					continue;
+				}
+			}
+
 			static_cast<OptimizedVersion*>(this)->DrawToClipRect(
 				xIndexL, xIndexR, y1, y2);
 
@@ -98,6 +137,8 @@ protected:
 	uint32					fDestinationBytesPerRow;
 	FilterInfo*				fWeightsX;
 	FilterInfo*				fWeightsY;
+	int32					fLastRow;
+		// the last row of the clipping rect being drawn
 };
 
 
@@ -229,6 +270,8 @@ template<class ColorType, class DrawMode>
 struct BilinearDefault :
 	DrawBitmapBilinearOptimized<BilinearDefault<ColorType, DrawMode> > {
 
+	static const bool kParallelRows = true;
+
 	void DrawToClipRect(int32 xIndexL, int32 xIndexR, int32 y1, int32 y2)
 	{
 		// In this mode we anticipate many pixels which need filtering,
@@ -236,9 +279,10 @@ struct BilinearDefault :
 		// the last column/row and the right/bottom corner pixel.
 
 		// The last column/row handling does not need to be performed
-		// for all clipping rects!
+		// for all clipping rects! Only the last row of the clipping rect
+		// is special, not the last one of a band of it (see DrawBand()).
 		int32 yMax = y2;
-		if (this->fWeightsY[yMax].weight == 255)
+		if (y2 == this->fLastRow && this->fWeightsY[yMax].weight == 255)
 			yMax--;
 		int32 xIndexMax = xIndexR;
 		if (this->fWeightsX[xIndexMax].weight == 255)
