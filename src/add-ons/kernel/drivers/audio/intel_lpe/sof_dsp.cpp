@@ -34,6 +34,18 @@ extern "C" {
 
 #define DSP_RUN_TIMEOUT			1000000
 #define DSP_BOOT_TIMEOUT		3000000
+#define IPC_TIMEOUT				500000
+
+// the fixed playback pipeline: host -> buffer -> SSP0
+#define PIPELINE_ID				1
+#define COMP_HOST_ID			1
+#define COMP_BUFFER_ID			2
+#define COMP_DAI_ID				3
+#define COMP_PIPELINE_ID		4
+#define PERIOD_US				1000
+#define DAI_PERIODS				2
+#define FRAME_BYTES				8
+	// S24_4LE stereo
 
 
 static uint32
@@ -94,6 +106,18 @@ mailbox_read(lpe_dsp* dsp, uint32 offset, void* buffer, size_t size)
 	uint32* words = (uint32*)buffer;
 	for (size_t i = 0; i < size / 4; i++)
 		words[i] = read32(dsp, offset + i * 4);
+}
+
+
+static void
+mailbox_write(lpe_dsp* dsp, uint32 offset, const void* buffer, size_t size)
+{
+	if (offset > LPE_BAR_SIZE || size > LPE_BAR_SIZE - offset)
+		return;
+
+	const uint32* words = (const uint32*)buffer;
+	for (size_t i = 0; i < size / 4; i++)
+		write32(dsp, offset + i * 4, words[i]);
 }
 
 
@@ -523,4 +547,293 @@ lpe_dsp_poll_messages(lpe_dsp* dsp)
 {
 	if (dsp->area >= 0 && dsp->ready)
 		handle_dsp_message(dsp);
+}
+
+
+//	#pragma mark - IPC
+
+
+/*!	Sends a message to the DSP and waits for its reply; the doorbells are
+	polled. Messages the DSP sends meanwhile are handled.
+*/
+static status_t
+send_message(lpe_dsp* dsp, const void* message, size_t size, void* reply,
+	size_t replySize)
+{
+	if (!dsp->ready || dsp->hostBoxSize == 0)
+		return B_NO_INIT;
+	if (size > dsp->hostBoxSize || (size % 4) != 0)
+		return B_BAD_VALUE;
+
+	uint32 command = ((const sof_ipc_cmd_hdr*)message)->cmd;
+	if ((shim_read64(dsp, SHIM_IPCX) & SHIM_BYT_IPC_BUSY) != 0) {
+		TRACE_ALWAYS("IPC %#" B_PRIx32 ": the DSP is still busy\n", command);
+		return B_BUSY;
+	}
+
+	mailbox_write(dsp, dsp->hostBoxOffset, message, size);
+	shim_write64(dsp, SHIM_IPCX, SHIM_BYT_IPC_BUSY);
+
+	bigtime_t timeout = system_time() + IPC_TIMEOUT;
+	while ((shim_read64(dsp, SHIM_IPCX) & SHIM_BYT_IPC_DONE) == 0) {
+		handle_dsp_message(dsp);
+		if (system_time() > timeout) {
+			TRACE_ALWAYS("IPC %#" B_PRIx32 ": no reply\n", command);
+			log_state(dsp, "IPC timeout");
+			return B_TIMED_OUT;
+		}
+		spin(50);
+	}
+
+	sof_ipc_reply header;
+	mailbox_read(dsp, dsp->hostBoxOffset, &header, sizeof(header));
+	if (reply != NULL && replySize > 0) {
+		size_t length = header.hdr.size;
+		if (length > replySize)
+			length = replySize;
+		memset(reply, 0, replySize);
+		mailbox_read(dsp, dsp->hostBoxOffset, reply, length & ~3);
+	}
+
+	// clear DONE: the host has read the reply
+	shim_update64(dsp, SHIM_IPCX, SHIM_BYT_IPC_DONE, 0);
+
+	if (header.error < 0) {
+		TRACE_ALWAYS("IPC %#" B_PRIx32 " failed: error %" B_PRId32 "\n",
+			command, header.error);
+		return B_ERROR;
+	}
+	return B_OK;
+}
+
+
+static void
+init_header(sof_ipc_cmd_hdr* header, size_t size, uint32 command)
+{
+	header->size = size;
+	header->cmd = command;
+}
+
+
+static status_t
+create_pipeline(lpe_dsp* dsp)
+{
+	// pipeline, scheduled by the DAI as in the SOF topologies for Bay Trail
+	sof_ipc_pipe_new pipe;
+	memset(&pipe, 0, sizeof(pipe));
+	init_header(&pipe.hdr, sizeof(pipe),
+		SOF_IPC_GLB_TPLG_MSG | SOF_IPC_TPLG_PIPE_NEW);
+	pipe.comp_id = COMP_PIPELINE_ID;
+	pipe.pipeline_id = PIPELINE_ID;
+	pipe.sched_id = COMP_DAI_ID;
+	pipe.period = PERIOD_US;
+	pipe.period_mips = 5000;
+	pipe.time_domain = SOF_TIME_DOMAIN_DMA;
+	status_t status = send_message(dsp, &pipe, sizeof(pipe), NULL, 0);
+	if (status != B_OK)
+		return status;
+
+	sof_ipc_comp_host host;
+	memset(&host, 0, sizeof(host));
+	init_header(&host.comp.hdr, sizeof(host),
+		SOF_IPC_GLB_TPLG_MSG | SOF_IPC_TPLG_COMP_NEW);
+	host.comp.id = COMP_HOST_ID;
+	host.comp.type = SOF_COMP_HOST;
+	host.comp.pipeline_id = PIPELINE_ID;
+	host.config.hdr.size = sizeof(host.config);
+	host.config.periods_sink = DAI_PERIODS;
+	host.config.periods_source = DAI_PERIODS;
+	host.config.frame_fmt = SOF_IPC_FRAME_S16_LE;
+	host.direction = SOF_IPC_STREAM_PLAYBACK;
+	status = send_message(dsp, &host, sizeof(host), NULL, 0);
+	if (status != B_OK)
+		return status;
+
+	sof_ipc_buffer buffer;
+	memset(&buffer, 0, sizeof(buffer));
+	init_header(&buffer.comp.hdr, sizeof(buffer),
+		SOF_IPC_GLB_TPLG_MSG | SOF_IPC_TPLG_BUFFER_NEW);
+	buffer.comp.id = COMP_BUFFER_ID;
+	buffer.comp.type = SOF_COMP_BUFFER;
+	buffer.comp.pipeline_id = PIPELINE_ID;
+	buffer.size = DAI_PERIODS * FRAME_BYTES * 48 * PERIOD_US / 1000;
+	buffer.caps = SOF_MEM_CAPS_RAM | SOF_MEM_CAPS_DMA | SOF_MEM_CAPS_CACHE;
+	status = send_message(dsp, &buffer, sizeof(buffer), NULL, 0);
+	if (status != B_OK)
+		return status;
+
+	sof_ipc_comp_dai dai;
+	memset(&dai, 0, sizeof(dai));
+	init_header(&dai.comp.hdr, sizeof(dai),
+		SOF_IPC_GLB_TPLG_MSG | SOF_IPC_TPLG_COMP_NEW);
+	dai.comp.id = COMP_DAI_ID;
+	dai.comp.type = SOF_COMP_DAI;
+	dai.comp.pipeline_id = PIPELINE_ID;
+	dai.config.hdr.size = sizeof(dai.config);
+	dai.config.periods_sink = DAI_PERIODS;
+	dai.config.periods_source = DAI_PERIODS;
+	dai.config.frame_fmt = SOF_IPC_FRAME_S24_4LE;
+	dai.direction = SOF_IPC_STREAM_PLAYBACK;
+	dai.dai_index = 0;
+	dai.type = SOF_DAI_INTEL_SSP;
+	status = send_message(dsp, &dai, sizeof(dai), NULL, 0);
+	if (status != B_OK)
+		return status;
+
+	static const uint32 kConnections[][2] = {
+		{ COMP_HOST_ID, COMP_BUFFER_ID },
+		{ COMP_BUFFER_ID, COMP_DAI_ID },
+	};
+	for (size_t i = 0; i < B_COUNT_OF(kConnections); i++) {
+		sof_ipc_pipe_comp_connect connect;
+		init_header(&connect.hdr, sizeof(connect),
+			SOF_IPC_GLB_TPLG_MSG | SOF_IPC_TPLG_COMP_CONNECT);
+		connect.source_id = kConnections[i][0];
+		connect.sink_id = kConnections[i][1];
+		status = send_message(dsp, &connect, sizeof(connect), NULL, 0);
+		if (status != B_OK)
+			return status;
+	}
+
+	sof_ipc_pipe_ready ready;
+	init_header(&ready.hdr, sizeof(ready),
+		SOF_IPC_GLB_TPLG_MSG | SOF_IPC_TPLG_PIPE_COMPLETE);
+	ready.comp_id = COMP_PIPELINE_ID;
+	status = send_message(dsp, &ready, sizeof(ready), NULL, 0);
+	if (status != B_OK)
+		return status;
+
+	// SSP0 to the codec on Bay Trail-CR: I2S, the SSP provides the clocks,
+	// 2 slots of 25 bits with 24 valid bits at 48 kHz (BCLK 2.4 MHz from
+	// the 19.2 MHz SSP clock), as in the SOF topology for Bay Trail codecs
+	sof_ipc_dai_config config;
+	memset(&config, 0, sizeof(config));
+	init_header(&config.hdr, sizeof(config),
+		SOF_IPC_GLB_DAI_MSG | SOF_IPC_DAI_CONFIG);
+	config.type = SOF_DAI_INTEL_SSP;
+	config.dai_index = 0;
+	config.format = SOF_DAI_FMT_I2S | SOF_DAI_FMT_CONT | SOF_DAI_FMT_NB_NF
+		| SOF_DAI_FMT_CBC_CFC;
+	config.ssp.hdr_size = sizeof(config.ssp);
+	config.ssp.mclk_rate = 19200000;
+	config.ssp.fsync_rate = 48000;
+	config.ssp.bclk_rate = 2400000;
+	config.ssp.tdm_slots = 2;
+	config.ssp.rx_slots = 3;
+	config.ssp.tx_slots = 3;
+	config.ssp.sample_valid_bits = 24;
+	config.ssp.tdm_slot_width = 25;
+	config.ssp.mclk_direction = 1;
+	status = send_message(dsp, &config, sizeof(config), NULL, 0);
+	if (status != B_OK)
+		return status;
+
+	dsp->pipelineCreated = true;
+	TRACE_ALWAYS("playback pipeline created\n");
+	return B_OK;
+}
+
+
+status_t
+lpe_dsp_start_playback(lpe_dsp* dsp, const lpe_stream_buffer* buffer)
+{
+	if (!dsp->pipelineCreated) {
+		status_t status = create_pipeline(dsp);
+		if (status != B_OK)
+			return status;
+	}
+
+	sof_ipc_pcm_params params;
+	memset(&params, 0, sizeof(params));
+	init_header(&params.hdr, sizeof(params),
+		SOF_IPC_GLB_STREAM_MSG | SOF_IPC_STREAM_PCM_PARAMS);
+	params.comp_id = COMP_HOST_ID;
+	params.params.hdr_size = sizeof(params.params);
+	params.params.buffer.phy_addr = (uint32)buffer->pageTable;
+	params.params.buffer.pages = buffer->pageCount;
+	params.params.buffer.size = buffer->size;
+	params.params.direction = SOF_IPC_STREAM_PLAYBACK;
+	params.params.frame_fmt = SOF_IPC_FRAME_S16_LE;
+	params.params.buffer_fmt = SOF_IPC_BUFFER_INTERLEAVED;
+	params.params.rate = 48000;
+	params.params.stream_tag = 1;
+	params.params.channels = 2;
+	params.params.sample_valid_bytes = 2;
+	params.params.sample_container_bytes = 2;
+	params.params.host_period_bytes = buffer->periodBytes;
+	// no position messages: the firmware writes the position into the
+	// stream mailbox every period instead
+	params.params.no_stream_position = 1;
+	params.params.cont_update_posn = 1;
+	params.params.chmap[0] = 3;
+		// SOF_CHMAP_FL
+	params.params.chmap[1] = 4;
+		// SOF_CHMAP_FR
+
+	sof_ipc_pcm_params_reply reply;
+	status_t status = send_message(dsp, &params, sizeof(params), &reply,
+		sizeof(reply));
+	if (status != B_OK)
+		return status;
+	dsp->positionOffset = reply.posn_offset;
+	TRACE_ALWAYS("stream set up: %" B_PRIu32 " pages, %" B_PRIu32
+		" bytes, position at %#" B_PRIx32 "\n", buffer->pageCount,
+		buffer->size, reply.posn_offset);
+
+	sof_ipc_stream stream;
+	init_header(&stream.hdr, sizeof(stream),
+		SOF_IPC_GLB_STREAM_MSG | SOF_IPC_STREAM_TRIG_START);
+	stream.comp_id = COMP_HOST_ID;
+	status = send_message(dsp, &stream, sizeof(stream), NULL, 0);
+	if (status == B_OK)
+		TRACE_ALWAYS("playback started\n");
+	return status;
+}
+
+
+status_t
+lpe_dsp_stop_playback(lpe_dsp* dsp)
+{
+	sof_ipc_stream stream;
+	init_header(&stream.hdr, sizeof(stream),
+		SOF_IPC_GLB_STREAM_MSG | SOF_IPC_STREAM_TRIG_STOP);
+	stream.comp_id = COMP_HOST_ID;
+	status_t status = send_message(dsp, &stream, sizeof(stream), NULL, 0);
+
+	init_header(&stream.hdr, sizeof(stream),
+		SOF_IPC_GLB_STREAM_MSG | SOF_IPC_STREAM_PCM_FREE);
+	status_t freeStatus = send_message(dsp, &stream, sizeof(stream), NULL,
+		0);
+	return status != B_OK ? status : freeStatus;
+}
+
+
+status_t
+lpe_dsp_read_position(lpe_dsp* dsp, sof_ipc_stream_posn* position)
+{
+	if (dsp->streamBoxOffset == 0)
+		return B_NO_INIT;
+	mailbox_read(dsp, dsp->streamBoxOffset + dsp->positionOffset, position,
+		sizeof(*position) & ~3);
+	return B_OK;
+}
+
+
+/*!	The DSP reads the host buffer through a table of 20 bit page frame
+	numbers, two and a half bytes each.
+*/
+void
+lpe_fill_page_table(uint8* table, const phys_addr_t* pages, uint32 count)
+{
+	for (uint32 i = 0; i < count; i++) {
+		uint32 frame = (uint32)(pages[i] >> 12);
+		uint8* entry = table + (i * 5) / 2;
+		uint32 value;
+		if ((i & 1) != 0) {
+			memcpy(&value, entry, sizeof(value));
+			value = (value & 0xf) | (frame << 4);
+		} else
+			value = frame;
+		memcpy(entry, &value, sizeof(value));
+	}
 }

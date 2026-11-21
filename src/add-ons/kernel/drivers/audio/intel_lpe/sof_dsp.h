@@ -103,6 +103,182 @@
 #define SOF_IPC_MAX_CHANNELS		8
 
 
+struct sof_ipc_cmd_hdr {
+	uint32	size;
+	uint32	cmd;
+};
+
+struct sof_ipc_reply {
+	sof_ipc_cmd_hdr	hdr;
+	int32	error;
+};
+
+struct sof_ipc_comp {
+	sof_ipc_cmd_hdr	hdr;
+	uint32	id;
+	uint32	type;
+	uint32	pipeline_id;
+	uint32	core;
+	uint32	ext_data_length;
+};
+
+struct sof_ipc_comp_config {
+	sof_ipc_cmd_hdr	hdr;
+	uint32	periods_sink;
+	uint32	periods_source;
+	uint32	reserved1;
+	uint32	frame_fmt;
+	uint32	xrun_action;
+	uint32	reserved[2];
+};
+
+struct sof_ipc_buffer {
+	sof_ipc_comp comp;
+	uint32	size;
+	uint32	caps;
+	uint32	flags;
+	uint32	reserved;
+};
+
+struct sof_ipc_comp_host {
+	sof_ipc_comp comp;
+	sof_ipc_comp_config config;
+	uint32	direction;
+	uint32	no_irq;
+	uint32	dmac_config;
+};
+
+struct sof_ipc_comp_dai {
+	sof_ipc_comp comp;
+	sof_ipc_comp_config config;
+	uint32	direction;
+	uint32	dai_index;
+	uint32	type;
+	uint32	reserved;
+};
+
+struct sof_ipc_pipe_new {
+	sof_ipc_cmd_hdr	hdr;
+	uint32	comp_id;
+	uint32	pipeline_id;
+	uint32	sched_id;
+	uint32	core;
+	uint32	period;
+	uint32	priority;
+	uint32	period_mips;
+	uint32	frames_per_sched;
+	uint32	xrun_limit_usecs;
+	uint32	time_domain;
+};
+
+struct sof_ipc_pipe_comp_connect {
+	sof_ipc_cmd_hdr	hdr;
+	uint32	source_id;
+	uint32	sink_id;
+};
+
+struct sof_ipc_pipe_ready {
+	sof_ipc_cmd_hdr	hdr;
+	uint32	comp_id;
+};
+
+struct sof_ipc_dai_ssp_params {
+	uint32	hdr_size;
+	uint16	reserved1;
+	uint16	mclk_id;
+	uint32	mclk_rate;
+	uint32	fsync_rate;
+	uint32	bclk_rate;
+	uint32	tdm_slots;
+	uint32	rx_slots;
+	uint32	tx_slots;
+	uint32	sample_valid_bits;
+	uint16	tdm_slot_width;
+	uint16	reserved2;
+	uint32	mclk_direction;
+	uint16	frame_pulse_width;
+	uint16	tdm_per_slot_padding_flag;
+	uint32	clks_control;
+	uint32	quirks;
+	uint32	bclk_delay;
+};
+
+struct sof_ipc_dai_config {
+	sof_ipc_cmd_hdr	hdr;
+	uint32	type;
+	uint32	dai_index;
+	uint16	format;
+	uint8	group_id;
+	uint8	flags;
+	uint32	reserved[8];
+	sof_ipc_dai_ssp_params ssp;
+	uint8	union_padding[104];
+		// the union of all DAI types is 164 bytes
+};
+
+struct sof_ipc_host_buffer {
+	uint32	hdr_size;
+	uint32	phy_addr;
+	uint32	pages;
+	uint32	size;
+	uint32	reserved[3];
+};
+
+struct sof_ipc_stream_params {
+	uint32	hdr_size;
+	sof_ipc_host_buffer buffer;
+	uint32	direction;
+	uint32	frame_fmt;
+	uint32	buffer_fmt;
+	uint32	rate;
+	uint16	stream_tag;
+	uint16	channels;
+	uint16	sample_valid_bytes;
+	uint16	sample_container_bytes;
+	uint32	host_period_bytes;
+	uint16	no_stream_position;
+	uint8	cont_update_posn;
+	uint8	reserved0;
+	int16	ext_data_length;
+	uint8	reserved[2];
+	uint16	chmap[SOF_IPC_MAX_CHANNELS];
+};
+
+struct sof_ipc_pcm_params {
+	sof_ipc_cmd_hdr	hdr;
+	uint32	comp_id;
+	uint32	flags;
+	uint32	reserved[2];
+	sof_ipc_stream_params params;
+};
+
+struct sof_ipc_pcm_params_reply {
+	sof_ipc_reply	rhdr;
+	uint32	comp_id;
+	uint32	posn_offset;
+};
+
+struct sof_ipc_stream {
+	sof_ipc_cmd_hdr	hdr;
+	uint32	comp_id;
+};
+
+struct sof_ipc_stream_posn {
+	sof_ipc_reply	rhdr;
+	uint32	comp_id;
+	uint32	flags;
+	uint32	wallclock_hz;
+	uint32	timestamp_ns;
+	uint64	host_posn;
+	uint64	dai_posn;
+	uint64	comp_posn;
+	uint64	wallclock;
+	uint64	timestamp;
+	uint32	xrun_comp_id;
+	int32	xrun_size;
+} _PACKED;
+
+
 struct lpe_dsp {
 	phys_addr_t		physicalBase;
 	size_t			length;
@@ -121,6 +297,18 @@ struct lpe_dsp {
 	uint32			dspBoxSize;
 	uint32			streamBoxOffset;
 	uint32			exceptionOffset;
+
+	bool			pipelineCreated;
+	uint32			positionOffset;
+};
+
+// the host buffer of a playback stream: a page table (one page) followed by
+// the audio pages, all below 4 GB
+struct lpe_stream_buffer {
+	phys_addr_t		pageTable;
+	uint32			pageCount;
+	uint32			size;
+	uint32			periodBytes;
 };
 
 
@@ -128,6 +316,12 @@ status_t lpe_dsp_init(lpe_dsp* dsp);
 void lpe_dsp_uninit(lpe_dsp* dsp);
 status_t lpe_dsp_boot(lpe_dsp* dsp, const uint8* image, size_t size);
 void lpe_dsp_poll_messages(lpe_dsp* dsp);
+
+status_t lpe_dsp_start_playback(lpe_dsp* dsp, const lpe_stream_buffer* buffer);
+status_t lpe_dsp_stop_playback(lpe_dsp* dsp);
+status_t lpe_dsp_read_position(lpe_dsp* dsp, sof_ipc_stream_posn* position);
+void lpe_fill_page_table(uint8* table, const phys_addr_t* pages,
+	uint32 count);
 
 
 #endif	// INTEL_LPE_SOF_DSP_H
