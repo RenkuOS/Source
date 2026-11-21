@@ -151,34 +151,48 @@ pch_i2c_interrupt_handler(pch_i2c_sim_info* bus)
 	if (enable == 0)
 		return B_UNHANDLED_INTERRUPT;
 
+	// The IC_CLR_* registers are cleared by reading them (DesignWare
+	// databook); a write does nothing and leaves the interrupt pending.
 	uint32 status = read32(bus->registers + PCH_IC_INTR_STAT);
+	if ((status & PCH_IC_INTR_STAT_TX_ABRT) != 0) {
+		// read the source before clearing the abort clears it too
+		bus->abort_source = read32(bus->registers + PCH_IC_TX_ABRT_SOURCE);
+		bus->error = B_IO_ERROR;
+	}
 	if ((status & PCH_IC_INTR_STAT_RX_UNDER) != 0)
-		write32(bus->registers + PCH_IC_CLR_RX_UNDER, 0);
+		read32(bus->registers + PCH_IC_CLR_RX_UNDER);
 	if ((status & PCH_IC_INTR_STAT_RX_OVER) != 0)
-		write32(bus->registers + PCH_IC_CLR_RX_OVER, 0);
+		read32(bus->registers + PCH_IC_CLR_RX_OVER);
 	if ((status & PCH_IC_INTR_STAT_TX_OVER) != 0)
-		write32(bus->registers + PCH_IC_CLR_TX_OVER, 0);
+		read32(bus->registers + PCH_IC_CLR_TX_OVER);
 	if ((status & PCH_IC_INTR_STAT_RD_REQ) != 0)
-		write32(bus->registers + PCH_IC_CLR_RD_REQ, 0);
+		read32(bus->registers + PCH_IC_CLR_RD_REQ);
 	if ((status & PCH_IC_INTR_STAT_TX_ABRT) != 0)
-		write32(bus->registers + PCH_IC_CLR_TX_ABRT, 0);
+		read32(bus->registers + PCH_IC_CLR_TX_ABRT);
 	if ((status & PCH_IC_INTR_STAT_RX_DONE) != 0)
-		write32(bus->registers + PCH_IC_CLR_RX_DONE, 0);
+		read32(bus->registers + PCH_IC_CLR_RX_DONE);
 	if ((status & PCH_IC_INTR_STAT_ACTIVITY) != 0)
-		write32(bus->registers + PCH_IC_CLR_ACTIVITY, 0);
+		read32(bus->registers + PCH_IC_CLR_ACTIVITY);
 	if ((status & PCH_IC_INTR_STAT_STOP_DET) != 0)
-		write32(bus->registers + PCH_IC_CLR_STOP_DET, 0);
+		read32(bus->registers + PCH_IC_CLR_STOP_DET);
 	if ((status & PCH_IC_INTR_STAT_START_DET) != 0)
-		write32(bus->registers + PCH_IC_CLR_START_DET, 0);
+		read32(bus->registers + PCH_IC_CLR_START_DET);
 	if ((status & PCH_IC_INTR_STAT_GEN_CALL) != 0)
-		write32(bus->registers + PCH_IC_CLR_GEN_CALL, 0);
+		read32(bus->registers + PCH_IC_CLR_GEN_CALL);
 
 	TRACE("pch_i2c_interrupt_handler %" B_PRIx32 "\n", status);
 
 	if ((status & ~PCH_IC_INTR_STAT_ACTIVITY) == 0)
 		return handled;
-	/*if ((status & PCH_IC_INTR_STAT_TX_ABRT) != 0)
-		tx error */
+	if ((status & PCH_IC_INTR_STAT_TX_ABRT) != 0) {
+		// no acknowledge (no device at the address) or lost arbitration:
+		// the transfer is over. Mask everything, so that nothing can fire
+		// again before the waiter has seen the error, and wake it up.
+		write32(bus->registers + PCH_IC_INTR_MASK, 0);
+		bus->wait_read.NotifyAll();
+		bus->wait_write.NotifyAll();
+		bus->wait_busy.NotifyAll();
+	}
 	if ((status & PCH_IC_INTR_STAT_RX_FULL) != 0)
 		bus->wait_read.NotifyAll();
 	if ((status & PCH_IC_INTR_STAT_TX_EMPTY) != 0)
@@ -230,6 +244,8 @@ exec_command_unlocked(pch_i2c_sim_info* bus, i2c_op op, i2c_addr slaveAddress,
 
 	TRACE("exec_command: write slave address\n");
 
+	bus->error = B_OK;
+	bus->abort_source = 0;
 	enable_device(bus, false);
 	write32(bus->registers + PCH_IC_CON,
 		read32(bus->registers + PCH_IC_CON) & ~PCH_IC_CON_10BIT_ADDR_MASTER);
@@ -297,12 +313,25 @@ exec_command_unlocked(pch_i2c_sim_info* bus, i2c_op op, i2c_addr slaveAddress,
 			bus->wait_read.Add(&waiter);
 
 			write32(bus->registers + PCH_IC_INTR_MASK,
-				PCH_IC_INTR_STAT_RX_FULL);
+				PCH_IC_INTR_STAT_RX_FULL | PCH_IC_INTR_STAT_TX_ABRT);
 
 			uint32 rxBytes = read32(bus->registers + PCH_IC_RXFLR);
+			if (rxBytes == 0 && bus->error != B_OK) {
+				write32(bus->registers + PCH_IC_INTR_MASK, 0);
+				bus->busy = 0;
+				return bus->error;
+			}
 			if (rxBytes == 0) {
 				// sleep until wake up by intr handler
-				if (waiter.Wait(B_RELATIVE_TIMEOUT, 500000L) != B_OK)
+				status_t waitStatus = waiter.Wait(B_RELATIVE_TIMEOUT, 500000L);
+				if (bus->error != B_OK) {
+					TRACE("exec_command: aborted, source %08" B_PRIx32 "\n",
+						bus->abort_source);
+					write32(bus->registers + PCH_IC_INTR_MASK, 0);
+					bus->busy = 0;
+					return bus->error;
+				}
+				if (waitStatus != B_OK)
 					ERROR("exec_command timed out waiting for read. Raw intr stat %08x TX ABORT SOURCE %08x\n",
 						read32(bus->registers + PCH_IC_RAW_INTR_STAT),
 						read32(bus->registers + PCH_IC_TX_ABRT_SOURCE));
@@ -339,13 +368,18 @@ exec_command_unlocked(pch_i2c_sim_info* bus, i2c_op op, i2c_addr slaveAddress,
 		TRACE("exec_command: waiting busy condition\n");
 		while (bus->busy) {
 			write32(bus->registers + PCH_IC_INTR_MASK,
-				PCH_IC_INTR_STAT_STOP_DET);
+				PCH_IC_INTR_STAT_STOP_DET | PCH_IC_INTR_STAT_TX_ABRT);
 
 			ConditionVariableEntry waiter;
 			bus->wait_busy.Add(&waiter);
 
 			if (!bus->busy)
 				break;
+			if (bus->error != B_OK) {
+				write32(bus->registers + PCH_IC_INTR_MASK, 0);
+				err = bus->error;
+				break;
+			}
 
 			// sleep until wake up by intr handler
 			err = waiter.Wait(B_RELATIVE_TIMEOUT, 500000L);
@@ -470,12 +504,28 @@ acpi_GetInteger(acpi_handle acpiCookie,
 	the bus, so that a single broken or unrelated child would hide all devices
 	that come after it.
 */
+/*!	The ACPI module, loaded on first use: it is no dependency of the driver,
+	so that the controller can also be used where there is no ACPI (from the
+	device tree). It stays loaded for the lifetime of the driver.
+*/
+status_t
+pch_i2c_get_acpi()
+{
+	if (gACPI != NULL)
+		return B_OK;
+	return get_module(B_ACPI_MODULE_NAME, (module_info**)&gACPI);
+}
+
+
 acpi_status
 pch_i2c_scan_bus_callback(acpi_handle object, uint32 nestingLevel,
 	void *context, void** returnValue)
 {
 	pch_i2c_sim_info* bus = (pch_i2c_sim_info*)context;
 	TRACE("pch_i2c_scan_bus_callback %p\n", object);
+
+	if (pch_i2c_get_acpi() != B_OK)
+		return B_OK;
 
 	acpi_data buffer;
 	buffer.pointer = NULL;
@@ -720,7 +770,6 @@ uninit_bus(void* bus_cookie)
 
 module_dependency module_dependencies[] = {
 	{ B_DEVICE_MANAGER_MODULE_NAME, (module_info**)&gDeviceManager },
-	{ B_ACPI_MODULE_NAME, (module_info**)&gACPI },
 	{ I2C_FOR_CONTROLLER_MODULE_NAME, (module_info**)&gI2c },
 	{ B_PCI_MODULE_NAME, (module_info**)&sPCI },
 	{}
@@ -755,6 +804,7 @@ static i2c_sim_interface sPchI2cDeviceModule = {
 module_info* modules[] = {
 	(module_info* )&gPchI2cAcpiDevice,
 	(module_info* )&gPchI2cPciDevice,
+	(module_info* )&gPchI2cFdtDevice,
 	(module_info* )&sPchI2cDeviceModule,
 	NULL
 };

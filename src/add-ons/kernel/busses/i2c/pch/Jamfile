@@ -8,8 +8,18 @@ UsePrivateKernelHeaders ;
 SubDirHdrs [ FDirName $(SUBDIR) $(DOTDOT) $(DOTDOT) $(DOTDOT) bus_managers acpi acpica include ] ;
 SubDirHdrs [ FDirName $(SUBDIR) $(DOTDOT) $(DOTDOT) $(DOTDOT) bus_managers acpi acpica include platform ] ;
 
+# only the device tree front-end needs <fdt_clock_reset.h>; the whole
+# private drivers directory would shadow ACPICA's headers
+ObjectHdrs [ FGristFiles pch_i2c_fdt.o ]
+	: [ FDirName $(SUBDIR) $(DOTDOT) $(DOTDOT) $(DOTDOT) bus_managers acpi
+			acpica include ]
+	  [ FDirName $(SUBDIR) $(DOTDOT) $(DOTDOT) $(DOTDOT) bus_managers acpi
+			acpica include platform ]
+	  [ FDirName $(HAIKU_TOP) headers private drivers ] ;
+
 KernelAddon pch_i2c :
 	pch_i2c.cpp
 	pch_i2c_acpi.cpp
 	pch_i2c_pci.cpp
+	pch_i2c_fdt.cpp
 ;
