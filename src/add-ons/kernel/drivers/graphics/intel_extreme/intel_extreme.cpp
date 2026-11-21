@@ -25,6 +25,7 @@
 
 #include "driver.h"
 #include "power.h"
+#include "render_node.h"
 #include "utility.h"
 
 
@@ -156,6 +157,17 @@ gen8_handle_interrupts(intel_info& info, uint32 interrupt)
 			dprintf("gen8_handle_interrupts unhandled interrupt on pipe C\n");
 		}
 		interrupt &= ~PCH_MASTER_INT_CTL_PIPE_PENDING_BDW(INTEL_PIPE_C);
+	}
+
+	if ((interrupt & GEN8_GT_RENDER_IRQ) != 0) {
+		// render node (Gen9 execlist submission) interrupt; safe to call
+		// before the render node was ever opened
+		int32 renderResult = render_node_interrupt(&info);
+		if (renderResult != B_UNHANDLED_INTERRUPT) {
+			if (renderResult == B_INVOKE_SCHEDULER)
+				handled = B_INVOKE_SCHEDULER;
+			interrupt &= ~GEN8_GT_RENDER_IRQ;
+		}
 	}
 
 	if ((interrupt & GEN8_DE_PORT_IRQ) != 0) {
