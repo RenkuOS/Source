@@ -547,6 +547,12 @@ VMSAv8TranslationMap::GetMemoryAttr(uint32 attributes, uint32 memoryType, bool i
 	if ((fHwFeature & HW_DIRTY) != 0 && (attr & kAttrSWDBM) != 0)
 		attr |= kAttrDBM;
 
+	// Kernel stack pages start accessed and dirty: an access flag or dirty
+	// tracking fault on one cannot be handled, as the exception entry pushes
+	// its iframe onto that same page and faults again.
+	if ((attributes & B_KERNEL_STACK_AREA) != 0)
+		attr = (attr | kAttrAF) & ~kAttrAPReadOnly;
+
 	attr |= kAttrSHInnerShareable; // Inner Shareable
 
 	uint8_t type = MAIR_NORMAL_WB;

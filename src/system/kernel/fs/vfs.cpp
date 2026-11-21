@@ -1063,7 +1063,10 @@ static status_t
 dec_vnode_ref_count(struct vnode* vnode, bool alwaysFree, bool reenter)
 {
 	ReadLocker locker(sVnodeLock);
-	AutoLocker<Vnode> nodeLocker(vnode);
+	// Not AutoLocker(vnode): its NULL check makes GCC warn about a NULL vnode
+	// in the atomic_add() below when KDEBUG is off.
+	vnode->Lock();
+	AutoLocker<Vnode> nodeLocker(vnode, true);
 
 	const int32 oldRefCount = atomic_add(&vnode->ref_count, -1);
 	ASSERT_PRINT(oldRefCount > 0, "vnode %p\n", vnode);
