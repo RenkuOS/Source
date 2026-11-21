@@ -18,6 +18,7 @@
 #include <new>
 
 #include <assert.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <Bitmap.h>
@@ -87,6 +88,7 @@ AVCodecDecoder::AVCodecDecoder()
 	fFrame(0),
 	fIsAudio(false),
 	fCodec(NULL),
+	fContextCodec(NULL),
 	fCodecContext(NULL),
 	fResampleContext(NULL),
 	fDecodedData(NULL),
@@ -174,8 +176,11 @@ AVCodecDecoder::~AVCodecDecoder()
 void
 AVCodecDecoder::GetCodecInfo(media_codec_info* mci)
 {
-	snprintf(mci->short_name, 32, "%s", fCodec->name);
-	snprintf(mci->pretty_name, 96, "%s", fCodec->long_name);
+	// the decoder really in use, which may be the hardware one
+	const AVCodec* codec = fCodecInitDone && fContextCodec != NULL
+		? fContextCodec : fCodec;
+	snprintf(mci->short_name, 32, "%s", codec->name);
+	snprintf(mci->pretty_name, 96, "%s", codec->long_name);
 	mci->id = 0;
 	mci->sub_id = fCodec->id;
 }
@@ -311,19 +316,9 @@ AVCodecDecoder::NegotiateOutputFormat(media_format* inOutFormat)
 	}
 
 	fCodecInitDone = false;
-	fCodecContext = avcodec_alloc_context3(fCodec);
-	if (fCodecContext == NULL)
-		return B_NO_MEMORY;
-
-	// The AVFormatReader hands over pts/dts/duration in microseconds
-	fCodecContext->pkt_timebase = av_make_q(1, 1000000);
-
-	system_info info;
-	get_system_info(&info);
-
-	fCodecContext->err_recognition = AV_EF_CAREFUL;
-	fCodecContext->error_concealment = 3;
-	fCodecContext->thread_count = info.cpu_count;
+	status_t status = _AllocateCodecContext(fIsAudio ? fCodec : _VideoCodec());
+	if (status != B_OK)
+		return status;
 
 	if (fIsAudio)
 		return _NegotiateAudioOutputFormat(inOutFormat);
@@ -350,6 +345,75 @@ AVCodecDecoder::Decode(void* outBuffer, int64* outFrameCount,
 
 
 // #pragma mark -
+
+
+/*!	The decoder for a video stream: the WAVE511 of the StarFive JH7110 for
+	H.264 when FFmpeg was built with it, otherwise fCodec. The hardware
+	decoder only opens when the VPU is there and free, so _OpenVideoCodec()
+	falls back to fCodec. WAVE511_DISABLE=1 in the environment skips it.
+*/
+const AVCodec*
+AVCodecDecoder::_VideoCodec() const
+{
+	if (fCodec->id != AV_CODEC_ID_H264)
+		return fCodec;
+	const char* disable = getenv("WAVE511_DISABLE");
+	if (disable != NULL && strcmp(disable, "0") != 0)
+		return fCodec;
+	const AVCodec* hardware = avcodec_find_decoder_by_name("h264_wave511");
+	return hardware != NULL ? hardware : fCodec;
+}
+
+
+status_t
+AVCodecDecoder::_AllocateCodecContext(const AVCodec* codec)
+{
+	fCodecContext = avcodec_alloc_context3(codec);
+	if (fCodecContext == NULL)
+		return B_NO_MEMORY;
+	fContextCodec = codec;
+
+	// The AVFormatReader hands over pts/dts/duration in microseconds
+	fCodecContext->pkt_timebase = av_make_q(1, 1000000);
+
+	system_info info;
+	get_system_info(&info);
+
+	fCodecContext->err_recognition = AV_EF_CAREFUL;
+	fCodecContext->error_concealment = 3;
+	fCodecContext->thread_count = info.cpu_count;
+	return B_OK;
+}
+
+
+/*!	Opens fCodecContext; when that was the hardware decoder and it cannot
+	open (busy, no driver, no firmware, a stream it does not support), the
+	context is made again for the software decoder.
+*/
+status_t
+AVCodecDecoder::_OpenVideoCodec()
+{
+	if (avcodec_open2(fCodecContext, fContextCodec, NULL) >= 0) {
+		if (fContextCodec != fCodec) {
+			TRACE("AVCodecDecoder: %s instead of %s\n", fContextCodec->name,
+				fCodec->name);
+		}
+		return B_OK;
+	}
+	if (fContextCodec == fCodec)
+		return B_ERROR;
+
+	fCodecContext->extradata = NULL;
+		// fExtraData, which is ours
+	avcodec_free_context(&fCodecContext);
+	status_t status = _AllocateCodecContext(fCodec);
+	if (status != B_OK)
+		return status;
+	_ApplyEssentialVideoContainerPropertiesToContext();
+	if (avcodec_open2(fCodecContext, fCodec, NULL) < 0)
+		return B_ERROR;
+	return B_OK;
+}
 
 
 void
@@ -490,7 +554,7 @@ AVCodecDecoder::_NegotiateVideoOutputFormat(media_format* inOutFormat)
 		// to _DecodeNextVideoFrame() will update the essential video format
 		// properties accordingly regardless of the settings here.
 
-	if (avcodec_open2(fCodecContext, fCodec, NULL) < 0) {
+	if (_OpenVideoCodec() != B_OK) {
 		TRACE("avcodec_open() failed to init codec!\n");
 		return B_ERROR;
 	}

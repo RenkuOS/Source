@@ -72,6 +72,9 @@ private:
 			status_t	_NegotiateAudioOutputFormat(media_format* inOutFormat);
 
 			status_t	_NegotiateVideoOutputFormat(media_format* inOutFormat);
+			const AVCodec* _VideoCodec() const;
+			status_t	_AllocateCodecContext(const AVCodec* codec);
+			status_t	_OpenVideoCodec();
 
 			status_t	_DecodeAudio(void* outBuffer, int64* outFrameCount,
 							media_header* mediaHeader,
@@ -118,6 +121,9 @@ private:
 
 			// FFmpeg related members
 			const AVCodec*		fCodec;
+			const AVCodec*		fContextCodec;
+									// fCodec, or the hardware decoder tried
+									// in its place
 			AVCodecContext*		fCodecContext;
 			SwrContext*			fResampleContext;
 			uint8_t*			fDecodedData;
