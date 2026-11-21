@@ -492,10 +492,13 @@ frame_buffer_console_init_post_vm(kernel_args* args)
 	if (!args->frame_buffer.enabled)
 		return B_OK;
 
+	// Not the default B_UNCACHED_MEMORY: console_blit() and console_clear()
+	// use memmove() and memset(), which fault on arm64 Device memory.
 	void* frameBuffer;
 	sConsole.area = map_physical_memory("frame buffer",
 		args->frame_buffer.physical_buffer.start,
-		args->frame_buffer.physical_buffer.size, B_ANY_KERNEL_ADDRESS,
+		args->frame_buffer.physical_buffer.size,
+		B_ANY_KERNEL_ADDRESS | B_WRITE_COMBINING_MEMORY,
 		B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA | B_CLONEABLE_AREA,
 		&frameBuffer);
 	if (sConsole.area < 0)

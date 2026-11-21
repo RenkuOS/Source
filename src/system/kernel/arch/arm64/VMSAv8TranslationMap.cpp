@@ -560,6 +560,9 @@ VMSAv8TranslationMap::GetMemoryAttr(uint32 attributes, uint32 memoryType, bool i
 	switch (memoryType & B_MEMORY_TYPE_MASK) {
 		case B_UNCACHED_MEMORY:
 			// TODO: This probably should be nGnRE for PCI
+			// Device memory faults on unaligned accesses and on DC ZVA, both
+			// of which memcpy(), memmove() and memset() use: access such
+			// mappings with naturally aligned loads and stores only.
 			type = MAIR_DEVICE_nGnRnE;
 			break;
 		case B_WRITE_COMBINING_MEMORY:
