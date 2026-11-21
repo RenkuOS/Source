@@ -32,6 +32,7 @@
 
 #include <AutoDeleter.h>
 #include <ObjectList.h>
+#include <StringList.h>
 
 
 // TODO: libsolv doesn't have any helpful out-of-memory handling. It just just
@@ -449,6 +450,18 @@ LibsolvSolver::Update(const BSolverPackageSpecifierList& packages,
 status_t
 LibsolvSolver::FullSync()
 {
+	return FullSync(BStringList());
+}
+
+
+/*!	Like FullSync(), but the installed packages named in \a keepInstalled are
+	kept: they mustn't be uninstalled to make way for other packages, which a
+	package no repository has could otherwise be. Should they be in the way,
+	that is a problem, with not keeping them as one solution.
+*/
+status_t
+LibsolvSolver::FullSync(const BStringList& keepInstalled)
+{
 	// add repositories to pool
 	status_t error = _AddRepositories();
 	if (error != B_OK)
@@ -463,6 +476,14 @@ LibsolvSolver::FullSync()
 
 	// set jobs' solver mode and solve
 	_SetJobsSolverMode(SOLVER_DISTUPGRADE);
+
+	for (int32 i = 0; i < keepInstalled.CountStrings(); i++) {
+		// repo_haiku prefixes the solvables' names with "pkg:"
+		BString name("pkg:");
+		name << keepInstalled.StringAt(i);
+		queue_push2(fJobs, SOLVER_LOCK | SOLVER_SOLVABLE_NAME,
+			pool_str2id(fPool, name.String(), 1));
+	}
 
 	_InitSolver();
 	return _Solve();
