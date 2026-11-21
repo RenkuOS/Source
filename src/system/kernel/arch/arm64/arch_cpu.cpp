@@ -18,6 +18,20 @@ extern "C" void _exception_vectors(void);
 static uint32 sPsciConduit = 0;
 
 
+// CTR_EL0, read once: reading it traps to the hypervisor on some hosts.
+// Bit 31 is RES1, so 0 means "not read yet".
+static uint64 sCtrEl0 = 0;
+
+
+static uint64
+read_ctr_el0()
+{
+	if (sCtrEl0 == 0)
+		sCtrEl0 = READ_SPECIALREG(CTR_EL0);
+	return sCtrEl0;
+}
+
+
 status_t
 arch_cpu_preboot_init_percpu(kernel_args *args, int curr_cpu)
 {
@@ -52,6 +66,7 @@ status_t
 arch_cpu_init(kernel_args *args)
 {
 	sPsciConduit = args->arch_args.psci_conduit;
+	dprintf("arm64: CTR_EL0 %#" B_PRIx64 "\n", read_ctr_el0());
 
 	for (uint32 i = 0; i < args->num_cpus; i++) {
 		cpu_ent* cpu = &gCPU[i];
@@ -101,26 +116,31 @@ arch_cpu_shutdown(bool reboot)
 void
 arch_cpu_sync_icache(void *address, size_t len)
 {
-	uint64_t ctr_el0 = 0;
-	asm volatile ("mrs\t%0, ctr_el0":"=r" (ctr_el0));
+	uint64_t ctr_el0 = read_ctr_el0();
 
 	uint64_t icache_line_size = 4 << (ctr_el0 & 0xF);
 	uint64_t dcache_line_size = 4 << ((ctr_el0 >> 16) & 0xF);
 	uint64_t addr = (uint64_t)address;
 	uint64_t end = addr + len;
 
-	for (uint64_t address_dcache = ROUNDDOWN(addr, dcache_line_size);
-	     address_dcache < end; address_dcache += dcache_line_size) {
-		asm volatile ("dc cvau, %0" : : "r"(address_dcache) : "memory");
+	// CTR_EL0.IDC: D-cache clean to PoU is not needed for I/D coherence
+	if ((ctr_el0 & (1UL << 28)) == 0) {
+		for (uint64_t address_dcache = ROUNDDOWN(addr, dcache_line_size);
+			 address_dcache < end; address_dcache += dcache_line_size) {
+			asm volatile ("dc cvau, %0" : : "r"(address_dcache) : "memory");
+		}
 	}
 
 	asm("dsb ish");
 
-	for (uint64_t address_icache = ROUNDDOWN(addr, icache_line_size);
-         address_icache < end; address_icache += icache_line_size) {
-		asm volatile ("ic ivau, %0" : : "r"(address_icache) : "memory");
+	// CTR_EL0.DIC: I-cache invalidation to PoU is not needed
+	if ((ctr_el0 & (1UL << 29)) == 0) {
+		for (uint64_t address_icache = ROUNDDOWN(addr, icache_line_size);
+			 address_icache < end; address_icache += icache_line_size) {
+			asm volatile ("ic ivau, %0" : : "r"(address_icache) : "memory");
+		}
+		asm("dsb ish");
 	}
-	asm("dsb ish");
 	asm("isb");
 }
 

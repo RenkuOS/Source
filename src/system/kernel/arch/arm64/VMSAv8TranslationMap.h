@@ -112,6 +112,13 @@ private:
 	int fASID;
 	int fRefcount;
 
+	// TLB invalidations queued under fLock and issued by Flush(). Above
+	// kMaxInvalidPages the whole ASID (or the whole TLB) is invalidated.
+	static constexpr int kMaxInvalidPages = 64;
+	int fInvalidPagesCount;
+	bool fInvalidGlobal;
+	addr_t fInvalidPages[kMaxInvalidPages];
+
 private:
 	static uint8_t MairIndex(uint8_t type);
 	bool ValidateVa(addr_t va);
@@ -123,6 +130,7 @@ private:
 		vm_page_reservation* reservation, UpdatePte &&updatePte);
 	bool AttemptPteBreakBeforeMake(uint64_t* ptePtr, uint64_t oldPte, addr_t va);
 	bool FlushVAIfAccessed(uint64_t pte, addr_t va);
+	void QueueInvalidation(uint64_t pte, addr_t va);
 };
 
 
