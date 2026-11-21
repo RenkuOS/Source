@@ -240,7 +240,7 @@ BMediaEventLooper::ControlLoop()
 				// The general idea of lateness is to allow
 				// the client code to detect when the buffer
 				// is handled late or early.
-				bigtime_t lateness = TimeSource()->RealTime() - waitUntil;
+				bigtime_t lateness = BTimeSource::RealTime() - waitUntil;
 
 				DispatchEvent(&event, lateness, hasRealtime);
 			}
@@ -255,9 +255,19 @@ BMediaEventLooper::ControlLoop()
 		hasEvent = fEventQueue.HasEvents();
 
 		if (hasEvent) {
-			waitUntil = TimeSource()->RealTimeFor(
-				fEventQueue.FirstEventTime(),
-				fEventLatency + fSchedulingLatency);
+			// TimeSource() is NULL when it has to ask the media_server for
+			// the time source and cannot, as when the media services quit:
+			// take the performance time as real time, as the system time
+			// source does, instead of crashing the team of the node.
+			BTimeSource* timeSource = TimeSource();
+			if (timeSource != NULL) {
+				waitUntil = timeSource->RealTimeFor(
+					fEventQueue.FirstEventTime(),
+					fEventLatency + fSchedulingLatency);
+			} else {
+				waitUntil = fEventQueue.FirstEventTime()
+					- (fEventLatency + fSchedulingLatency);
+			}
 		} else if (!hasRealtime)
 			waitUntil = B_INFINITE_TIMEOUT;
 
@@ -273,7 +283,7 @@ BMediaEventLooper::ControlLoop()
 		}
 
 		if (waitUntil != B_INFINITE_TIMEOUT
-				&& TimeSource()->RealTime() >= waitUntil) {
+				&& BTimeSource::RealTime() >= waitUntil) {
 			err = WaitForMessage(0);
 		} else
 			err = WaitForMessage(waitUntil);
