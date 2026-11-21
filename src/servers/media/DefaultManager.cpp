@@ -58,6 +58,7 @@ DefaultManager::DefaultManager()
 	fTimeSource(-1),
 	fAudioMixer(-1),
 	fPhysicalAudioOutInputID(0),
+	fMsgListLock("default manager saved defaults"),
 	fRescanThread(-1),
 	fRescanRequested(0),
 	fRescanLock("rescan default manager"),
@@ -169,10 +170,11 @@ DefaultManager::SaveState(NodeManager *node_manager)
 		// boot without the device forgets it for good -- and neither must
 		// having found no node at all, which this used to skip. Write back
 		// what was loaded instead.
-		BMessage* saved = _SavedDefault(default_types[i]);
-		if (saved != NULL && (media_node_ids[i] == -1
+		BMessage saved;
+		if (_SavedDefault(default_types[i], &saved)
+			&& (media_node_ids[i] == -1
 				|| fUsingFallback[_TypeIndex(default_types[i])])) {
-			list.AddItem(new BMessage(*saved));
+			list.AddItem(new BMessage(saved));
 			continue;
 		}
 
@@ -227,10 +229,19 @@ DefaultManager::SaveState(NodeManager *node_manager)
 			return B_ERROR;
 		if (settings->Flatten(&file) < B_OK)
 			return B_ERROR;
-		delete settings;
 	}
 	if (file.Write(fEndHeader, sizeof(uint32)*3) < (int32)sizeof(uint32)*3)
 		return B_ERROR;
+
+	// What was written is the preference from now on. It was only read at
+	// start, so a default chosen later in Media was not known as saved: an
+	// output standing in for it was then taken for the saved one "present
+	// again", and the chosen one was never gone back to.
+	BAutolock locker(fMsgListLock);
+	for (int32 i = 0; i < fMsgList.CountItems(); i++)
+		delete (BMessage*)fMsgList.ItemAt(i);
+	fMsgList.MakeEmpty();
+	fMsgList.AddList(&list);
 
 	return B_OK;
 }
@@ -494,7 +505,8 @@ DefaultManager::_FindPhysical(volatile media_node_id *id, uint32 default_type,
 	// broke out only on a type match, so with no entry saved for THIS type it
 	// was left pointing at another type's entry, with msgDninfo never filled
 	// in -- and the uninitialised name then matched no device at all.
-	BMessage *msg = _SavedDefault(default_type);
+	BMessage savedMsg;
+	BMessage *msg = _SavedDefault(default_type, &savedMsg) ? &savedMsg : NULL;
 	if (msg != NULL) {
 		const char *name = NULL;
 		const char *path = NULL;
@@ -665,18 +677,23 @@ DefaultManager::_TypeIndex(uint32 defaultType)
 }
 
 
-/*!	The saved default of \a defaultType as loaded at start, or NULL. */
-BMessage*
-DefaultManager::_SavedDefault(uint32 defaultType) const
+/*!	Copies the saved default of \a defaultType into \a _saved: a copy, as
+	SaveState() replaces the list while a rescan reads it.
+*/
+bool
+DefaultManager::_SavedDefault(uint32 defaultType, BMessage* _saved) const
 {
+	BAutolock locker(fMsgListLock);
 	for (int32 i = 0; i < fMsgList.CountItems(); i++) {
 		BMessage* msg = (BMessage*)fMsgList.ItemAt(i);
 		int32 msgType;
 		if (msg->FindInt32(kDefaultManagerType, &msgType) == B_OK
-			&& (uint32)msgType == defaultType)
-			return msg;
+			&& (uint32)msgType == defaultType) {
+			*_saved = *msg;
+			return true;
+		}
 	}
-	return NULL;
+	return false;
 }
 
 
