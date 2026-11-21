@@ -222,6 +222,14 @@ ARMVMTranslationMap32Bit::Map(addr_t va, phys_addr_t pa, uint32 attributes,
 
 	fMapCount++;
 
+	// The page may have been written through the data cache, and the
+	// instruction caches may still hold what was at this physical address
+	// before
+	if ((attributes & (B_EXECUTE_AREA | B_KERNEL_EXECUTE_AREA)) != 0) {
+		ThreadCPUPinner pinner(thread);
+		arm_sync_icache_page(pa);
+	}
+
 	return 0;
 }
 
@@ -566,6 +574,11 @@ ARMVMTranslationMap32Bit::Protect(addr_t start, addr_t end, uint32 attributes,
 				// been in any TLB.
 				InvalidatePage(start);
 			}
+
+			// Code may just have been written to the page that becomes
+			// executable (e.g. by the kernel add-on loader)
+			if ((attributes & (B_EXECUTE_AREA | B_KERNEL_EXECUTE_AREA)) != 0)
+				arm_sync_icache_page(oldEntry & ARM_PTE_ADDRESS_MASK);
 		}
 	} while (start != 0 && start < end);
 
