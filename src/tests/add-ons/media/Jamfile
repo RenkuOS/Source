@@ -2,3 +2,4 @@ SubDir HAIKU_TOP src tests add-ons media ;
 
 SubInclude HAIKU_TOP src tests add-ons media plugins ;
 SubInclude HAIKU_TOP src tests add-ons media media-add-ons ;
+SubInclude HAIKU_TOP src tests add-ons media usb_webcam ;
