@@ -772,16 +772,50 @@ print_kernel_debugger_message()
 }
 
 
-static void
+/*!	Returns whether the last of the commands in \a commands, separated by
+	';', is one of those that leave the debugger.
+*/
+static bool
+last_command_quits(const char* commands)
+{
+	const char* last = strrchr(commands, ';');
+	last = last != NULL ? last + 1 : commands;
+	while (isspace(*last))
+		last++;
+
+	size_t length = strlen(last);
+	while (length > 0 && isspace(last[length - 1]))
+		length--;
+
+	static const char* const kQuitCommands[] = { "continue", "exit", "es" };
+	for (size_t i = 0; i < B_COUNT_OF(kQuitCommands); i++) {
+		if (length == strlen(kQuitCommands[i])
+			&& strncmp(last, kQuitCommands[i], length) == 0) {
+			return true;
+		}
+	}
+	return false;
+}
+
+
+/*!	Executes the commands that follow kKDLMessageCommandSeparator in the
+	kernel debugger message. Returns the return code of the last command, so
+	that commands ending with "continue" can leave the debugger again without
+	a keyboard. An error stops the command line before its end; when the last
+	command leaves the debugger, it is still executed then, since nobody may be
+	able to type it.
+*/
+static int
 execute_panic_commands()
 {
 	if (sCurrentKernelDebuggerMessage == NULL
 		|| strstr(sCurrentKernelDebuggerMessage,
 				kKDLMessageCommandSeparator) == NULL) {
-		return;
+		return 0;
 	}
 
 	// Indeed there are commands to execute.
+	int returnCode = 0;
 	const size_t kCommandBufferSize = 512;
 	char* commandBuffer = (char*)debug_malloc(kCommandBufferSize);
 	if (commandBuffer != NULL) {
@@ -796,7 +830,13 @@ execute_panic_commands()
 			if (commands != NULL) {
 				commands += strlen(kKDLMessageCommandSeparator);
 				kprintf("initial commands: %s\n", commands);
-				evaluate_debug_command(commands);
+				returnCode = evaluate_debug_command(commands);
+				if (returnCode != B_KDEBUG_QUIT
+					&& last_command_quits(commands)) {
+					kprintf("initial commands stopped early, leaving the "
+						"debugger as they ask\n");
+					returnCode = B_KDEBUG_QUIT;
+				}
 			}
 		}
 
@@ -804,6 +844,8 @@ execute_panic_commands()
 
 		debug_free(commandBuffer);
 	}
+
+	return returnCode;
 }
 
 
@@ -887,6 +929,7 @@ kernel_debugger_loop(const char* messagePrefix, const char* message,
 			arch_debug_stack_trace();
 	}
 
+	bool quit = false;
 	if (has_debugger_command("help")) {
 		// Commands are registered already -- execute panic() commands. Do that
 		// with paging disabled, so everything is printed, even if the user
@@ -894,7 +937,7 @@ kernel_debugger_loop(const char* messagePrefix, const char* message,
 		bool pagingEnabled = blue_screen_paging_enabled();
 		blue_screen_set_paging(false);
 
-		execute_panic_commands();
+		quit = execute_panic_commands() == B_KDEBUG_QUIT;
 
 		blue_screen_set_paging(pagingEnabled);
 	}
@@ -903,7 +946,7 @@ kernel_debugger_loop(const char* messagePrefix, const char* message,
 		// Index of the previous command line, if the command returned
 		// B_KDEBUG_CONT, i.e. asked to be repeatable, -1 otherwise.
 
-	for (;;) {
+	while (!quit) {
 		CommandLineEditingHelper editingHelper;
 		kprintf(kKDLPrompt);
 		char* line = sLineBuffer[sCurrentLine];
@@ -2154,6 +2197,26 @@ kernel_debugger(const char* message)
 }
 
 
+/*!	Enters the kernel debugger with \a format as its message, so that the
+	commands after kKDLMessageCommandSeparator in it are executed, as they are
+	for panic(), and the user message is printed after \a prefix.
+*/
+static void
+kernel_debugger_with_message(const char* prefix, const char* format, ...)
+{
+	va_list args;
+	va_start(args, format);
+
+	cpu_status state = disable_interrupts();
+
+	kernel_debugger_internal(prefix, format, args, smp_get_current_cpu());
+
+	restore_interrupts(state);
+
+	va_end(args);
+}
+
+
 bool
 set_dprintf_enabled(bool newState)
 {
@@ -2310,15 +2373,23 @@ _user_kernel_debugger(const char* userMessage)
 		return B_NOT_ALLOWED;
 
 	char message[512];
-	strcpy(message, "USER: ");
-	size_t length = strlen(message);
-
-	if (userMessage == NULL || !IS_USER_ADDRESS(userMessage) || user_strlcpy(
-			message + length, userMessage, sizeof(message) - length) < 0) {
+	if (userMessage == NULL || !IS_USER_ADDRESS(userMessage)
+		|| user_strlcpy(message, userMessage, sizeof(message)) < 0) {
 		return B_BAD_ADDRESS;
 	}
 
-	kernel_debugger(message);
+	// The message is used as a format string, so that the commands in it
+	// are executed (see execute_panic_commands()): escape any '%'.
+	char format[sizeof(message) * 2];
+	size_t length = 0;
+	for (const char* c = message; *c != '\0'; c++) {
+		if (*c == '%')
+			format[length++] = '%';
+		format[length++] = *c;
+	}
+	format[length] = '\0';
+
+	kernel_debugger_with_message("USER: ", format);
 	return B_OK;
 }
 
