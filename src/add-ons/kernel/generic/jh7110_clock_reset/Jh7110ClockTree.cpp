@@ -116,6 +116,8 @@ static const ClockDef kClocks[] = {
 	DEF1(SYS, I2C5_APB, kGate, 0, 0, SYS(APB0)),
 	DEF1(SYS, WDT_APB, kGate, 0, 0, SYS(APB0)),
 	DEF1(SYS, WDT_CORE, kGate, 0, 0, EXT(OSC)),
+	DEF1(SYS, TEMP_APB, kGate, 0, 0, SYS(APB_BUS)),
+	DEF1(SYS, TEMP_CORE, kGate, 0, 5, EXT(OSC)),
 
 	// AON
 	DEF1(AON, OSC_DIV4, 0, 0, 5, EXT(OSC)),
