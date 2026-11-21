@@ -42,6 +42,7 @@ public:
 		void					SetReport(status_t status, uint8 *report,
 									size_t length);
 		uint8 *					CurrentReport() { return fCurrentReport; };
+		status_t				ReportStatus() { return fReportStatus; };
 
 #ifndef USERLAND_HID
 		status_t				SendReport();
