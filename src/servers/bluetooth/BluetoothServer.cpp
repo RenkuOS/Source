@@ -465,10 +465,18 @@ BluetoothServer::_LocalDeviceByPath(const char* path)
 void
 BluetoothServer::StartServices(ServerRemoteDevice* rd)
 {
+	// One thread at a time per device: encryption goes on again after a
+	// pause (a role switch before Bluetooth 2.1 does that), and two threads
+	// filled the same services message at once.
+	if (atomic_test_and_set(&rd->services_running, 1, 0) != 0)
+		return;
+
 	thread_id thread = spawn_thread(_ServicesThread, "bluetooth services",
 		B_NORMAL_PRIORITY, rd);
 	if (thread >= 0)
 		resume_thread(thread);
+	else
+		atomic_set(&rd->services_running, 0);
 }
 
 
@@ -479,6 +487,7 @@ BluetoothServer::_ServicesThread(void* data)
 	BluetoothServer* server = (BluetoothServer*)be_app;
 	server->DiscoverServices(rd);
 	server->NotifyServices(rd);
+	atomic_set(&rd->services_running, 0);
 	return B_OK;
 }
 

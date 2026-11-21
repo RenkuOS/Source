@@ -6,6 +6,7 @@
 #define _LOCALDEVICE_IMPL_H_
 
 #include <String.h>
+#include <string.h>
 
 #include <bluetooth/bluetooth.h>
 #include <bluetooth/L2CAP/btL2CAP.h>
@@ -22,6 +23,22 @@
 
 struct ServerRemoteDevice
 {
+						ServerRemoteDevice()
+							:
+							clock_offset(0),
+							pscan_rep_mode(0),
+							link_type(0),
+							encryption_enabled(0),
+							handle(0),
+							conn_state(RemoteDevice::DISCONNECTED),
+							outgoing(false),
+							services_running(0)
+						{
+							memset(&bdaddr, 0, sizeof(bdaddr));
+							memset(classOfDevice, 0, sizeof(classOfDevice));
+							memset(&link_key, 0, sizeof(link_key));
+						}
+
 	bdaddr_t			bdaddr;
 	BString     		friendly_name;
 	uint16				clock_offset;
@@ -36,6 +53,8 @@ struct ServerRemoteDevice
 	BMessage			services;
 	bool				outgoing;
 		// we opened the connection, rather than the device
+	int32				services_running;
+		// a services thread reads the records of the device now
 };
 
 // no link uses it: the handles go up to 0x0eff

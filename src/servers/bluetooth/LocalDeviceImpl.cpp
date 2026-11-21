@@ -1155,7 +1155,7 @@ LocalDeviceImpl::InquiryResult(uint8* numberOfResponses, size_t length,
 		return;
 
 	// the count comes from the air: the responses must fit in the event
-	if (count > (length - 1) / kInquiryResponseSize) {
+	if (length < 1 || count > (length - 1) / kInquiryResponseSize) {
 		syslog(LOG_WARNING, "bluetooth_server: inquiry result with %d "
 			"responses in %d bytes\n", count, (int)length);
 		return;
@@ -1203,7 +1203,7 @@ LocalDeviceImpl::InquiryResultWithRSSI(uint8* numberOfResponses,
 	if (count == 0 || request == NULL)
 		return;
 
-	if (count > (length - 1) / kInquiryResponseSize) {
+	if (length < 1 || count > (length - 1) / kInquiryResponseSize) {
 		syslog(LOG_WARNING, "bluetooth_server: inquiry result with %d "
 			"responses in %d bytes\n", count, (int)length);
 		return;
@@ -1461,14 +1461,19 @@ LocalDeviceImpl::ConnectionRequest(struct hci_ev_conn_request* event,
 			serverRd->link_key = LinkKeyUtils::NullKey();
 		}
 
-		// the controller does not ask for a device it still has a link to:
-		// that link went away without our hearing of it
-		if (serverRd->conn_state == RemoteDevice::CONNECTED)
-			_LinkDown(serverRd);
+		// A SCO or eSCO link rides on the ACL link of the device, which
+		// stays as it is.
+		if (event->link_type == HCI_ACL_CONN) {
+			// the controller does not ask for an ACL link to a device it
+			// still has one with: that link went away without our hearing
+			// of it
+			if (serverRd->conn_state == RemoteDevice::CONNECTED)
+				_LinkDown(serverRd);
 
-		serverRd->link_type = event->link_type;
-		serverRd->conn_state = RemoteDevice::CONNECTING;
-		serverRd->outgoing = false;
+			serverRd->link_type = event->link_type;
+			serverRd->conn_state = RemoteDevice::CONNECTING;
+			serverRd->outgoing = false;
+		}
 		memcpy(serverRd->classOfDevice, event->dev_class, 3 * sizeof(uint8));
 
 		BMessage notice(BT_MSG_NEW_REMOTE_DEVICE);
@@ -1539,8 +1544,13 @@ LocalDeviceImpl::CreateConnection(BMessage* message)
 	rdConn->classOfDevice[1] = (record & 0x0000FF00) >> 8;
 	rdConn->classOfDevice[2] = (record & 0x00FF0000) >> 16;
 
-	rdConn->conn_state = RemoteDevice::CONNECTING;
-	rdConn->link_type = HCI_ACL_CONN;
+	// Asked to connect a device that is connected already (it connected by
+	// itself): the controller answers that the link exists, and the link
+	// must stay up with its handle.
+	if (rdConn->conn_state != RemoteDevice::CONNECTED) {
+		rdConn->conn_state = RemoteDevice::CONNECTING;
+		rdConn->link_type = HCI_ACL_CONN;
+	}
 
 	AddRemoteDevice(rdConn);
 
@@ -1769,6 +1779,15 @@ LocalDeviceImpl::ConnectionComplete(struct hci_ev_conn_complete* event)
 {
 	BMessage reply;
 
+	// SCO and eSCO links ride on the ACL link of the device: its state and
+	// handle are those of the ACL link.
+	if (event->link_type != HCI_ACL_CONN) {
+		TRACE_BT("LocalDeviceImpl: %s: link type %d to %s, status %#x\n",
+			__FUNCTION__, event->link_type,
+			bdaddrUtils::ToString(event->bdaddr).String(), event->status);
+		return;
+	}
+
 	ServerRemoteDevice* rd = RemoteDeviceByAddr(event->bdaddr);
 	if (rd != NULL)
 		reply.AddData("bdaddr", B_ANY_TYPE, &event->bdaddr, sizeof(bdaddr_t));
@@ -1824,7 +1843,9 @@ LocalDeviceImpl::ConnectionComplete(struct hci_ev_conn_complete* event)
 		linkkey_t nullLinkKey = LinkKeyUtils::NullKey();
 		if (rd == NULL)
 			;
-		else if (LinkKeyUtils::Compare(&rd->link_key, &nullLinkKey))
+		else if (event->status == BT_ACL_CONNECTION_EXISTS) {
+			// the link we asked for is there already, and stays
+		} else if (LinkKeyUtils::Compare(&rd->link_key, &nullLinkKey))
 			RemoveRemoteDevice(rd);
 		else
 			_LinkDown(rd);
