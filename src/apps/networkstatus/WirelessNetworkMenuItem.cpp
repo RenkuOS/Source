@@ -21,9 +21,17 @@
 WirelessNetworkMenuItem::WirelessNetworkMenuItem(wireless_network network,
 	BMessage* message)
 	:
-	BMenuItem(network.name, message),
-	fNetwork(network)
+	BMenuItem(network.name, message)
 {
+	SetNetwork(network);
+}
+
+
+void
+WirelessNetworkMenuItem::SetNetwork(const wireless_network& network)
+{
+	fNetwork = network;
+
 	// Append authentication mode to label
 	BString label = B_TRANSLATE("%name% (%authenticationMode%)");
 	label.Replace("%name%", network.name, 1);
@@ -113,4 +121,44 @@ WirelessNetworkMenuItem::CompareSignalStrength(const BMenuItem* a,
 		return strncasecmp(aNetwork.name, bNetwork.name, 32);
 
 	return bNetwork.signal_strength - aNetwork.signal_strength;
+}
+
+
+/*!	Collapses \a networks in place to one entry per SSID, keeping the
+	strongest access point of each. Hidden networks (empty name) are kept
+	as they are. If any access point of a group is in \a associated, the
+	address of the kept entry is added to it, so the entry can be marked.
+	Returns the new number of entries.
+*/
+/*static*/ uint32
+WirelessNetworkMenuItem::MergeSameName(wireless_network* networks,
+	uint32 count, std::set<BNetworkAddress>& associated)
+{
+	uint32 merged = 0;
+	for (uint32 i = 0; i < count; i++) {
+		const wireless_network network = networks[i];
+
+		uint32 group = merged;
+		if (network.name[0] != '\0') {
+			for (group = 0; group < merged; group++) {
+				if (strcmp(networks[group].name, network.name) == 0)
+					break;
+			}
+		}
+
+		if (group == merged) {
+			networks[merged++] = network;
+			continue;
+		}
+
+		bool isAssociated
+			= associated.find(network.address) != associated.end()
+			|| associated.find(networks[group].address) != associated.end();
+		if (network.signal_strength > networks[group].signal_strength)
+			networks[group] = network;
+		if (isAssociated)
+			associated.insert(networks[group].address);
+	}
+
+	return merged;
 }

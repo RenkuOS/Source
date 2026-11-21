@@ -6,6 +6,8 @@
 #define WIRELESS_NETWORK_MENU_ITEM_H
 
 
+#include <set>
+
 #include <MenuItem.h>
 #include <NetworkDevice.h>
 
@@ -18,11 +20,15 @@ public:
 	virtual						~WirelessNetworkMenuItem();
 
 			wireless_network	Network() const { return fNetwork; }
+			void				SetNetwork(const wireless_network& network);
 
 			BString 			AuthenticationName(int32 mode);
 
 	static	int					CompareSignalStrength(const BMenuItem* a,
 									const BMenuItem* b);
+	static	uint32				MergeSameName(wireless_network* networks,
+									uint32 count,
+									std::set<BNetworkAddress>& associated);
 
 protected:
 	virtual	void				DrawContent();
