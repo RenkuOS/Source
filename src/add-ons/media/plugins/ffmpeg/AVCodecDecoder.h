@@ -99,6 +99,11 @@ private:
 			status_t	_FlushOneVideoFrameFromDecoderBuffer();
 			void		_UpdateMediaHeaderForVideoFrame();
 			status_t	_DeinterlaceAndColorConvertVideoFrame();
+#if USE_SWS_FOR_COLOR_SPACE_CONVERSION
+			SwsContext*	_CreateSwsContext(int width, int height,
+							AVPixelFormat format);
+			status_t	_ScaleFrameThreaded(int width, int height);
+#endif
 
 			// video deinterlace filter graph
 			status_t	_InitFilterGraph(enum AVPixelFormat pixfmt,
@@ -122,6 +127,10 @@ private:
 			SwrContext*			fResampleContext;
 			uint8_t*			fDecodedData;
 			size_t				fDecodedDataSizeInBytes;
+			uint8_t*			fConvertTarget;
+									// the caller's buffer while decoding a
+									// video frame in _DecodeVideo()
+			bool				fConvertedToTarget;
 			AVFrame*			fPostProcessedDecodedPicture;
 			AVFrame*			fRawDecodedPicture;
 			AVFrame*			fRawDecodedAudio;

@@ -27,6 +27,10 @@
 
 #include "Utilities.h"
 
+extern "C" {
+	#include <libavutil/opt.h>
+}
+
 
 #undef TRACE
 //#define TRACE_AV_CODEC
@@ -91,6 +95,8 @@ AVCodecDecoder::AVCodecDecoder()
 	fResampleContext(NULL),
 	fDecodedData(NULL),
 	fDecodedDataSizeInBytes(0),
+	fConvertTarget(NULL),
+	fConvertedToTarget(false),
 	fPostProcessedDecodedPicture(av_frame_alloc()),
 	fRawDecodedPicture(av_frame_alloc()),
 	fRawDecodedAudio(av_frame_alloc()),
@@ -659,15 +665,25 @@ status_t
 AVCodecDecoder::_DecodeVideo(void* outBuffer, int64* outFrameCount,
 	media_header* mediaHeader, media_decode_info* info)
 {
-	status_t videoDecodingStatus
-		= fDecodedDataSizeInBytes > 0 ? B_OK : _DecodeNextVideoFrame();
+	// A frame decoded now can be converted straight into outBuffer, which
+	// saves a copy of the whole picture (about 11 ms for 1080p on a JH7110);
+	// the one decoded while negotiating the format is in fDecodedData.
+	bool decodeNow = fDecodedDataSizeInBytes == 0;
+	status_t videoDecodingStatus = B_OK;
+	if (decodeNow) {
+		fConvertTarget = static_cast<uint8_t*>(outBuffer);
+		fConvertedToTarget = false;
+		videoDecodingStatus = _DecodeNextVideoFrame();
+		fConvertTarget = NULL;
+	}
 
 	if (videoDecodingStatus != B_OK)
 		return videoDecodingStatus;
 
 	*outFrameCount = 1;
 	*mediaHeader = fHeader;
-	memcpy(outBuffer, fDecodedData, mediaHeader->size_used);
+	if (!decodeNow || !fConvertedToTarget)
+		memcpy(outBuffer, fDecodedData, mediaHeader->size_used);
 
 	fDecodedDataSizeInBytes = 0;
 
@@ -1667,10 +1683,8 @@ AVCodecDecoder::_DeinterlaceAndColorConvertVideoFrame()
 	// Some decoders do not set pix_fmt until they have decoded 1 frame
 #if USE_SWS_FOR_COLOR_SPACE_CONVERSION
 	if (fSwsContext == NULL) {
-		fSwsContext = sws_getContext(displayWidth, displayHeight,
-			fCodecContext->pix_fmt, displayWidth, displayHeight,
-			colorspace_to_pixfmt(fOutputColorSpace),
-			SWS_FAST_BILINEAR, NULL, NULL, NULL);
+		fSwsContext = _CreateSwsContext(displayWidth, displayHeight,
+			fCodecContext->pix_fmt);
 	}
 #else
 	if (fFormatConversionFunc == NULL) {
@@ -1692,9 +1706,21 @@ AVCodecDecoder::_DeinterlaceAndColorConvertVideoFrame()
 		return B_NO_MEMORY;
 	}
 
-	fPostProcessedDecodedPicture->data[0] = fDecodedData;
-	fPostProcessedDecodedPicture->linesize[0]
-		= fHeader.u.raw_video.bytes_per_row;
+	// Convert into the caller's buffer when the conversion cannot write
+	// beyond it: the converters work on blocks of up to 64 bytes, so the
+	// buffer must be aligned to them and the rows a multiple of them, with
+	// no padding (fDecodedData has 64 bytes alignment and 63 more bytes).
+	uint8_t* target = fDecodedData;
+	uint32 bytesPerRow = fHeader.u.raw_video.bytes_per_row;
+	if (fConvertTarget != NULL && !useDeinterlacedPicture
+		&& fOutputColorSpace == B_RGB32
+		&& ((addr_t)fConvertTarget & 63) == 0
+		&& bytesPerRow == (uint32)displayWidth * 4 && bytesPerRow % 64 == 0) {
+		target = fConvertTarget;
+	}
+
+	fPostProcessedDecodedPicture->data[0] = target;
+	fPostProcessedDecodedPicture->linesize[0] = bytesPerRow;
 
 #if USE_SWS_FOR_COLOR_SPACE_CONVERSION
 	if (fSwsContext != NULL) {
@@ -1727,10 +1753,12 @@ AVCodecDecoder::_DeinterlaceAndColorConvertVideoFrame()
 #endif
 		} else {
 #if USE_SWS_FOR_COLOR_SPACE_CONVERSION
-			sws_scale(fSwsContext, fRawDecodedPicture->data,
-				fRawDecodedPicture->linesize, 0, displayHeight,
-				fPostProcessedDecodedPicture->data,
-				fPostProcessedDecodedPicture->linesize);
+			if (_ScaleFrameThreaded(displayWidth, displayHeight) != B_OK) {
+				sws_scale(fSwsContext, fRawDecodedPicture->data,
+					fRawDecodedPicture->linesize, 0, displayHeight,
+					fPostProcessedDecodedPicture->data,
+					fPostProcessedDecodedPicture->linesize);
+			}
 #else
 			(*fFormatConversionFunc)(fRawDecodedPicture,
 				fPostProcessedDecodedPicture, displayWidth, displayHeight);
@@ -1741,8 +1769,88 @@ AVCodecDecoder::_DeinterlaceAndColorConvertVideoFrame()
 	if (fRawDecodedPicture->flags & AV_FRAME_FLAG_INTERLACED)
 		av_freep(&deinterlacedPicture.data[0]);
 
+	fConvertedToTarget = target != fDecodedData;
 	return B_OK;
 }
+
+
+#if USE_SWS_FOR_COLOR_SPACE_CONVERSION
+/*!	\brief Creates the color conversion context, with one slice thread per
+	CPU.
+
+	The conversion to RGB is the most expensive part of decoding at high
+	resolutions (a 1080p frame takes about 25 ms on one core of a JH7110),
+	and libswscale splits it into horizontal slices when it has threads.
+	Those are only used through sws_scale_frame(), see _ScaleFrameThreaded().
+*/
+SwsContext*
+AVCodecDecoder::_CreateSwsContext(int width, int height, AVPixelFormat format)
+{
+	AVPixelFormat outputFormat = colorspace_to_pixfmt(fOutputColorSpace);
+
+	system_info info;
+	get_system_info(&info);
+
+	SwsContext* context = sws_alloc_context();
+	if (context != NULL) {
+		av_opt_set_int(context, "srcw", width, 0);
+		av_opt_set_int(context, "srch", height, 0);
+		av_opt_set_int(context, "src_format", format, 0);
+		av_opt_set_int(context, "dstw", width, 0);
+		av_opt_set_int(context, "dsth", height, 0);
+		av_opt_set_int(context, "dst_format", outputFormat, 0);
+		av_opt_set_int(context, "sws_flags", SWS_FAST_BILINEAR, 0);
+		av_opt_set_int(context, "threads", info.cpu_count, 0);
+		if (sws_init_context(context, NULL, NULL) >= 0)
+			return context;
+		sws_freeContext(context);
+	}
+
+	return sws_getContext(width, height, format, width, height, outputFormat,
+		SWS_FAST_BILINEAR, NULL, NULL, NULL);
+}
+
+
+static void
+dont_free_buffer(void* opaque, uint8_t* data)
+{
+}
+
+
+/*!	\brief Converts fRawDecodedPicture into fPostProcessedDecodedPicture with
+	sws_scale_frame(), which uses the slice threads of fSwsContext (plain
+	sws_scale() runs on one thread only).
+
+	\returns B_OK if the frame was converted, an error if the caller should
+		convert it with sws_scale() instead.
+*/
+status_t
+AVCodecDecoder::_ScaleFrameThreaded(int width, int height)
+{
+	AVFrame* output = av_frame_alloc();
+	if (output == NULL)
+		return B_NO_MEMORY;
+
+	// sws_scale_frame() wants a reference counted destination; the buffer
+	// stays ours, so the reference does not free it
+	output->buf[0] = av_buffer_create(fPostProcessedDecodedPicture->data[0],
+		fHeader.size_used, dont_free_buffer, NULL, 0);
+	if (output->buf[0] == NULL) {
+		av_frame_free(&output);
+		return B_NO_MEMORY;
+	}
+	output->data[0] = fPostProcessedDecodedPicture->data[0];
+	output->linesize[0] = fPostProcessedDecodedPicture->linesize[0];
+	output->width = width;
+	output->height = height;
+	output->format = colorspace_to_pixfmt(fOutputColorSpace);
+
+	int result = sws_scale_frame(fSwsContext, output, fRawDecodedPicture);
+	av_frame_free(&output);
+
+	return result < 0 ? B_ERROR : B_OK;
+}
+#endif
 
 
 /*! \brief Init the deinterlace filter graph.
