@@ -611,8 +611,20 @@ BPackageManager::FullSync(bool reinstall)
 	BStringList installedPackages;
 	get_package_names(InstallationRepository(), installedPackages);
 
+	// What the repositories have of the held packages has been left out, so
+	// they are orphans to the solver, which may uninstall them when they are
+	// in the way. Locking them makes that a problem instead.
+	BStringList heldInstalled;
+	for (int32 i = 0; i < fHeldPackages.CountStrings(); i++) {
+		const BString& name = fHeldPackages.StringAt(i);
+		if (installed_package_named(InstallationRepository(), name) != NULL
+			&& !heldInstalled.Add(name)) {
+			throw std::bad_alloc();
+		}
+	}
+
 	// solve
-	status_t error = fSolver->FullSync();
+	status_t error = fSolver->FullSync(heldInstalled);
 	if (error != B_OK)
 		DIE(error, "Failed to compute packages to synchronize");
 
