@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: MIT
+
+SubDir HAIKU_TOP src add-ons kernel drivers power jh7110_thermal ;
+
+UsePrivateHeaders drivers ;
+UsePrivateKernelHeaders ;
+
+KernelAddon jh7110_thermal :
+	jh7110_thermal.cpp
+;
