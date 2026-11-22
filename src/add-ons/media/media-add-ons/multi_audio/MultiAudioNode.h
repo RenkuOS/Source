@@ -23,6 +23,7 @@
 
 
 class BDiscreteParameter;
+class BParameter;
 class BParameterGroup;
 
 class node_input;
@@ -278,6 +279,12 @@ private:
 			void				_UpdateInternalLatency(
 									const media_format& format);
 
+			size_t				_MixValueSize(BParameter* parameter) const;
+			void				_RememberValue(int32 id, const void* value,
+									size_t size);
+			bool				_RememberedValue(int32 id, const void** _value,
+									ssize_t* _size) const;
+
 private:
 			status_t			fInitStatus;
 
@@ -321,6 +328,10 @@ private:
 			MultiAudioDevice*	fDevice;
 			BParameterWeb*		fWeb;
 			BMessage			fConfig;
+				// the configuration this node was created with, kept up to
+				// date with every mix value set successfully; it stands in for
+				// values the device cannot report (unplugged) when the
+				// configuration is saved
 };
 
 

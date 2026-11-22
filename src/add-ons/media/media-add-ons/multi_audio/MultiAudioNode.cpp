@@ -1600,7 +1600,10 @@ MultiAudioNode::GetParameterValue(int32 id, bigtime_t* lastChange, void* value,
 	if (info.item_count > 0) {
 		status_t status = fDevice->GetMix(&info);
 		if (status != B_OK) {
+			// Nothing was written to value, so B_OK would hand the caller
+			// whatever its buffer held, and *size would still claim all of it.
 			fprintf(stderr, "Failed on DRIVER_GET_MIX\n");
+			return status;
 		} else {
 			if (parameter->Type() == BParameter::B_CONTINUOUS_PARAMETER) {
 				((float*)value)[0] = values[0].gain;
@@ -1774,6 +1777,13 @@ MultiAudioNode::SetParameterValue(int32 id, bigtime_t performanceTime,
 	multi_mix_control* controls = fDevice->MixControlInfo().controls;
 	int32 control_id = controls[id - 100].id;
 
+	// A saved configuration can hold values of the wrong size: until
+	// GetParameterValue() reported read errors, an unplugged device left the
+	// caller's whole buffer behind as the value. Do not apply those.
+	size_t expectedSize = _MixValueSize(parameter);
+	if (expectedSize == 0 || size != expectedSize)
+		return;
+
 	if (parameter->Type() == BParameter::B_CONTINUOUS_PARAMETER) {
 		for (uint32 i = 0; i < size / sizeof(float); i++) {
 			PRINT(("SetParameterValue B_CONTINUOUS_PARAMETER value[%" B_PRIi32
@@ -1810,6 +1820,8 @@ MultiAudioNode::SetParameterValue(int32 id, bigtime_t performanceTime,
 		status_t status = fDevice->SetMix(&info);
 		if (status != B_OK)
 			fprintf(stderr, "Failed on DRIVER_SET_MIX\n");
+		else
+			_RememberValue(id, value, expectedSize);
 	}
 }
 
@@ -3127,6 +3139,18 @@ MultiAudioNode::GetConfigurationFor(BMessage* message)
 		if (err == B_OK && size > 0) {
 			message->AddInt32("parameterID", parameter->ID());
 			message->AddData("parameterData", B_RAW_TYPE, buffer, size, false);
+			continue;
+		}
+
+		// The device cannot tell (it is unplugged, say): keep the value last
+		// set, so that the user's setting survives until it is back.
+		const void* remembered;
+		ssize_t rememberedSize;
+		if (_RememberedValue(parameter->ID(), &remembered, &rememberedSize)
+			&& (size_t)rememberedSize == _MixValueSize(parameter)) {
+			message->AddInt32("parameterID", parameter->ID());
+			message->AddData("parameterData", B_RAW_TYPE, remembered,
+				rememberedSize, false);
 		} else {
 			PRINT(("parameter err: %s\n", strerror(err)));
 		}
@@ -3135,6 +3159,78 @@ MultiAudioNode::GetConfigurationFor(BMessage* message)
 	free(buffer);
 	PRINT_OBJECT(*message);
 	return B_OK;
+}
+
+
+/*!	Returns the size of the value of \a parameter if it is a mix control,
+	that is, one that SetParameterValue() hands to the driver; 0 otherwise.
+*/
+size_t
+MultiAudioNode::_MixValueSize(BParameter* parameter) const
+{
+	if (parameter->Type() == BParameter::B_CONTINUOUS_PARAMETER)
+		return parameter->CountChannels() == 2 ? 2 * sizeof(float) : sizeof(float);
+	if (parameter->Type() == BParameter::B_DISCRETE_PARAMETER)
+		return sizeof(int32);
+	return 0;
+}
+
+
+//!	Records \a value as the current one for parameter \a id in fConfig.
+void
+MultiAudioNode::_RememberValue(int32 id, const void* value, size_t size)
+{
+	int32 storedID;
+	for (int32 index = 0;
+			fConfig.FindInt32("parameterID", index, &storedID) == B_OK;
+			index++) {
+		if (storedID != id)
+			continue;
+
+		// Applying the configuration in the constructor passes values that
+		// live in fConfig itself; replacing those with themselves would read
+		// from the storage being replaced.
+		const void* stored;
+		ssize_t storedSize;
+		if (fConfig.FindData("parameterData", B_RAW_TYPE, index, &stored,
+				&storedSize) == B_OK
+			&& (size_t)storedSize == size && memcmp(stored, value, size) == 0) {
+			return;
+		}
+
+		fConfig.ReplaceData("parameterData", B_RAW_TYPE, index, value, size);
+		return;
+	}
+
+	// Keep "parameterID" and "parameterData" paired index by index.
+	if (fConfig.AddInt32("parameterID", id) != B_OK)
+		return;
+	if (fConfig.AddData("parameterData", B_RAW_TYPE, value, size, false)
+			!= B_OK) {
+		type_code type;
+		int32 count;
+		if (fConfig.GetInfo("parameterID", &type, &count) == B_OK)
+			fConfig.RemoveData("parameterID", count - 1);
+	}
+}
+
+
+//!	Finds the value fConfig holds for parameter \a id.
+bool
+MultiAudioNode::_RememberedValue(int32 id, const void** _value,
+	ssize_t* _size) const
+{
+	int32 storedID;
+	for (int32 index = 0;
+			fConfig.FindInt32("parameterID", index, &storedID) == B_OK;
+			index++) {
+		if (storedID == id) {
+			return fConfig.FindData("parameterData", B_RAW_TYPE, index, _value,
+				_size) == B_OK;
+		}
+	}
+
+	return false;
 }
 
 
