@@ -65,6 +65,11 @@ public:
 
 	virtual int32				GetBatteryCount() = 0;
 
+	virtual	status_t			GetChargeThresholds(int32 index,
+									acpi_battery_charge_thresholds* thresholds);
+	virtual	status_t			SetChargeThresholds(int32 index,
+									const acpi_battery_charge_thresholds& thresholds);
+
 protected:
 	virtual void				_WatchPowerStatus() = 0;
 

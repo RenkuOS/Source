@@ -16,6 +16,7 @@
 
 
 class BFile;
+class BMenu;
 
 
 class PowerStatusView : public BView {
@@ -95,6 +96,10 @@ private:
 			void			_SaveSettings();
 
 			void			_OpenExtendedWindow();
+
+			BMenu*			_ChargeLimitMenu();
+			void			_SetChargeLimit(
+								const acpi_battery_charge_thresholds& limit);
 
 private:
 			BWindow*		fExtendedWindow;

@@ -13,12 +13,14 @@
 #include "PowerStatusView.h"
 
 #include <algorithm>
+#include <vector>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
 #include <AboutWindow.h>
+#include <Alert.h>
 #include <Application.h>
 #include <Bitmap.h>
 #include <Beep.h>
@@ -43,6 +45,7 @@
 
 #include "ACPIDriverInterface.h"
 #include "APMDriverInterface.h"
+#include "ChargeLimit.h"
 #include "ExtendedInfoWindow.h"
 #include "PowerStatus.h"
 
@@ -59,6 +62,7 @@ const uint32 kMsgToggleLabel = 'tglb';
 const uint32 kMsgToggleTime = 'tgtm';
 const uint32 kMsgToggleStatusIcon = 'tgsi';
 const uint32 kMsgToggleExtInfo = 'texi';
+const uint32 kMsgSetChargeLimit = 'stcl';
 
 const double kLowBatteryPercentage = 0.15;
 const double kNoteBatteryPercentage = 0.3;
@@ -789,6 +793,15 @@ PowerStatusReplicant::MessageReceived(BMessage *message)
 			_OpenExtendedWindow();
 			break;
 
+		case kMsgSetChargeLimit:
+		{
+			acpi_battery_charge_thresholds limit;
+			limit.start = message->GetUInt32("start", 0);
+			limit.stop = message->GetUInt32("stop", 100);
+			_SetChargeLimit(limit);
+			break;
+		}
+
 		case B_ABOUT_REQUESTED:
 			_AboutRequested();
 			break;
@@ -831,6 +844,9 @@ PowerStatusReplicant::MouseDown(BPoint point)
 		menu->AddSeparatorItem();
 		menu->AddItem(new BMenuItem(B_TRANSLATE("Battery info" B_UTF8_ELLIPSIS),
 			new BMessage(kMsgToggleExtInfo)));
+		BMenu* chargeLimitMenu = _ChargeLimitMenu();
+		if (chargeLimitMenu != NULL)
+			menu->AddItem(chargeLimitMenu);
 
 		menu->AddSeparatorItem();
 		menu->AddItem(new BMenuItem(B_TRANSLATE("About" B_UTF8_ELLIPSIS),
@@ -842,6 +858,78 @@ PowerStatusReplicant::MouseDown(BPoint point)
 		ConvertToScreen(&point);
 		menu->Go(point, true, false, true);
 	}
+}
+
+
+/*!	Returns the menu to choose the charge limit of all batteries, or NULL
+	if no battery driver supports it.
+*/
+BMenu*
+PowerStatusReplicant::_ChargeLimitMenu()
+{
+	std::vector<uint32> stops;
+	for (int32 i = 0; i < fDriverInterface->GetBatteryCount(); i++) {
+		acpi_battery_charge_thresholds thresholds;
+		if (fDriverInterface->GetChargeThresholds(i, &thresholds) == B_OK)
+			stops.push_back(thresholds.stop);
+	}
+	if (stops.empty())
+		return NULL;
+
+	int32 marked = charge_limit_index(&stops[0], stops.size());
+
+	BMenu* menu = new BMenu(B_TRANSLATE("Charge limit"));
+	menu->SetFont(be_plain_font);
+
+	BNumberFormat numberFormat;
+	for (int32 i = 0; i < kChargeLimitCount; i++) {
+		BString percent;
+		if (numberFormat.FormatPercent(percent,
+				kChargeLimits[i].stop / 100.0) != B_OK) {
+			percent.SetToFormat("%" B_PRIu32 "%%", kChargeLimits[i].stop);
+		}
+
+		BString label = percent;
+		if (kChargeLimits[i].stop == 100) {
+			label = B_TRANSLATE("Full (%percent%)");
+			label.ReplaceFirst("%percent%", percent);
+		}
+
+		BMessage* message = new BMessage(kMsgSetChargeLimit);
+		message->AddUInt32("start", kChargeLimits[i].start);
+		message->AddUInt32("stop", kChargeLimits[i].stop);
+
+		BMenuItem* item = new BMenuItem(label, message);
+		item->SetMarked(i == marked);
+		menu->AddItem(item);
+	}
+	menu->SetTargetForItems(this);
+	return menu;
+}
+
+
+void
+PowerStatusReplicant::_SetChargeLimit(const acpi_battery_charge_thresholds& limit)
+{
+	status_t status = B_OK;
+	for (int32 i = 0; i < fDriverInterface->GetBatteryCount(); i++) {
+		acpi_battery_charge_thresholds current;
+		if (fDriverInterface->GetChargeThresholds(i, &current) != B_OK)
+			continue;
+
+		status_t result = fDriverInterface->SetChargeThresholds(i, limit);
+		if (result != B_OK)
+			status = result;
+	}
+	if (status == B_OK)
+		return;
+
+	BString text(B_TRANSLATE("The charge limit could not be set: %error%"));
+	text.ReplaceFirst("%error%", strerror(status));
+	BAlert* alert = new BAlert(B_TRANSLATE("Charge limit"), text,
+		B_TRANSLATE("OK"), NULL, NULL, B_WIDTH_AS_USUAL, B_STOP_ALERT);
+	alert->SetFlags(alert->Flags() | B_CLOSE_ON_ESCAPE);
+	alert->Go(NULL);
 }
 
 

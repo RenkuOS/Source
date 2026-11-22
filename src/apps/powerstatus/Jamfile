@@ -6,6 +6,7 @@ UsePrivateSystemHeaders ;
 Application PowerStatus :
 	ACPIDriverInterface.cpp
 	APMDriverInterface.cpp
+	ChargeLimit.cpp
 	DriverInterface.cpp
 	ExtendedInfoWindow.cpp
 	PowerStatusWindow.cpp

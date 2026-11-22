@@ -147,3 +147,18 @@ PowerStatusDriverInterface::_ThreadWatchPowerFunction(void* data)
 	return 0;
 }
 
+
+status_t
+PowerStatusDriverInterface::GetChargeThresholds(int32 index,
+	acpi_battery_charge_thresholds* thresholds)
+{
+	return B_NOT_SUPPORTED;
+}
+
+
+status_t
+PowerStatusDriverInterface::SetChargeThresholds(int32 index,
+	const acpi_battery_charge_thresholds& thresholds)
+{
+	return B_NOT_SUPPORTED;
+}
