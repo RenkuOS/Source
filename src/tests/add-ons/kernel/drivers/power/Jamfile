@@ -1,0 +1,7 @@
+SubDir HAIKU_TOP src tests add-ons kernel drivers power ;
+
+SubDirHdrs $(HAIKU_TOP) src add-ons kernel drivers power acpi_battery ;
+SEARCH_SOURCE += [ FDirName $(HAIKU_TOP) src add-ons kernel drivers power
+	acpi_battery ] ;
+
+SimpleTest ThinkPadChargeTest : ThinkPadChargeTest.cpp thinkpad_charge_logic.cpp ;
