@@ -812,6 +812,10 @@ ieee80211_media_status(struct ifnet *ifp, struct ifmediareq *imr)
 	     !(ic->ic_flags & IEEE80211_F_RSNON) ||
 	     ic->ic_bss->ni_port_valid))
 		imr->ifm_status |= IFM_ACTIVE;
+#ifdef __HAIKU__
+	else if (ieee80211_roaming(ic))
+		imr->ifm_status |= IFM_ACTIVE;
+#endif
 	imr->ifm_active |= IFM_AUTO;
 	switch (ic->ic_opmode) {
 	case IEEE80211_M_STA:

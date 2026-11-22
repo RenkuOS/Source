@@ -1399,6 +1399,9 @@ ieee80211_node_join_bss(struct ieee80211com *ic, struct ieee80211_node *selbs)
 		else if (auth_next)
 			mgt = IEEE80211_FC0_SUBTYPE_AUTH;
 
+#ifdef __HAIKU__
+		ieee80211_set_roaming(ic, bgscan);
+#endif
 		ieee80211_new_state(ic, IEEE80211_S_AUTH, mgt);
 	}
 }
