@@ -29,6 +29,7 @@
 
 #include "NotificationManager.h"
 
+#include <new>
 #include <string.h>
 
 #include <Autolock.h>
@@ -192,10 +193,23 @@ NotificationManager::SendNotifications(BMessage *msg)
 
 	TRACE("NotificationManager::SendNotifications what %#lx\n", what);
 
-	BAutolock _(fLocker);
+	// Collect the receivers under the lock, send without it. Each send may
+	// take TIMEOUT when a receiver does not read its port, and CleanupTeam(),
+	// which the main thread calls whenever a team quits, needs the same lock:
+	// one stuck receiver used to stall the whole media_server, quit included.
+	fLocker.Lock();
+	int32 capacity = fNotificationList.CountItems();
+	BMessenger* receivers = new(std::nothrow) BMessenger[capacity];
+	if (receivers == NULL) {
+		fLocker.Unlock();
+		ERROR("NotificationManager::SendNotifications: out of memory\n");
+		return;
+	}
+	int32 count = 0;
 
 	Notification *n;
-	for (fNotificationList.Rewind(); fNotificationList.GetNext(&n); ) {
+	for (fNotificationList.Rewind(); fNotificationList.GetNext(&n)
+			&& count < capacity; ) {
 		if (n->what != B_MEDIA_WILDCARD && n->what != what)
 			continue;
 		
@@ -253,9 +267,15 @@ NotificationManager::SendNotifications(BMessage *msg)
 				break;
 		}
 
-		TRACE("NotificationManager::SendNotifications sending\n");
-		n->messenger.SendMessage(msg, static_cast<BHandler *>(NULL), TIMEOUT);
+		receivers[count++] = n->messenger;
 	}
+	fLocker.Unlock();
+
+	for (int32 i = 0; i < count; i++) {
+		TRACE("NotificationManager::SendNotifications sending\n");
+		receivers[i].SendMessage(msg, static_cast<BHandler *>(NULL), TIMEOUT);
+	}
+	delete[] receivers;
 }
 	
 
