@@ -77,6 +77,41 @@ VirtualScreen::SetConfiguration(Desktop& desktop, const ScreenConfigurations& co
 		}
 	}
 
+	// The screens this desktop already has are kept as they are, and only their
+	// modes are set: _Reset() below lets them go and leaves the drawing engine and
+	// the HWInterface NULL (and the list of screens empty) until they have been
+	// acquired and their modes set again, and the threads that use the screen in
+	// the meantime (the compositor and the applications' own threads) crashed on
+	// that (the setting of a mode can take long). With the screens kept, the
+	// HWInterface's own lock (which AccelerantHWInterface::SetMode() takes for
+	// writing) is what holds them back.
+	if (fScreenList.CountItems() > 0) {
+		for (int32 i = 0; i < fScreenList.CountItems(); i++) {
+			screen_item* item = fScreenList.ItemAt(i);
+			Screen* screen = item->screen;
+
+			status_t status = _ApplyMode(screen, configurations, currentConfigurations);
+			if (status != B_OK)
+				return status;
+
+			if (!previousModesFailed && _changedScreens != NULL) {
+				// Figure out which screens have changed their mode
+				display_mode mode;
+				screen->GetMode(mode);
+
+				ScreenModeMap::const_iterator found = previousModes.find(screen);
+				if (found != previousModes.end()
+					&& memcmp(&mode, &found->second, sizeof(display_mode)))
+					*_changedScreens |= 1 << i;
+			}
+
+			item->frame = screen->Frame();
+		}
+
+		UpdateFrame();
+		return B_OK;
+	}
+
 	_Reset();
 
 	ScreenList list;
@@ -119,6 +154,31 @@ VirtualScreen::AddScreen(Screen* screen, const ScreenConfigurations& configurati
 
 	item->screen = screen;
 
+	status_t status = _ApplyMode(screen, configurations, currentConfigurations);
+	if (status != B_OK) {
+		delete item;
+		return status;
+	}
+
+	// TODO: this works only for single screen configurations
+	fDrawingEngine = screen->GetDrawingEngine();
+	fHWInterface = screen->HWInterface();
+	fFrame = screen->Frame();
+	item->frame = fFrame;
+
+	fScreenList.AddItem(item);
+
+	return B_OK;
+}
+
+
+/*!	Sets the mode that is configured for \a screen, or the best one there is when
+	there is none (or it does not work), and records it in \a currentConfigurations.
+*/
+status_t
+VirtualScreen::_ApplyMode(Screen* screen, const ScreenConfigurations& configurations,
+	ScreenConfigurations& currentConfigurations)
+{
 	status_t status = B_ERROR;
 	display_mode mode;
 	if (_GetMode(screen, configurations, mode) == B_OK) {
@@ -140,8 +200,6 @@ VirtualScreen::AddScreen(Screen* screen, const ScreenConfigurations& configurati
 		if (status != B_OK) {
 			debug_printf("app_server: Failed to set mode: %s\n",
 				strerror(status));
-
-			delete item;
 			return status;
 		}
 	}
@@ -149,14 +207,6 @@ VirtualScreen::AddScreen(Screen* screen, const ScreenConfigurations& configurati
 	monitor_info info;
 	bool hasInfo = screen->GetMonitorInfo(info) == B_OK;
 	currentConfigurations.Set(screen->ID(), hasInfo ? &info : NULL, screen->Frame(), mode);
-
-	// TODO: this works only for single screen configurations
-	fDrawingEngine = screen->GetDrawingEngine();
-	fHWInterface = screen->HWInterface();
-	fFrame = screen->Frame();
-	item->frame = fFrame;
-
-	fScreenList.AddItem(item);
 
 	return B_OK;
 }
