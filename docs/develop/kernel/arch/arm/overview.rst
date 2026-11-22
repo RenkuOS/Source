@@ -34,6 +34,7 @@ We have accumulated some notes and documentation on some of them.
    /kernel/arch/arm/beagle
    /kernel/arch/arm/efikamx
    /kernel/arch/arm/ipaq
+   /kernel/arch/arm/pinephone
    /kernel/arch/arm/rpi1
    /kernel/arch/arm/rpi2
    /kernel/arch/arm/rpi3
