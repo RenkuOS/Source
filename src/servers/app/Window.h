@@ -23,6 +23,7 @@
 #include "WindowShape.h"
 
 #include <AutoDeleter.h>
+#include <Locker.h>
 #include <ObjectList.h>
 #include <Referenceable.h>
 #include <Region.h>
@@ -207,6 +208,14 @@ public:
 			void				EndUpdate();
 			bool				InUpdate() const
 									{ return fInUpdate; }
+
+			// The part of the window that is being drawn in the update that is
+			// going on (empty when there is none). The compositor does not put
+			// it on the screen until the update is over: the window draws
+			// straight into the buffer the compositor reads, and a frame taken
+			// in the middle of an update shows what has been drawn so far (the
+			// background first, then the views over it).
+			void				GetUpdatingRegion(BRegion* region) const;
 
 			bool				NeedsUpdate() const
 									{ return fUpdateRequested; }
@@ -506,6 +515,12 @@ private:
 
 			// After those, for the same reason.
 			uint32				fDecoratorGeneration;
+			// Last of all, for the same reason (decorator add-ons read the members
+			// above through inline accessors).
+			// What the update going on draws, for the compositor, which reads it from
+			// its own thread (see GetUpdatingRegion()).
+	mutable	BLocker				fUpdatingLock;
+			BRegion				fUpdatingRegion;
 };
 
 
