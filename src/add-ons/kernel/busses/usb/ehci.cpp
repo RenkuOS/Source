@@ -597,8 +597,12 @@ EHCI::EHCI(pci_info *info, pci_device_module_info* pci, pci_device* device, Stac
 	}
 
 	// Create the isochronous finisher service thread
+	// Above the real-time threads of media applications: this thread runs
+	// the completions that queue the next isochronous transfers (streams
+	// requeue from their callback), and while it waits the endpoint has
+	// holes of several milliseconds that a camera fills with lost data.
 	fFinishIsochronousThread = spawn_kernel_thread(FinishIsochronousThread,
-		"ehci isochronous finish thread", B_URGENT_DISPLAY_PRIORITY,
+		"ehci isochronous finish thread", B_REAL_TIME_DISPLAY_PRIORITY,
 		(void *)this);
 	resume_thread(fFinishIsochronousThread);
 
