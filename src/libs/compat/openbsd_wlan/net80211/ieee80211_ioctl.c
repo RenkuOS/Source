@@ -870,7 +870,27 @@ ieee80211_ioctl(struct ifnet *ifp, u_long cmd, caddr_t data)
 			ifp->if_mtu = ifr->ifr_mtu;
 		break;
 	case SIOCS80211SCAN:
+#ifndef __HAIKU__
 		/* Disabled. SIOCG80211ALLNODES is enough. */
+#else
+		/*
+		 * While associated, start a background scan. The flag may be
+		 * left over from before the driver was stopped.
+		 */
+		error = EBUSY;
+		if (ic->ic_state == IEEE80211_S_SCAN)
+			error = EINPROGRESS;
+		else if (ic->ic_opmode == IEEE80211_M_STA &&
+		    ic->ic_state == IEEE80211_S_RUN) {
+			if (ic->ic_flags & IEEE80211_F_BGSCAN) {
+				error = EINPROGRESS;
+				break;
+			}
+			ieee80211_begin_bgscan(ifp);
+			if (ic->ic_flags & IEEE80211_F_BGSCAN)
+				error = 0;
+		}
+#endif
 		break;
 	case SIOCG80211NODE:
 		nr = (struct ieee80211_nodereq *)data;
@@ -964,8 +984,16 @@ ieee80211_ioctl(struct ifnet *ifp, u_long cmd, caddr_t data)
 			na->na_nodes++;
 			ni = RBT_NEXT(ieee80211_tree, ni);
 		}
+#ifndef __HAIKU__
 		if (suser(curproc) == 0)
 			ieee80211_begin_bgscan(ifp);
+#else
+		/*
+		 * Everybody is root here, and the Haiku glue reads the nodes
+		 * one at a time: every reader of the scan results would start
+		 * a background scan. IEEE80211_IOC_SCAN_REQ starts one.
+		 */
+#endif
 		break;
 	case SIOCG80211FLAGS:
 		flags = ic->ic_userflags;

@@ -39,6 +39,7 @@ private:
 private:
 			BNetworkInterface	fInterface;
 			int					fPulseCount;
+			bigtime_t			fLastScan;
 
 			BStringView*		fStatusField;
 			BStringView*		fMacAddressField;
