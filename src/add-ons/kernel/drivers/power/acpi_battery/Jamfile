@@ -4,6 +4,8 @@ UsePrivateKernelHeaders ;
 
 KernelAddon acpi_battery :
 	acpi_battery.cpp
+	thinkpad_charge.cpp
+	thinkpad_charge_logic.cpp
 	;
 
 Depends acpi_battery : acpi ;
