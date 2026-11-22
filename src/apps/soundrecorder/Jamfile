@@ -6,6 +6,7 @@ Application SoundRecorder :
 	DrawButton.cpp
 	DrawingTidbits.cpp
 	FileUtils.cpp
+	PlaybackBuffer.cpp
 	RecorderApp.cpp
 	RecorderWindow.cpp
 	ScopeView.cpp

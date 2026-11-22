@@ -22,6 +22,7 @@
 #include <Window.h>
 
 #include "DrawButton.h"
+#include "PlaybackBuffer.h"
 #include "ScopeView.h"
 #include "SoundListView.h"
 #include "TransportButton.h"
@@ -131,6 +132,7 @@ private:
 		int64 fPlayLimit;
 		int64 fPlayFrame;
 		int64 fPlayFrames;
+		PlaybackBuffer fPlayBuffer;
 
 		bool fLooping;
 
@@ -169,6 +171,7 @@ static	void RecordFile(void * cookie, bigtime_t timestamp, void * data, size_t s
 static	void NotifyRecordFile(void * cookie, BMediaRecorder::notification code, ...);
 
 static	void PlayFile(void * cookie, void * data, size_t size, const media_raw_audio_format & format);
+static	status_t ReadPlayFrames(void * cookie, void * buffer, int64 * frames);
 static	void NotifyPlayFile(void * cookie, BSoundPlayer::sound_player_notification code, ...);
 
 		void RefsReceived(BMessage *msg);
