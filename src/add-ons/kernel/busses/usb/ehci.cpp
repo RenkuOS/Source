@@ -1321,6 +1321,22 @@ EHCI::SubmitIsochronous(Transfer *transfer)
 		// Chain off THIS pipe's previous transfer, not a controller-global
 		// anchor: see the iso_anchor comment in the header.
 		int32 anchor = GetIsoAnchor(pipe);
+		if (anchor != -1 && fFirstIsochronousTransfer != NULL) {
+			// The anchor must still be ahead of the controller, with the
+			// margin a new transfer gets. A transfer queued after its
+			// predecessor's last frame had passed was linked into frames
+			// the controller had left: its first descriptors stayed active,
+			// were not seen by the finisher, which only looks a few frames
+			// back, and ran a whole frame list later into the buffer of a
+			// transfer that was long finished.
+			uint32 now = (ReadOpReg(EHCI_FRINDEX) / 8)
+				& (EHCI_VFRAMELIST_ENTRIES_COUNT - 1);
+			uint32 ahead = ((uint32)anchor - now)
+				& (EHCI_VFRAMELIST_ENTRIES_COUNT - 1);
+			uint32 margin = (fThreshold + 7) / 8 + 1;
+			if (ahead < margin || ahead >= EHCI_VFRAMELIST_ENTRIES_COUNT / 2)
+				anchor = -1;
+		}
 		if (fFirstIsochronousTransfer != NULL && anchor != -1)
 			currentFrame = anchor;
 		else {
