@@ -1305,6 +1305,18 @@ ieee80211_node_switch_bss(struct ieee80211com *ic, struct ieee80211_node *ni)
 	}
 
 	curbs = ieee80211_find_node(ic, sba->cur_macaddr);
+#ifdef __HAIKU__
+	/* The current AP may have been missed by the scan, see end_scan. */
+	if (ifp->if_flags & IFF_DEBUG) {
+		printf("%s: roaming from %s chan %d ",
+		    ifp->if_xname, ether_sprintf(sba->cur_macaddr),
+		    ieee80211_chan2ieee(ic, ic->ic_bss->ni_chan));
+		printf("to %s chan %d\n", ether_sprintf(selbs->ni_macaddr),
+		    ieee80211_chan2ieee(ic, selbs->ni_chan));
+	}
+	if (curbs != NULL)
+		ieee80211_node_newstate(curbs, IEEE80211_STA_CACHE);
+#else
 	if (curbs == NULL) {
 		ieee80211_node_free_unref_cb(ni);
 		ic->ic_flags &= ~IEEE80211_F_BGSCAN;
@@ -1320,12 +1332,99 @@ ieee80211_node_switch_bss(struct ieee80211com *ic, struct ieee80211_node *ni)
 		    ieee80211_chan2ieee(ic, selbs->ni_chan));
 	}
 	ieee80211_node_newstate(curbs, IEEE80211_STA_CACHE);
+#endif
 	/*
 	 * ieee80211_node_join_bss() frees arg and ic->ic_bss via
 	 * ic->ic_node_copy() in ieee80211_node_cleanup().
 	 */
 	ieee80211_node_join_bss(ic, selbs);
 }
+
+#ifdef __HAIKU__
+/*
+ * Roaming within the ESS (see ieee80211_roam_logic.h): after a background
+ * scan, switch only to an AP that is clearly stronger than the smoothed
+ * signal of the current one.
+ */
+#define IEEE80211_ROAM_LOST_RATIO	20	/* in percent */
+#define IEEE80211_ROAM_LOST		(-85)	/* in dBm */
+#define IEEE80211_ROAM_WEAK_RATIO	38	/* in percent, -75 dBm on iwm */
+#define IEEE80211_ROAM_WEAK		(-75)	/* in dBm */
+#define IEEE80211_ROAM_HYSTERESIS	8	/* about dB */
+#define IEEE80211_ROAM_HYST_FAST	15	/* about dB */
+#define IEEE80211_ROAM_DWELL		30000	/* msec */
+
+static long long
+ieee80211_roam_now(void)
+{
+	return system_time() / 1000;
+}
+
+static void
+ieee80211_roam_params(struct ieee80211com *ic,
+    struct ieee80211_roam_params *rp)
+{
+	if (ic->ic_max_rssi) {
+		rp->rp_lost_thres = ic->ic_max_rssi *
+		    IEEE80211_ROAM_LOST_RATIO / 100;
+		rp->rp_weak_thres = ic->ic_max_rssi *
+		    IEEE80211_ROAM_WEAK_RATIO / 100;
+	} else {
+		rp->rp_lost_thres = (u_int8_t)IEEE80211_ROAM_LOST;
+		rp->rp_weak_thres = (u_int8_t)IEEE80211_ROAM_WEAK;
+	}
+	rp->rp_hysteresis = IEEE80211_ROAM_HYSTERESIS;
+	rp->rp_hyst_fast = IEEE80211_ROAM_HYST_FAST;
+	rp->rp_dwell = IEEE80211_ROAM_DWELL;
+}
+
+/* A frame from our AP: smooth its signal. */
+void
+ieee80211_roam_input(struct ieee80211com *ic, struct ieee80211_node *ni,
+    int rssi)
+{
+	if (rssi != 0)
+		ieee80211_roam_avg_add(&ni->ni_roam_avg, rssi,
+		    ieee80211_roam_now());
+}
+
+/* After a bgscan: is selbs worth leaving the current AP for? */
+static int
+ieee80211_roam_switch(struct ieee80211com *ic, struct ieee80211_node *curbs,
+    struct ieee80211_node *selbs)
+{
+	struct ieee80211_roam_params rp;
+	struct ieee80211_node *ni = ic->ic_bss;
+	const u_int8_t *a = selbs->ni_macaddr;
+	unsigned int id = 0;
+	int cur, cand = 0;
+
+	/* The current AP may be missing from the scan when it is weak. */
+	cur = ieee80211_roam_avg_get(&ni->ni_roam_avg);
+	if (cur == 0 && curbs != NULL)
+		cur = curbs->ni_rssi;
+	if (selbs != curbs) {
+		cand = selbs->ni_rssi;
+		id = (unsigned int)a[2] << 24 | a[3] << 16 | a[4] << 8 | a[5];
+		if (id == 0)
+			id = 1;
+	}
+
+	ieee80211_roam_params(ic, &rp);
+	return ieee80211_roam_should_switch(&rp, &ic->ic_roam, cur, cand, id,
+	    ieee80211_roam_now());
+}
+
+static void
+ieee80211_roam_join(struct ieee80211com *ic)
+{
+	struct ieee80211_roam_params rp;
+
+	memset(&ic->ic_bss->ni_roam_avg, 0, sizeof(ic->ic_bss->ni_roam_avg));
+	ieee80211_roam_params(ic, &rp);
+	ieee80211_roam_joined(&rp, &ic->ic_roam, ieee80211_roam_now());
+}
+#endif
 
 void
 ieee80211_node_join_bss(struct ieee80211com *ic, struct ieee80211_node *selbs)
@@ -1380,6 +1479,10 @@ ieee80211_node_join_bss(struct ieee80211com *ic, struct ieee80211_node *selbs)
 		    ic->ic_state == IEEE80211_S_AUTH);
 		int mgt = -1;
 
+#ifdef __HAIKU__
+		if (ic->ic_opmode == IEEE80211_M_STA)
+			ieee80211_roam_join(ic);
+#endif
 		timeout_del(&ic->ic_bgscan_timeout);
 		ic->ic_flags &= ~IEEE80211_F_BGSCAN;
 
@@ -1562,7 +1665,17 @@ ieee80211_end_scan(struct ifnet *ifp)
 		struct ieee80211_node_switch_bss_arg *arg;
 
 		/* AP disappeared? Should not happen. */
+#ifdef __HAIKU__
+		/*
+		 * It does: a weak AP's beacon is easily missed during the
+		 * scan. While its frames still come in, roam or stay as
+		 * the signal tells instead of dropping into a full scan.
+		 */
+		if (selbs == NULL || (curbs == NULL &&
+		    ieee80211_roam_avg_get(&ic->ic_bss->ni_roam_avg) == 0)) {
+#else
 		if (selbs == NULL || curbs == NULL) {
+#endif
 			ic->ic_flags &= ~IEEE80211_F_BGSCAN;
 			goto notfound;
 		}
@@ -1574,7 +1687,11 @@ ieee80211_end_scan(struct ifnet *ifp)
 		 * Do not change ic->ic_bss in these cases and make
 		 * background scans less frequent.
 		 */
+#ifdef __HAIKU__
+		if (!ieee80211_roam_switch(ic, curbs, selbs)) {
+#else
 		if (selbs == curbs || !(*ic->ic_node_checkrssi)(ic, selbs)) {
+#endif
 			if (ic->ic_bgscan_fail < IEEE80211_BGSCAN_FAIL_MAX) {
 				if (ic->ic_bgscan_fail <= 0)
 					ic->ic_bgscan_fail = 1;
@@ -1611,7 +1728,11 @@ ieee80211_end_scan(struct ifnet *ifp)
 		/* Prevent dispatch of additional data frames to hardware. */
 		ic->ic_xflags |= IEEE80211_F_TX_MGMT_ONLY;
 
+#ifdef __HAIKU__
+		IEEE80211_ADDR_COPY(arg->cur_macaddr, ic->ic_bss->ni_macaddr);
+#else
 		IEEE80211_ADDR_COPY(arg->cur_macaddr, curbs->ni_macaddr);
+#endif
 		IEEE80211_ADDR_COPY(arg->sel_macaddr, selbs->ni_macaddr);
 
 		if (ic->ic_bgscan_done) {
