@@ -256,15 +256,19 @@ acpi_ac_init_driver(device_node *node, void **_driverCookie)
 		(void **)&device->acpi_cookie);
 	sDeviceManager->put_node(parent);
 
+	device->last_status = 0;
+	device->select_pool = NULL;
+
+	// Read the current state; until now it was only read on a notify, so
+	// booting on AC reported "offline" until the adapter was replugged.
+	acpi_ac_update_status(device);
+	device->updated = false;
+
 	status = device->acpi->install_notify_handler(device->acpi_cookie,
 		ACPI_DEVICE_NOTIFY, acpi_ac_notify_handler, device);
 	if (status != B_OK) {
 		ERROR("can't install notify handler\n");
 	}
-
-	device->last_status = 0;
-	device->updated = false;
-	device->select_pool = NULL;
 
 	*_driverCookie = device;
 	return B_OK;
