@@ -70,7 +70,9 @@ arch_handle_fdt(const void* fdt, int node)
 		}
 	}
 
-	if (strcmp(compatible, "arm,psci-1.0") == 0)
+	// PSCI 0.2 and later share the standard function IDs; 0.1 does not
+	if (dtb_has_fdt_string(compatible, compatibleLen, "arm,psci-1.0")
+		|| dtb_has_fdt_string(compatible, compatibleLen, "arm,psci-0.2"))
 		arm64_handle_fdt_psci_node(fdt, node);
 }
 

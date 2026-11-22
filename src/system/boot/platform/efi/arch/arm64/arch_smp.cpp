@@ -85,6 +85,10 @@ arch_smp_get_current_cpu(void)
 void
 arch_smp_init_other_cpus(void)
 {
+	if (sCpuEnableMethod == CpuEnableMethod::Psci && sPsciCallFn == NULL) {
+		dprintf("smp: CPUs use PSCI but no PSCI conduit was found\n");
+		sCpuEnableMethod = CpuEnableMethod::Unknown;
+	}
 	if (sCpuEnableMethod == CpuEnableMethod::Unknown)
 		sCpuCount = 1;
 	gKernelArgs.num_cpus = sCpuCount;
