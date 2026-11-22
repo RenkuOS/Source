@@ -1348,7 +1348,12 @@ EHCI::SubmitIsochronous(Transfer *transfer)
 			// number in the driver makes no sense for many reason, one of which
 			// is that frame numbers value are host controller specific, and the
 			// driver does not know which host controller is running.
-			currentFrame = ((ReadOpReg(EHCI_FRINDEX) + threshold) / 8)
+			// One frame more than the threshold: the descriptors are
+			// linked after this read, and a controller that caches a whole
+			// frame (IST) had often fetched the first one's frame already,
+			// so its first packet never ran (a fifth of a microphone's
+			// transactions on an AC100, whose transfers are four packets).
+			currentFrame = ((ReadOpReg(EHCI_FRINDEX) + threshold) / 8 + 1)
 				& (EHCI_FRAMELIST_ENTRIES_COUNT - 1);
 		}
 
