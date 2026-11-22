@@ -993,7 +993,7 @@ Device::_MultiGetDescription(multi_description* multiDescription)
 		USBTerminal.PushBack(fAudioControl.Find(fStreams[i]->TerminalLink()));
 
 		fAudioControl.GetChannelsDescription(Channels, &Description, USBTerminal,
-			fStreams[i]->IsInput());
+			fStreams[i]->IsInput(), fStreams[i]->ChannelCount());
 		fStreams[i]->GetFormatsAndRates(&Description);
 	}
 

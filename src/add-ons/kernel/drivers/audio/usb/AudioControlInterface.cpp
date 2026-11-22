@@ -7,6 +7,8 @@
 
 #include "AudioControlInterface.h"
 
+#include <string.h>
+
 #include <usb/USB_audio.h>
 
 #include "Device.h"
@@ -1002,7 +1004,9 @@ AudioControlInterface::AudioControlInterface(Device* device)
 	fControlsBitmap(0),
 	fLastClockId(0),
 	fLastClockRate(0),
-	fDevice(device)
+	fDevice(device),
+	fSavedMixLock(B_SPINLOCK_INITIALIZER),
+	fSavedMixCount(0)
 {
 }
 
@@ -1596,13 +1600,17 @@ AudioControlInterface::InitHardwareGains()
 			}
 		}
 	}
+
+	// The defaults above only exist to wake devices that power up silent.
+	// Whatever the media node chose since overrides them.
+	_RestoreMixValues();
 }
 
 
 uint32
 AudioControlInterface::GetChannelsDescription(
 	Vector<multi_channel_info>& Channels, multi_description* Description,
-	Vector<_AudioControl*>& Terminals, bool isForInput)
+	Vector<_AudioControl*>& Terminals, bool isForInput, uint32 streamChannels)
 {
 	uint32 addedChannels = 0;
 
@@ -1614,8 +1622,23 @@ AudioControlInterface::GetChannelsDescription(
 			continue;
 		}
 
+		// The buffers carry as many channels as the stream format says
+		// (see _GetBuffers), so describe that many. The Logitech C920 has a
+		// microphone terminal with bNrChannels 1 but bmChannelConfig left and
+		// right, and streams two channels: going by the terminal, the media
+		// node took only the left one.
+		uint32 channelCount = cluster->ChannelsCount();
+		if (streamChannels != 0 && streamChannels != channelCount) {
+			TRACE(ERR, "Terminal #%d declares %u channels, its stream carries "
+				"%u; describing %u.\n", Terminals[i]->ID(),
+				(unsigned)channelCount, (unsigned)streamChannels,
+				(unsigned)streamChannels);
+			channelCount = streamChannels;
+		}
+
 		uint32 channels = GetTerminalChannels(Channels, cluster,
-			isForInput ? B_MULTI_INPUT_CHANNEL : B_MULTI_OUTPUT_CHANNEL);
+			isForInput ? B_MULTI_INPUT_CHANNEL : B_MULTI_OUTPUT_CHANNEL, 0,
+			channelCount);
 
 		if (isForInput)
 			Description->input_channel_count += channels;
@@ -1631,9 +1654,13 @@ AudioControlInterface::GetChannelsDescription(
 
 uint32
 AudioControlInterface::GetTerminalChannels(Vector<multi_channel_info>& Channels,
-		AudioChannelCluster* cluster, channel_kind kind, uint32 connectors)
+		AudioChannelCluster* cluster, channel_kind kind, uint32 connectors,
+		uint32 channelCount)
 {
-	if (cluster->ChannelsCount() < 2) { // mono channel
+	if (channelCount == 0)
+		channelCount = cluster->ChannelsCount();
+
+	if (channelCount < 2) { // mono channel
 		multi_channel_info info;
 		info.channel_id	= Channels.Count();
 		info.kind		= kind;
@@ -1645,7 +1672,6 @@ AudioControlInterface::GetTerminalChannels(Vector<multi_channel_info>& Channels,
 	}
 
 	uint32 startCount = Channels.Count();
-	uint32 channelCount = cluster->ChannelsCount();
 
 	// Haiku multi-aduio designations have the same bits
 	// as USB Audio 2.0 cluster spatial locations :-)
@@ -2515,6 +2541,19 @@ AudioControlInterface::ListMixControls(multi_mix_control_info* Info)
 }
 
 
+/*!	Whether a failed control request means the device is going away. The
+	media node keeps polling its controls; between the physical unplug and
+	Device::Removed() its requests come back cancelled or with a transaction
+	error. That is expected, not a fault of the control.
+*/
+static bool
+device_is_leaving(status_t status)
+{
+	return status == B_CANCELED || status == B_DEV_CRC_ERROR
+		|| status == B_DEV_NOT_READY;
+}
+
+
 status_t
 AudioControlInterface::GetMix(multi_mix_value_info* Info)
 {
@@ -2569,6 +2608,13 @@ AudioControlInterface::GetMix(multi_mix_value_info* Info)
 			REQ_VALUE(Info->values[i].id), REQ_INDEX(Info->values[i].id),
 			length, &data, &actualLength);
 
+		if (device_is_leaving(status)) {
+			// The values left in Info would be stale; say so instead of
+			// returning B_OK with them.
+			TRACE(INF, "Device is leaving; mix values not read (%#08x).\n",
+				status);
+			return B_DEV_NOT_READY;
+		}
 		if (status != B_OK || actualLength != length) {
 			TRACE(ERR, "Request (%04x:%04x) failed:%#08x; received %d of %d\n",
 				REQ_VALUE(Info->values[i].id), REQ_INDEX(Info->values[i].id),
@@ -2705,6 +2751,13 @@ AudioControlInterface::SetMix(multi_mix_value_info* Info)
 			REQ_VALUE(Info->values[i].id), REQ_INDEX(Info->values[i].id),
 			length, &data, &actualLength);
 
+		if (device_is_leaving(status)) {
+			// Not remembered either: the replug must restore the value the
+			// device last accepted.
+			TRACE(INF, "Device is leaving; mix values not set (%#08x).\n",
+				status);
+			return B_DEV_NOT_READY;
+		}
 		if (status != B_OK || actualLength != length) {
 			TRACE(ERR, "Request (%04x:%04x) failed:%#08x; send %d of %d\n",
 				REQ_VALUE(Info->values[i].id), REQ_INDEX(Info->values[i].id),
@@ -2713,8 +2766,68 @@ AudioControlInterface::SetMix(multi_mix_value_info* Info)
 		}
 
 		TRACE(MIX, "Value set OK\n");
+		_SaveMixValue(Info->values[i].id, data, length);
 	}
 
 	return B_OK;
+}
+
+
+void
+AudioControlInterface::_SaveMixValue(int32 id, int16 data, uint16 length)
+{
+	cpu_status state = disable_interrupts();
+	acquire_spinlock(&fSavedMixLock);
+
+	int32 slot = 0;
+	while (slot < fSavedMixCount && fSavedMix[slot].id != id)
+		slot++;
+	bool full = slot >= kMaxSavedMixValues;
+	if (!full) {
+		fSavedMix[slot].id = id;
+		fSavedMix[slot].data = data;
+		fSavedMix[slot].length = length;
+		if (slot == fSavedMixCount)
+			fSavedMixCount++;
+	}
+
+	release_spinlock(&fSavedMixLock);
+	restore_interrupts(state);
+
+	if (full) {
+		TRACE(ERR, "No room to remember control %#08x; a replug will reset "
+			"it.\n", id);
+	}
+}
+
+
+/*!	Writes the values the media node set back to the device. A replugged
+	device was power cycled, and InitHardwareGains() has just put every
+	feature unit to its default; without this the C920 microphone always
+	came back at its 14 dB minimum while the media node still showed the
+	user's gain.
+*/
+void
+AudioControlInterface::_RestoreMixValues()
+{
+	SavedMixValue values[kMaxSavedMixValues];
+	int32 count;
+	cpu_status state = disable_interrupts();
+	acquire_spinlock(&fSavedMixLock);
+	count = fSavedMixCount;
+	memcpy(values, fSavedMix, count * sizeof(SavedMixValue));
+	release_spinlock(&fSavedMixLock);
+	restore_interrupts(state);
+
+	for (int32 i = 0; i < count; i++) {
+		int16 data = values[i].data;
+		size_t actualLength = 0;
+		status_t status = gUSBModule->send_request(fDevice->USBDevice(),
+			USB_REQTYPE_INTERFACE_OUT | USB_REQTYPE_CLASS, USB_AUDIO_SET_CUR,
+			REQ_VALUE(values[i].id), REQ_INDEX(values[i].id), values[i].length,
+			&data, &actualLength);
+		TRACE(INF, "Restore control %#08x to %d: %#x\n", values[i].id,
+			(int)data, (int)status);
+	}
 }
 
