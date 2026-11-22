@@ -44,7 +44,12 @@ typedef enum {
 	// interval is missed between two calls from userland.
 	B_USB_RAW_COMMAND_ISOCHRONOUS_STREAM_START = 0x5000,
 	B_USB_RAW_COMMAND_ISOCHRONOUS_STREAM_READ,
-	B_USB_RAW_COMMAND_ISOCHRONOUS_STREAM_STOP
+	B_USB_RAW_COMMAND_ISOCHRONOUS_STREAM_STOP,
+		// READ and STOP act on the device's first stream (and STOP on all
+		// of them); the _ENDPOINT ones name the endpoint, as a device can
+		// stream on several (a camera's video and sound)
+	B_USB_RAW_COMMAND_ISOCHRONOUS_STREAM_READ_ENDPOINT,
+	B_USB_RAW_COMMAND_ISOCHRONOUS_STREAM_STOP_ENDPOINT
 } usb_raw_command_id;
 
 
@@ -225,6 +230,22 @@ typedef union {
 			// in: size of data, out: bytes stored
 		bigtime_t						timeout;
 	} stream_read;
+
+	struct {
+		status_t						status;
+		uint32							interface;
+		uint32							endpoint;
+		void							*data;
+		size_t							length;
+			// in: size of data, out: bytes stored
+		bigtime_t						timeout;
+	} stream_read_endpoint;
+
+	struct {
+		status_t						status;
+		uint32							interface;
+		uint32							endpoint;
+	} stream_stop_endpoint;
 } usb_raw_command;
 
 #endif // _USB_RAW_H_
