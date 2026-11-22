@@ -107,8 +107,9 @@ ieee80211_roam_should_switch(const struct ieee80211_roam_params *rp,
 		return 1;
 	}
 
-	/* Better in this scan; confirm with the next one. */
+	/* Better in this scan; confirm with the next one, soon. */
 	rs->rs_cand = id;
+	rs->rs_scan_gap = 0;
 	return 0;
 }
 
@@ -118,4 +119,87 @@ ieee80211_roam_joined(const struct ieee80211_roam_params *rp,
 {
 	rs->rs_last_join = now;
 	rs->rs_cand = 0;
+	/*
+	 * Do not start over with frequent scans: a switch between APs
+	 * of similar strength would then soon be followed by the next.
+	 */
+	rs->rs_scan_gap /= 2;
+}
+
+int
+ieee80211_roam_should_scan(const struct ieee80211_roam_params *rp,
+    struct ieee80211_roam_state *rs, int cur, long long now)
+{
+	int gap;
+
+	if (cur == 0)
+		return 0;
+
+	if (cur >= rp->rp_scan_thres) {
+		/*
+		 * Good enough. Forget the backoff only when clearly above
+		 * the threshold, so that a signal right at it does not
+		 * bring back frequent scans.
+		 */
+		if (cur >= rp->rp_scan_thres + rp->rp_hysteresis / 2)
+			rs->rs_scan_gap = 0;
+		rs->rs_retry = 0;
+		return 0;
+	}
+
+	if (rs->rs_retry != 0) {
+		/* The last request did not start a scan: try again soon. */
+		if (now < rs->rs_retry)
+			return 0;
+		gap = 0;
+	} else if (ieee80211_roam_weak(rp, cur)) {
+		/*
+		 * Weak or lost: look around often, even right after a
+		 * switch. While the signal stays put (standing in a room
+		 * where all APs are weak), at most every rp_scan_still:
+		 * every scan costs throughput.
+		 */
+		gap = ieee80211_roam_lost(rp, cur) ? rp->rp_scan_lost :
+		    rp->rp_scan_weak;
+		if (cur > rs->rs_scan_rssi - rp->rp_hysteresis / 2 &&
+		    rs->rs_scan_gap > gap)
+			gap = rs->rs_scan_gap < rp->rp_scan_still ?
+			    rs->rs_scan_gap : rp->rp_scan_still;
+	} else {
+		if (now - rs->rs_last_join < rp->rp_dwell)
+			return 0;
+		/* The signal is falling: we are moving, look again soon. */
+		if (cur <= rs->rs_scan_rssi - rp->rp_hysteresis / 2)
+			rs->rs_scan_gap = 0;
+		gap = rs->rs_scan_gap;
+		if (gap < rp->rp_scan_min)
+			gap = rp->rp_scan_min;
+	}
+
+	if (rs->rs_last_scan != 0 && now - rs->rs_last_scan < gap)
+		return 0;
+
+	rs->rs_retry = 0;
+	rs->rs_last_scan = now;
+	rs->rs_scan_rssi = cur;
+	return 1;
+}
+
+void
+ieee80211_roam_scan_done(const struct ieee80211_roam_params *rp,
+    struct ieee80211_roam_state *rs)
+{
+	/* Nothing better found: wait longer next time. */
+	if (rs->rs_scan_gap < rp->rp_scan_min)
+		rs->rs_scan_gap = rp->rp_scan_min;
+	else if (rs->rs_scan_gap < rp->rp_scan_max / 2)
+		rs->rs_scan_gap *= 2;
+	else
+		rs->rs_scan_gap = rp->rp_scan_max;
+}
+
+void
+ieee80211_roam_scan_refused(struct ieee80211_roam_state *rs, long long now)
+{
+	rs->rs_retry = now + IEEE80211_ROAM_RETRY;
 }

@@ -443,9 +443,10 @@ ieee80211_inputm(struct ifnet *ifp, struct mbuf *m, struct ieee80211_node *ni,
 		ni->ni_inact = 0;
 
 #ifdef __HAIKU__
+		/* Smooth the signal, start background scans from it. */
 		if (ownap && ic->ic_opmode == IEEE80211_M_STA)
 			ieee80211_roam_input(ic, ni, rxi->rxi_rssi);
-#endif
+#else
 		if (ic->ic_state == IEEE80211_S_RUN && ic->ic_bgscan_start) {
 			/* Cancel or start background scan based on RSSI. */
 			if ((*ic->ic_node_checkrssi)(ic, ni))
@@ -456,6 +457,7 @@ ieee80211_inputm(struct ifnet *ifp, struct mbuf *m, struct ieee80211_node *ni,
 				timeout_add_msec(&ic->ic_bgscan_timeout,
 				    500 * (ic->ic_bgscan_fail + 1));
 		}
+#endif
 	}
 
 #ifndef IEEE80211_STA_ONLY

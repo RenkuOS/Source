@@ -622,6 +622,7 @@ void ieee80211_reset_scan(struct ifnet *);
 void ieee80211_notify_scan_done(struct ieee80211com *);
 void ieee80211_roam_input(struct ieee80211com *, struct ieee80211_node *,
 		int);
+void ieee80211_roam_scan_failed(struct ieee80211com *);
 #endif
 struct ieee80211_node *ieee80211_alloc_node(struct ieee80211com *,
 		const u_int8_t *);

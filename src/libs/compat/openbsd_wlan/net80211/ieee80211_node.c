@@ -1342,9 +1342,9 @@ ieee80211_node_switch_bss(struct ieee80211com *ic, struct ieee80211_node *ni)
 
 #ifdef __HAIKU__
 /*
- * Roaming within the ESS (see ieee80211_roam_logic.h): after a background
- * scan, switch only to an AP that is clearly stronger than the smoothed
- * signal of the current one.
+ * Roaming within the ESS (see ieee80211_roam_logic.h): background scans
+ * and switches depend on the smoothed signal of the current AP instead
+ * of the last frame's, and a new AP must be clearly stronger.
  */
 #define IEEE80211_ROAM_LOST_RATIO	20	/* in percent */
 #define IEEE80211_ROAM_LOST		(-85)	/* in dBm */
@@ -1353,6 +1353,11 @@ ieee80211_node_switch_bss(struct ieee80211com *ic, struct ieee80211_node *ni)
 #define IEEE80211_ROAM_HYSTERESIS	8	/* about dB */
 #define IEEE80211_ROAM_HYST_FAST	15	/* about dB */
 #define IEEE80211_ROAM_DWELL		30000	/* msec */
+#define IEEE80211_ROAM_SCAN_MIN		5000	/* msec */
+#define IEEE80211_ROAM_SCAN_MAX		60000	/* msec */
+#define IEEE80211_ROAM_SCAN_WEAK	2500	/* msec */
+#define IEEE80211_ROAM_SCAN_LOST	1000	/* msec */
+#define IEEE80211_ROAM_SCAN_STILL	10000	/* msec */
 
 static long long
 ieee80211_roam_now(void)
@@ -1362,30 +1367,57 @@ ieee80211_roam_now(void)
 
 static void
 ieee80211_roam_params(struct ieee80211com *ic,
-    struct ieee80211_roam_params *rp)
+    const struct ieee80211_node *ni, struct ieee80211_roam_params *rp)
 {
+	int is2ghz = ni->ni_chan != IEEE80211_CHAN_ANYC &&
+	    IEEE80211_IS_CHAN_2GHZ(ni->ni_chan);
+
 	if (ic->ic_max_rssi) {
+		rp->rp_scan_thres = ic->ic_max_rssi * (is2ghz ?
+		    IEEE80211_RSSI_THRES_RATIO_2GHZ :
+		    IEEE80211_RSSI_THRES_RATIO_5GHZ) / 100;
 		rp->rp_lost_thres = ic->ic_max_rssi *
 		    IEEE80211_ROAM_LOST_RATIO / 100;
 		rp->rp_weak_thres = ic->ic_max_rssi *
 		    IEEE80211_ROAM_WEAK_RATIO / 100;
 	} else {
+		rp->rp_scan_thres = (u_int8_t)(is2ghz ?
+		    IEEE80211_RSSI_THRES_2GHZ : IEEE80211_RSSI_THRES_5GHZ);
 		rp->rp_lost_thres = (u_int8_t)IEEE80211_ROAM_LOST;
 		rp->rp_weak_thres = (u_int8_t)IEEE80211_ROAM_WEAK;
 	}
 	rp->rp_hysteresis = IEEE80211_ROAM_HYSTERESIS;
 	rp->rp_hyst_fast = IEEE80211_ROAM_HYST_FAST;
 	rp->rp_dwell = IEEE80211_ROAM_DWELL;
+	rp->rp_scan_min = IEEE80211_ROAM_SCAN_MIN;
+	rp->rp_scan_max = IEEE80211_ROAM_SCAN_MAX;
+	rp->rp_scan_weak = IEEE80211_ROAM_SCAN_WEAK;
+	rp->rp_scan_lost = IEEE80211_ROAM_SCAN_LOST;
+	rp->rp_scan_still = IEEE80211_ROAM_SCAN_STILL;
 }
 
-/* A frame from our AP: smooth its signal. */
+/* A frame from our AP: smooth its signal and maybe start a bgscan. */
 void
 ieee80211_roam_input(struct ieee80211com *ic, struct ieee80211_node *ni,
     int rssi)
 {
+	struct ieee80211_roam_params rp;
+	long long now = ieee80211_roam_now();
+
 	if (rssi != 0)
-		ieee80211_roam_avg_add(&ni->ni_roam_avg, rssi,
-		    ieee80211_roam_now());
+		ieee80211_roam_avg_add(&ni->ni_roam_avg, rssi, now);
+
+	if (ni != ic->ic_bss || ic->ic_state != IEEE80211_S_RUN ||
+	    ic->ic_bgscan_start == NULL ||
+	    timeout_pending(&ic->ic_bgscan_timeout) ||
+	    (ic->ic_flags & IEEE80211_F_BGSCAN) ||
+	    (ic->ic_flags & IEEE80211_F_DESBSSID))
+		return;
+
+	ieee80211_roam_params(ic, ni, &rp);
+	if (ieee80211_roam_should_scan(&rp, &ic->ic_roam,
+	    ieee80211_roam_avg_get(&ni->ni_roam_avg), now))
+		timeout_add_msec(&ic->ic_bgscan_timeout, 10);
 }
 
 /* After a bgscan: is selbs worth leaving the current AP for? */
@@ -1410,9 +1442,12 @@ ieee80211_roam_switch(struct ieee80211com *ic, struct ieee80211_node *curbs,
 			id = 1;
 	}
 
-	ieee80211_roam_params(ic, &rp);
-	return ieee80211_roam_should_switch(&rp, &ic->ic_roam, cur, cand, id,
-	    ieee80211_roam_now());
+	ieee80211_roam_params(ic, ni, &rp);
+	if (ieee80211_roam_should_switch(&rp, &ic->ic_roam, cur, cand, id,
+	    ieee80211_roam_now()))
+		return 1;
+	ieee80211_roam_scan_done(&rp, &ic->ic_roam);
+	return 0;
 }
 
 static void
@@ -1421,8 +1456,15 @@ ieee80211_roam_join(struct ieee80211com *ic)
 	struct ieee80211_roam_params rp;
 
 	memset(&ic->ic_bss->ni_roam_avg, 0, sizeof(ic->ic_bss->ni_roam_avg));
-	ieee80211_roam_params(ic, &rp);
+	ieee80211_roam_params(ic, ic->ic_bss, &rp);
 	ieee80211_roam_joined(&rp, &ic->ic_roam, ieee80211_roam_now());
+}
+
+/* ieee80211_begin_bgscan() could not start the scan we asked for. */
+void
+ieee80211_roam_scan_failed(struct ieee80211com *ic)
+{
+	ieee80211_roam_scan_refused(&ic->ic_roam, ieee80211_roam_now());
 }
 #endif
 

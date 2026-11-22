@@ -3,7 +3,8 @@
 # Distributed under the terms of the MIT License.
 # SPDX-License-Identifier: MIT
 """Build and run the tests of net80211/ieee80211_roam_logic.c on the build
-host: smoothing and when to switch access points."""
+host: smoothing, when to scan, when to switch access points, and a few
+simulated walks through a mesh network."""
 from pathlib import Path
 import os
 import subprocess
