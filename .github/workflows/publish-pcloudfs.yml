@@ -1,0 +1,59 @@
+name: publish pcloudfs test image
+
+# Publishes the .img of an existing x270-build run as a public release zip.
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Run id of the x270-build run to publish'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download image artifact
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+          RUN_NUMBER=$(gh run view "$RUN_ID" --repo 12akakor/Source --json number --jq .number)
+          echo "Publishing x270-build #$RUN_NUMBER ($RUN_ID)"
+          gh run download "$RUN_ID" --repo 12akakor/Source --name "renku-x86_64-x270-build${RUN_NUMBER}" --dir image
+          ls -la image
+
+      - name: Zip and release with a unique name
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+          IMG=$(find image -name '*.img' | head -1)
+          if [ -z "$IMG" ]; then echo "::error::no .img found"; exit 1; fi
+          RUN_NUMBER=$(gh run view "$RUN_ID" --repo 12akakor/Source --json number --jq .number)
+          STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+          NAME="pcloudfs-x270-${RUN_NUMBER}-${STAMP}"
+          cp "$IMG" "${NAME}.img"
+          zip -9 "${NAME}.zip" "${NAME}.img"
+          sha256sum "${NAME}.zip" > "${NAME}.zip.sha256"
+          if gh release view pcloudfs-test --repo 12akakor/Source >/dev/null 2>&1; then
+            for old in $(gh release view pcloudfs-test --repo 12akakor/Source --json assets --jq '.assets[].name'); do
+              gh release delete-asset pcloudfs-test "$old" --repo 12akakor/Source --yes
+            done
+            gh release upload pcloudfs-test "${NAME}.zip" "${NAME}.zip.sha256" --repo 12akakor/Source --clobber
+          else
+            gh release create pcloudfs-test "${NAME}.zip" "${NAME}.zip.sha256" \
+              --repo 12akakor/Source --target ${{ github.sha }} \
+              --title "pcloudfs test image" --prerelease --latest=false \
+              --notes "Test image: ${NAME}.zip. Write the .img to a USB stick in DD mode. Read SYSLOG.TXT from the FAT partition after testing and send it back."
+          fi
+          echo "### ${NAME}.zip" >> "$GITHUB_STEP_SUMMARY"
+          echo "${NAME}.zip" > artifact-name.txt
