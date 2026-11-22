@@ -68,6 +68,8 @@ struct BatteryState {
 	acpi_battery_info			info;
 	acpi_extended_battery_info	extended;
 	bool						hasExtended;
+	acpi_battery_charge_thresholds	thresholds;
+	bool						hasThresholds;
 	status_t					status;
 };
 
@@ -225,11 +227,16 @@ static status_t
 read_battery(int fd, BatteryState& battery)
 {
 	battery.hasExtended = false;
+	battery.hasThresholds = false;
 	battery.status = B_ERROR;
 
 	if (ioctl(fd, GET_EXTENDED_BATTERY_INFO, &battery.extended,
 			sizeof(acpi_extended_battery_info)) == 0)
 		battery.hasExtended = true;
+
+	if (ioctl(fd, GET_BATTERY_CHARGE_THRESHOLDS, &battery.thresholds,
+			sizeof(acpi_battery_charge_thresholds)) == 0)
+		battery.hasThresholds = true;
 
 	if (ioctl(fd, GET_BATTERY_INFO, &battery.info,
 			sizeof(acpi_battery_info)) != 0) {
@@ -515,6 +522,11 @@ print_battery_line(int index, const BatteryState& battery)
 		printf("  health %" B_PRIu32 "%%",
 			(uint32)((uint64)battery.extended.last_full_charge * 100
 				/ battery.extended.design_capacity));
+	}
+
+	if (battery.hasThresholds) {
+		printf("  limit %" B_PRIu32 "-%" B_PRIu32 "%%",
+			battery.thresholds.start, battery.thresholds.stop);
 	}
 
 	printf("\n");
