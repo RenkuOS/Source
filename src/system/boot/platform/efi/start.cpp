@@ -243,6 +243,10 @@ efi_main(efi_handle image, efi_system_table *systemTable)
 {
 	stage2_args args;
 	memset(&args, 0, sizeof(stage2_args));
+	// The default heap of 1.5 MB holds the packagefs tree of one system
+	// package only, so the boot menu could not list a second installation.
+	// EFI has memory to spare.
+	args.heap_size = 16 * 1024 * 1024;
 
 	kImage = image;
 	kSystemTable = systemTable;
