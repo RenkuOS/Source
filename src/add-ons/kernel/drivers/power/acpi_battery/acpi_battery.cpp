@@ -26,6 +26,7 @@ struct battery_driver_cookie {
 	device_node*				node;
 	acpi_device_module_info*	acpi;
 	acpi_device					acpi_cookie;
+	bool						absent;
 };
 
 
@@ -54,6 +55,8 @@ struct battery_device_cookie {
 #endif
 #define ERROR(x...) dprintf("acpi_battery: " x)
 
+#define ACPI_STA_DEVICE_PRESENT		0x01
+
 
 static device_manager_info *sDeviceManager;
 static ConditionVariable sBatteryCondition;
@@ -75,12 +78,52 @@ GetString(char* buffer, size_t length, acpi_object_type* pointer)
 }
 
 
+/*!	Returns whether the battery device is present, from its _STA method.
+	Firmware often declares battery devices for several board variants and
+	reports through _STA which one is fitted; the _BIX and _BST methods of the
+	others fail or read a fuel gauge that is not there, which can take long
+	(an I2C transfer that times out, for example). A device that is not
+	present, or whose _STA fails, is not asked again. An empty battery slot
+	(device present, battery not) is handled as before.
+*/
+static bool
+battery_present(battery_driver_cookie* cookie)
+{
+	if (cookie->absent)
+		return false;
+
+	acpi_object_type* object = NULL;
+	status_t status = cookie->acpi->get_object(cookie->acpi_cookie, "_STA",
+		&object);
+	if (status == B_ENTRY_NOT_FOUND) {
+		// no _STA: the battery is always present
+		return true;
+	}
+
+	uint64 sta = 0;
+	if (status == B_OK && object != NULL
+		&& object->object_type == ACPI_TYPE_INTEGER) {
+		sta = object->integer.integer;
+	}
+	free(object);
+
+	if ((sta & ACPI_STA_DEVICE_PRESENT) == 0) {
+		TRACE("battery device is not present\n");
+		cookie->absent = true;
+		return false;
+	}
+	return true;
+}
+
+
 status_t
 ReadBatteryStatus(battery_driver_cookie* cookie,
 	acpi_battery_info* batteryStatus)
 {
 	TRACE("ReadBatteryStatus\n");
 	status_t status = B_ERROR;
+	if (!battery_present(cookie))
+		return B_DEV_NOT_READY;
 
 	acpi_data buffer;
 	buffer.pointer = NULL;
@@ -132,6 +175,9 @@ ReadBatteryInfo(battery_driver_cookie* cookie,
 	acpi_extended_battery_info* batteryInfo)
 {
 	TRACE("ReadBatteryInfo\n");
+	if (!battery_present(cookie))
+		return B_DEV_NOT_READY;
+
 	acpi_data buffer;
 	buffer.pointer = NULL;
 	buffer.length = ACPI_ALLOCATE_BUFFER;
@@ -496,6 +542,28 @@ acpi_battery_free(void* cookie)
 //	#pragma mark - driver module API
 
 
+/*!	Returns whether the system has a PMIC whose own driver reports the
+	battery. On Bay Trail and Cherry Trail boards with an X-Powers AXP288
+	PMIC (INT33F4), the ACPI battery devices of the firmware read hardware
+	that is not fitted or not set up; the axp288 driver reads the fuel gauge
+	of the PMIC itself. Linux skips the ACPI battery devices on these boards
+	as well (acpi_quirk_skip_acpi_ac_and_battery()).
+*/
+static bool
+has_native_battery_pmic()
+{
+	acpi_module_info* acpi;
+	if (get_module(B_ACPI_MODULE_NAME, (module_info**)&acpi) != B_OK)
+		return false;
+
+	char path[255];
+	bool found = acpi->get_device("INT33F4", 0, path, sizeof(path)) == B_OK;
+
+	put_module(B_ACPI_MODULE_NAME);
+	return found;
+}
+
+
 static float
 acpi_battery_support(device_node *parent)
 {
@@ -521,6 +589,9 @@ acpi_battery_support(device_node *parent)
 	    || (strcmp(name, ACPI_NAME_BATTERY) && strcmp(name, "MSHW0146"))) {
 		return 0.0;
 	}
+
+	if (has_native_battery_pmic())
+		return 0.0;
 
 	return 0.6;
 }
