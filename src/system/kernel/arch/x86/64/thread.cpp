@@ -437,6 +437,12 @@ arch_setup_signal_frame(Thread* thread, struct sigaction* action,
 	frame->di = (addr_t)userSignalFrameData;
 	frame->flags &= ~(uint64)(X86_EFLAGS_TRAP | X86_EFLAGS_DIRECTION);
 
+	// The handler is 64-bit code, but the signal may have interrupted 32-bit
+	// code. IRET with that CS and the handler's address would fault in kernel
+	// mode. The signal frame keeps the interrupted CS and SS for sigreturn.
+	frame->cs = USER_CODE_SELECTOR;
+	frame->ss = USER_DATA_SELECTOR;
+
 	return B_OK;
 }
 
