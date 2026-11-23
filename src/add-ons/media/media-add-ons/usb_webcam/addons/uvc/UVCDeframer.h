@@ -7,6 +7,7 @@
 
 
 #include "CamDeframer.h"
+#include "UVCPayload.h"
 
 #include <USB3.h>
 
@@ -21,9 +22,13 @@ public:
 
 private:
 	void						_PrintBuffer(const void* buffer, size_t size);
+	void						_FinishFrame();
 
 	int32						fFrameCount;
 	int32						fID;
+	bool						fSynced;
+	bool						fFrameBroken;
+	uvc_sof_order				fSOFOrder;
 	BMallocIO					fInputBuffer;
 };
 

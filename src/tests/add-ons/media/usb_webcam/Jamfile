@@ -1,0 +1,4 @@
+SubDir HAIKU_TOP src tests add-ons media usb_webcam ;
+
+SubDirHdrs $(HAIKU_TOP) src add-ons media media-add-ons usb_webcam addons uvc ;
+SimpleTest UVCPayloadTest : UVCPayloadTest.cpp ;
