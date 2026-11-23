@@ -192,7 +192,13 @@ haiku_thread_unpin()
 extern "C" void
 os_preempt_disable()
 {
-	thread_get_current_thread()->cpu->reschedule_disabled++;
+	// The count is the thread's own: only it changes it, so neither an
+	// interrupt nor a move to another CPU in the middle can make it count
+	// somewhere else (with a per-CPU count, a thread moved between looking
+	// up its CPU and counting stopped a CPU it had left from ever switching
+	// threads again, #148). Once it is counted, the thread is not preempted
+	// and stays on this CPU.
+	thread_get_current_thread()->preemption_disabled++;
 	memory_full_barrier();
 }
 
@@ -200,19 +206,20 @@ os_preempt_disable()
 extern "C" void
 os_preempt_enable()
 {
-	ASSERT(os_preempt_disabled());
-
 	Thread* thread = thread_get_current_thread();
-	thread->cpu->reschedule_disabled--;
-	if (thread->cpu->invoke_scheduler)
+	ASSERT(thread->preemption_disabled > 0);
+	memory_full_barrier();
+	if (--thread->preemption_disabled == 0) {
+		// a reschedule asked for meanwhile was put off
 		scheduler_reschedule_if_necessary();
+	}
 }
 
 
 extern "C" bool
 os_preempt_disabled()
 {
-	return thread_get_current_thread()->cpu->reschedule_disabled;
+	return thread_get_current_thread()->preemption_disabled > 0;
 }
 
 

@@ -424,6 +424,12 @@ private:
 			UserTimerList		fUserTimers;			// protected by fLock
 			ThreadTimeUserTimerList fCPUTimeUserTimers;
 									// protected by time_lock
+
+public:
+	int32			preemption_disabled;
+		// > 0: the thread is not preempted (it stays on its CPU); only the
+		// thread itself changes it. It must not block or exit meanwhile.
+		// (At the end, so that the other members keep their offsets.)
 };
 
 
