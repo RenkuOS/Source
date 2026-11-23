@@ -185,13 +185,14 @@ fork(void)
 pid_t
 vfork(void)
 {
+	thread_id thread;
 	// Unlike fork(), no pre- and post-fork hooks are called: the child may
 	// only exec or _exit. But exec allocates memory (it flattens the
 	// arguments and environment), so the heap's locks are taken around the
 	// fork and set up again in the child, as fork() does: a child forked
 	// while another thread held one of them waited for it forever.
 	__heap_before_fork();
-	thread_id thread = _kern_fork();
+	thread = _kern_fork();
 	if (thread == 0)
 		__heap_after_fork_child();
 	else
