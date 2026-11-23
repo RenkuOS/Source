@@ -141,11 +141,17 @@ public:
 			bool				ShapeContains(const BPoint& where) const;
 			// Whether the window's contents are mixed with what is behind it
 			// by their own alpha: only on a composited desktop, and when the
-			// window asked for it with B_TRANSPARENT_WINDOW.
+			// window asked for it with B_TRANSPARENT_WINDOW or B_GLASS_WINDOW.
 			bool				IsTransparent() const
 									{ return fBufferInterface.IsSet()
-										&& (fFlags & B_TRANSPARENT_WINDOW)
-											!= 0; }
+										&& (fFlags & (B_TRANSPARENT_WINDOW
+											| B_GLASS_WINDOW)) != 0; }
+			// Whether the window asked for glass where it isn't opaque, with
+			// B_GLASS_WINDOW. It then decides by the alpha of its pixels
+			// which of its parts are glass, whatever the glass setting is.
+			bool				IsGlass() const
+									{ return fBufferInterface.IsSet()
+										&& (fFlags & B_GLASS_WINDOW) != 0; }
 			// The parts of the window that can be turned to glass by the glass
 			// setting: its border and tab, and its content area. Both are
 			// empty for windows that are never glass, such as the desktop.

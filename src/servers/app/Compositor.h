@@ -37,7 +37,8 @@ class WindowWobble;
 
 	Parts of windows can be glass: what is behind them is blurred before they
 	are laid over it. The glass setting turns window borders, or whole
-	windows, to glass.
+	windows, to glass, and a window with B_GLASS_WINDOW is glass wherever it
+	isn't opaque.
 */
 class Compositor {
 public:

@@ -358,8 +358,9 @@ Window::ShapeContains(const BPoint& where) const
 	if (!fShape.Contains(where))
 		return false;
 
-	// What the window hasn't drawn at all can't be clicked.
-	if (fTransparentRegion.Contains(where) && fBufferReady) {
+	// What the window hasn't drawn at all can't be clicked, but glass is
+	// still part of the window.
+	if (!IsGlass() && fTransparentRegion.Contains(where) && fBufferReady) {
 		const WindowBuffer& buffer = fBufferInterface->Buffer();
 		int32 x = (int32)where.x;
 		int32 y = (int32)where.y;
@@ -1592,7 +1593,7 @@ void
 Window::SetFlags(uint32 flags, BRegion* updateRegion)
 {
 	// Turning transparency on or off changes how the whole window is drawn.
-	if (((fFlags ^ flags) & B_TRANSPARENT_WINDOW) != 0
+	if (((fFlags ^ flags) & (B_TRANSPARENT_WINDOW | B_GLASS_WINDOW)) != 0
 		&& fBufferInterface.IsSet() && updateRegion != NULL) {
 		BRegion full;
 		GetFullRegion(&full);
@@ -1969,6 +1970,7 @@ Window::ValidWindowFlags()
 		| B_AUTO_UPDATE_SIZE_LIMITS
 		| B_CLOSE_ON_ESCAPE
 		| B_TRANSPARENT_WINDOW
+		| B_GLASS_WINDOW
 		| B_NO_SERVER_SIDE_WINDOW_MODIFIERS
 		| kWindowScreenFlag
 		| kAcceptKeyboardFocusFlag;

@@ -820,12 +820,10 @@ Compositor::_GetGlass(Window* window, BRegion& glass, BRegion& tinted) const
 {
 	glass.MakeEmpty();
 	tinted.MakeEmpty();
-	if (fGlass == 0)
-		return;
 
 	// What the setting turns to glass is laid over the blur, which it would
 	// hide when fully opaque.
-	if (fGlassOpacity < 100) {
+	if (fGlass != 0 && fGlassOpacity < 100) {
 		tinted = window->GlassBorderRegion();
 		if (fGlass == 2 && !window->IsTransparent())
 			tinted.Include(&window->GlassContentRegion());
@@ -835,6 +833,11 @@ Compositor::_GetGlass(Window* window, BRegion& glass, BRegion& tinted) const
 	// A window that draws with alpha decides itself what is opaque.
 	if (fGlass == 2 && window->IsTransparent())
 		glass.Include(&window->GlassContentRegion());
+
+	// Where a window with B_GLASS_WINDOW isn't opaque, it is glass, with or
+	// without a border, whatever the setting is.
+	if (window->IsGlass())
+		glass.Include(&window->TransparentRegion());
 }
 
 
@@ -886,10 +889,12 @@ Compositor::_GetGlassDamage(const BRegion& damage, BRegion& changed,
 	drawn = damage;
 	glassReach.MakeEmpty();
 	fGlassWindows.clear();
-	if (fGlass == 0 || damage.CountRects() == 0)
+	if (damage.CountRects() == 0)
 		return;
 
-	// The windows that can have glass, from the front to the back
+	// The windows that can have glass, from the front to the back. Without
+	// the setting, only those that ask for it have any.
+	bool anyGlass = fGlass != 0;
 	WindowList& windows = fDesktop->CurrentWindows();
 	int32 workspace = fDesktop->CurrentWorkspace();
 	for (Window* window = windows.LastWindow(); window != NULL;
@@ -905,11 +910,18 @@ Compositor::_GetGlassDamage(const BRegion& damage, BRegion& changed,
 		if (wobble != NULL && wobble->ready && !wobble->flat)
 			continue;
 
+		if (window->IsGlass())
+			anyGlass = true;
+
 		fGlassWindows.push_back(GlassWindow());
 		GlassWindow& entry = fGlassWindows.back();
 		entry.window = window;
 		entry.bounds = window->Shape().Bounds();
 		entry.nearby = false;
+	}
+	if (!anyGlass) {
+		fGlassWindows.clear();
+		return;
 	}
 
 	// Which of them are nearby, by their frames: from the back to the front,
