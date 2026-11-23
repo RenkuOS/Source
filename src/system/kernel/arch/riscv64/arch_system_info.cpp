@@ -15,11 +15,17 @@
 #include <arch_cpu.h>
 #include <arch/system_info.h>
 #include <boot/kernel_args.h>
+#include <platform/sbi/sbi_syscalls.h>
+
+
+extern uint32 gPlatform;
 
 
 static uint64 sCPUClockFrequency;
 static uint64 sBusClockFrequency;
 static uint16 sCPURevision;
+static enum cpu_vendor sCPUVendor = B_CPU_VENDOR_UNKNOWN;
+static uint32 sCPUModel;
 static uint64 sTimerFrequency;
 static bigtime_t sLastMeasurement;
 
@@ -73,12 +79,12 @@ arch_fill_topology_node(cpu_topology_node_info* node, int32 cpu)
 			break;
 
 		case B_TOPOLOGY_PACKAGE:
-			node->data.package.vendor = B_CPU_VENDOR_UNKNOWN;
+			node->data.package.vendor = sCPUVendor;
 			node->data.package.cache_line_size = CACHE_LINE_SIZE;
 			break;
 
 		case B_TOPOLOGY_CORE:
-			node->data.core.model = 0;
+			node->data.core.model = sCPUModel;
 			node->data.core.default_frequency = sCPUClockFrequency;
 			break;
 
@@ -91,6 +97,16 @@ arch_fill_topology_node(cpu_topology_node_info* node, int32 cpu)
 status_t
 arch_system_info_init(struct kernel_args *args)
 {
+	if (gPlatform == kPlatformSbi) {
+		// JEDEC identifiers (bank and code) of the vendors we know
+		switch (sbi_get_mvendorid().value) {
+			case 0x489:
+				sCPUVendor = B_CPU_VENDOR_SIFIVE;
+				break;
+		}
+		sCPUModel = (uint32)sbi_get_marchid().value;
+	}
+
 	sTimerFrequency = args->arch_args.timerFrequency;
 	if (measure_cpu_frequency() == 0)
 		sCPUClockFrequency = 1000000000;
