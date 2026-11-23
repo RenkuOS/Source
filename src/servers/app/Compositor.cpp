@@ -6,6 +6,7 @@
 
 #include "Compositor.h"
 
+#include <math.h>
 #include <new>
 #include <string.h>
 
@@ -836,6 +837,66 @@ Compositor::_DrawShadow(RenderingBuffer* target, Window* window,
 	#define EDGE(distance) ((distance) < -margin ? 0 : (distance) > margin \
 		? 255 : profile[(distance) + margin])
 
+	// Where a corner is cut off, the shadow follows its curve. The shadow of
+	// a rectangle is the product of the edges along both of its sides. In the
+	// quarter beyond the centre of a rounded corner, the edge along one side
+	// is taken at the distance from the curve instead, and the other at the
+	// radius, which is what the edge along that side is where the quarter
+	// begins: the shadow rounds off without a seam.
+	struct ShadowCorner {
+		size_t	rect;
+		int32	radius;
+		int32	centerX;
+		int32	centerY;
+		bool	left;
+		bool	top;
+		uint32	edgeAtRadius;
+	};
+	const int32 kMaxShadowCorners = 16;
+	ShadowCorner shadowCorners[kMaxShadowCorners];
+	int32 shadowCornerCount = 0;
+
+	const std::vector<WindowShape::Corner>& corners = shape.Corners();
+	const int32 offset = isGlow ? 0 : WindowShape::ShadowOffset();
+	for (size_t c = 0; c < corners.size()
+			&& shadowCornerCount < kMaxShadowCorners; c++) {
+		const WindowShape::Corner& corner = corners[c];
+		// A corner covered by another part of the shape isn't round.
+		if (!shape.EdgeRegion().Intersects(corner.frame))
+			continue;
+
+		ShadowCorner& shadowCorner = shadowCorners[shadowCornerCount];
+		shadowCorner.left = corner.kind == WindowShape::LEFT_TOP
+			|| corner.kind == WindowShape::LEFT_BOTTOM;
+		shadowCorner.top = corner.kind == WindowShape::LEFT_TOP
+			|| corner.kind == WindowShape::RIGHT_TOP;
+		shadowCorner.radius = corner.radius;
+		shadowCorner.edgeAtRadius = EDGE(corner.radius);
+
+		// The shadow of the rectangle the corner belongs to
+		BRect frame = corner.frame.OffsetByCopy(0, offset);
+		for (size_t k = 0; k < rects.size(); k++) {
+			const BRect& rect = rects[k];
+			if (!rect.Contains(frame)
+				|| (shadowCorner.left ? rect.left != frame.left
+					: rect.right != frame.right)
+				|| (shadowCorner.top ? rect.top != frame.top
+					: rect.bottom != frame.bottom)) {
+				continue;
+			}
+
+			shadowCorner.rect = k;
+			shadowCorner.centerX = shadowCorner.left
+				? (int32)rect.left + corner.radius
+				: (int32)rect.right - corner.radius;
+			shadowCorner.centerY = shadowCorner.top
+				? (int32)rect.top + corner.radius
+				: (int32)rect.bottom - corner.radius;
+			shadowCornerCount++;
+			break;
+		}
+	}
+
 	int32 count = region.CountRects();
 	for (int32 i = 0; i < count; i++) {
 		clipping_rect rect = region.RectAtInt(i);
@@ -854,14 +915,57 @@ Compositor::_DrawShadow(RenderingBuffer* target, Window* window,
 		}
 
 		for (int32 y = rect.top; y <= rect.bottom; y++) {
+			// The corners whose quarter this row goes through
+			int32 rowCorners[kMaxShadowCorners];
+			int32 rowCornerCount = 0;
+			for (int32 c = 0; c < shadowCornerCount; c++) {
+				const ShadowCorner& corner = shadowCorners[c];
+				if (corner.top ? y <= corner.centerY : y >= corner.centerY)
+					rowCorners[rowCornerCount++] = c;
+			}
+
 			uint8* dst = bits + y * bytesPerRow + rect.left * 4;
 			for (int32 x = 0; x < width; x++) {
+				const int32 px = rect.left + x;
 				uint32 alpha = 0;
 				for (size_t k = 0; k < rects.size(); k++) {
 					int32 top = (int32)rects[k].top;
 					int32 bottom = (int32)rects[k].bottom;
 					uint32 rowValue = EDGE(y - top) * EDGE(bottom - y) / 255;
 					uint32 value = columns[k * width + x] * rowValue;
+
+					bool rounded = false;
+					for (int32 c = 0; c < rowCornerCount; c++) {
+						const ShadowCorner& corner
+							= shadowCorners[rowCorners[c]];
+						int32 dx = corner.left
+							? corner.centerX - px : px - corner.centerX;
+						if (corner.rect != k || dx < 0)
+							continue;
+
+						int32 dy = corner.top
+							? corner.centerY - y : y - corner.centerY;
+						// Between two steps of the profile, or the curve
+						// would come out in steps.
+						float distance = corner.radius
+							- sqrtf((float)(dx * dx + dy * dy));
+						int32 below = (int32)floorf(distance);
+						uint32 fraction = (uint32)((distance - below) * 256);
+						uint32 edge = (EDGE(below) * (256 - fraction)
+							+ EDGE(below + 1) * fraction) >> 8;
+						int32 alongX = corner.left
+							? (int32)rects[k].right - px
+							: px - (int32)rects[k].left;
+						int32 alongY = corner.top
+							? bottom - y : y - top;
+						uint32 cornerValue
+							= corner.edgeAtRadius * EDGE(alongX) / 255
+							* (edge * EDGE(alongY) / 255);
+						if (!rounded || cornerValue < value)
+							value = cornerValue;
+						rounded = true;
+					}
+
 					if (value > alpha)
 						alpha = value;
 				}
