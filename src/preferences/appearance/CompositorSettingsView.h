@@ -10,8 +10,7 @@
 
 
 class BCheckBox;
-
-
+class BMenuField;
 class BSlider;
 
 
@@ -36,10 +35,15 @@ private:
 									bool value);
 			void				_SetWobbliness(int32 wobbliness);
 			void				_UpdateWobbliness();
+			void				_SetGlass(int32 glass);
+			void				_SetGlassOpacity(int32 opacity);
+			void				_UpdateGlass();
 
 	static	bool				_Get(int32 code, bool defaultValue);
 	static	void				_Set(int32 code, bool value);
 	static	uint8				_GetWobbliness();
+	static	uint8				_GetValue(int32 code, uint8 defaultValue);
+	static	void				_SetValue(int32 code, uint8 value);
 
 private:
 			BCheckBox*			fCompositedCheckBox;
@@ -48,6 +52,8 @@ private:
 			BCheckBox*			fDragTransparencyCheckBox;
 			BCheckBox*			fWobblyCheckBox;
 			BSlider*			fWobblinessSlider;
+			BMenuField*			fGlassMenuField;
+			BSlider*			fGlassOpacitySlider;
 
 			bool				fSavedComposited;
 			bool				fSavedShadows;
@@ -55,6 +61,8 @@ private:
 			bool				fSavedDragTransparency;
 			bool				fSavedWobbly;
 			int32				fSavedWobbliness;
+			int32				fSavedGlass;
+			int32				fSavedGlassOpacity;
 };
 
 

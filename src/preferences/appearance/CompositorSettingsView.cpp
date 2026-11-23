@@ -11,6 +11,9 @@
 #include <CheckBox.h>
 #include <LayoutBuilder.h>
 #include <Locale.h>
+#include <MenuField.h>
+#include <MenuItem.h>
+#include <PopUpMenu.h>
 #include <Slider.h>
 #include <Window.h>
 
@@ -31,6 +34,8 @@ static const int32 kMsgRoundedCorners = 'cmpr';
 static const int32 kMsgDragTransparency = 'cmpt';
 static const int32 kMsgWobbly = 'cmpo';
 static const int32 kMsgWobbliness = 'cmpl';
+static const int32 kMsgGlass = 'cmpg';
+static const int32 kMsgGlassOpacity = 'cmpa';
 
 // What app_server uses until it is told otherwise
 static const bool kDefaultComposited = false;
@@ -39,6 +44,8 @@ static const bool kDefaultRoundedCorners = true;
 static const bool kDefaultDragTransparency = false;
 static const bool kDefaultWobbly = false;
 static const int32 kDefaultWobbliness = 50;
+static const int32 kDefaultGlass = 0;
+static const int32 kDefaultGlassOpacity = 70;
 
 
 CompositorSettingsView::CompositorSettingsView(const char* name)
@@ -53,6 +60,9 @@ CompositorSettingsView::CompositorSettingsView(const char* name)
 		kDefaultDragTransparency);
 	fSavedWobbly = _Get(AS_GET_COMPOSITED_WOBBLY_WINDOWS, kDefaultWobbly);
 	fSavedWobbliness = _GetWobbliness();
+	fSavedGlass = _GetValue(AS_GET_COMPOSITED_GLASS, kDefaultGlass);
+	fSavedGlassOpacity = _GetValue(AS_GET_COMPOSITED_GLASS_OPACITY,
+		kDefaultGlassOpacity);
 
 	fCompositedCheckBox = new BCheckBox("composited",
 		B_TRANSLATE("Compositor (after a restart)"),
@@ -75,11 +85,36 @@ CompositorSettingsView::CompositorSettingsView(const char* name)
 	fWobblinessSlider->SetHashMarks(B_HASH_MARKS_BOTTOM);
 	fWobblinessSlider->SetHashMarkCount(5);
 
+	// In the order of the values app_server takes
+	BPopUpMenu* glassMenu = new BPopUpMenu("glass");
+	const char* glassLabels[] = {
+		B_TRANSLATE("Off"),
+		B_TRANSLATE("Window borders"),
+		B_TRANSLATE("Whole windows")
+	};
+	for (int32 i = 0; i < 3; i++) {
+		BMessage* message = new BMessage(kMsgGlass);
+		message->AddInt32("glass", i);
+		glassMenu->AddItem(new BMenuItem(glassLabels[i], message));
+	}
+	fGlassMenuField = new BMenuField("glass", B_TRANSLATE("Glass:"),
+		glassMenu);
+	fGlassOpacitySlider = new BSlider("glass opacity",
+		B_TRANSLATE("Glass opacity"), new BMessage(kMsgGlassOpacity), 10, 100,
+		B_HORIZONTAL);
+	fGlassOpacitySlider->SetLimitLabels(B_TRANSLATE("Clearer"),
+		B_TRANSLATE("More solid"));
+	fGlassOpacitySlider->SetHashMarks(B_HASH_MARKS_BOTTOM);
+	fGlassOpacitySlider->SetHashMarkCount(10);
+
 	fShadowsCheckBox->SetValue(fSavedShadows);
 	fRoundedCornersCheckBox->SetValue(fSavedRoundedCorners);
 	fDragTransparencyCheckBox->SetValue(fSavedDragTransparency);
 	fWobblyCheckBox->SetValue(fSavedWobbly);
 	fWobblinessSlider->SetValue(fSavedWobbliness);
+	if (BMenuItem* item = glassMenu->ItemAt(fSavedGlass))
+		item->SetMarked(true);
+	fGlassOpacitySlider->SetValue(fSavedGlassOpacity);
 	_SetComposited(fSavedComposited);
 
 	BLayoutBuilder::Group<>(this, B_VERTICAL, B_USE_DEFAULT_SPACING)
@@ -91,6 +126,14 @@ CompositorSettingsView::CompositorSettingsView(const char* name)
 			.Add(fWobblyCheckBox)
 			.AddGroup(B_VERTICAL)
 				.Add(fWobblinessSlider)
+				.SetInsets(B_USE_WINDOW_SPACING, 0, 0, 0)
+				.End()
+			.AddGroup(B_HORIZONTAL)
+				.Add(fGlassMenuField)
+				.AddGlue()
+				.End()
+			.AddGroup(B_VERTICAL)
+				.Add(fGlassOpacitySlider)
 				.SetInsets(B_USE_WINDOW_SPACING, 0, 0, 0)
 				.End()
 			.SetInsets(B_USE_WINDOW_SPACING, 0, 0, 0)
@@ -116,6 +159,8 @@ CompositorSettingsView::AttachedToWindow()
 	fDragTransparencyCheckBox->SetTarget(this);
 	fWobblyCheckBox->SetTarget(this);
 	fWobblinessSlider->SetTarget(this);
+	fGlassMenuField->Menu()->SetTargetForItems(this);
+	fGlassOpacitySlider->SetTarget(this);
 }
 
 
@@ -161,6 +206,21 @@ CompositorSettingsView::MessageReceived(BMessage* message)
 			Window()->PostMessage(kMsgUpdate);
 			break;
 
+		case kMsgGlass:
+		{
+			int32 glass;
+			if (message->FindInt32("glass", &glass) == B_OK) {
+				_SetGlass(glass);
+				Window()->PostMessage(kMsgUpdate);
+			}
+			break;
+		}
+
+		case kMsgGlassOpacity:
+			_SetGlassOpacity(fGlassOpacitySlider->Value());
+			Window()->PostMessage(kMsgUpdate);
+			break;
+
 		default:
 			BView::MessageReceived(message);
 			break;
@@ -179,7 +239,9 @@ CompositorSettingsView::IsDefaultable()
 		|| (fDragTransparencyCheckBox->Value() == B_CONTROL_ON)
 			!= kDefaultDragTransparency
 		|| (fWobblyCheckBox->Value() == B_CONTROL_ON) != kDefaultWobbly
-		|| fWobblinessSlider->Value() != kDefaultWobbliness;
+		|| fWobblinessSlider->Value() != kDefaultWobbliness
+		|| fGlassMenuField->Menu()->FindMarkedIndex() != kDefaultGlass
+		|| fGlassOpacitySlider->Value() != kDefaultGlassOpacity;
 }
 
 
@@ -197,6 +259,8 @@ CompositorSettingsView::SetDefaults()
 		kDefaultWobbly);
 	_SetWobbliness(kDefaultWobbliness);
 	_UpdateWobbliness();
+	_SetGlass(kDefaultGlass);
+	_SetGlassOpacity(kDefaultGlassOpacity);
 }
 
 
@@ -210,7 +274,9 @@ CompositorSettingsView::IsRevertable()
 		|| (fDragTransparencyCheckBox->Value() == B_CONTROL_ON)
 			!= fSavedDragTransparency
 		|| (fWobblyCheckBox->Value() == B_CONTROL_ON) != fSavedWobbly
-		|| fWobblinessSlider->Value() != fSavedWobbliness;
+		|| fWobblinessSlider->Value() != fSavedWobbliness
+		|| fGlassMenuField->Menu()->FindMarkedIndex() != fSavedGlass
+		|| fGlassOpacitySlider->Value() != fSavedGlassOpacity;
 }
 
 
@@ -231,6 +297,8 @@ CompositorSettingsView::Revert()
 		fSavedWobbly);
 	_SetWobbliness(fSavedWobbliness);
 	_UpdateWobbliness();
+	_SetGlass(fSavedGlass);
+	_SetGlassOpacity(fSavedGlassOpacity);
 }
 
 
@@ -259,7 +327,9 @@ CompositorSettingsView::_SetComposited(bool composited)
 	fRoundedCornersCheckBox->SetEnabled(composited);
 	fDragTransparencyCheckBox->SetEnabled(composited);
 	fWobblyCheckBox->SetEnabled(composited);
+	fGlassMenuField->SetEnabled(composited);
 	_UpdateWobbliness();
+	_UpdateGlass();
 }
 
 
@@ -293,6 +363,34 @@ CompositorSettingsView::_UpdateWobbliness()
 }
 
 
+void
+CompositorSettingsView::_SetGlass(int32 glass)
+{
+	_SetValue(AS_SET_COMPOSITED_GLASS, (uint8)glass);
+	if (BMenuItem* item = fGlassMenuField->Menu()->ItemAt(glass))
+		item->SetMarked(true);
+	_UpdateGlass();
+}
+
+
+void
+CompositorSettingsView::_SetGlassOpacity(int32 opacity)
+{
+	_SetValue(AS_SET_COMPOSITED_GLASS_OPACITY, (uint8)opacity);
+	fGlassOpacitySlider->SetValue(opacity);
+}
+
+
+//!	The slider only matters while there is glass.
+void
+CompositorSettingsView::_UpdateGlass()
+{
+	fGlassOpacitySlider->SetEnabled(
+		fCompositedCheckBox->Value() == B_CONTROL_ON
+		&& fGlassMenuField->Menu()->FindMarkedIndex() > 0);
+}
+
+
 /*static*/ bool
 CompositorSettingsView::_Get(int32 code, bool defaultValue)
 {
@@ -318,6 +416,30 @@ CompositorSettingsView::_GetWobbliness()
 	if (link.FlushWithReply(status) == B_OK && status == B_OK)
 		link.Read<uint8>(&value);
 	return value;
+}
+
+
+/*static*/ uint8
+CompositorSettingsView::_GetValue(int32 code, uint8 defaultValue)
+{
+	BPrivate::AppServerLink link;
+	link.StartMessage(code);
+
+	int32 status;
+	uint8 value = defaultValue;
+	if (link.FlushWithReply(status) == B_OK && status == B_OK)
+		link.Read<uint8>(&value);
+	return value;
+}
+
+
+/*static*/ void
+CompositorSettingsView::_SetValue(int32 code, uint8 value)
+{
+	BPrivate::AppServerLink link;
+	link.StartMessage(code);
+	link.Attach<uint8>(value);
+	link.Flush();
 }
 
 
