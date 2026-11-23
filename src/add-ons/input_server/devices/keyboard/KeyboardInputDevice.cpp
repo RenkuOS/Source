@@ -98,6 +98,8 @@ KeyboardDevice::KeyboardDevice(KeyboardInputDevice* owner, const char* path)
 	fOwner(owner),
 	fFD(-1),
 	fThread(-1),
+	fLEDThread(-1),
+	fLEDSem(-1),
 	fActive(false),
 	fInputMethodStarted(false),
 	fKeyboardID(0),
@@ -161,21 +163,44 @@ KeyboardDevice::Start()
 	CALLED();
 	TRACE("name: %s\n", fDeviceRef.name);
 
+	char threadName[B_OS_NAME_LENGTH];
+	snprintf(threadName, B_OS_NAME_LENGTH, "%s LEDs", fDeviceRef.name);
+
+	fLEDSem = create_sem(0, threadName);
+	if (fLEDSem < B_OK)
+		return fLEDSem;
+
+	fLEDThread = spawn_thread(_LEDThreadEntry, threadName,
+		kKeyboardThreadPriority, this);
+	if (fLEDThread < B_OK) {
+		delete_sem(fLEDSem);
+		fLEDSem = -1;
+		return fLEDThread;
+	}
+
+	snprintf(threadName, B_OS_NAME_LENGTH, "%s watcher", fDeviceRef.name);
+
+	fThread = spawn_thread(_ControlThreadEntry, threadName,
+		kKeyboardThreadPriority, this);
+	if (fThread < B_OK) {
+		delete_sem(fLEDSem);
+		fLEDSem = -1;
+		resume_thread(fLEDThread);
+		status_t dummy;
+		wait_for_thread(fLEDThread, &dummy);
+		fLEDThread = -1;
+		return fThread;
+	}
+
+	// only now, so that the error returns above leave nothing open
 	fFD = open(fPath, O_RDWR);
 	if (fFD < 0) {
 		// let the control thread handle any error on opening the device
 		fFD = errno;
 	}
 
-	char threadName[B_OS_NAME_LENGTH];
-	snprintf(threadName, B_OS_NAME_LENGTH, "%s watcher", fDeviceRef.name);
-
-	fThread = spawn_thread(_ControlThreadEntry, threadName,
-		kKeyboardThreadPriority, this);
-	if (fThread < B_OK)
-		return fThread;
-
 	fActive = true;
+	resume_thread(fLEDThread);
 	resume_thread(fThread);
 
 	return fFD >= 0 ? B_OK : B_ERROR;
@@ -189,6 +214,16 @@ KeyboardDevice::Stop()
 	TRACE("name: %s\n", fDeviceRef.name);
 
 	fActive = false;
+
+	// The LED thread may sit in KB_SET_LEDS for up to the USB control
+	// transfer timeout; let it finish before fFD goes away.
+	delete_sem(fLEDSem);
+	fLEDSem = -1;
+	if (fLEDThread >= 0) {
+		status_t dummy;
+		wait_for_thread(fLEDThread, &dummy);
+		fLEDThread = -1;
+	}
 
 	close(fFD);
 	fFD = -1;
@@ -536,19 +571,50 @@ KeyboardDevice::_UpdateSettings(uint32 opcode)
 void
 KeyboardDevice::_UpdateLEDs()
 {
-	if (fFD < 0)
-		return;
+	// KB_SET_LEDS can block for seconds (e.g. a USB SET_REPORT the device
+	// never completes), so hand it to the LED thread instead of stalling
+	// KB_READ.
+	release_sem_etc(fLEDSem, 1, B_DO_NOT_RESCHEDULE);
+}
 
-	char lockIO[3] = {0, 0, 0};
 
-	if ((fModifiers & B_NUM_LOCK) != 0)
-		lockIO[0] = 1;
-	if ((fModifiers & B_CAPS_LOCK) != 0)
-		lockIO[1] = 1;
-	if ((fModifiers & B_SCROLL_LOCK) != 0)
-		lockIO[2] = 1;
+/*static*/ int32
+KeyboardDevice::_LEDThreadEntry(void* arg)
+{
+	KeyboardDevice* device = (KeyboardDevice*)arg;
+	return device->_LEDThread();
+}
 
-	ioctl(fFD, KB_SET_LEDS, &lockIO, sizeof(lockIO));
+
+/*!	Sends the current lock state to the driver whenever _UpdateLEDs() was
+	called. Requests that piled up while one was in flight are coalesced into
+	a single one carrying the latest state. Exits when fLEDSem is deleted.
+*/
+int32
+KeyboardDevice::_LEDThread()
+{
+	while (acquire_sem(fLEDSem) == B_OK) {
+		int32 pending;
+		if (get_sem_count(fLEDSem, &pending) == B_OK && pending > 0)
+			acquire_sem_etc(fLEDSem, pending, 0, 0);
+
+		if (fFD < 0)
+			continue;
+
+		char lockIO[3] = {0, 0, 0};
+
+		uint32 modifiers = fModifiers;
+		if ((modifiers & B_NUM_LOCK) != 0)
+			lockIO[0] = 1;
+		if ((modifiers & B_CAPS_LOCK) != 0)
+			lockIO[1] = 1;
+		if ((modifiers & B_SCROLL_LOCK) != 0)
+			lockIO[2] = 1;
+
+		ioctl(fFD, KB_SET_LEDS, &lockIO, sizeof(lockIO));
+	}
+
+	return 0;
 }
 
 
