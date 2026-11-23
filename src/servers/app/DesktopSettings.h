@@ -78,6 +78,8 @@ public:
 			bool				CompositedDragTransparency() const;
 			bool				CompositedWobblyWindows() const;
 			uint8				CompositedWobbliness() const;
+			uint8				CompositedGlass() const;
+			uint8				CompositedGlassOpacity() const;
 			uint8				Hinting() const;
 			uint8				SubpixelAverageWeight() const;
 			bool				IsSubpixelOrderingRegular() const;
@@ -119,6 +121,8 @@ public:
 									bool transparent);
 			void				SetCompositedWobblyWindows(bool wobbly);
 			void				SetCompositedWobbliness(uint8 wobbliness);
+			void				SetCompositedGlass(uint8 glass);
+			void				SetCompositedGlassOpacity(uint8 opacity);
 			void				SetHinting(uint8 hinting);
 			void				SetSubpixelAverageWeight(uint8 averageWeight);
 			void				SetSubpixelOrderingRegular(

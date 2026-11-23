@@ -7,8 +7,11 @@ SEARCH_SOURCE += [ FDirName $(HAIKU_TOP) src servers app ] ;
 UnitTestLib app_server_unit_tests.so :
 	AppServerUnitTestAddOn.cpp
 
+	GlassBlur.cpp
 	IntPoint.cpp
 	IntRect.cpp
+
+	GlassBlurTest.cpp
 	SimpleTransformTest.cpp
 
 	: be [ TargetLibstdc++ ]

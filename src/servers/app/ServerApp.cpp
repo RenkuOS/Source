@@ -3842,6 +3842,47 @@ ServerApp::_DispatchMessage(int32 code, BPrivate::LinkReceiver& link)
 			fLink.Flush();
 			break;
 		}
+		case AS_SET_COMPOSITED_GLASS:
+		case AS_SET_COMPOSITED_GLASS_OPACITY:
+		{
+			uint8 value;
+			if (link.Read<uint8>(&value) != B_OK)
+				break;
+
+			Compositor* compositor = fDesktop->GetCompositor();
+			{
+				// The compositor gets both, in the order they are changed.
+				LockedDesktopSettings settings(fDesktop);
+				if (code == AS_SET_COMPOSITED_GLASS)
+					settings.SetCompositedGlass(min_c(value, 2));
+				else
+					settings.SetCompositedGlassOpacity(min_c(value, 100));
+				if (compositor != NULL) {
+					compositor->SetGlass(settings.CompositedGlass(),
+						settings.CompositedGlassOpacity());
+				}
+			}
+
+			if (compositor != NULL)
+				fDesktop->WindowShapesChanged();
+			break;
+		}
+		case AS_GET_COMPOSITED_GLASS:
+		{
+			DesktopSettings settings(fDesktop);
+			fLink.StartMessage(B_OK);
+			fLink.Attach<uint8>(settings.CompositedGlass());
+			fLink.Flush();
+			break;
+		}
+		case AS_GET_COMPOSITED_GLASS_OPACITY:
+		{
+			DesktopSettings settings(fDesktop);
+			fLink.StartMessage(B_OK);
+			fLink.Attach<uint8>(settings.CompositedGlassOpacity());
+			fLink.Flush();
+			break;
+		}
 		case AS_GET_SUBPIXEL_ANTIALIASING:
 		{
 			DesktopSettings settings(fDesktop);

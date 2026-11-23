@@ -540,8 +540,11 @@ Desktop::Init()
 		fCompositor.SetTo(new(std::nothrow) Compositor(this));
 		if (fCompositor.IsSet() && fCompositor->InitCheck() != B_OK)
 			fCompositor.Unset();
-		if (fCompositor.IsSet())
+		if (fCompositor.IsSet()) {
 			HWInterface()->SetPageFlipping(true);
+			fCompositor->SetGlass(fSettings->CompositedGlass(),
+				fSettings->CompositedGlassOpacity());
+		}
 	}
 	debug_printf("app_server: desktop is %scomposited\n",
 		fCompositor.IsSet() ? "" : "not ");
