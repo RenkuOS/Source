@@ -599,7 +599,9 @@ RecorderWindow::MessageReceived(BMessage * message)
 		break;
 	case UPDATE_TRACKSLIDER:
 		{
-			bigtime_t timestamp = fPlayTrack->CurrentTime();
+			bigtime_t timestamp;
+			if (message->FindInt64("time", &timestamp) != B_OK)
+				break;
 			fTrackSlider->SetMainTime(timestamp, false);
 			fScopeView->SetMainTime(timestamp);
 		}
@@ -728,6 +730,17 @@ RecorderWindow::Play(BMessage * message)
 		return;
 	}
 
+	const media_raw_audio_format& format = fPlayFormat.u.raw_audio;
+	size_t frameSize = (format.format & 0xf) * format.channel_count;
+	uint8 silence = format.format == media_raw_audio_format::B_AUDIO_UCHAR
+		? 0x80 : 0;
+	status_t err = fPlayBuffer.SetTo(format.buffer_size, frameSize, silence);
+	if (err != B_OK) {
+		ErrorAlert(B_TRANSLATE("Cannot get the file to play"), err);
+		StopPlaying();
+		return;
+	}
+
 	fPlayLimit = MIN(fPlayFrames, (off_t)(fTrackSlider->RightTime()
 		* fPlayFormat.u.raw_audio.frame_rate / 1000000LL));
 	fPlayTrack->SeekToTime(fTrackSlider->MainTime());
@@ -736,7 +749,7 @@ RecorderWindow::Play(BMessage * message)
 	// Create our internal Node which plays sound, and register it.
 	fPlayer = new BSoundPlayer(fAudioMixerNode, &fPlayFormat.u.raw_audio,
 		"Sound Player");
-	status_t err = fPlayer->InitCheck();
+	err = fPlayer->InitCheck();
 	if (err < B_OK)
 		return;
 
@@ -1243,24 +1256,42 @@ RecorderWindow::PlayFile(void * cookie, void * data, size_t size,
 {
 	//	Callback called from the SoundProducer when producing buffers.
 	RecorderWindow * window = (RecorderWindow *)cookie;
-	int32 frame_size = (window->fPlayFormat.u.raw_audio.format & 0xf) *
-		window->fPlayFormat.u.raw_audio.channel_count;
 
 	if ((window->fPlayFrame < window->fPlayLimit) || window->fLooping) {
 		if (window->fPlayFrame >= window->fPlayLimit) {
 			bigtime_t left = window->fTrackSlider->LeftTime();
 			window->fPlayTrack->SeekToTime(&left);
 			window->fPlayFrame = window->fPlayTrack->CurrentFrame();
+			window->fPlayBuffer.Clear();
 		}
-		int64 frames = 0;
-		window->fPlayTrack->ReadFrames(data, &frames);
-		window->fVUView->ComputeLevels(data, size / frame_size, format.format);
-		window->fPlayFrame += size/frame_size;
-		window->PostMessage(UPDATE_TRACKSLIDER);
+		int64 frames = window->fPlayBuffer.Fill(data, size, ReadPlayFrames,
+			window->fPlayTrack);
+		if (frames == 0) {
+			// The track ended before the frame count it announced.
+			window->fPlayLimit = window->fPlayFrame;
+			if (!window->fLooping)
+				window->PostMessage(STOP_PLAYING);
+			return;
+		}
+		window->fVUView->ComputeLevels(data, frames, format.format);
+		window->fPlayFrame += frames;
+
+		BMessage update(UPDATE_TRACKSLIDER);
+		update.AddInt64("time", (bigtime_t)(window->fPlayFrame * 1000000.0
+			/ window->fPlayFormat.u.raw_audio.frame_rate));
+		window->PostMessage(&update);
 	} else {
 		//	we're done!
+		window->fPlayBuffer.FillSilence(data, size);
 		window->PostMessage(STOP_PLAYING);
 	}
+}
+
+
+status_t
+RecorderWindow::ReadPlayFrames(void * cookie, void * buffer, int64 * frames)
+{
+	return ((BMediaTrack *)cookie)->ReadFrames(buffer, frames);
 }
 
 
