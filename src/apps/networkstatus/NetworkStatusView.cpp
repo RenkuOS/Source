@@ -410,6 +410,8 @@ NetworkStatusView::MouseDown(BPoint point)
 		uint32 networksCount = 0;
 		wireless_network* networks = NULL;
 		device.GetNetworks(networks, networksCount);
+		networksCount = WirelessNetworkMenuItem::MergeSameName(networks,
+			networksCount, associated);
 		for (uint32 i = 0; i < networksCount; i++) {
 			const wireless_network& network = networks[i];
 			BMessage* message = new BMessage(kMsgJoinNetwork);

@@ -34,6 +34,19 @@ static const uint32 kMsgInterfaceRenegotiate = 'redo';
 static const uint32 kMsgJoinNetwork = 'join';
 
 
+/*!	Match by SSID (BSSID only for hidden networks), not
+	wireless_network::operator==, which also compares the ever-changing
+	signal strength. Access points sharing an SSID are one menu entry.
+*/
+static bool
+same_network(const wireless_network& a, const wireless_network& b)
+{
+	if (a.name[0] == '\0' && b.name[0] == '\0')
+		return a.address == b.address;
+	return strcmp(a.name, b.name) == 0;
+}
+
+
 #undef B_TRANSLATION_CONTEXT
 #define B_TRANSLATION_CONTEXT "IntefaceView"
 
@@ -239,7 +252,9 @@ InterfaceView::_Update(bool updateWirelessNetworks)
 	else if (!fNetworkMenuField->IsHidden(fNetworkMenuField) && !isWireless)
 		fNetworkMenuField->Hide();
 
-	if (isWireless && updateWirelessNetworks) {
+	// Don't touch the network menu while it is open (it has a window then)
+	if (isWireless && updateWirelessNetworks
+		&& fNetworkMenuField->Menu()->Window() == NULL) {
 		// Rebuild network menu
 		BMenu* menu = fNetworkMenuField->Menu();
 		int32 count = menu->CountItems();
@@ -292,6 +307,8 @@ InterfaceView::_Update(bool updateWirelessNetworks)
 		}
 
 		ArrayDeleter<wireless_network> networksDeleter(networks);
+		networksCount = WirelessNetworkMenuItem::MergeSameName(networks,
+			networksCount, associated);
 
 		// go through menu items and remove networks that have dropped out
 		for (int32 index = 0; index < count; index++) {
@@ -303,7 +320,7 @@ InterfaceView::_Update(bool updateWirelessNetworks)
 
 			bool networkFound = false;
 			for (uint32 i = 0; i < networksCount; i++) {
-				if (networkItem->Network() == networks[i]) {
+				if (same_network(networkItem->Network(), networks[i])) {
 					networkFound = true;
 					break;
 				}
@@ -311,7 +328,9 @@ InterfaceView::_Update(bool updateWirelessNetworks)
 
 			if (!networkFound) {
 				menu->RemoveItem(networkItem);
+				delete networkItem;
 				count--;
+				index--;
 			}
 		}
 
@@ -327,9 +346,13 @@ InterfaceView::_Update(bool updateWirelessNetworks)
 				if (networkItem == NULL)
 					break;
 
-				if (networkItem->Network() == network) {
-					// found it
+				if (same_network(networkItem->Network(), network)) {
+					// found it, refresh signal/label in place
 					networkFound = true;
+					networkItem->SetNetwork(network);
+					// join the group's current strongest AP
+					BNetworkAddress address = network.address;
+					networkItem->Message()->ReplaceFlat("address", &address);
 					if (associated.find(network.address) != associated.end())
 						networkItem->SetMarked(true);
 					break;
