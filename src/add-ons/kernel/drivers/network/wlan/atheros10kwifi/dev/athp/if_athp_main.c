@@ -1458,10 +1458,15 @@ athp_key_update_drain_tx(struct ath10k *ar)
 {
 	int i, pending;
 
+	/*
+	 * Only read the count, without the HTT transmit lock: stopping the core
+	 * (ath10k_core_stop()) destroys that lock, and a key update can still
+	 * be queued when the interface goes down. The count itself stays valid.
+	 * Nor can this hold the conf lock: transmitting takes it, so message 4
+	 * couldn't be sent while we wait for it.
+	 */
 	for (i = 0; i < 20; i++) {
-		ATHP_HTT_TX_LOCK(&ar->htt);
-		pending = ar->htt.num_pending_tx;
-		ATHP_HTT_TX_UNLOCK(&ar->htt);
+		pending = *(volatile int *)&ar->htt.num_pending_tx;
 		if (pending == 0)
 			return;
 		pause("athpkey", MAX(1, hz / 100));
