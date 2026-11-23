@@ -36,7 +36,8 @@ public:
 								MouseReportDecoder(HIDCollection &collection,
 									HIDReport &motionReport);
 
-			//! Is there a report that has not been decoded yet?
+			//! Did the last packet carry a report of this mouse? Stays true
+			//! after Decode(), so ask only after waiting for a packet.
 			bool				HasNewData();
 
 			mouse_movement		Decode(bigtime_t timestamp);

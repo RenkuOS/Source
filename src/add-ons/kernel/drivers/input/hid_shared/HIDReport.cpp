@@ -248,7 +248,9 @@ HIDReport::WaitForReport(bigtime_t timeout)
 	status_t result = fParser->Device()->MaybeScheduleTransfer(this);
 	if (result != B_OK) {
 		TRACE_ALWAYS("scheduling transfer failed\n");
-		return result;
+		// listeners take "busy" for a status stored by SetReport(), not for a
+		// busy bus
+		return result == B_BUSY ? B_DEV_NOT_READY : result;
 	}
 
 	result = conditionVariableEntry.Wait(B_RELATIVE_TIMEOUT | B_CAN_INTERRUPT, timeout);
