@@ -193,6 +193,8 @@ athp_alloc_list(struct ath10k *ar, struct athp_buf_ring *br, int count, int btyp
 		ath10k_err(ar, "%s: malloc failed!\n", __func__);
 		return (-1);
 	}
+	/* athp_free_list() frees this many at teardown */
+	br->br_count = count;
 
 	/* Setup initial state for each entry */
 	for (i = 0; i < count; i++) {
