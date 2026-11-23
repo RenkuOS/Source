@@ -1,0 +1,15 @@
+name			atheros10k_wifi_firmwares
+version			20261120-1
+architecture	any
+summary			"Firmware for Qualcomm Atheros QCA6174 WiFi chips"
+description		"Firmware for the Qualcomm Atheros QCA6174 hw3.0 WiFi chips that the atheros10kwifi driver supports: firmware API 4 and the board data. The files come from linux-firmware."
+
+packager		"The Haiku build system"
+vendor			"Haiku Project"
+
+copyrights		"Qualcomm Atheros, Inc."
+licenses		"Qualcomm Atheros ath10k (firmware)"
+
+provides {
+	atheros10k_wifi_firmwares = 20261120
+}

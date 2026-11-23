@@ -39,6 +39,7 @@ if $(HAIKU_BUILD_TYPE) = test {
 }
 
 if $(HAIKU_BUILD_TYPE) = regular {
+	packages += atheros10k_wifi_firmwares ;
 	packages += mediatek_wifi_firmwares ;
 	packages += realtek_rtw88_wifi_firmwares ;
 }

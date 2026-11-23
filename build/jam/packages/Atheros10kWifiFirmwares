@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: MIT
+#
+# Firmware for the Qualcomm Atheros QCA6174 hw3.0 chips that atheros10kwifi
+# drives, from linux-firmware. athp loads firmware API 4 (it can't load
+# firmware-6.bin yet), and picks the card's board data from board-2.bin,
+# falling back to board.bin. The files are renamed the way athp asks for them
+# and pinned to one linux-firmware commit, checked against their SHA-256. They
+# come from the GitLab repository of linux-firmware, as for the Realtek
+# firmware.
+local atherosFirmwarePackage = atheros10k_wifi_firmwares.hpkg ;
+HaikuPackage $(atherosFirmwarePackage) ;
+
+local commit = a1ebb5ad7eae3caca60b8b3db5792cf43339ba58 ;
+local linuxFirmware
+	= https://gitlab.com/kernel-firmware/linux-firmware/-/raw/$(commit) ;
+local hw30 = $(linuxFirmware)/ath10k/QCA6174/hw3.0 ;
+
+# QCA6174 hw3.0, firmware WLAN.RM.2.0-00180-QCARMSWPZ-1.
+local firmwareFiles =
+	[ DownloadFile athp_QCA6174_hw3.0_firmware-4.bin
+		: $(hw30)/firmware-4.bin
+		:
+		: dc74ba148cf88f1f99a62854112ec574d8c265d88417a4d969461448b0ab60c5 ]
+	[ DownloadFile athp_QCA6174_hw3.0_board-2.bin
+		: $(hw30)/board-2.bin
+		:
+		: 66e83dde1c9af535df1fcd17c72971a96a263357300e921b358d35a353227d60 ]
+	[ DownloadFile athp_QCA6174_hw3.0_board.bin
+		: $(hw30)/board.bin
+		:
+		: 1a8d225818b46986fc4f615594fbe448fa820618590d6902c8f844bb37cda667 ]
+	;
+local licenseFile = [ DownloadFile LICENSE.QualcommAtheros_ath10k.txt
+	: $(linuxFirmware)/LICENSES/LICENSE.QualcommAtheros_ath10k
+	:
+	: 337a55102138d7baa143ee4a4c6c91693e0113fece35d380b2a12109e8c23b3f ] ;
+local noticeFile = [ DownloadFile notice_ath10k_QCA6174_hw3.0_firmware-4.txt
+	: $(hw30)/notice_ath10k_firmware-4.txt
+	:
+	: 3b5eb392b2d9d8c46d6aae26d06c187e5ea3029b12d13bc2b8deb8b3ce6bfa53 ] ;
+
+AddFilesToPackage data firmware atheros10kwifi : $(firmwareFiles) ;
+AddFilesToPackage data licenses : $(licenseFile)
+	: "Qualcomm Atheros ath10k (firmware)" ;
+AddFilesToPackage data licenses : $(noticeFile)
+	: "Qualcomm Atheros ath10k (firmware notices)" ;
+
+BuildHaikuPackage $(atherosFirmwarePackage) : atheros10k_wifi_firmwares ;

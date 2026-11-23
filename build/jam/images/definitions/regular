@@ -317,6 +317,7 @@ SYSTEM_ADD_ONS_DRIVERS_NET += [ FFilterByBuildFeatures
 	# WLAN drivers
 	x86,x86_64,riscv64,arm64 @{
 		aironetwifi
+		atheros10kwifi
 		atheroswifi
 		broadcom43xx
 		broadcom43xxn
