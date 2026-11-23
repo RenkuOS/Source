@@ -251,7 +251,10 @@ update_int_load(int i)
 	compute_load(sVectors[i].last_measure_time, sVectors[i].last_measure_active,
 		sVectors[i].load, system_time());
 
-	if (oldLoad != sVectors[i].load)
+	// The vector can have been freed since its handlers ran: the vector lock
+	// isn't held here. free_io_interrupt_vectors() clears assigned_cpu with
+	// the load lock held, so it can't change under us.
+	if (oldLoad != sVectors[i].load && sVectors[i].assigned_cpu != NULL)
 		atomic_add(&sVectors[i].assigned_cpu->load, sVectors[i].load - oldLoad);
 
 	release_spinlock(&sVectors[i].load_lock);
@@ -717,7 +720,11 @@ free_io_interrupt_vectors(int32 count, int32 startVector)
 			continue;
 		}
 
+		// An interrupt that came in just before its handler was removed can
+		// still be updating the load of this vector, without the vector lock.
+		SpinLocker loadLocker(vector.load_lock);
 		vector.assigned_cpu = NULL;
+		loadLocker.Unlock();
 		sAllocatedIOInterruptVectors[startVector + i] = false;
 	}
 }
