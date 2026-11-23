@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/sockio.h>
 #include <sys/time.h>
 
 #include <new>
@@ -514,9 +515,48 @@ socket_free(net_socket* _socket)
 }
 
 
+/*!	Whether \a op changes the network configuration (interfaces, addresses,
+	routes, media, packet capture, driver settings); only root may do that.
+	BSD-style requests that only pass data in (_IOW(), like the 802.11 ones of
+	the compat drivers) set values as well.
+*/
+static bool
+is_configuration_change(uint32 op)
+{
+	switch (op) {
+		case SIOCADDRT:
+		case SIOCDELRT:
+		case SIOCSIFADDR:
+		case SIOCSIFDSTADDR:
+		case SIOCSIFFLAGS:
+		case SIOCSIFBRDADDR:
+		case SIOCSIFNETMASK:
+		case SIOCSIFMETRIC:
+		case SIOCDIFADDR:
+		case SIOCAIFADDR:
+		case SIOCADDMULTI:
+		case SIOCDELMULTI:
+		case SIOCSIFMTU:
+		case SIOCSIFMEDIA:
+		case SIOCSPACKETCAP:
+		case SIOCCPACKETCAP:
+		case SIOCSDRVSPEC:
+		case SIOCSIFGENERIC:
+		case B_SOCKET_SET_ALIAS:
+			return true;
+	}
+
+	return (op & 0xe0000000) == 0x80000000;
+		// IOC_IN without IOC_OUT
+}
+
+
 status_t
 socket_control(net_socket* socket, uint32 op, void* data, size_t length)
 {
+	if (is_configuration_change(op) && !may_change_configuration())
+		return B_NOT_ALLOWED;
+
 	switch (op) {
 		case FIONREAD:
 		{

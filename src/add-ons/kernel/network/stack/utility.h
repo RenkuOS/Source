@@ -73,6 +73,8 @@ void		uninit_timers(void);
 
 // syscall restart
 bool		is_syscall(void);
+status_t	check_request_buffer(const void* buffer, size_t size);
+bool		may_change_configuration(void);
 bool		is_restarted_syscall(void);
 bigtime_t	set_syscall_restart_timeout(bigtime_t relativeTimeout);
 bigtime_t	restore_syscall_restart_timeout(void);

@@ -31,6 +31,7 @@
 #include <new>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include <utility>
 
 
@@ -445,6 +446,11 @@ UdpDomainSupport::_BindEndpoint(UdpEndpoint *endpoint,
 status_t
 UdpDomainSupport::_Bind(UdpEndpoint *endpoint, const sockaddr *address)
 {
+	// ports below 1024 are for root, as for TCP (airos-works/haiku#130)
+	uint16 port = ntohs(AddressModule()->get_port(address));
+	if (port != 0 && port < 1024 && geteuid() != 0)
+		return B_PERMISSION_DENIED;
+
 	int socketOptions = endpoint->Socket()->options;
 
 	EndpointTable::Iterator it = fActiveEndpoints.GetIterator();

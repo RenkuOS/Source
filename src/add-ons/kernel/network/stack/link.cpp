@@ -395,6 +395,7 @@ link_control(net_protocol* _protocol, int level, int option, void* value,
 		{
 			// count number of interfaces
 			struct ifconf config;
+			memset(&config, 0, sizeof(config));
 			config.ifc_value = count_device_interfaces();
 
 			return user_memcpy(value, &config, sizeof(struct ifconf));
@@ -405,6 +406,10 @@ link_control(net_protocol* _protocol, int level, int option, void* value,
 			// retrieve available interfaces
 			struct ifconf config;
 			if (user_memcpy(&config, value, sizeof(struct ifconf)) < B_OK)
+				return B_BAD_ADDRESS;
+			if (config.ifc_len < 0)
+				return B_BAD_VALUE;
+			if (check_request_buffer(config.ifc_buf, config.ifc_len) != B_OK)
 				return B_BAD_ADDRESS;
 
 			status_t result = list_device_interfaces(config.ifc_buf,
