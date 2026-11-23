@@ -36,12 +36,7 @@ extern "C" {
 #define DSP_BOOT_TIMEOUT		3000000
 #define IPC_TIMEOUT				500000
 
-// the fixed playback pipeline: host -> buffer -> SSP0
-#define PIPELINE_ID				1
-#define COMP_HOST_ID			1
-#define COMP_BUFFER_ID			2
-#define COMP_DAI_ID				3
-#define COMP_PIPELINE_ID		4
+// the fixed pipelines (see kPipelines)
 #define PERIOD_US				1000
 #define DAI_PERIODS				2
 #define FRAME_BYTES				8
@@ -627,94 +622,24 @@ init_header(sof_ipc_cmd_hdr* header, size_t size, uint32 command)
 }
 
 
+struct pipeline_ids {
+	uint32	pipeline;
+	uint32	host;
+	uint32	buffer;
+	uint32	dai;
+	uint32	scheduler;
+};
+
+// playback: host -> buffer -> SSP0, capture: SSP0 -> buffer -> host
+static const pipeline_ids kPipelines[LPE_STREAM_COUNT] = {
+	{ 1, 1, 2, 3, 4 },
+	{ 2, 5, 6, 7, 8 },
+};
+
+
 static status_t
-create_pipeline(lpe_dsp* dsp)
+configure_ssp(lpe_dsp* dsp)
 {
-	// pipeline, scheduled by the DAI as in the SOF topologies for Bay Trail
-	sof_ipc_pipe_new pipe;
-	memset(&pipe, 0, sizeof(pipe));
-	init_header(&pipe.hdr, sizeof(pipe),
-		SOF_IPC_GLB_TPLG_MSG | SOF_IPC_TPLG_PIPE_NEW);
-	pipe.comp_id = COMP_PIPELINE_ID;
-	pipe.pipeline_id = PIPELINE_ID;
-	pipe.sched_id = COMP_DAI_ID;
-	pipe.period = PERIOD_US;
-	pipe.period_mips = 5000;
-	pipe.time_domain = SOF_TIME_DOMAIN_DMA;
-	status_t status = send_message(dsp, &pipe, sizeof(pipe), NULL, 0);
-	if (status != B_OK)
-		return status;
-
-	sof_ipc_comp_host host;
-	memset(&host, 0, sizeof(host));
-	init_header(&host.comp.hdr, sizeof(host),
-		SOF_IPC_GLB_TPLG_MSG | SOF_IPC_TPLG_COMP_NEW);
-	host.comp.id = COMP_HOST_ID;
-	host.comp.type = SOF_COMP_HOST;
-	host.comp.pipeline_id = PIPELINE_ID;
-	host.config.hdr.size = sizeof(host.config);
-	host.config.periods_sink = DAI_PERIODS;
-	host.config.periods_source = DAI_PERIODS;
-	host.config.frame_fmt = SOF_IPC_FRAME_S16_LE;
-	host.direction = SOF_IPC_STREAM_PLAYBACK;
-	status = send_message(dsp, &host, sizeof(host), NULL, 0);
-	if (status != B_OK)
-		return status;
-
-	sof_ipc_buffer buffer;
-	memset(&buffer, 0, sizeof(buffer));
-	init_header(&buffer.comp.hdr, sizeof(buffer),
-		SOF_IPC_GLB_TPLG_MSG | SOF_IPC_TPLG_BUFFER_NEW);
-	buffer.comp.id = COMP_BUFFER_ID;
-	buffer.comp.type = SOF_COMP_BUFFER;
-	buffer.comp.pipeline_id = PIPELINE_ID;
-	buffer.size = DAI_PERIODS * FRAME_BYTES * 48 * PERIOD_US / 1000;
-	buffer.caps = SOF_MEM_CAPS_RAM | SOF_MEM_CAPS_DMA | SOF_MEM_CAPS_CACHE;
-	status = send_message(dsp, &buffer, sizeof(buffer), NULL, 0);
-	if (status != B_OK)
-		return status;
-
-	sof_ipc_comp_dai dai;
-	memset(&dai, 0, sizeof(dai));
-	init_header(&dai.comp.hdr, sizeof(dai),
-		SOF_IPC_GLB_TPLG_MSG | SOF_IPC_TPLG_COMP_NEW);
-	dai.comp.id = COMP_DAI_ID;
-	dai.comp.type = SOF_COMP_DAI;
-	dai.comp.pipeline_id = PIPELINE_ID;
-	dai.config.hdr.size = sizeof(dai.config);
-	dai.config.periods_sink = DAI_PERIODS;
-	dai.config.periods_source = DAI_PERIODS;
-	dai.config.frame_fmt = SOF_IPC_FRAME_S24_4LE;
-	dai.direction = SOF_IPC_STREAM_PLAYBACK;
-	dai.dai_index = 0;
-	dai.type = SOF_DAI_INTEL_SSP;
-	status = send_message(dsp, &dai, sizeof(dai), NULL, 0);
-	if (status != B_OK)
-		return status;
-
-	static const uint32 kConnections[][2] = {
-		{ COMP_HOST_ID, COMP_BUFFER_ID },
-		{ COMP_BUFFER_ID, COMP_DAI_ID },
-	};
-	for (size_t i = 0; i < B_COUNT_OF(kConnections); i++) {
-		sof_ipc_pipe_comp_connect connect;
-		init_header(&connect.hdr, sizeof(connect),
-			SOF_IPC_GLB_TPLG_MSG | SOF_IPC_TPLG_COMP_CONNECT);
-		connect.source_id = kConnections[i][0];
-		connect.sink_id = kConnections[i][1];
-		status = send_message(dsp, &connect, sizeof(connect), NULL, 0);
-		if (status != B_OK)
-			return status;
-	}
-
-	sof_ipc_pipe_ready ready;
-	init_header(&ready.hdr, sizeof(ready),
-		SOF_IPC_GLB_TPLG_MSG | SOF_IPC_TPLG_PIPE_COMPLETE);
-	ready.comp_id = COMP_PIPELINE_ID;
-	status = send_message(dsp, &ready, sizeof(ready), NULL, 0);
-	if (status != B_OK)
-		return status;
-
 	// SSP0 to the codec on Bay Trail-CR: I2S, the SSP provides the clocks,
 	// 2 slots of 25 bits with 24 valid bits at 48 kHz (BCLK 2.4 MHz from
 	// the 19.2 MHz SSP clock), as in the SOF topology for Bay Trail codecs
@@ -736,39 +661,152 @@ create_pipeline(lpe_dsp* dsp)
 	config.ssp.sample_valid_bits = 24;
 	config.ssp.tdm_slot_width = 25;
 	config.ssp.mclk_direction = 1;
-	status = send_message(dsp, &config, sizeof(config), NULL, 0);
+	return send_message(dsp, &config, sizeof(config), NULL, 0);
+}
+
+
+static status_t
+create_pipeline(lpe_dsp* dsp, uint32 direction)
+{
+	const pipeline_ids& ids = kPipelines[direction];
+
+	// pipeline, scheduled by the DAI as in the SOF topologies for Bay Trail
+	sof_ipc_pipe_new pipe;
+	memset(&pipe, 0, sizeof(pipe));
+	init_header(&pipe.hdr, sizeof(pipe),
+		SOF_IPC_GLB_TPLG_MSG | SOF_IPC_TPLG_PIPE_NEW);
+	pipe.comp_id = ids.scheduler;
+	pipe.pipeline_id = ids.pipeline;
+	pipe.sched_id = ids.dai;
+	pipe.period = PERIOD_US;
+	pipe.period_mips = 5000;
+	pipe.time_domain = SOF_TIME_DOMAIN_DMA;
+	status_t status = send_message(dsp, &pipe, sizeof(pipe), NULL, 0);
 	if (status != B_OK)
 		return status;
 
-	dsp->pipelineCreated = true;
-	TRACE_ALWAYS("playback pipeline created\n");
+	sof_ipc_comp_host host;
+	memset(&host, 0, sizeof(host));
+	init_header(&host.comp.hdr, sizeof(host),
+		SOF_IPC_GLB_TPLG_MSG | SOF_IPC_TPLG_COMP_NEW);
+	host.comp.id = ids.host;
+	host.comp.type = SOF_COMP_HOST;
+	host.comp.pipeline_id = ids.pipeline;
+	host.config.hdr.size = sizeof(host.config);
+	host.config.periods_sink = DAI_PERIODS;
+	host.config.periods_source = DAI_PERIODS;
+	host.config.frame_fmt = SOF_IPC_FRAME_S16_LE;
+	host.direction = direction;
+	status = send_message(dsp, &host, sizeof(host), NULL, 0);
+	if (status != B_OK)
+		return status;
+
+	sof_ipc_buffer buffer;
+	memset(&buffer, 0, sizeof(buffer));
+	init_header(&buffer.comp.hdr, sizeof(buffer),
+		SOF_IPC_GLB_TPLG_MSG | SOF_IPC_TPLG_BUFFER_NEW);
+	buffer.comp.id = ids.buffer;
+	buffer.comp.type = SOF_COMP_BUFFER;
+	buffer.comp.pipeline_id = ids.pipeline;
+	buffer.size = DAI_PERIODS * FRAME_BYTES * 48 * PERIOD_US / 1000;
+	buffer.caps = SOF_MEM_CAPS_RAM | SOF_MEM_CAPS_DMA | SOF_MEM_CAPS_CACHE;
+	status = send_message(dsp, &buffer, sizeof(buffer), NULL, 0);
+	if (status != B_OK)
+		return status;
+
+	sof_ipc_comp_dai dai;
+	memset(&dai, 0, sizeof(dai));
+	init_header(&dai.comp.hdr, sizeof(dai),
+		SOF_IPC_GLB_TPLG_MSG | SOF_IPC_TPLG_COMP_NEW);
+	dai.comp.id = ids.dai;
+	dai.comp.type = SOF_COMP_DAI;
+	dai.comp.pipeline_id = ids.pipeline;
+	dai.config.hdr.size = sizeof(dai.config);
+	dai.config.periods_sink = DAI_PERIODS;
+	dai.config.periods_source = DAI_PERIODS;
+	dai.config.frame_fmt = SOF_IPC_FRAME_S24_4LE;
+	dai.direction = direction;
+	dai.dai_index = 0;
+	dai.type = SOF_DAI_INTEL_SSP;
+	status = send_message(dsp, &dai, sizeof(dai), NULL, 0);
+	if (status != B_OK)
+		return status;
+
+	uint32 connections[2][2] = {
+		{ ids.host, ids.buffer },
+		{ ids.buffer, ids.dai },
+	};
+	if (direction == LPE_CAPTURE) {
+		connections[0][0] = ids.dai;
+		connections[0][1] = ids.buffer;
+		connections[1][0] = ids.buffer;
+		connections[1][1] = ids.host;
+	}
+	for (int i = 0; i < 2; i++) {
+		sof_ipc_pipe_comp_connect connect;
+		init_header(&connect.hdr, sizeof(connect),
+			SOF_IPC_GLB_TPLG_MSG | SOF_IPC_TPLG_COMP_CONNECT);
+		connect.source_id = connections[i][0];
+		connect.sink_id = connections[i][1];
+		status = send_message(dsp, &connect, sizeof(connect), NULL, 0);
+		if (status != B_OK)
+			return status;
+	}
+
+	sof_ipc_pipe_ready ready;
+	init_header(&ready.hdr, sizeof(ready),
+		SOF_IPC_GLB_TPLG_MSG | SOF_IPC_TPLG_PIPE_COMPLETE);
+	ready.comp_id = ids.scheduler;
+	status = send_message(dsp, &ready, sizeof(ready), NULL, 0);
+	if (status != B_OK)
+		return status;
+
+	// the DAI configuration applies to the DAI components that exist, so
+	// it follows each new one
+	status = configure_ssp(dsp);
+	if (status != B_OK)
+		return status;
+
+	dsp->pipelineCreated[direction] = true;
+	TRACE_ALWAYS("%s pipeline created\n",
+		direction == LPE_PLAYBACK ? "playback" : "capture");
 	return B_OK;
 }
 
 
 status_t
-lpe_dsp_start_playback(lpe_dsp* dsp, const lpe_stream_buffer* buffer)
+lpe_dsp_start_stream(lpe_dsp* dsp, uint32 direction,
+	const lpe_stream_buffer* buffer)
 {
-	if (!dsp->pipelineCreated) {
-		status_t status = create_pipeline(dsp);
+	if (direction >= LPE_STREAM_COUNT)
+		return B_BAD_VALUE;
+
+	// Both pipelines are created before the first stream starts, so that
+	// configuring the SSP for the second one does not disturb a running
+	// stream.
+	for (uint32 i = 0; i < LPE_STREAM_COUNT; i++) {
+		if (dsp->pipelineCreated[i])
+			continue;
+		status_t status = create_pipeline(dsp, i);
 		if (status != B_OK)
 			return status;
 	}
+	const pipeline_ids& ids = kPipelines[direction];
 
 	sof_ipc_pcm_params params;
 	memset(&params, 0, sizeof(params));
 	init_header(&params.hdr, sizeof(params),
 		SOF_IPC_GLB_STREAM_MSG | SOF_IPC_STREAM_PCM_PARAMS);
-	params.comp_id = COMP_HOST_ID;
+	params.comp_id = ids.host;
 	params.params.hdr_size = sizeof(params.params);
 	params.params.buffer.phy_addr = (uint32)buffer->pageTable;
 	params.params.buffer.pages = buffer->pageCount;
 	params.params.buffer.size = buffer->size;
-	params.params.direction = SOF_IPC_STREAM_PLAYBACK;
+	params.params.direction = direction;
 	params.params.frame_fmt = SOF_IPC_FRAME_S16_LE;
 	params.params.buffer_fmt = SOF_IPC_BUFFER_INTERLEAVED;
 	params.params.rate = 48000;
-	params.params.stream_tag = 1;
+	params.params.stream_tag = direction + 1;
 	params.params.channels = 2;
 	params.params.sample_valid_bytes = 2;
 	params.params.sample_container_bytes = 2;
@@ -787,29 +825,33 @@ lpe_dsp_start_playback(lpe_dsp* dsp, const lpe_stream_buffer* buffer)
 		sizeof(reply));
 	if (status != B_OK)
 		return status;
-	dsp->positionOffset = reply.posn_offset;
-	TRACE_ALWAYS("stream set up: %" B_PRIu32 " pages, %" B_PRIu32
-		" bytes, position at %#" B_PRIx32 "\n", buffer->pageCount,
-		buffer->size, reply.posn_offset);
+	dsp->positionOffset[direction] = reply.posn_offset;
 
 	sof_ipc_stream stream;
 	init_header(&stream.hdr, sizeof(stream),
 		SOF_IPC_GLB_STREAM_MSG | SOF_IPC_STREAM_TRIG_START);
-	stream.comp_id = COMP_HOST_ID;
+	stream.comp_id = ids.host;
 	status = send_message(dsp, &stream, sizeof(stream), NULL, 0);
-	if (status == B_OK)
-		TRACE_ALWAYS("playback started\n");
+	if (status == B_OK) {
+		TRACE_ALWAYS("%s started: %" B_PRIu32 " pages, %" B_PRIu32
+			" bytes, position at %#" B_PRIx32 "\n",
+			direction == LPE_PLAYBACK ? "playback" : "capture",
+			buffer->pageCount, buffer->size, reply.posn_offset);
+	}
 	return status;
 }
 
 
 status_t
-lpe_dsp_stop_playback(lpe_dsp* dsp)
+lpe_dsp_stop_stream(lpe_dsp* dsp, uint32 direction)
 {
+	if (direction >= LPE_STREAM_COUNT)
+		return B_BAD_VALUE;
+
 	sof_ipc_stream stream;
 	init_header(&stream.hdr, sizeof(stream),
 		SOF_IPC_GLB_STREAM_MSG | SOF_IPC_STREAM_TRIG_STOP);
-	stream.comp_id = COMP_HOST_ID;
+	stream.comp_id = kPipelines[direction].host;
 	status_t status = send_message(dsp, &stream, sizeof(stream), NULL, 0);
 
 	init_header(&stream.hdr, sizeof(stream),
@@ -821,12 +863,13 @@ lpe_dsp_stop_playback(lpe_dsp* dsp)
 
 
 status_t
-lpe_dsp_read_position(lpe_dsp* dsp, sof_ipc_stream_posn* position)
+lpe_dsp_read_position(lpe_dsp* dsp, uint32 direction,
+	sof_ipc_stream_posn* position)
 {
-	if (dsp->streamBoxOffset == 0)
+	if (dsp->streamBoxOffset == 0 || direction >= LPE_STREAM_COUNT)
 		return B_NO_INIT;
-	mailbox_read(dsp, dsp->streamBoxOffset + dsp->positionOffset, position,
-		sizeof(*position) & ~3);
+	mailbox_read(dsp, dsp->streamBoxOffset + dsp->positionOffset[direction],
+		position, sizeof(*position) & ~3);
 	return B_OK;
 }
 

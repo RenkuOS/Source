@@ -281,6 +281,12 @@ struct sof_ipc_stream_posn {
 } _PACKED;
 
 
+// stream directions, as SOF numbers them
+#define LPE_PLAYBACK				0
+#define LPE_CAPTURE					1
+#define LPE_STREAM_COUNT			2
+
+
 struct lpe_dsp {
 	phys_addr_t		physicalBase;
 	size_t			length;
@@ -301,11 +307,11 @@ struct lpe_dsp {
 	uint32			streamBoxOffset;
 	uint32			exceptionOffset;
 
-	bool			pipelineCreated;
-	uint32			positionOffset;
+	bool			pipelineCreated[LPE_STREAM_COUNT];
+	uint32			positionOffset[LPE_STREAM_COUNT];
 };
 
-// the host buffer of a playback stream: a page table (one page) followed by
+// the host buffer of a stream: a page table (one page) followed by
 // the audio pages, all below 4 GB
 struct lpe_stream_buffer {
 	phys_addr_t		pageTable;
@@ -320,9 +326,11 @@ void lpe_dsp_uninit(lpe_dsp* dsp);
 status_t lpe_dsp_boot(lpe_dsp* dsp, const uint8* image, size_t size);
 void lpe_dsp_poll_messages(lpe_dsp* dsp);
 
-status_t lpe_dsp_start_playback(lpe_dsp* dsp, const lpe_stream_buffer* buffer);
-status_t lpe_dsp_stop_playback(lpe_dsp* dsp);
-status_t lpe_dsp_read_position(lpe_dsp* dsp, sof_ipc_stream_posn* position);
+status_t lpe_dsp_start_stream(lpe_dsp* dsp, uint32 direction,
+	const lpe_stream_buffer* buffer);
+status_t lpe_dsp_stop_stream(lpe_dsp* dsp, uint32 direction);
+status_t lpe_dsp_read_position(lpe_dsp* dsp, uint32 direction,
+	sof_ipc_stream_posn* position);
 void lpe_fill_page_table(uint8* table, const phys_addr_t* pages,
 	uint32 count);
 
