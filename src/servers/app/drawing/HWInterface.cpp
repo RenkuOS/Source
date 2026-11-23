@@ -44,6 +44,7 @@ HWInterface::HWInterface()
 	:
 	MultiLocker("hw interface lock"),
 	fFloatingOverlaysLock("floating overlays lock"),
+	fFramePending(false),
 	fCursor(NULL),
 	fDragBitmap(NULL),
 	fDragBitmapOffset(0, 0),
@@ -259,7 +260,12 @@ HWInterface::MoveCursorTo(float x, float y)
 
 		IntRect oldFrame = _CursorFrame();
 		fCursorLocation = p;
-		if (fCursorVisible) {
+		if (fCursorVisible && fFramePending) {
+			// The drawing buffer is a frame ahead of the screen: what is
+			// under the cursor would come from it.
+			fPendingCursorDamage.Include((clipping_rect)oldFrame);
+			fPendingCursorDamage.Include((clipping_rect)_CursorFrame());
+		} else if (fCursorVisible) {
 			// Invalidate and _DrawCursor would not draw
 			// anything if the cursor is hidden
 			// (invalid cursor frame), but explicitly
@@ -334,6 +340,47 @@ HWInterface::InvalidateRegion(const BRegion& region)
 	}
 
 	return B_OK;
+}
+
+
+/*! The object needs to be already locked!
+*/
+status_t
+HWInterface::PresentRegion(const BRegion& region)
+{
+	BAutolock _(fFloatingOverlaysLock);
+	BRegion update(region);
+	_TakeCursorDamage(update);
+	return InvalidateRegion(update);
+}
+
+
+void
+HWInterface::SetFramePending()
+{
+	BAutolock _(fFloatingOverlaysLock);
+	fFramePending = true;
+}
+
+
+/*!	Only while an application has the screen, which draws over the cursor
+	anyway: it is drawn again as the screen is given back.
+*/
+void
+HWInterface::CancelPendingFrame()
+{
+	BAutolock _(fFloatingOverlaysLock);
+	fFramePending = false;
+	fPendingCursorDamage.MakeEmpty();
+}
+
+
+void
+HWInterface::_TakeCursorDamage(BRegion& update)
+{
+	update.Include(&fPendingCursorDamage);
+	fPendingCursorDamage.MakeEmpty();
+	fFramePending = false;
 }
 
 

@@ -540,6 +540,8 @@ Desktop::Init()
 		fCompositor.SetTo(new(std::nothrow) Compositor(this));
 		if (fCompositor.IsSet() && fCompositor->InitCheck() != B_OK)
 			fCompositor.Unset();
+		if (fCompositor.IsSet())
+			HWInterface()->SetPageFlipping(true);
 	}
 	debug_printf("app_server: desktop is %scomposited\n",
 		fCompositor.IsSet() ? "" : "not ");
