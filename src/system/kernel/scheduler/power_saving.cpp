@@ -139,7 +139,9 @@ rebalance(const ThreadData* threadData)
 	CoreEntry* core = threadData->Core();
 
 	int32 coreLoad = core->GetLoad();
-	int32 threadLoad = threadData->GetLoad() / core->CPUCount();
+	int32 threadLoad = threadData->GetLoad()
+		/ std::max(core->CPUCount(), (int32)1);
+		// (0 while its last CPU is being disabled)
 	if (coreLoad > kHighLoad) {
 		if (sSmallTaskCore == core) {
 			sSmallTaskCore = NULL;

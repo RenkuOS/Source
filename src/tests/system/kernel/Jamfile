@@ -5,6 +5,8 @@ UsePrivateHeaders shared ;
 
 SimpleTest advisory_locking_test : advisory_locking_test.cpp ;
 
+SimpleTest scheduler_cpu_count_test : scheduler_cpu_count_test.cpp ;
+
 SimpleTest fibo_load_image : fibo_load_image.cpp ;
 SimpleTest fibo_fork : fibo_fork.cpp ;
 SimpleTest fibo_exec : fibo_exec.cpp ;
