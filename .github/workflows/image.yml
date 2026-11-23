@@ -189,12 +189,10 @@ jobs:
           tar -xf pkgs/renkuosports-arm64-repo.tar -C pkgs packages
           mv pkgs/packages/*.hpkg "${DL}/"
           rm -rf pkgs
-          # --no-downloads also stops jam fetching the MediaTek firmware, and
-          # jam checks its pinned SHA-256 only when it downloads it.
-          FW="$(grep -o 'https://[^ ]*\.tgz' build/jam/packages/MediatekWifiFirmwares | head -1)"
-          SUM="$(grep -oE '[0-9a-f]{64}' build/jam/packages/MediatekWifiFirmwares | head -1)"
-          curl -fsSL --retry 5 -o "${DL}/${FW##*/}" "${FW}"
-          echo "${SUM}  ${DL}/${FW##*/}" | sha256sum -c -
+          # --no-downloads also stops the downloads in build/jam/packages, such
+          # as the MediaTek and Realtek firmware. Fetch each one here and check
+          # it against its pinned SHA-256, as jam would.
+          python3 .github/scripts/fetch-jam-downloads.py "${DL}"
           .github/scripts/arm64-pins.sh "${DL}" > build/jam/repositories/HaikuPorts/arm64
           echo "packages: $(ls "${DL}" | grep -c '\.hpkg$')"
           echo "pins changed from the tree's snapshot:"
