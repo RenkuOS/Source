@@ -13,9 +13,10 @@
 //
 // It brings up the codec (master clock through ACPI, reset, jack detection),
 // boots Sound Open Firmware on the DSP (sof_dsp.cpp) and publishes the
-// speakers as a multi_audio device: 48 kHz, 16 bit stereo, two buffers of
+// codec as a multi_audio device: 48 kHz, 16 bit stereo, two buffers of
 // 1024 frames, played through a fixed pipeline from memory to SSP0 and the
-// codec. Headphones, volume controls and recording are not done yet.
+// codec. Playback goes to the headphones while they are plugged in, else to
+// the speakers. Volume controls and recording are not done yet.
 
 
 #include <ACPI.h>
@@ -136,6 +137,12 @@ struct intel_lpe_driver {
 	int32					running;
 	thread_id				playbackThread;
 	sem_id					bufferReadySem;
+
+	// Protects the output routing: speakers or headphones.
+	mutex					outputLock;
+	bool					headphonesPlugged;
+	bool					outputActive;
+	bool					headphoneAmpOn;
 
 	// Playback position, written by the playback thread.
 	spinlock				positionLock;
@@ -264,6 +271,7 @@ rt5640_probe(intel_lpe_driver* driver)
 
 
 static void start_dsp(intel_lpe_driver* driver);
+static void update_output(intel_lpe_driver* driver);
 
 
 static status_t
@@ -290,6 +298,11 @@ jack_poll_thread(void* data)
 					status, gen2);
 				last = status;
 				lastJD2 = gen2 & (1 << 11);
+
+				// JD1 is low while headphones are plugged in
+				MutexLocker outputLocker(driver->outputLock);
+				driver->headphonesPlugged = (status & RT5640_STATUS_JD) == 0;
+				update_output(driver);
 			}
 		}
 		snooze(JACK_POLL_INTERVAL);
@@ -519,7 +532,7 @@ static const rt5640_register_value kSpeakerPlayback[] = {
 	{ 0x62, 0x0000 },
 	{ 0x65, 0x3000 },	// power: speaker mixers
 	{ 0x66, 0xc000 },	// power: speaker volumes
-	{ 0x01, 0x0808 },	// speaker volume, unmuted
+	{ 0x01, 0x8888 },	// speaker volume, muted until the output is chosen
 };
 
 // private registers (index MX-6A, data MX-6C) that the Realtek drivers set
@@ -536,7 +549,143 @@ static const rt5640_register_value kPrivateInit[] = {
 #define RT5640_PRIVATE_DATA			0x6c
 
 #define RT5640_SPEAKER_VOLUME		0x01
+#define RT5640_SPEAKER_ON			0x0808	// 0 dB
 #define RT5640_SPEAKER_MUTED		0x8888
+#define RT5640_HEADPHONE_VOLUME		0x02
+#define RT5640_HEADPHONE_ON			0x0c0c	// -6 dB
+#define RT5640_HEADPHONE_MUTE		0x8080
+#define RT5640_POWER_ANALOG1		0x63
+#define RT5640_POWER_MIXER			0x65
+#define RT5640_POWER_VOLUME			0x66
+#define RT5640_DEPOP_1				0x8e
+#define RT5640_DEPOP_2				0x8f
+#define RT5640_DEPOP_3				0x90
+#define RT5640_CHARGE_PUMP			0x91
+
+// MX-63
+#define RT5640_POWER_FV1			(1 << 14)
+#define RT5640_POWER_HP_L			(1 << 7)
+#define RT5640_POWER_HP_R			(1 << 6)
+#define RT5640_POWER_HP_AMP			(1 << 5)
+#define RT5640_POWER_FV2			(1 << 3)
+// MX-65, MX-66
+#define RT5640_POWER_OUT_MIX		(3 << 14)
+#define RT5640_POWER_HP_VOLUME		(3 << 10)
+// private registers
+#define RT5640_PR_CHARGE_PUMP_1		0x24
+#define RT5640_PR_MAIN_AMP_2		0x37
+#define RT5640_PR_HP_DCC_1			0x77
+
+static void
+rt5640_update(intel_lpe_driver* driver, uint8 reg, uint16 mask, uint16 value)
+{
+	uint16 old;
+	if (rt5640_read(driver, reg, &old) == B_OK)
+		rt5640_write(driver, reg, (old & ~mask) | (value & mask));
+}
+
+
+static void
+rt5640_write_private(intel_lpe_driver* driver, uint8 reg, uint16 value)
+{
+	rt5640_write(driver, RT5640_PRIVATE_INDEX, reg);
+	rt5640_write(driver, RT5640_PRIVATE_DATA, value);
+}
+
+
+static void
+rt5640_update_private(intel_lpe_driver* driver, uint8 reg, uint16 mask,
+	uint16 value)
+{
+	uint16 old;
+	rt5640_write(driver, RT5640_PRIVATE_INDEX, reg);
+	if (rt5640_read(driver, RT5640_PRIVATE_DATA, &old) == B_OK)
+		rt5640_write(driver, RT5640_PRIVATE_DATA,
+			(old & ~mask) | (value & mask));
+}
+
+
+/*!	Powers the headphone path up: output mixers and headphone volumes,
+	then the amplifier with its charge pump in the order the codec needs to
+	avoid a pop, then the volume. The order and the depop values follow
+	what Linux does for this codec (rt5640.c, used as a description).
+*/
+static void
+headphone_on(intel_lpe_driver* driver)
+{
+	rt5640_update(driver, RT5640_POWER_MIXER, RT5640_POWER_OUT_MIX,
+		RT5640_POWER_OUT_MIX);
+	rt5640_update(driver, RT5640_POWER_VOLUME, RT5640_POWER_HP_VOLUME,
+		RT5640_POWER_HP_VOLUME);
+	rt5640_update(driver, RT5640_POWER_ANALOG1,
+		RT5640_POWER_HP_L | RT5640_POWER_HP_R,
+		RT5640_POWER_HP_L | RT5640_POWER_HP_R);
+
+	// amplifier: manual depop, charge pump up, soft generator off
+	rt5640_update_private(driver, RT5640_PR_CHARGE_PUMP_1, 0x0700, 0x0200);
+	rt5640_update(driver, RT5640_DEPOP_2, 1 << 13, 1 << 13);
+	rt5640_update(driver, RT5640_DEPOP_1, (1 << 3) | (1 << 2) | 1,
+		(1 << 3) | 1);
+	rt5640_write_private(driver, RT5640_PR_HP_DCC_1, 0x9f00);
+	rt5640_update(driver, RT5640_POWER_ANALOG1,
+		RT5640_POWER_FV1 | RT5640_POWER_FV2, 0);
+	rt5640_update(driver, RT5640_POWER_ANALOG1, RT5640_POWER_HP_AMP,
+		RT5640_POWER_HP_AMP);
+	snooze(12000);
+	rt5640_update(driver, RT5640_POWER_ANALOG1,
+		RT5640_POWER_FV1 | RT5640_POWER_FV2,
+		RT5640_POWER_FV1 | RT5640_POWER_FV2);
+
+	// then automatic depop: digital depop on, charge pump in high voltage
+	// mode with its clocks (192 kHz, 12 kHz, 192 kHz), soft generator on
+	rt5640_update(driver, RT5640_DEPOP_2, (1 << 13) | (1 << 6), 1 << 6);
+	rt5640_update(driver, RT5640_CHARGE_PUMP, 3 << 8, 2 << 8);
+	rt5640_update(driver, RT5640_DEPOP_3, 0x0777, 0x0737);
+	rt5640_write_private(driver, RT5640_PR_MAIN_AMP_2, 0x1c00);
+	rt5640_update(driver, RT5640_DEPOP_1, (1 << 3) | (1 << 2), 1 << 2);
+	rt5640_update_private(driver, RT5640_PR_CHARGE_PUMP_1, 0x0700, 0x0400);
+
+	rt5640_write(driver, RT5640_HEADPHONE_VOLUME, RT5640_HEADPHONE_ON);
+	snooze(80000);
+	driver->headphoneAmpOn = true;
+}
+
+
+static void
+headphone_off(intel_lpe_driver* driver)
+{
+	rt5640_update(driver, RT5640_HEADPHONE_VOLUME, RT5640_HEADPHONE_MUTE,
+		RT5640_HEADPHONE_MUTE);
+	snooze(70000);
+	rt5640_update(driver, RT5640_POWER_ANALOG1,
+		RT5640_POWER_HP_L | RT5640_POWER_HP_R | RT5640_POWER_HP_AMP, 0);
+	rt5640_update(driver, RT5640_POWER_VOLUME, RT5640_POWER_HP_VOLUME, 0);
+	rt5640_update(driver, RT5640_POWER_MIXER, RT5640_POWER_OUT_MIX, 0);
+	driver->headphoneAmpOn = false;
+}
+
+
+/*!	Routes playback to the headphones while they are plugged in, else to
+	the speakers; both are off when nothing plays. Called with outputLock
+	held.
+*/
+static void
+update_output(intel_lpe_driver* driver)
+{
+	bool speaker = driver->outputActive && !driver->headphonesPlugged;
+	bool headphones = driver->outputActive && driver->headphonesPlugged;
+
+	if (!speaker)
+		rt5640_write(driver, RT5640_SPEAKER_VOLUME, RT5640_SPEAKER_MUTED);
+	if (!headphones && driver->headphoneAmpOn)
+		headphone_off(driver);
+
+	if (headphones && !driver->headphoneAmpOn)
+		headphone_on(driver);
+	if (speaker)
+		rt5640_write(driver, RT5640_SPEAKER_VOLUME, RT5640_SPEAKER_ON);
+}
+
 
 static status_t
 setup_speaker_playback(intel_lpe_driver* driver)
@@ -614,7 +763,13 @@ playback_start(intel_lpe_driver* driver)
 	if (get_sem_count(driver->bufferReadySem, &count) == B_OK && count > 0)
 		acquire_sem_etc(driver->bufferReadySem, count, B_RELATIVE_TIMEOUT, 0);
 
-	status_t status = setup_speaker_playback(driver);
+	status_t status;
+	{
+		MutexLocker outputLocker(driver->outputLock);
+		status = setup_speaker_playback(driver);
+		// the setup leaves the headphone amplifier off
+		driver->headphoneAmpOn = false;
+	}
 	if (status != B_OK)
 		return status;
 
@@ -631,9 +786,13 @@ playback_start(intel_lpe_driver* driver)
 		MutexLocker dspLocker(driver->dspLock);
 		status = lpe_dsp_start_playback(&driver->dsp, &buffer);
 	}
-	if (status != B_OK) {
-		rt5640_write(driver, RT5640_SPEAKER_VOLUME, RT5640_SPEAKER_MUTED);
+	if (status != B_OK)
 		return status;
+
+	{
+		MutexLocker outputLocker(driver->outputLock);
+		driver->outputActive = true;
+		update_output(driver);
 	}
 
 	driver->running = 1;
@@ -642,9 +801,13 @@ playback_start(intel_lpe_driver* driver)
 	if (driver->playbackThread < 0) {
 		status = driver->playbackThread;
 		driver->running = 0;
+		{
+			MutexLocker outputLocker(driver->outputLock);
+			driver->outputActive = false;
+			update_output(driver);
+		}
 		MutexLocker dspLocker(driver->dspLock);
 		lpe_dsp_stop_playback(&driver->dsp);
-		rt5640_write(driver, RT5640_SPEAKER_VOLUME, RT5640_SPEAKER_MUTED);
 		return status;
 	}
 	resume_thread(driver->playbackThread);
@@ -663,7 +826,11 @@ playback_stop(intel_lpe_driver* driver)
 	wait_for_thread(driver->playbackThread, &result);
 	driver->playbackThread = -1;
 
-	rt5640_write(driver, RT5640_SPEAKER_VOLUME, RT5640_SPEAKER_MUTED);
+	{
+		MutexLocker outputLocker(driver->outputLock);
+		driver->outputActive = false;
+		update_output(driver);
+	}
 	{
 		MutexLocker dspLocker(driver->dspLock);
 		lpe_dsp_stop_playback(&driver->dsp);
@@ -695,7 +862,7 @@ get_description(intel_lpe_driver* driver, multi_description* data)
 	data->interface_version = B_CURRENT_INTERFACE_VERSION;
 	data->interface_minimum = B_CURRENT_INTERFACE_VERSION;
 
-	strlcpy(data->friendly_name, "Speakers (Intel LPE)",
+	strlcpy(data->friendly_name, "Intel LPE audio (RT5640)",
 		sizeof(data->friendly_name));
 	strlcpy(data->vendor_info, "Renku", sizeof(data->vendor_info));
 
@@ -1074,6 +1241,7 @@ intel_lpe_init_driver(device_node* node, void** _driverCookie)
 	driver->ringArea = driver->tableArea = -1;
 	mutex_init(&driver->lock, "intel_lpe");
 	mutex_init(&driver->dspLock, "intel_lpe dsp");
+	mutex_init(&driver->outputLock, "intel_lpe output");
 	B_INITIALIZE_SPINLOCK(&driver->positionLock);
 	driver->dspBooted.Init(driver, "intel_lpe dsp boot");
 
@@ -1099,6 +1267,7 @@ intel_lpe_init_driver(device_node* node, void** _driverCookie)
 	if (status != B_OK) {
 		TRACE_ALWAYS("probe failed: %s\n", strerror(status));
 		delete_ring(driver);
+		mutex_destroy(&driver->outputLock);
 		mutex_destroy(&driver->dspLock);
 		mutex_destroy(&driver->lock);
 		delete driver;
@@ -1132,6 +1301,7 @@ intel_lpe_uninit_driver(void* driverCookie)
 		lpe_dsp_uninit(&driver->dsp);
 	delete_sem(driver->bufferReadySem);
 	delete_ring(driver);
+	mutex_destroy(&driver->outputLock);
 	mutex_destroy(&driver->dspLock);
 	mutex_destroy(&driver->lock);
 	delete driver;
