@@ -44,6 +44,8 @@ if $(HAIKU_BUILD_TYPE) = regular {
 		: nameFromMetaInfo ;
 	AddPackageFilesToHaikuImage system packages
 		: realtek_rtw88_wifi_firmwares.hpkg : nameFromMetaInfo ;
+	AddPackageFilesToHaikuImage system packages
+		: intel_sof_baytrail_firmware.hpkg : nameFromMetaInfo ;
 }
 
 # import what is shared by all images
