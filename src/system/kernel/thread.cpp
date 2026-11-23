@@ -4180,11 +4180,22 @@ _user_set_thread_affinity(thread_id id, const void* userMask, size_t size)
 	if (thread->team != thread_get_current_thread()->team && geteuid() != 0)
 		return B_NOT_ALLOWED;
 
-	thread->cpumask = mask;
+	{
+		// The scheduler reads the mask more than once while it chooses a
+		// CPU for the thread (ChooseCoreAndCPU(), then _ChooseCPU()), with
+		// this lock held: a mask that changed in between left it with a core
+		// none of whose CPUs the thread may use, and a NULL CPU.
+		InterruptsSpinLocker schedulerLocker(thread->scheduler_lock);
+		thread->cpumask = mask;
+	}
+	const bool self = thread == thread_get_current_thread();
 	threadLocker.Unlock();
 
-	// check if running on masked CPU
-	if (!mask.IsEmpty() && !mask.GetBit(thread->cpu->cpu_num))
+	// The caller itself moves at once if it runs on a CPU it has just
+	// excluded. Another thread is not looked at: it has no CPU while it does
+	// not run (thread->cpu is NULL then, and this used to read through it),
+	// and one that runs leaves a masked CPU when it is next rescheduled.
+	if (self && !mask.IsEmpty() && !mask.GetBit(thread->cpu->cpu_num))
 		thread_yield();
 
 	return B_OK;
