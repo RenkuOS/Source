@@ -290,9 +290,13 @@ scheduler_new_thread_entry(Thread* thread)
 static inline void
 switch_thread(Thread* fromThread, Thread* toThread)
 {
-	// notify the user debugger code
-	if ((fromThread->flags & THREAD_FLAGS_DEBUGGER_INSTALLED) != 0)
+	// notify the user debugger code. A profiling timer the thread still has
+	// armed on this CPU must go with it even when the debugger has left
+	// meanwhile, or it fires in the context of the next thread here.
+	if ((fromThread->flags & THREAD_FLAGS_DEBUGGER_INSTALLED) != 0
+		|| fromThread->debug_info.profile.installed_timer != NULL) {
 		user_debug_thread_unscheduled(fromThread);
+	}
 
 	// stop CPU time based user timers
 	stop_cpu_timers(fromThread, toThread);
@@ -330,7 +334,7 @@ reschedule(int32 nextState)
 	ThreadData* oldThreadData = oldThread->scheduler_data;
 
 	CPUSet oldThreadMask;
-	bool useOldThreadMask, fetchedOldThreadMask = false;
+	bool useOldThreadMask = false;
 
 	oldThreadData->StopCPUTime();
 
@@ -353,7 +357,6 @@ reschedule(int32 nextState)
 
 			oldThreadMask = oldThreadData->GetCPUMask();
 			useOldThreadMask = !oldThreadMask.IsEmpty();
-			fetchedOldThreadMask = true;
 
 			if (!oldThreadData->IsIdle() && (!useOldThreadMask || oldThreadMask.GetBit(thisCPU))) {
 				oldThreadData->Continues();
@@ -401,12 +404,15 @@ reschedule(int32 nextState)
 		} else
 			nextThreadData = oldThreadData;
 	} else {
-		if (!fetchedOldThreadMask) {
-			oldThreadMask = oldThreadData->GetCPUMask();
-			useOldThreadMask = !oldThreadMask.IsEmpty();
-			fetchedOldThreadMask = true;
-		}
-		bool oldThreadShouldMigrate = useOldThreadMask && !oldThreadMask.GetBit(thisCPU);
+		// A thread that runs outside its CPU mask moves to a CPU of the mask,
+		// if it stays ready. One that is going to wait (or die) must not be
+		// put into a run queue: it would be run again before anything woke
+		// it up, and return from thread_block() with its wait still pending
+		// (#137). It is placed according to its mask when it wakes up.
+		// (A core's threads run on any of its CPUs, so with SMT a thread
+		// that may only use one of them runs on the others, too.)
+		bool oldThreadShouldMigrate = enqueueOldThread && useOldThreadMask
+			&& !oldThreadMask.GetBit(thisCPU);
 		if (oldThreadShouldMigrate)
 			enqueueOldThread = false;
 
@@ -492,9 +498,21 @@ scheduler_reschedule(int32 nextState)
 		return;
 	}
 
-	if (thread->cpu->reschedule_disabled) {
-		ASSERT(nextState == B_THREAD_READY);
-		return;
+	// A thread that has preemption disabled is not preempted, but it is
+	// still switched out when it blocks or exits: before, this returned for
+	// those too (the ASSERT is compiled out of release builds), so the thread
+	// went on as if it had been woken up (#148). The count used to be per
+	// CPU, and a CPU it was left on by mistake stopped switching for good.
+	if (thread->preemption_disabled > 0) {
+		if (nextState == B_THREAD_READY)
+			return;
+
+		static int32 sReported = 0;
+		if (atomic_add(&sReported, 1) < 8) {
+			dprintf("scheduler: thread %" B_PRId32 " (%s) leaves its CPU (state "
+				"%" B_PRId32 ") with preemption disabled\n", thread->id,
+				thread->name, nextState);
+		}
 	}
 
 	reschedule(nextState);
