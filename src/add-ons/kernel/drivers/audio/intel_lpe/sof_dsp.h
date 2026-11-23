@@ -71,6 +71,8 @@
 #define SOF_IPC_STREAM_TRIG_STOP	(0x005U << 16)
 #define SOF_IPC_STREAM_POSITION		(0x00aU << 16)
 
+#define SOF_ABI_MAJOR				3
+
 #define SOF_IPC_PANIC_MAGIC			0x0dead000
 #define SOF_IPC_PANIC_MAGIC_MASK	0x0ffff000
 
@@ -291,6 +293,7 @@ struct lpe_dsp {
 	uint8*			pci;
 
 	bool			ready;
+	bool			unsupported;
 	uint32			hostBoxOffset;
 	uint32			hostBoxSize;
 	uint32			dspBoxOffset;

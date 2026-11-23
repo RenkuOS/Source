@@ -424,7 +424,6 @@ handle_fw_ready(lpe_dsp* dsp)
 	uint8 message[96];
 	mailbox_read(dsp, LPE_MBOX_OFFSET, message, sizeof(message));
 
-
 	// struct sof_ipc_fw_version at 24: header (4), major, minor, micro,
 	// build (2 each), date[12], time[10], tag[6], abi_version
 	const uint8* version = message + 24;
@@ -443,6 +442,15 @@ handle_fw_ready(lpe_dsp* dsp)
 		"%" B_PRIu32 ".%" B_PRIu32 ".%" B_PRIu32 "\n", numbers[0], numbers[1],
 		numbers[2], numbers[3], tag, date, time, (abi >> 24) & 0xff,
 		(abi >> 12) & 0xfff, abi & 0xfff);
+
+	// The messages of this driver are those of IPC3, ABI 3.x. Later SOF
+	// releases speak IPC4 (and no longer build for Bay Trail).
+	if (((abi >> 24) & 0xff) != SOF_ABI_MAJOR) {
+		TRACE_ALWAYS("the firmware uses ABI %" B_PRIu32 ", this driver ABI %d: "
+			"not used\n", (abi >> 24) & 0xff, SOF_ABI_MAJOR);
+		dsp->unsupported = true;
+		return;
+	}
 
 	if (dsp->hostBoxSize == 0 || dsp->dspBoxSize == 0)
 		TRACE_ALWAYS("the firmware image described no mailbox windows\n");
@@ -469,7 +477,8 @@ handle_dsp_message(lpe_dsp* dsp)
 		uint32 header[2];
 		mailbox_read(dsp, dsp->ready ? dsp->dspBoxOffset : LPE_MBOX_OFFSET,
 			header, sizeof(header));
-		if (!dsp->ready && (header[1] & SOF_GLB_TYPE_MASK) == SOF_IPC_FW_READY)
+		if (!dsp->ready && !dsp->unsupported
+			&& (header[1] & SOF_GLB_TYPE_MASK) == SOF_IPC_FW_READY)
 			handle_fw_ready(dsp);
 		else if ((header[1] & SOF_GLB_TYPE_MASK) == SOF_IPC_GLB_TRACE_MSG) {
 			// trace positions: nothing to do without a trace buffer
@@ -523,7 +532,10 @@ lpe_dsp_boot(lpe_dsp* dsp, const uint8* image, size_t size)
 	// the firmware announces itself with FW_READY
 	timeout = system_time() + DSP_BOOT_TIMEOUT;
 	while (!dsp->ready) {
-		if (!handle_dsp_message(dsp) && system_time() > timeout) {
+		bool handled = handle_dsp_message(dsp);
+		if (dsp->unsupported)
+			return B_NOT_SUPPORTED;
+		if (!handled && system_time() > timeout) {
 			log_state(dsp, "boot timed out");
 			uint32 words[12];
 			mailbox_read(dsp, LPE_MBOX_OFFSET, words, sizeof(words));
