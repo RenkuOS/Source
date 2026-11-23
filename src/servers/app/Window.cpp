@@ -40,6 +40,7 @@
 #include "RoundedDecorator.h"
 #include "ServerApp.h"
 #include "ServerWindow.h"
+#include "StyleDecorator.h"
 #include "WindowBehaviour.h"
 #include "WindowBuffer.h"
 #include "Workspace.h"
@@ -129,7 +130,8 @@ Window::Window(const BRect& frame, const char *name,
 	fBufferLost(false),
 	fHasRoundedCorners(false),
 	fCompositeAlpha(255),
-	fDecoratorGeneration(0)
+	fDecoratorGeneration(0),
+	fGlassFrame(false)
 {
 	_InitWindowStack();
 
@@ -289,6 +291,10 @@ Window::SetClipping(BRegion* stillAvailableOnScreen)
 			fGlassBorderRegion = fCompositeRegion;
 			fGlassBorderRegion.Exclude(&fGlassContentRegion);
 		}
+
+		StyleDecorator* style = dynamic_cast<StyleDecorator*>(Decorator());
+		fGlassFrame = style != NULL && style->HasGlassFrame()
+			&& fGlassBorderRegion.CountRects() > 0;
 
 		// The buffer can't be drawn to above or left of the screen, but other
 		// windows don't matter anymore: the window draws everything else. In

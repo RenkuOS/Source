@@ -17,6 +17,7 @@
 
 #include <WindowPrivate.h>
 
+#include "Desktop.h"
 #include "DesktopSettings.h"
 #include "DrawingEngine.h"
 #include "ServerFont.h"
@@ -166,6 +167,8 @@ StyleDecorator::Draw(BRect updateRect)
 {
 	if (!_HasStyle() || fTabList.CountItems() == 0)
 		return;
+
+	_ClearGlass(updateRect);
 
 	if (_StyleHas(offsetof(decor_style, draw) + sizeof(fStyle->draw))
 		&& fStyle->draw != NULL) {
@@ -649,6 +652,7 @@ StyleDecorator::_SyncIn() const
 	fWindow.outline_resizing = IsOutlineResizing();
 	fWindow.corners_cut = RoundedDecorator::IsActive(
 		const_cast<StyleDecorator*>(this)->GetDesktop());
+	fWindow.glass = HasGlassFrame();
 	fWindow.outline_frame = to_decor_rect(BRect(fFrame.LeftTop(),
 		fFrame.RightBottom() + fOutlinesDelta));
 
@@ -772,6 +776,7 @@ StyleDecorator::_DrawButton(Decorator::Tab* tab, int32 button, bool direct,
 	_SyncIn();
 	const bool copyToFront = fDrawingEngine->CopyToFrontEnabled();
 	fDrawingEngine->SetCopyToFrontEnabled(direct);
+	_ClearGlass(rect);
 	fStyle->draw_button(&fWindow, fCanvas, index, button,
 		to_decor_rect(rect));
 	fDrawingEngine->SetCopyToFrontEnabled(copyToFront);
@@ -808,6 +813,40 @@ StyleDecorator::GetRoundedShape(std::vector<Decorator::ShapeRect>& shape) const
 		shape[i].rightTop = std::max((int32)0, styleShape[i].right_top);
 		shape[i].leftBottom = std::max((int32)0, styleShape[i].left_bottom);
 		shape[i].rightBottom = std::max((int32)0, styleShape[i].right_bottom);
+	}
+}
+
+
+bool
+StyleDecorator::HasGlassFrame() const
+{
+	if (!_HasStyle() || !_StyleHas(offsetof(decor_style, flags)
+			+ sizeof(fStyle->flags))
+		|| (fStyle->flags & DECOR_STYLE_GLASS) == 0) {
+		return false;
+	}
+
+	Desktop* desktop = const_cast<StyleDecorator*>(this)->GetDesktop();
+	return desktop != NULL && desktop->GetCompositor() != NULL;
+}
+
+
+/*!	A glass frame is drawn with alpha, which would build up if it were drawn
+	over what it drew before: so what of it is drawn again starts out clear.
+*/
+void
+StyleDecorator::_ClearGlass(BRect rect)
+{
+	if (!HasGlassFrame() || !rect.IsValid())
+		return;
+
+	const BRegion& footprint = GetFootprint();
+	const rgb_color clear = { 0, 0, 0, 0 };
+	int32 count = footprint.CountRects();
+	for (int32 i = 0; i < count; i++) {
+		BRect part = footprint.RectAt(i) & rect;
+		if (part.IsValid())
+			fDrawingEngine->FillRect(part, clear);
 	}
 }
 

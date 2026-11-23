@@ -66,9 +66,9 @@
 /*!	Versions 1 and 2 were drafts: styles were built against them, with other
 	structure layouts, before the interface settled. Version 3 is the first
 	final one, and app_server refuses anything older. Version 4 adds rounded
-	corners on a composited desktop.
+	corners on a composited desktop, version 5 glass frames.
 */
-#define DECOR_STYLE_API_VERSION		4
+#define DECOR_STYLE_API_VERSION		5
 
 
 #ifdef __cplusplus
@@ -268,6 +268,15 @@ typedef struct decor_window {
 	bool					corners_cut;
 		// the compositor cuts off the corners that rounded_shape() gives,
 		// and the border should follow them, as with canvas->stroke_corner()
+
+	// in, from version 5
+	bool					glass;
+		// the frame is glass now: the style asked for it with
+		// DECOR_STYLE_GLASS, and the desktop is composited. Before the style
+		// draws, what it draws over is clear; what it draws keeps its alpha,
+		// and what is behind the window shows through it, blurred. Draw with
+		// B_OP_ALPHA and B_ALPHA_COMPOSITE to build up partial alpha. When
+		// this is false, draw an opaque frame.
 } decor_window;
 
 
@@ -489,7 +498,18 @@ typedef struct decor_style {
 	// them square
 	void					(*rounded_shape)(decor_window* window,
 								decor_shape_rect* shape, int32 count);
+
+	// from version 5: DECOR_STYLE_* flags
+	uint32					flags;
 } decor_style;
+
+
+//!	decor_style flags, from version 5
+enum {
+	DECOR_STYLE_GLASS		= 0x01
+		// the frame is glass on a composited desktop, whatever the user's
+		// glass setting is; see decor_window::glass
+};
 
 
 #ifdef __cplusplus
