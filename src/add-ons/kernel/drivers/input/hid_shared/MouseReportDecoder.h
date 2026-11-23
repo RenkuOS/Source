@@ -8,6 +8,7 @@
 #define MOUSE_REPORT_DECODER_H
 
 
+#include <InterfaceDefs.h>
 #include <SupportDefs.h>
 
 #include <keyboard_mouse_driver.h>
@@ -16,11 +17,6 @@
 class HIDCollection;
 class HIDReport;
 class HIDReportItem;
-
-
-#ifndef B_MAX_MOUSE_BUTTONS
-#	define B_MAX_MOUSE_BUTTONS		8
-#endif
 
 
 /*!	Turns the input reports of one HID mouse into mouse movements.

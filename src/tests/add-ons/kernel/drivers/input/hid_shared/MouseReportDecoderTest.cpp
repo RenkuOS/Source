@@ -64,6 +64,24 @@ static const uint8 kTwoBitButtonsDescriptor[] = {
 	0xc0, 0xc0
 };
 
+// A mouse with 16 buttons, X and Y, all in one report without report ID.
+static const uint8 kSixteenButtonsDescriptor[] = {
+	0x05, 0x01, 0x09, 0x02, 0xa1, 0x01, 0x09, 0x01, 0xa1, 0x00, 0x05, 0x09,
+	0x19, 0x01, 0x29, 0x10, 0x15, 0x00, 0x25, 0x01, 0x95, 0x10, 0x75, 0x01,
+	0x81, 0x02, 0x05, 0x01, 0x09, 0x30, 0x09, 0x31, 0x15, 0x81, 0x25, 0x7f,
+	0x75, 0x08, 0x95, 0x02, 0x81, 0x06, 0xc0, 0xc0
+};
+
+// A mouse with X and Y in report 2 and three buttons in report 1, where the
+// motion report comes first.
+static const uint8 kMotionFirstDescriptor[] = {
+	0x05, 0x01, 0x09, 0x02, 0xa1, 0x01, 0x09, 0x01, 0xa1, 0x00, 0x85, 0x02,
+	0x09, 0x30, 0x09, 0x31, 0x15, 0x81, 0x25, 0x7f, 0x75, 0x08, 0x95, 0x02,
+	0x81, 0x06, 0x85, 0x01, 0x05, 0x09, 0x19, 0x01, 0x29, 0x03, 0x15, 0x00,
+	0x25, 0x01, 0x95, 0x03, 0x75, 0x01, 0x81, 0x02, 0x95, 0x01, 0x75, 0x0d,
+	0x81, 0x03, 0xc0, 0xc0
+};
+
 // Mouse interface of the CHERRY DW 9100 Slim (USB 046a:c114, interface 1),
 // read from the device. Buttons and wheel are in report 1, the 12 bit X and Y
 // axes are in report 2, report 9 is vendor specific.
@@ -463,6 +481,94 @@ button_value_outside_its_range_counts_as_released()
 }
 
 
+static void
+mouse_reports_buttons_nine_to_sixteen()
+{
+	MouseFixture mouse(kSixteenButtonsDescriptor,
+		sizeof(kSixteenButtonsDescriptor));
+
+	Reception reception = mouse.Receive(Packet{0x00, 0x81, 0, 0});
+
+	CHECK_EQUAL(0x8100, reception.movement.buttons);
+}
+
+
+// --- Tests: what a woken listener sees --------------------------------------
+
+static MouseReportDecoder *sListener = NULL;
+static std::vector<mouse_movement> sSeenByListener;
+
+
+static void
+decode_like_a_woken_listener(HIDReport *report)
+{
+	// The mouse handler waits for the motion report only.
+	bool isMotionReport = report->FindItem(B_HID_USAGE_PAGE_GENERIC_DESKTOP,
+		B_HID_UID_GD_X) != NULL;
+	status_t status = report->ReportStatus();
+	bool readsReport = status == B_OK
+		|| (status == B_BUSY && sListener->HasNewData());
+	if (isMotionReport && readsReport)
+		sSeenByListener.push_back(sListener->Decode(kFirstTimestamp));
+}
+
+
+/*!	The buttons report still points at the transfer buffer from the last packet.
+	When the motion packet overwrites it, a listener that wakes up must not read
+	the buttons from the X byte.
+*/
+static void
+check_listener_sees_no_buttons(MouseFixture &mouse,
+	const Packet &buttonsPacket, const Packet &motionPacket)
+{
+	mouse.Receive(buttonsPacket);
+	sListener = &mouse.Decoder();
+	sSeenByListener.clear();
+	HIDReport::sNotifyHook = decode_like_a_woken_listener;
+
+	mouse.Receive(motionPacket);
+
+	HIDReport::sNotifyHook = NULL;
+	CHECK_TRUE(!sSeenByListener.empty());
+	for (size_t i = 0; i < sSeenByListener.size(); i++)
+		CHECK_EQUAL(0, sSeenByListener[i].buttons);
+}
+
+
+static void
+cherry_listener_woken_by_motion_sees_no_buttons_in_old_report()
+{
+	MouseFixture mouse(kCherryMouseDescriptor, sizeof(kCherryMouseDescriptor));
+	check_listener_sees_no_buttons(mouse, cherry_buttons_packet(0),
+		cherry_motion_packet(1, 0));
+}
+
+
+static void
+listener_sees_no_buttons_in_old_report_when_motion_report_comes_first()
+{
+	MouseFixture mouse(kMotionFirstDescriptor, sizeof(kMotionFirstDescriptor));
+	check_listener_sees_no_buttons(mouse, Packet{1, 0, 0}, Packet{2, 1, 0});
+}
+
+
+static void
+cherry_listener_of_the_motion_report_is_woken_by_a_buttons_packet()
+{
+	MouseFixture mouse(kCherryMouseDescriptor, sizeof(kCherryMouseDescriptor));
+	sListener = &mouse.Decoder();
+	sSeenByListener.clear();
+	HIDReport::sNotifyHook = decode_like_a_woken_listener;
+
+	mouse.Receive(cherry_buttons_packet(kLeftButton));
+
+	HIDReport::sNotifyHook = NULL;
+	CHECK_EQUAL(1, sSeenByListener.size());
+	if (!sSeenByListener.empty())
+		CHECK_EQUAL(kLeftButton, sSeenByListener[0].buttons);
+}
+
+
 int
 main()
 {
@@ -488,6 +594,13 @@ main()
 
 	printf("mouse buttons with values outside their range\n");
 	RUN_TEST(button_value_outside_its_range_counts_as_released);
+	RUN_TEST(mouse_reports_buttons_nine_to_sixteen);
+
+	printf("what a woken listener sees\n");
+	RUN_TEST(cherry_listener_woken_by_motion_sees_no_buttons_in_old_report);
+	RUN_TEST(
+		listener_sees_no_buttons_in_old_report_when_motion_report_comes_first);
+	RUN_TEST(cherry_listener_of_the_motion_report_is_woken_by_a_buttons_packet);
 
 	printf("\n%d passed, %d failed\n", sPassedTests, sFailedTests);
 	return sFailedTests == 0 ? 0 : 1;

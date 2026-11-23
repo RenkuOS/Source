@@ -19,6 +19,11 @@
 #include <string.h>
 
 
+#ifdef USERLAND_HID
+void (*HIDReport::sNotifyHook)(HIDReport *report) = NULL;
+#endif
+
+
 HIDReport::HIDReport(HIDParser *parser, uint8 type, uint8 id)
 	:	fParser(parser),
 		fType(type),
@@ -154,8 +159,16 @@ HIDReport::SetReport(status_t status, uint8 *report, size_t length)
 			" bits\n", length * 8, fReportSize);
 		fReportStatus = B_ERROR;
 	}
+}
 
-#ifndef USERLAND_HID
+
+void
+HIDReport::NotifyListeners()
+{
+#ifdef USERLAND_HID
+	if (sNotifyHook != NULL)
+		sNotifyHook(this);
+#else
 	fConditionVariable.NotifyAll();
 #endif
 }
