@@ -33,6 +33,7 @@
 #include <new>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 #include <sys/sockio.h>
 
 
@@ -850,6 +851,11 @@ arp_control(const char *subsystem, uint32 function, void *buffer,
 	struct arp_control control;
 	if (bufferSize != sizeof(struct arp_control))
 		return B_BAD_VALUE;
+
+	// only root may change the cache (airos-works/haiku#130)
+	if (function != ARP_GET_ENTRY && function != ARP_GET_ENTRIES
+		&& geteuid() != 0)
+		return B_NOT_ALLOWED;
 	if (user_memcpy(&control, buffer, sizeof(struct arp_control)) < B_OK)
 		return B_BAD_ADDRESS;
 
