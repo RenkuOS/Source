@@ -63,6 +63,7 @@ AddFilesToPackage add-ons kernel busses pci :
 	;
 AddFilesToPackage add-ons kernel busses random :
 	ccp_rng@x86,x86_64
+	jh7110_trng@riscv64
 	virtio_rng
 	;
 AddFilesToPackage add-ons kernel busses scsi :
