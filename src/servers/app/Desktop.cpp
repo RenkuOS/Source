@@ -3426,6 +3426,7 @@ Desktop::_ChangeWindowWorkspaces(Window* window, uint32 oldWorkspaces,
 				if (i == CurrentWorkspace()) {
 					// remove its appearance from the current workspace
 					window->SetCurrentWorkspace(-1);
+					window->SaveSnapshot();
 					window->ReleaseBuffer();
 
 					if (!window->IsHidden())
@@ -4000,7 +4001,9 @@ Desktop::_SetWorkspace(int32 index, bool moveFocusWindow)
 		}
 
 		window->SetCurrentWorkspace(-1);
-		// Like a hidden window, it redraws when it can be seen again.
+		// Like a hidden window, it redraws when it can be seen again. Until
+		// then it is shown in a small picture of what it was.
+		window->SaveSnapshot();
 		window->ReleaseBuffer();
 	}
 
