@@ -1333,13 +1333,19 @@ EHCI::SubmitIsochronous(Transfer *transfer)
 			// were not seen by the finisher, which only looks a few frames
 			// back, and ran a whole frame list later into the buffer of a
 			// transfer that was long finished.
+			// The anchor counts frames modulo the whole frame list, so a
+			// transfer queued up to a virtual frame list ahead (128 ms; a
+			// sound card keeps about 100 ms queued) is not mistaken for one
+			// whose frames have passed.
 			uint32 now = (ReadOpReg(EHCI_FRINDEX) / 8)
-				& (EHCI_VFRAMELIST_ENTRIES_COUNT - 1);
+				& (EHCI_FRAMELIST_ENTRIES_COUNT - 1);
 			uint32 ahead = ((uint32)anchor - now)
-				& (EHCI_VFRAMELIST_ENTRIES_COUNT - 1);
+				& (EHCI_FRAMELIST_ENTRIES_COUNT - 1);
 			uint32 margin = (fThreshold + 7) / 8 + 1;
-			if (ahead < margin || ahead >= EHCI_VFRAMELIST_ENTRIES_COUNT / 2)
+			if (ahead < margin || ahead >= EHCI_VFRAMELIST_ENTRIES_COUNT)
 				anchor = -1;
+			else
+				anchor &= EHCI_VFRAMELIST_ENTRIES_COUNT - 1;
 		}
 		if (fFirstIsochronousTransfer != NULL && anchor != -1)
 			currentFrame = anchor;
@@ -3426,6 +3432,15 @@ EHCI::GetIsoAnchor(Pipe *pipe)
 void
 EHCI::SetIsoAnchor(Pipe *pipe, int32 frame)
 {
+	// Keep the frame modulo the whole frame list: the frame is less than a
+	// virtual frame list ahead of the controller, which tells which of its
+	// turns it belongs to.
+	uint32 now = (ReadOpReg(EHCI_FRINDEX) / 8)
+		& (EHCI_FRAMELIST_ENTRIES_COUNT - 1);
+	frame = (now + (((uint32)frame - now)
+		& (EHCI_VFRAMELIST_ENTRIES_COUNT - 1)))
+		& (EHCI_FRAMELIST_ENTRIES_COUNT - 1);
+
 	int free = -1;
 	for (int i = 0; i < kIsoAnchorCount; i++) {
 		if (fIsoAnchors[i].pipe == pipe) {
