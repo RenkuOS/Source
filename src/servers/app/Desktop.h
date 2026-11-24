@@ -264,6 +264,12 @@ public:
 			void				MinimizeApplication(team_id team);
 			void				BringApplicationToFront(team_id team);
 			void				WindowAction(int32 windowToken, int32 action);
+			// RenkuOS: the pixels of a window, as the compositor has them
+			// (see Window::ReadPixels()).
+			status_t			ReadWindowPixels(int32 windowToken,
+									int32 maxWidth, int32 maxHeight,
+									uint8* target, int32 targetBytesPerRow,
+									int32* _width, int32* _height);
 
 			void				WriteWindowList(team_id team,
 									BPrivate::LinkSender& sender);

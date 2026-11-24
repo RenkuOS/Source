@@ -28,6 +28,8 @@
 #include <Region.h>
 #include <String.h>
 
+#include <vector>
+
 
 class Window;
 class WindowBufferHWInterface;
@@ -132,6 +134,20 @@ public:
 									{ return fBufferInterface.Get(); }
 			// Nothing of the window can be shown until it has first been drawn.
 			bool				IsBufferReady() const { return fBufferReady; }
+			// When compositing, copies the window's pixels, as they are in its
+			// buffer (so also the parts that other windows cover), scaled down
+			// to fit \a maxWidth by \a maxHeight (never up), as 32-bit pixels
+			// with the window's size in \a _width and \a _height. B_NOT_SUPPORTED
+			// without a buffer and without a snapshot (a window that is hidden
+			// shows the picture it had when it was minimized).
+			// The window lock must be held, at least for reading.
+			// Keeps a small picture of the window, for ReadPixels() when its
+			// buffer is gone. Called when it is minimized, before the buffer
+			// is released. The window lock must be held for writing.
+			void				SaveSnapshot();
+			status_t			ReadPixels(int32 maxWidth, int32 maxHeight,
+									uint8* target, int32 targetBytesPerRow,
+									int32* _width, int32* _height) const;
 			// What the compositor shows of this window, on or off screen.
 			const BRegion&		CompositeRegion() const
 									{ return fCompositeRegion; }
@@ -506,6 +522,12 @@ private:
 
 			// After those, for the same reason.
 			uint32				fDecoratorGeneration;
+
+			// The picture SaveSnapshot() made of a minimized window, as 32-bit
+			// pixels, until its buffer is back.
+			std::vector<uint8>	fSnapshot;
+			int32				fSnapshotWidth;
+			int32				fSnapshotHeight;
 };
 
 

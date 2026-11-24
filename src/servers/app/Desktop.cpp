@@ -1497,6 +1497,10 @@ Desktop::HideWindow(Window* window, bool fromMinimize)
 		}
 	}
 
+	// A minimized window is shown in a picture (a preview), now that it has
+	// no buffer for a while.
+	if (fromMinimize)
+		window->SaveSnapshot();
 	window->ReleaseBuffer();
 
 	NotifyWindowHidden(window, fromMinimize);
@@ -2476,6 +2480,26 @@ Desktop::WindowAction(int32 windowToken, int32 action)
 	}
 
 	UnlockAllWindows();
+}
+
+
+status_t
+Desktop::ReadWindowPixels(int32 windowToken, int32 maxWidth, int32 maxHeight,
+	uint8* target, int32 targetBytesPerRow, int32* _width, int32* _height)
+{
+	// Only reading: a window can't go away while the lock is held.
+	AutoReadLocker locker(fWindowLock);
+
+	::ServerWindow* serverWindow;
+	Window* window;
+	if (BPrivate::gDefaultTokens.GetToken(windowToken,
+			B_SERVER_TOKEN, (void**)&serverWindow) != B_OK
+		|| (window = serverWindow->Window()) == NULL) {
+		return B_BAD_VALUE;
+	}
+
+	return window->ReadPixels(maxWidth, maxHeight, target, targetBytesPerRow,
+		_width, _height);
 }
 
 

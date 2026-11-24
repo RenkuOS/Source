@@ -3517,6 +3517,74 @@ ServerApp::_DispatchMessage(int32 code, BPrivate::LinkReceiver& link)
 			break;
 		}
 
+		case AS_READ_WINDOW_PIXELS:
+		{
+			// RenkuOS: copies the pixels of one window out of the compositor's
+			// buffer for it, also while other windows cover it, scaled down to
+			// fit a size (never up), into an area of the client's, as 32-bit
+			// pixels.
+			//
+			// Attached:
+			//	1) int32 server token of the window (window_info's)
+			//	2) area_id of a cloneable area that belongs to the client
+			//	3) int32 bytes per row in that area
+			//	4) int32 maximum width, 5) int32 maximum height; the area
+			//	   must hold that many rows
+			// Returns:
+			//	B_OK, then int32 width and int32 height of the picture
+			//	B_NOT_SUPPORTED when the desktop is not composited, or the
+			//		window has no buffer (it is hidden)
+			//	B_MISMATCHED_VALUES when the area is too small
+			//	B_BAD_VALUE for a window that does not exist or a bad area
+			int32 windowToken;
+			area_id area;
+			int32 bytesPerRow;
+			int32 maxWidth;
+			int32 maxHeight;
+			status_t status = B_BAD_VALUE;
+			int32 width = 0;
+			int32 height = 0;
+
+			if (link.Read<int32>(&windowToken) == B_OK
+				&& link.Read<area_id>(&area) == B_OK
+				&& link.Read<int32>(&bytesPerRow) == B_OK
+				&& link.Read<int32>(&maxWidth) == B_OK
+				&& link.Read<int32>(&maxHeight) == B_OK
+				&& maxWidth >= 1 && maxWidth <= 8192
+				&& maxHeight >= 1 && maxHeight <= 8192
+				&& bytesPerRow >= maxWidth * 4) {
+				area_info info;
+				void* address;
+				area_id clone = B_BAD_VALUE;
+				if (get_area_info(area, &info) == B_OK
+					&& info.team == fClientTeam) {
+					clone = clone_area("window pixels", &address,
+						B_ANY_ADDRESS, B_READ_AREA | B_WRITE_AREA, area);
+				}
+				if (clone >= 0) {
+					// The client can resize its area at any time: check the
+					// clone's size now (in 64 bits).
+					if (get_area_info(clone, &info) != B_OK
+						|| (uint64)bytesPerRow * maxHeight > info.size) {
+						status = B_MISMATCHED_VALUES;
+					} else {
+						status = fDesktop->ReadWindowPixels(windowToken,
+							maxWidth, maxHeight, (uint8*)address,
+							bytesPerRow, &width, &height);
+					}
+					delete_area(clone);
+				}
+			}
+
+			fLink.StartMessage(status);
+			if (status == B_OK) {
+				fLink.Attach<int32>(width);
+				fLink.Attach<int32>(height);
+			}
+			fLink.Flush();
+			break;
+		}
+
 		case AS_SCREEN_OBSERVER_START:
 		{
 			// RenkuOS: start following changes to the screen. The first

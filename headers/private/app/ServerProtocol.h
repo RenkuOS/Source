@@ -397,6 +397,7 @@ enum {
 	AS_SCREEN_OBSERVER_START	= 'RSos',
 	AS_SCREEN_OBSERVER_STOP		= 'RSoe',
 	AS_SCREEN_OBSERVER_READ		= 'RSor',
+	AS_READ_WINDOW_PIXELS		= 'RWpx',
 };
 
 // bitmap allocation flags

@@ -1,3 +1,4 @@
+?? build-wp.sh
 /*
  * Copyright 2001-2020, Haiku, Inc.
  * Distributed under the terms of the MIT license.
@@ -129,7 +130,9 @@ Window::Window(const BRect& frame, const char *name,
 	fBufferLost(false),
 	fHasRoundedCorners(false),
 	fCompositeAlpha(255),
-	fDecoratorGeneration(0)
+	fDecoratorGeneration(0),
+	fSnapshotWidth(0),
+	fSnapshotHeight(0)
 {
 	_InitWindowStack();
 
@@ -355,6 +358,200 @@ Window::ShapeContains(const BPoint& where) const
 		}
 	}
 	return true;
+}
+
+
+// The size of the largest picture of \a width by \a height pixels that fits \a maxWidth by
+// \a maxHeight, never larger than the picture itself.
+static void
+fit_size(int32 width, int32 height, int32 maxWidth, int32 maxHeight,
+	int32* _width, int32* _height)
+{
+	*_width = width;
+	*_height = height;
+	if (width <= maxWidth && height <= maxHeight)
+		return;
+
+	if ((int64)maxWidth * height <= (int64)maxHeight * width) {
+		*_width = maxWidth;
+		*_height = max_c(1, (int32)((int64)height * maxWidth / width));
+	} else {
+		*_height = maxHeight;
+		*_width = max_c(1, (int32)((int64)width * maxHeight / height));
+	}
+}
+
+
+// Every target pixel is the average of the part of the source it covers.
+static void
+scale_pixels(const uint8* source, size_t sourceBytesPerRow, int32 width,
+	int32 height, uint8* target, size_t targetBytesPerRow, int32 targetWidth,
+	int32 targetHeight)
+{
+	// The columns are the same for every row: work them out once, not for
+	// each pixel (the divisions were most of the time spent).
+	struct Column {
+		int32 from;
+		int32 to;
+		int32 step;
+	};
+	std::vector<Column> columns;
+	try {
+		columns.resize(targetWidth);
+	} catch (...) {
+		return;
+	}
+	for (int32 x = 0; x < targetWidth; x++) {
+		Column& column = columns[x];
+		column.from = (int32)((int64)x * width / targetWidth);
+		column.to = (int32)((int64)(x + 1) * width / targetWidth);
+		if (column.to <= column.from)
+			column.to = column.from + 1;
+		column.step = max_c(1, (column.to - column.from) / 2);
+	}
+
+	// 65536 / count, rounded up, for the counts a grid of at most 3 by 3
+	// samples can give (a sum of at most 255 * count stays below 256 * count)
+	static const uint32 kReciprocal[10] = {
+		0, 65536, 32768, 21846, 16384, 13108, 10923, 9363, 8192, 7282
+	};
+
+	for (int32 y = 0; y < targetHeight; y++) {
+		int32 fromY = (int32)((int64)y * height / targetHeight);
+		int32 toY = (int32)((int64)(y + 1) * height / targetHeight);
+		if (toY <= fromY)
+			toY = fromY + 1;
+		// (a big part of the source is sampled on a grid of at most 3 by
+		// 3 pixels: as good for a preview, and a window as large as the
+		// screen is read in a few milliseconds)
+		const int32 stepY = max_c(1, (toY - fromY) / 2);
+		uint8* out = target + y * targetBytesPerRow;
+
+		for (int32 x = 0; x < targetWidth; x++, out += 4) {
+			const Column& column = columns[x];
+			uint32 red = 0;
+			uint32 green = 0;
+			uint32 blue = 0;
+			uint32 count = 0;
+			for (int32 sy = fromY; sy < toY; sy += stepY) {
+				const uint8* in = source + sy * sourceBytesPerRow
+					+ column.from * 4;
+				for (int32 sx = column.from; sx < column.to;
+						sx += column.step, in += 4 * column.step) {
+					blue += in[0];
+					green += in[1];
+					red += in[2];
+					count++;
+				}
+			}
+			const uint32 reciprocal = kReciprocal[count];
+			out[0] = (blue * reciprocal) >> 16;
+			out[1] = (green * reciprocal) >> 16;
+			out[2] = (red * reciprocal) >> 16;
+			out[3] = 255;
+		}
+	}
+}
+
+
+/*!	The window lock must be held, at least for reading.
+
+	The pixels are read while the window may be drawing to its buffer: a part
+	of the picture can be of the frame before. That does not matter for a
+	preview.
+
+	A window that has no buffer, because it is minimized, gives the picture
+	SaveSnapshot() made of it.
+*/
+status_t
+Window::ReadPixels(int32 maxWidth, int32 maxHeight, uint8* target,
+	int32 targetBytesPerRow, int32* _width, int32* _height) const
+{
+	if (maxWidth <= 0 || maxHeight <= 0 || target == NULL)
+		return B_BAD_VALUE;
+
+	const uint8* source = NULL;
+	size_t sourceBytesPerRow = 0;
+	int32 width = 0;
+	int32 height = 0;
+
+	if (fBufferInterface.IsSet() && fBufferReady
+		&& fBufferInterface->Buffer().InitCheck() == B_OK) {
+		const WindowBuffer& buffer = fBufferInterface->Buffer();
+		BRect frame = buffer.Frame();
+		width = (int32)frame.Width() + 1;
+		height = (int32)frame.Height() + 1;
+		if (width > 0 && height > 0) {
+			source = buffer.PixelAt((int32)frame.left, (int32)frame.top);
+			sourceBytesPerRow = buffer.BytesPerRow();
+		}
+	} else if (!fSnapshot.empty()) {
+		width = fSnapshotWidth;
+		height = fSnapshotHeight;
+		source = fSnapshot.data();
+		sourceBytesPerRow = (size_t)width * 4;
+	}
+
+	if (source == NULL)
+		return B_NOT_SUPPORTED;
+
+	int32 targetWidth;
+	int32 targetHeight;
+	fit_size(width, height, maxWidth, maxHeight, &targetWidth, &targetHeight);
+	if (targetBytesPerRow < targetWidth * 4)
+		return B_MISMATCHED_VALUES;
+
+	scale_pixels(source, sourceBytesPerRow, width, height, target,
+		targetBytesPerRow, targetWidth, targetHeight);
+
+	*_width = targetWidth;
+	*_height = targetHeight;
+	return B_OK;
+}
+
+
+/*!	The window lock must be held for writing. Called when the window is
+	minimized, so that it can still be shown in a small picture while it has
+	no buffer; the picture goes when the window has one again.
+*/
+void
+Window::SaveSnapshot()
+{
+	if (!fBufferInterface.IsSet() || !fBufferReady
+		|| fBufferInterface->Buffer().InitCheck() != B_OK) {
+		return;
+	}
+
+	const int32 kSnapshotWidth = 480;
+	const int32 kSnapshotHeight = 320;
+
+	std::vector<uint8> pixels;
+	int32 width;
+	int32 height;
+	try {
+		pixels.resize((size_t)kSnapshotWidth * kSnapshotHeight * 4);
+	} catch (...) {
+		return;
+	}
+	if (ReadPixels(kSnapshotWidth, kSnapshotHeight, pixels.data(),
+			kSnapshotWidth * 4, &width, &height) != B_OK) {
+		return;
+	}
+
+	// keep it compact: rows of exactly the picture's width
+	std::vector<uint8> snapshot;
+	try {
+		snapshot.resize((size_t)width * height * 4);
+	} catch (...) {
+		return;
+	}
+	for (int32 y = 0; y < height; y++) {
+		memcpy(snapshot.data() + (size_t)y * width * 4,
+			pixels.data() + (size_t)y * kSnapshotWidth * 4, (size_t)width * 4);
+	}
+	fSnapshot.swap(snapshot);
+	fSnapshotWidth = width;
+	fSnapshotHeight = height;
 }
 
 
@@ -997,6 +1194,8 @@ Window::RedrawDirtyRegion()
 		if (fBufferInterface.IsSet() && !fBufferReady
 			&& fBufferInterface->Buffer().InitCheck() == B_OK) {
 			fBufferReady = true;
+			// the snapshot of a minimized window is not needed anymore
+			std::vector<uint8>().swap(fSnapshot);
 			// including the shadow
 			BRegion bounds(fShape.Bounds());
 			fBufferInterface->InvalidateRegion(bounds);
