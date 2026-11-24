@@ -552,9 +552,17 @@ DefaultManager::_FindPhysical(volatile media_node_id *id, uint32 default_type,
 	// name carries the instance suffix -- "#2" -- that tells identical
 	// devices apart); else the first real device, as when nothing is saved,
 	// marked as a fallback so SaveState() keeps the preference.
+	//
+	// And between those two, the same name from an add-on with the same file
+	// name in another directory. The add-on's path is where it was installed,
+	// not what it is: when an update moved hmulti_audio.media_addon from
+	// system non-packaged into its package, the device saved as the default
+	// was "not present" at every boot until it was picked again.
 	media_node_id exactMatch = -1;
 	media_node_id nameMatch = -1;
 	int32 nameMatchIndex = -1;
+	media_node_id leafMatch = -1;
+	int32 leafMatchIndex = -1;
 	int32 firstReal = -1;
 
 	for (int i = 0; i < count; i++) {
@@ -601,10 +609,24 @@ DefaultManager::_FindPhysical(volatile media_node_id *id, uint32 default_type,
 		if (strcmp(dninfo.name, msgDninfo.name) != 0)
 			continue;
 		BPath path;
-		if (gDormantNodeManager->FindAddOnPath(&path, dninfo.addon) != B_OK
-			|| path != msgPath) {
-			syslog(LOG_DEBUG, "media_server: \"%s\" is from %s, not %s\n",
-				info[i].name, path.Path(), msgPath.Path());
+		if (gDormantNodeManager->FindAddOnPath(&path, dninfo.addon) != B_OK) {
+			syslog(LOG_DEBUG, "media_server: no add-on path for \"%s\"\n",
+				info[i].name);
+			continue;
+		}
+		if (path != msgPath) {
+			const char* leaf = path.Leaf();
+			const char* savedLeaf = msgPath.Leaf();
+			if (leaf != NULL && savedLeaf != NULL
+				&& strcmp(leaf, savedLeaf) == 0) {
+				if (leafMatch < 0) {
+					leafMatch = info[i].node.node;
+					leafMatchIndex = i;
+				}
+			} else {
+				syslog(LOG_DEBUG, "media_server: \"%s\" is from %s, not %s\n",
+					info[i].name, path.Path(), msgPath.Path());
+			}
 			continue;
 		}
 		if (dninfo.flavor_id == msgDninfo.flavor_id) {
@@ -617,11 +639,27 @@ DefaultManager::_FindPhysical(volatile media_node_id *id, uint32 default_type,
 		}
 	}
 
+	if (exactMatch < 0 && nameMatch < 0 && leafMatch >= 0) {
+		nameMatch = leafMatch;
+		nameMatchIndex = leafMatchIndex;
+		BPath path;
+		dormant_node_info dninfo;
+		if (fRoster->GetDormantNodeFor(info[leafMatchIndex].node, &dninfo)
+				== B_OK
+			&& gDormantNodeManager->FindAddOnPath(&path, dninfo.addon)
+				== B_OK) {
+			syslog(LOG_NOTICE, "media_server: default %s %s \"%s\" restored"
+				" from %s; it was saved from %s\n", isAudio ? "audio" : "video",
+				isInput ? "input" : "output", info[leafMatchIndex].name,
+				path.Path(), msgPath.Path());
+		}
+	}
+
 	const int32 typeIndex = _TypeIndex(default_type);
 
 	if (msg != NULL && (exactMatch >= 0 || nameMatch >= 0)) {
 		*id = exactMatch >= 0 ? exactMatch : nameMatch;
-		if (exactMatch < 0) {
+		if (exactMatch < 0 && nameMatch != leafMatch) {
 			syslog(LOG_NOTICE, "media_server: default %s %s \"%s\" restored by"
 				" name; its flavor id moved from %" B_PRId32 "\n",
 				isAudio ? "audio" : "video", isInput ? "input" : "output",
