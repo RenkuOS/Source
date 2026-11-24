@@ -1574,6 +1574,7 @@ MultiAudioNode::GetParameterValue(int32 id, bigtime_t* lastChange, void* value,
 
 	multi_mix_value_info info;
 	multi_mix_value values[2];
+	memset(values, 0, sizeof(values));
 	info.values = values;
 	info.item_count = 0;
 	multi_mix_control* controls = fDevice->MixControlInfo().controls;
@@ -1619,11 +1620,12 @@ MultiAudioNode::GetParameterValue(int32 id, bigtime_t* lastChange, void* value,
 						B_PRIi32 "]: %f\n", i, ((float*)value)[i]));
 				}
 			} else if (parameter->Type() == BParameter::B_DISCRETE_PARAMETER) {
-				BDiscreteParameter* discrete = (BDiscreteParameter*)parameter;
-				if (discrete->CountItems() <= 2)
-					((int32*)value)[0] = values[0].enable ? 1 : 0;
-				else
+				// By the control's kind, as _ProcessGroup() made the
+				// parameter: a mux with two inputs is still a mux.
+				if ((controls[id - 100].flags & B_MULTI_MIX_MUX) != 0)
 					((int32*)value)[0] = values[0].mux;
+				else
+					((int32*)value)[0] = values[0].enable ? 1 : 0;
 
 				*size = sizeof(int32);
 
@@ -1772,6 +1774,7 @@ MultiAudioNode::SetParameterValue(int32 id, bigtime_t performanceTime,
 
 	multi_mix_value_info info;
 	multi_mix_value values[2];
+	memset(values, 0, sizeof(values));
 	info.values = values;
 	info.item_count = 0;
 	multi_mix_control* controls = fDevice->MixControlInfo().controls;
@@ -1804,16 +1807,16 @@ MultiAudioNode::SetParameterValue(int32 id, bigtime_t performanceTime,
 				"]: %" B_PRIi32 "\n", i, ((int32*)value)[i]));
 		}
 
-		BDiscreteParameter* discrete = (BDiscreteParameter*)parameter;
-		if (discrete->CountItems() <= 2) {
-			info.item_count = 1;
-			values[0].id = control_id;
-			values[0].enable = ((int32*)value)[0] == 1;
-		} else {
-			info.item_count = 1;
-			values[0].id = control_id;
+		// By the control's kind, as _ProcessGroup() made the parameter. A
+		// mux with two inputs was taken for an on/off switch here: only
+		// the one byte of `enable` was set, and the driver read `mux`,
+		// which shares it, with the other three bytes left from the stack.
+		info.item_count = 1;
+		values[0].id = control_id;
+		if ((controls[id - 100].flags & B_MULTI_MIX_MUX) != 0)
 			values[0].mux = ((uint32*)value)[0];
-		}
+		else
+			values[0].enable = ((int32*)value)[0] == 1;
 	}
 
 	if (info.item_count > 0) {
