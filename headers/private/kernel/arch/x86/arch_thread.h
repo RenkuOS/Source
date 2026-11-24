@@ -32,6 +32,8 @@ void x86_set_tls_context(Thread* thread);
 
 #ifdef __x86_64__
 bool x86_64_is_user_ip(uint64 cs, uint64 ip);
+void x86_save_tls_context(Thread* thread);
+void x86_64_reset_user_segments(Thread* thread);
 #endif
 
 

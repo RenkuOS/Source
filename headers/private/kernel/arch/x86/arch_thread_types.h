@@ -50,6 +50,14 @@ struct arch_thread {
 	uintptr_t		instruction_pointer;
 
 	uint64			user_gs_base;
+
+	// The user FS, DS and ES selectors, and the FS base used while the FS
+	// selector is 0 (0: the thread's TLS). Only 32-bit code needs anything
+	// but 0 in them, and then they must survive context switches.
+	uint64			user_fs_base;
+	uint16			user_fs_selector;
+	uint16			user_ds_selector;
+	uint16			user_es_selector;
 #else
 	struct farcall	current_stack;
 	struct farcall	interrupt_stack;

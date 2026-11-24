@@ -188,6 +188,10 @@ arch_thread_init_tls(Thread *thread)
 {
 	thread->user_local_storage =
 		thread->user_stack_base + thread->user_stack_size;
+#ifdef __x86_64__
+	// Called by the thread itself, when it is new or has called exec().
+	x86_64_reset_user_segments(thread);
+#endif
 	return B_OK;
 }
 
@@ -199,6 +203,13 @@ arch_thread_context_switch(Thread* from, Thread* to)
 
 	cpuData->arch.tss.sp0 = to->kernel_stack_top;
 	x86_set_syscall_stack(to->kernel_stack_top);
+
+#ifdef __x86_64__
+	// Userland threads keep their own FS, DS and ES selectors. Kernel threads
+	// never use them.
+	if (from->user_local_storage != 0)
+		x86_save_tls_context(from);
+#endif
 
 	// set TLS GDT entry to the current thread - since this action is
 	// dependent on the current CPU, we have to do it here
