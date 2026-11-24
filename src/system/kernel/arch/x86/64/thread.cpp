@@ -154,6 +154,11 @@ arch_thread_control(const char* subsystem, uint32 function, void* buffer,
 				return B_BAD_ADDRESS;
 			}
 
+			// WRMSR faults in kernel mode on a non-canonical base. Every user
+			// address is canonical, and no other base is of use to userland.
+			if (base > USER_TOP)
+				return B_BAD_VALUE;
+
 			Thread* thread = thread_get_current_thread();
 			thread->arch_info.user_gs_base = base;
 			x86_write_msr(IA32_MSR_KERNEL_GS_BASE, base);
