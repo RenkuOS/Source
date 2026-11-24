@@ -13,7 +13,18 @@
 int
 issetugid(void)
 {
-	// TODO: as long as we're effectively a single user system, this will do,
-	//	but we might want to have real kernel support for this.
-	return 1;
+	uid_t realUser, effectiveUser, savedUser;
+	gid_t realGroup, effectiveGroup, savedGroup;
+
+	if (getresuid(&realUser, &effectiveUser, &savedUser) != 0
+		|| getresgid(&realGroup, &effectiveGroup, &savedGroup) != 0) {
+		return 1;
+	}
+
+	// The kernel does not record whether an exec() changed our IDs, so any
+	// difference between the real, effective, and saved IDs counts as tainted.
+	// TODO: a process that has fully given up its privileges counts as
+	//	untainted; that needs kernel support to track.
+	return realUser != effectiveUser || realUser != savedUser
+		|| realGroup != effectiveGroup || realGroup != savedGroup;
 }
