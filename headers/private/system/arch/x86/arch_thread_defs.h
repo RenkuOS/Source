@@ -20,6 +20,10 @@
 	// buffer: uint64, receives the FS base used while the selector is 0
 #define THREAD_GET_GS_BASE		5
 	// buffer: uint64, receives the user GS base
+#define THREAD_SET_DEBUG_REGISTERS	6
+	// buffer: struct thread_debug_registers, the calling thread's own
+	// hardware breakpoints. One that is hit raises SIGTRAP, and the signal
+	// context then holds DR6.
 
 // The local descriptor table of a team has this many entries.
 #define THREAD_LDT_ENTRY_COUNT	8192
@@ -31,6 +35,16 @@ struct thread_ldt_entry {
 		// The raw segment descriptor, as the CPU reads it from the table. Only
 		// present, writable 32-bit data segments of DPL 3 are accepted; all
 		// zeros clears the entry.
+};
+
+struct thread_debug_registers {
+	uint64	address[4];
+		// DR0-DR3. Only those of enabled breakpoints are checked and used:
+		// they must be user addresses, aligned to the breakpoint's length.
+	uint64	dr7;
+		// The enable bits (local and global enable mean the same) and the R/W
+		// and LEN fields as in DR7; I/O breakpoints are refused. LE, GE and
+		// bit 10 are ignored, any other bit must be 0. 0 removes all.
 };
 
 

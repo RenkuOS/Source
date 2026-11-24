@@ -154,15 +154,17 @@ update_thread_breakpoints_flag(Thread* thread)
 {
 	Team* team = thread->team;
 
-	if (arch_has_breakpoints(&team->debug_info.arch_info))
+	if (arch_has_breakpoints(&team->debug_info.arch_info)
+		|| arch_has_thread_breakpoints(thread)) {
 		atomic_or(&thread->flags, THREAD_FLAGS_BREAKPOINTS_DEFINED);
-	else
+	} else
 		atomic_and(&thread->flags, ~THREAD_FLAGS_BREAKPOINTS_DEFINED);
 }
 
 
 /*!	Updates the Thread::flags THREAD_FLAGS_BREAKPOINTS_DEFINED bit of all
-	threads of the current team.
+	threads of the current team. A thread with breakpoints of its own keeps
+	the bit; it changes them only with the team locked.
 */
 static void
 update_threads_breakpoints_flag()
@@ -171,16 +173,14 @@ update_threads_breakpoints_flag()
 
 	TeamLocker teamLocker(team);
 
-	if (arch_has_breakpoints(&team->debug_info.arch_info)) {
-		for (Thread* thread = team->thread_list.First(); thread != NULL;
-				thread = team->thread_list.GetNext(thread)) {
+	const bool teamBreakpoints
+		= arch_has_breakpoints(&team->debug_info.arch_info);
+	for (Thread* thread = team->thread_list.First(); thread != NULL;
+			thread = team->thread_list.GetNext(thread)) {
+		if (teamBreakpoints || arch_has_thread_breakpoints(thread))
 			atomic_or(&thread->flags, THREAD_FLAGS_BREAKPOINTS_DEFINED);
-		}
-	} else {
-		for (Thread* thread = team->thread_list.First(); thread != NULL;
-				thread = team->thread_list.GetNext(thread)) {
+		else
 			atomic_and(&thread->flags, ~THREAD_FLAGS_BREAKPOINTS_DEFINED);
-		}
 	}
 }
 

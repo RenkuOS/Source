@@ -10,6 +10,7 @@
 
 
 #include <arch/thread.h>
+#include <arch/user_debugger.h>
 
 #include <stddef.h>
 #include <stdlib.h>
@@ -97,8 +98,10 @@ x86_restart_syscall(iframe* frame)
 }
 
 
-// Wine reads the FS selector of the interrupted code here.
+// Wine reads the FS selector of the interrupted code here, and DR6.
 static_assert(offsetof(fpu_state, fs) == 486,
+	"the signal frame layout is part of the userland ABI");
+static_assert(offsetof(fpu_state, dr6) == 488,
 	"the signal frame layout is part of the userland ABI");
 
 
@@ -421,6 +424,9 @@ arch_team_reset_for_exec(Team* team)
 		x86_64_reset_user_segments(thread_get_current_thread());
 	}
 	free(ldt);
+
+	// Breakpoints in the old image must not fire in the new one.
+	x86_reset_thread_breakpoints();
 }
 
 
@@ -540,6 +546,21 @@ arch_thread_control(const char* subsystem, uint32 function, void* buffer,
 				return B_BAD_ADDRESS;
 			}
 			return B_OK;
+		}
+
+		case THREAD_SET_DEBUG_REGISTERS:
+		{
+			thread_debug_registers registers;
+			if (bufferSize != sizeof(registers))
+				return B_BAD_VALUE;
+
+			if (!is_user_address_range(buffer, sizeof(registers))
+				|| user_memcpy(&registers, buffer, sizeof(registers)) < B_OK) {
+				return B_BAD_ADDRESS;
+			}
+
+			return x86_set_thread_breakpoints(registers.address,
+				registers.dr7);
 		}
 	}
 	return B_BAD_HANDLER;
@@ -773,6 +794,14 @@ arch_setup_signal_frame(Thread* thread, struct sigaction* action,
 	signalFrameData->context.uc_mcontext.fpu.fp_fxsave.trap_number = frame->vector;
 	const uint16 fsSelector = read_fs_selector();
 	signalFrameData->context.uc_mcontext.fpu.fp_fxsave.fs = fsSelector;
+	// Which of the thread's own breakpoints raised a SIGTRAP. Each trap
+	// replaces the value, so it goes into one frame only.
+	signalFrameData->context.uc_mcontext.fpu.fp_fxsave.dr6 = 0;
+	if (signalFrameData->info.si_signo == SIGTRAP) {
+		signalFrameData->context.uc_mcontext.fpu.fp_fxsave.dr6
+			= thread->arch_info.user_dr6;
+		thread->arch_info.user_dr6 = 0;
+	}
 
 	// Fill in signalFrameData->context.uc_stack.
 	signal_get_user_stack(frame->user_sp, &signalFrameData->context.uc_stack);
@@ -819,7 +848,10 @@ arch_setup_signal_frame(Thread* thread, struct sigaction* action,
 		+ (addr_t)commPageAddress;
 	arch_cpu_disable_user_access();
 	frame->di = (addr_t)userSignalFrameData;
-	frame->flags &= ~(uint64)(X86_EFLAGS_TRAP | X86_EFLAGS_DIRECTION);
+	// The context keeps RF for the interrupted code; the handler starts
+	// without it.
+	frame->flags &= ~(uint64)(X86_EFLAGS_TRAP | X86_EFLAGS_DIRECTION
+		| X86_EFLAGS_RESUME);
 
 	// The handler is 64-bit code, but the signal may have interrupted 32-bit
 	// code. IRET with that CS and the handler's address would fault in kernel
@@ -902,8 +934,12 @@ arch_restore_signal_frame(struct signal_frame_data* signalFrameData)
 	frame->r15 = signalFrameData->context.uc_mcontext.r15;
 	frame->user_sp = signalFrameData->context.uc_mcontext.rsp;
 	frame->ip = ip;
-	frame->flags = (frame->flags & ~(uint64)X86_EFLAGS_USER_FLAGS)
-		| (signalFrameData->context.uc_mcontext.rflags & X86_EFLAGS_USER_FLAGS);
+	// The resume flag too: the kernel sets it for an instruction that hit a
+	// breakpoint, which would raise the debug exception again without it when
+	// the handler returns to it.
+	const uint64 kRestoredFlags = X86_EFLAGS_USER_FLAGS | X86_EFLAGS_RESUME;
+	frame->flags = (frame->flags & ~kRestoredFlags)
+		| (signalFrameData->context.uc_mcontext.rflags & kRestoredFlags);
 
 	// Note: the error_code and vector fields are not restored. These are provided to the signal
 	// handler for information purposes only, and are not used after the signal handling is
