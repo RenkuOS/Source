@@ -36,6 +36,10 @@ enum jh7110_ext_clock {
 	JH7110_EXT_GMAC0_RGMII_RXIN,
 	JH7110_EXT_GMAC1_RMII_REFIN,
 	JH7110_EXT_GMAC1_RGMII_RXIN,
+	JH7110_EXT_MCLK_EXT,		// audio master clock input, if the board has one
+	JH7110_EXT_I2STX_BCLK_EXT,	// I2S TX bit and frame clock inputs (slave)
+	JH7110_EXT_I2STX_LRCK_EXT,
+	JH7110_EXT_LAST = JH7110_EXT_I2STX_LRCK_EXT
 };
 
 #define JH7110_OSC_RATE		24000000LL

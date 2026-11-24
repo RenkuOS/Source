@@ -78,8 +78,19 @@ static const ClockDef kClocks[] = {
 	DEF1(SYS, APB0, kGate, 0, 0, SYS(APB_BUS)),
 	DEF1(SYS, AUDIO_ROOT, 0, 0, 4, PLL(PLL2_OUT)),
 	DEF1(SYS, MCLK_INNER, 0, 0, 7, SYS(AUDIO_ROOT)),
+	DEF2(SYS, MCLK, 0, 1, 0, SYS(MCLK_INNER), EXT(MCLK_EXT)),
 	DEF1(SYS, PWMDAC_APB, kGate, 0, 0, SYS(APB0)),
 	DEF1(SYS, PWMDAC_CORE, kGate, 0, 9, SYS(AUDIO_ROOT)),
+	DEF1(SYS, I2STX0_APB, kGate, 0, 0, SYS(APB0)),
+	DEF1(SYS, I2STX0_BCLK_MST, kGate, 0, 6, SYS(MCLK)),
+	DEF1(SYS, I2STX0_BCLK_MST_INV, kInvert, 0, 0, SYS(I2STX0_BCLK_MST)),
+	DEF2(SYS, I2STX0_LRCK_MST, 0, 1, 7, SYS(I2STX0_BCLK_MST_INV),
+		SYS(I2STX0_BCLK_MST)),
+	DEF2(SYS, I2STX0_BCLK, 0, 1, 0, SYS(I2STX0_BCLK_MST),
+		EXT(I2STX_BCLK_EXT)),
+	DEF1(SYS, I2STX0_BCLK_INV, kInvert, 0, 0, SYS(I2STX0_BCLK)),
+	DEF2(SYS, I2STX0_LRCK, 0, 1, 0, SYS(I2STX0_LRCK_MST),
+		EXT(I2STX_LRCK_EXT)),
 	DEF1(SYS, QSPI_AHB, kGate, 0, 0, SYS(AHB1)),
 	DEF1(SYS, QSPI_APB, kGate, 0, 0, SYS(APB_BUS)),
 	DEF1(SYS, QSPI_REF_SRC, 0, 0, 5, PLL(PLL0_OUT)),
@@ -90,6 +101,7 @@ static const ClockDef kClocks[] = {
 	DEF1(SYS, SDIO1_SDCARD, kGate, 0, 4, SYS(AXI_CFG0)),
 	DEF1(SYS, USB_125M, 0, 0, 4, PLL(PLL0_OUT)),
 	DEF1(SYS, NOC_BUS_STG_AXI, kGate, 0, 0, SYS(NOCSTG_BUS)),
+	DEF1(SYS, VOUT_TOP_HDMITX0_MCLK, kGate, 0, 0, SYS(MCLK)),
 	DEF1(SYS, GMAC1_AHB, kGate, 0, 0, SYS(AHB0)),
 	DEF1(SYS, GMAC1_AXI, kGate, 0, 0, SYS(STG_AXIAHB)),
 	DEF1(SYS, GMAC_SRC, 0, 0, 3, PLL(PLL0_OUT)),
@@ -201,7 +213,7 @@ Jh7110ClockTree::IsKnown(jh7110_clock_ref clock)
 {
 	switch (clock.controller) {
 		case JH7110_EXT:
-			return clock.id <= JH7110_EXT_GMAC1_RGMII_RXIN;
+			return clock.id <= JH7110_EXT_LAST;
 		case JH7110_PLL:
 			return clock.id < JH7110_PLLCLK_END;
 		default:
@@ -337,7 +349,7 @@ Jh7110ClockTree::GetRate(jh7110_clock_ref clock)
 	switch (clock.controller) {
 		case JH7110_EXT:
 			// only the oscillator rate is fixed; the GMAC reference inputs
-			// depend on the board
+			// and the audio clock inputs depend on the board
 			return clock.id == JH7110_EXT_OSC ? JH7110_OSC_RATE : B_UNSUPPORTED;
 		case JH7110_PLL:
 			return PllRate(clock.id);
