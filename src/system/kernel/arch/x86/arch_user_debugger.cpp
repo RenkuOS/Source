@@ -821,6 +821,41 @@ x86_reset_thread_breakpoints()
 }
 
 
+/*!	Whether a debug or breakpoint exception from userland goes to the current
+	thread as SIGTRAP: no user debugger is installed for the team, and the
+	thread has a handler for the signal. Otherwise it is a debugger event as
+	before, for which the debug_server is installed if there is no debugger.
+	Interrupts must be enabled.
+*/
+static bool
+thread_catches_traps(Thread* thread)
+{
+	if (user_debugger_installed(thread))
+		return false;
+
+	struct sigaction action;
+	return sigaction(SIGTRAP, NULL, &action) == 0
+		&& action.sa_handler != SIG_DFL && action.sa_handler != SIG_IGN;
+}
+
+
+/*!	Sends the current thread SIGTRAP for a debug or breakpoint exception from
+	userland. Like the signal of a page fault, it is not blocked or ignored:
+	the team is killed then. Interrupts must be enabled.
+	\param code \c TRAP_BRKPT or \c TRAP_TRACE.
+	\param dr6 The status bits of DR6 for the signal frame.
+*/
+static void
+send_trap_signal(Thread* thread, iframe* frame, int32 code, uint64 dr6)
+{
+	thread->arch_info.user_dr6 = dr6;
+
+	Signal signal(SIGTRAP, code, B_OK, thread->team->id);
+	signal.SetAddress((void*)frame->ip);
+	send_signal_to_thread_forced(thread, signal);
+}
+
+
 /*!	Handles a debug exception from userland that one of the thread's own
 	breakpoints raised, with SIGTRAP. Interrupts must be disabled; if this
 	returns \c true, they have been enabled.
@@ -849,10 +884,6 @@ handle_thread_breakpoint(Thread* thread, iframe* frame, size_t dr6)
 	if (hit == 0)
 		return false;
 
-	// For the signal frame. BS is passed on too: a trap flag the thread set
-	// itself may have been pending as well.
-	thread->arch_info.user_dr6 = hit | (dr6 & (1 << X86_DR6_BS));
-
 	// An instruction breakpoint is a fault: the instruction runs when the
 	// thread returns to it with RF set, which the signal context keeps.
 	if (instruction)
@@ -860,11 +891,60 @@ handle_thread_breakpoint(Thread* thread, iframe* frame, size_t dr6)
 
 	enable_interrupts();
 
-	// As for a page fault: blocked, it kills the team, rather than coming
-	// later with a context that is no longer the breakpoint's.
-	Signal signal(SIGTRAP, TRAP_BRKPT, B_OK, thread->team->id);
-	signal.SetAddress((void*)frame->ip);
-	send_signal_to_thread_forced(thread, signal);
+	// BS is passed on too: a single step may have been pending as well.
+	send_trap_signal(thread, frame, TRAP_BRKPT,
+		hit | (dr6 & (1 << X86_DR6_BS)));
+	return true;
+}
+
+
+/*!	Returns whether \a dr6 reports a breakpoint that \a dr7 enables. DR6 may
+	report one that is not enabled as well.
+*/
+static bool
+enabled_breakpoint_hit(size_t dr6, size_t dr7)
+{
+	for (int32 i = 0; i < X86_BREAKPOINT_COUNT; i++) {
+		if ((dr6 & (1 << sDR6B[i])) != 0
+			&& (dr7 & ((1 << sDR7L[i]) | (1 << sDR7G[i]))) != 0) {
+			return true;
+		}
+	}
+	return false;
+}
+
+
+/*!	Handles any other debug exception from userland with SIGTRAP, if the
+	thread catches it (thread_catches_traps()): a single step, when the
+	thread set the trap flag itself, or ICEBP. Interrupts must be disabled;
+	they are enabled if this gets past the breakpoint and debugger checks.
+	\param dr6 The status bits of DR6 for this exception.
+	\param dr7 DR7 when the thread entered the kernel, which is saved only
+		while breakpoints are installed.
+	\return Whether SIGTRAP was sent.
+*/
+static bool
+handle_thread_debug_trap(Thread* thread, iframe* frame, size_t dr6,
+	size_t dr7)
+{
+	// A break- or watchpoint of the team's, which can be set without a
+	// debugger (_user_set_debugger_breakpoint()), is left to the debugger
+	// path, which sets RF for an instruction breakpoint: as SIGTRAP without
+	// it, the instruction would raise the exception again at once, forever.
+	// The thread's own ones were handled already. Breakpoints are installed
+	// whenever the flag is set.
+	if (((thread->flags & THREAD_FLAGS_BREAKPOINTS_DEFINED) != 0
+			&& enabled_breakpoint_hit(dr6, dr7))
+		|| user_debugger_installed(thread)) {
+		return false;
+	}
+
+	enable_interrupts();
+
+	if (!thread_catches_traps(thread))
+		return false;
+
+	send_trap_signal(thread, frame, TRAP_TRACE, dr6 & (1 << X86_DR6_BS));
 	return true;
 }
 
@@ -1209,8 +1289,12 @@ x86_handle_debug_exception(iframe* frame)
 	TRACE(("x86_handle_debug_exception(): DR6: %lx, DR7: %lx\n", dr6, dr7));
 
 #ifdef __x86_64__
-	if (IFRAME_IS_USER(frame) && handle_thread_breakpoint(thread, frame, dr6))
-		return;
+	if (IFRAME_IS_USER(frame)) {
+		if (handle_thread_breakpoint(thread, frame, dr6)
+			|| handle_thread_debug_trap(thread, frame, dr6, dr7)) {
+			return;
+		}
+	}
 #endif
 
 	// check, which exception condition applies
@@ -1340,6 +1424,19 @@ void
 x86_handle_breakpoint_exception(iframe* frame)
 {
 	TRACE(("x86_handle_breakpoint_exception()\n"));
+
+#ifdef __x86_64__
+	// The signal reports the address after the int3 instruction, where the
+	// thread continues, as on other systems.
+	if (IFRAME_IS_USER(frame)) {
+		Thread* thread = thread_get_current_thread();
+		enable_interrupts();
+		if (thread_catches_traps(thread)) {
+			send_trap_signal(thread, frame, TRAP_BRKPT, 0);
+			return;
+		}
+	}
+#endif
 
 	// reset eip to the int3 instruction
 	frame->ip--;

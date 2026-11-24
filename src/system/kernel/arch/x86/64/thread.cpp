@@ -794,8 +794,9 @@ arch_setup_signal_frame(Thread* thread, struct sigaction* action,
 	signalFrameData->context.uc_mcontext.fpu.fp_fxsave.trap_number = frame->vector;
 	const uint16 fsSelector = read_fs_selector();
 	signalFrameData->context.uc_mcontext.fpu.fp_fxsave.fs = fsSelector;
-	// Which of the thread's own breakpoints raised a SIGTRAP. Each trap
-	// replaces the value, so it goes into one frame only.
+	// Which of the thread's own breakpoints raised a SIGTRAP, and whether it
+	// was a single step. Each trap replaces the value, so it goes into one
+	// frame only.
 	signalFrameData->context.uc_mcontext.fpu.fp_fxsave.dr6 = 0;
 	if (signalFrameData->info.si_signo == SIGTRAP) {
 		signalFrameData->context.uc_mcontext.fpu.fp_fxsave.dr6
@@ -936,8 +937,11 @@ arch_restore_signal_frame(struct signal_frame_data* signalFrameData)
 	frame->ip = ip;
 	// The resume flag too: the kernel sets it for an instruction that hit a
 	// breakpoint, which would raise the debug exception again without it when
-	// the handler returns to it.
-	const uint64 kRestoredFlags = X86_EFLAGS_USER_FLAGS | X86_EFLAGS_RESUME;
+	// the handler returns to it. And the trap flag, so that a SIGTRAP handler
+	// can go on single-stepping the code, or stop. Sigreturn returns with
+	// IRET, so the first instruction runs before the next single step.
+	const uint64 kRestoredFlags = X86_EFLAGS_USER_FLAGS | X86_EFLAGS_RESUME
+		| X86_EFLAGS_TRAP;
 	frame->flags = (frame->flags & ~kRestoredFlags)
 		| (signalFrameData->context.uc_mcontext.rflags & kRestoredFlags);
 

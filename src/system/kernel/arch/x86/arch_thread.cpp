@@ -282,6 +282,12 @@ arch_store_fork_frame(struct arch_fork_arg* arg)
 
 	// we also want fork() to return 0 for the child
 	arg->iframe.ax = 0;
+
+#ifdef __x86_64__
+	// The child does not single-step: neither the parent's debugger nor its
+	// own SIGTRAP handler asked for it.
+	arg->iframe.flags &= ~(uint64)X86_EFLAGS_TRAP;
+#endif
 }
 
 
