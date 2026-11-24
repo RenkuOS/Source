@@ -151,8 +151,9 @@ HWInterface::Cursor() const
 	if (!fFloatingOverlaysLock.Lock())
 		return ServerCursorReference(NULL);
 
+	ServerCursorReference cursor = fCursor;
 	fFloatingOverlaysLock.Unlock();
-	return fCursor;
+	return cursor;
 }
 
 
@@ -162,8 +163,9 @@ HWInterface::CursorAndDragBitmap() const
 	if (!fFloatingOverlaysLock.Lock())
 		return ServerCursorReference(NULL);
 
+	ServerCursorReference cursor = fCursorAndDragBitmap;
 	fFloatingOverlaysLock.Unlock();
-	return fCursorAndDragBitmap;
+	return cursor;
 }
 
 
