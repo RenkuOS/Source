@@ -29,6 +29,19 @@
 
 static uint32 sPlicContexts[SMP_MAX_CPUS];
 
+// The PLIC sources, which are the I/O interrupt vectors reserved in
+// arch_int_init_post_vm(). Vectors above them (MSI, for instance) are dispatched by
+// their own controllers and never reach the PLIC registers here.
+static const int32 kPlicVectorCount = 128;
+
+// Each source is enabled in the PLIC context of one CPU only, the one it is
+// assigned to (CPU 0 until the kernel assigns it), so that only that CPU
+// takes it. The enable registers are shared by all CPUs: the lock guards
+// their read-modify-write.
+static spinlock sPlicLock = B_SPINLOCK_INITIALIZER;
+static int32 sPlicSourceCpu[kPlicVectorCount];
+static uint32 sPlicSourceEnabled[kPlicVectorCount / 32];
+
 
 //#pragma mark -
 
@@ -382,9 +395,6 @@ arch_int_init(kernel_args* args)
 	for (uint32 i = 0; i < args->num_cpus; i++)
 		sPlicContexts[i] = args->arch_args.plicContexts[i];
 
-	// TODO: read from FDT
-	reserve_io_interrupt_vectors(128, 0, INTERRUPT_TYPE_IRQ);
-
 	for (uint32 i = 0; i < args->num_cpus; i++)
 		gPlicRegs->contexts[sPlicContexts[i]].priorityThreshold = 0;
 
@@ -395,6 +405,12 @@ arch_int_init(kernel_args* args)
 status_t
 arch_int_init_post_vm(kernel_args* args)
 {
+	// Not in arch_int_init(): interrupts_init_post_vm() initializes every
+	// vector before it calls this, which would turn the reserved PLIC vectors
+	// back into INTERRUPT_TYPE_UNKNOWN. The kernel only assigns IRQ vectors
+	// to CPUs and balances their load.
+	// TODO: read from FDT
+	reserve_io_interrupt_vectors(kPlicVectorCount, 0, INTERRUPT_TYPE_IRQ);
 	return B_OK;
 }
 
@@ -413,12 +429,28 @@ arch_int_init_io(kernel_args* args)
 }
 
 
+static inline void
+plic_set_enabled(int32 irq, int32 cpu, bool enabled)
+{
+	volatile uint32& enable = gPlicRegs->enable[sPlicContexts[cpu]][irq / 32];
+	if (enabled)
+		enable |= 1U << (irq % 32);
+	else
+		enable &= ~(1U << (irq % 32));
+}
+
+
 void
 arch_int_enable_io_interrupt(int32 irq)
 {
 	dprintf("arch_int_enable_io_interrupt(%" B_PRId32 ")\n", irq);
+	if (irq < 0 || irq >= kPlicVectorCount)
+		return;
+
+	InterruptsSpinLocker locker(sPlicLock);
 	gPlicRegs->priority[irq] = 1;
-	gPlicRegs->enable[sPlicContexts[0]][irq / 32] |= 1 << (irq % 32);
+	plic_set_enabled(irq, sPlicSourceCpu[irq], true);
+	sPlicSourceEnabled[irq / 32] |= 1U << (irq % 32);
 }
 
 
@@ -426,16 +458,40 @@ void
 arch_int_disable_io_interrupt(int32 irq)
 {
 	dprintf("arch_int_disable_io_interrupt(%" B_PRId32 ")\n", irq);
+	if (irq < 0 || irq >= kPlicVectorCount)
+		return;
+
+	InterruptsSpinLocker locker(sPlicLock);
 	gPlicRegs->priority[irq] = 0;
-	gPlicRegs->enable[sPlicContexts[0]][irq / 32] &= ~(1 << (irq % 32));
+	plic_set_enabled(irq, sPlicSourceCpu[irq], false);
+	sPlicSourceEnabled[irq / 32] &= ~(1U << (irq % 32));
 }
 
 
+/*!	Moves a PLIC source to the context of \a cpu. An enabled source is
+	enabled for the new CPU before it is disabled for the old one, so that a
+	pending interrupt always has a CPU to take it; one already claimed is
+	completed by the CPU that claimed it, through that CPU's context.
+*/
 int32
 arch_int_assign_to_cpu(int32 irq, int32 cpu)
 {
-	// Not yet supported.
-	return 0;
+	if (irq < 0 || irq >= kPlicVectorCount)
+		return 0;
+	if (cpu < 0 || cpu >= smp_get_num_cpus())
+		cpu = 0;
+
+	InterruptsSpinLocker locker(sPlicLock);
+	int32 oldCpu = sPlicSourceCpu[irq];
+	if (oldCpu == cpu)
+		return cpu;
+
+	if ((sPlicSourceEnabled[irq / 32] & (1U << (irq % 32))) != 0) {
+		plic_set_enabled(irq, cpu, true);
+		plic_set_enabled(irq, oldCpu, false);
+	}
+	sPlicSourceCpu[irq] = cpu;
+	return cpu;
 }
 
 
