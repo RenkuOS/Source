@@ -9,16 +9,19 @@
  * Based on the PLDA driver of X547's device_manager2 branch; register usage
  * cross-checked with the U-Boot and Linux StarFive/PLDA drivers.
  *
- * The firmware brings the link up ("pci enum" in U-Boot): clocks, resets,
- * PHY, PERST# and the root port setup are left as they are. This driver only
- * checks that the port is alive, provides configuration space access and
- * handles MSIs.
+ * If the firmware left the port off (the factory U-Boot of the Milk-V Mars
+ * does so for PCIe0, the VL805 USB 3 controller), the driver brings it up as
+ * the U-Boot driver does: STG syscon, PHY tuning, clocks, resets, PERST#,
+ * root port setup and bridge windows. A port the firmware enabled is left as
+ * it is, apart from the translation tables.
  */
 
 
 #include "PldaPCIController.h"
+#include "Jh7110Pcie.h"
 
 #include <bus/FDT.h>
+#include <fdt_clock_reset.h>
 
 #include <AutoDeleterDrivers.h>
 #include <util/AutoLock.h>
@@ -27,34 +30,56 @@
 #include <new>
 
 
-// JH7110 clock/reset generator and system controller of the STG domain,
-// only used to check that the firmware enabled the port
+// clock/reset generators, for the direct check if the clock/reset driver is
+// not available
 #define JH7110_SYSCRG_BASE				0x13020000
 #define JH7110_SYSCLK_NOC_BUS_STG_AXI	96
 #define JH7110_STGCRG_BASE				0x10230000
 #define JH7110_STGCRG_RESET_ASSERT		0x74
-#define JH7110_STG_SYSCON_BASE			0x10240000
-#define JH7110_STG_SYSCON_PCIE0_BASE	0x48
-#define JH7110_STG_SYSCON_PCIE1_BASE	0x1f8
-#define JH7110_STG_SYSCON_LNKSTA		0x170
-#define JH7110_STG_DATA_LINK_ACTIVE		(1u << 5)
 #define JH7110_CLK_ENABLE				(1u << 31)
+
+#define PLDA_FUNCTION_DIS				(1u << 15)
+#define PLDA_RP_ENABLE					1
+#define PLDA_PREF_MEM_WIN_64_SUPPORT	(1u << 3)
+#define PLDA_PMSG_LTR_SUPPORT			(1u << 2)
+#define PCI_CLASS_BRIDGE_PCI_NORMAL		0x060400
+
+
+static vuint32*
+map_physical_reg(phys_addr_t address, AreaDeleter& area)
+{
+	phys_addr_t pageBase = address & ~(phys_addr_t)(B_PAGE_SIZE - 1);
+	void* virtualBase;
+	area.SetTo(map_physical_memory("jh7110 pcie setup", pageBase,
+		B_PAGE_SIZE, B_ANY_KERNEL_ADDRESS,
+		B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, &virtualBase));
+	if (area.Get() < 0)
+		return NULL;
+
+	return (vuint32*)((addr_t)virtualBase + (address - pageBase));
+}
 
 
 static uint32
 read_physical_reg(phys_addr_t address)
 {
-	phys_addr_t pageBase = address & ~(phys_addr_t)(B_PAGE_SIZE - 1);
-	void* virtualBase;
-	area_id area = map_physical_memory("jh7110 pcie check", pageBase,
-		B_PAGE_SIZE, B_ANY_KERNEL_ADDRESS,
-		B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, &virtualBase);
-	if (area < 0)
+	AreaDeleter area;
+	vuint32* reg = map_physical_reg(address, area);
+	return reg != NULL ? *reg : 0;
+}
+
+
+//!	Read-modify-write; returns the value read back.
+static uint32
+update_physical_reg(phys_addr_t address, uint32 mask, uint32 bits)
+{
+	AreaDeleter area;
+	vuint32* reg = map_physical_reg(address, area);
+	if (reg == NULL)
 		return 0;
 
-	uint32 value = *(vuint32*)((addr_t)virtualBase + (address - pageBase));
-	delete_area(area);
-	return value;
+	*reg = jh7110_update_bits(*reg, mask, bits);
+	return *reg;
 }
 
 
@@ -187,15 +212,78 @@ PldaPCIController::ReadResourceInfo()
 }
 
 
-/*!	The port is set up by the firmware. Touching the bridge registers while
-	its clocks are gated or its resets asserted would hang the bus, so check
-	that first, through the clock/reset generator that is always accessible.
+// ports this driver enabled, for a second probe after a failed one
+static bool sEnabledByDriver[2];
+
+static const char* const kJh7110Clocks[] = { "noc", "tl", "axi_mst0", "apb" };
+static const char* const kJh7110Resets[] = { "mst0", "slv0", "slv", "brg",
+	"core", "apb" };
+
+
+/*!	Touching the bridge registers while its clocks are gated or its resets
+	asserted would hang the bus, so look at the clock/reset generator first,
+	which is always accessible.
+	Returns B_OK if the port is enabled, B_DEV_NOT_READY if it is off.
 */
 status_t
 PldaPCIController::CheckJH7110Port()
 {
 	if (fDomain > 1)
 		return B_BAD_VALUE;
+
+	// through the clock/reset driver, by the names of the device tree
+	fdt_clock_reset_module_info* clockReset;
+	if (get_module(JH7110_CLOCK_RESET_MODULE_NAME,
+			(module_info**)&clockReset) == B_OK) {
+		DeviceNodePutter<&gDeviceManager> fdtNode(
+			gDeviceManager->get_parent_node(fNode));
+
+		status_t status = B_OK;
+		for (size_t i = 0; i < B_COUNT_OF(kJh7110Clocks); i++) {
+			fdt_clock clock;
+			if (clockReset->get_clock(fdtNode.Get(), kJh7110Clocks[i], 0,
+					&clock) != B_OK) {
+				status = B_ERROR;
+				break;
+			}
+			if (!clockReset->is_clock_enabled(clock)) {
+				TRACE("PCIe%" B_PRIu32 " clock %s is off\n", fDomain,
+					kJh7110Clocks[i]);
+				status = B_DEV_NOT_READY;
+			}
+		}
+		for (size_t i = 0; status != B_ERROR && i < B_COUNT_OF(kJh7110Resets);
+				i++) {
+			fdt_reset reset;
+			if (clockReset->get_reset(fdtNode.Get(), kJh7110Resets[i], 0,
+					&reset) != B_OK) {
+				status = B_ERROR;
+				break;
+			}
+			if (clockReset->is_reset_asserted(reset)) {
+				TRACE("PCIe%" B_PRIu32 " reset %s is asserted\n",
+					fDomain, kJh7110Resets[i]);
+				status = B_DEV_NOT_READY;
+			}
+		}
+		put_module(JH7110_CLOCK_RESET_MODULE_NAME);
+
+		if (status == B_DEV_NOT_READY) {
+			dprintf("plda: PCIe%" B_PRIu32 " not enabled by the firmware\n",
+				fDomain);
+			return status;
+		}
+		if (status == B_OK)
+			TRACE("PCIe%" B_PRIu32 " clocks and resets ok\n", fDomain);
+		else {
+			dprintf("plda: clock/reset lookup failed, checking the registers "
+				"directly\n");
+		}
+	}
+
+	// The direct register check also runs when the module answered: the two
+	// must agree, which also checks the clock and reset IDs used to enable
+	// the port.
 
 	uint32 firstClock = fDomain == 0 ? 8 : 11;
 	uint32 firstReset = fDomain == 0 ? 11 : 17;
@@ -214,24 +302,278 @@ PldaPCIController::CheckJH7110Port()
 
 	if (!clocksOn || resets != 0) {
 		dprintf("plda: PCIe%" B_PRIu32 " not enabled by the firmware (clocks "
-			"%s, resets %#" B_PRIx32 "); run \"pci enum\" in U-Boot\n",
-			fDomain, clocksOn ? "on" : "off", resets);
+			"%s, resets %#" B_PRIx32 ")\n", fDomain, clocksOn ? "on" : "off",
+			resets);
 		return B_DEV_NOT_READY;
 	}
 
-	uint32 linkStatus = read_physical_reg(JH7110_STG_SYSCON_BASE
-		+ (fDomain == 0 ? JH7110_STG_SYSCON_PCIE0_BASE
-			: JH7110_STG_SYSCON_PCIE1_BASE)
-		+ JH7110_STG_SYSCON_LNKSTA);
-	if ((linkStatus & JH7110_STG_DATA_LINK_ACTIVE) == 0) {
-		dprintf("plda: PCIe%" B_PRIu32 " link down (status %#" B_PRIx32
-			")\n", fDomain, linkStatus);
-		return B_DEVICE_NOT_FOUND;
-	}
-
-	dprintf("plda: PCIe%" B_PRIu32 " link up\n", fDomain);
+	TRACE("PCIe%" B_PRIu32 " clock and reset registers ok\n", fDomain);
 	return B_OK;
 }
+
+
+uint32
+PldaPCIController::StgSysconReg(uint32 offset)
+{
+	return JH7110_STG_SYSCON_BASE + jh7110_stg_port_base(fDomain) + offset;
+}
+
+
+void
+PldaPCIController::SetPerst(bool assert)
+{
+	// PERST# is active low; set the level before enabling the output
+	phys_addr_t base = JH7110_SYS_GPIO_BASE + jh7110_gpio_offset(fPerstGpio);
+	uint32 shift = jh7110_gpio_shift(fPerstGpio);
+	uint32 dout = update_physical_reg(base + JH7110_SYS_GPIO_DOUT,
+		JH7110_GPIO_DOUT_MASK << shift, (assert ? 0u : 1u) << shift);
+	uint32 doen = update_physical_reg(base + JH7110_SYS_GPIO_DOEN,
+		JH7110_GPIO_DOEN_MASK << shift, JH7110_GPOEN_ENABLE << shift);
+
+	TRACE("PCIe%" B_PRIu32 " PERST# (GPIO %" B_PRIu32 ") %s: dout %#"
+		B_PRIx32 ", doen %#" B_PRIx32 "\n", fDomain, fPerstGpio,
+		assert ? "asserted" : "released", (dout >> shift) & JH7110_GPIO_DOUT_MASK,
+		(doen >> shift) & JH7110_GPIO_DOEN_MASK);
+}
+
+
+/*!	First half of the U-Boot starfive_pcie_probe(): system controller, PHY,
+	clocks and resets, PERST# asserted. The bridge registers are accessible
+	afterwards.
+*/
+status_t
+PldaPCIController::EnableJH7110Port(fdt_device_module_info* fdtModule,
+	fdt_device* fdtDev)
+{
+	fdt_clock_reset_module_info* clockReset;
+	if (get_module(JH7110_CLOCK_RESET_MODULE_NAME,
+			(module_info**)&clockReset) != B_OK) {
+		dprintf("plda: no clock/reset driver, cannot enable PCIe%" B_PRIu32
+			"\n", fDomain);
+		return B_DEV_NOT_READY;
+	}
+
+	dprintf("plda: PCIe%" B_PRIu32 ": enabling the port\n", fDomain);
+
+	// PERST# line: "perst-gpios = <&sysgpio pin flags>"
+	fPerstGpio = fDomain == 0 ? JH7110_PCIE0_PERST_GPIO
+		: JH7110_PCIE1_PERST_GPIO;
+	int propLen;
+	const uint32* perst = (const uint32*)fdtModule->get_prop(fdtDev,
+		"perst-gpios", &propLen);
+	if (perst != NULL && propLen == 12)
+		fPerstGpio = B_BENDIAN_TO_HOST_INT32(perst[1]);
+	TRACE("PCIe%" B_PRIu32 " PERST# on GPIO %" B_PRIu32 "%s\n",
+		fDomain, fPerstGpio, perst != NULL ? "" : " (default)");
+	if (fPerstGpio >= 64) {
+		put_module(JH7110_CLOCK_RESET_MODULE_NAME);
+		return B_BAD_VALUE;
+	}
+
+	// system controller
+	TRACE("PCIe%" B_PRIu32 " stg syscon before: ar %#" B_PRIx32
+		", aw %#" B_PRIx32 ", rp_nep %#" B_PRIx32 ", lnksta %#" B_PRIx32 "\n",
+		fDomain, read_physical_reg(StgSysconReg(JH7110_STG_AR)),
+		read_physical_reg(StgSysconReg(JH7110_STG_AW)),
+		read_physical_reg(StgSysconReg(JH7110_STG_RP_NEP)),
+		read_physical_reg(StgSysconReg(JH7110_STG_LNKSTA)));
+
+	update_physical_reg(StgSysconReg(JH7110_STG_RP_NEP), JH7110_STG_K_RP_NEP,
+		JH7110_STG_K_RP_NEP);
+	update_physical_reg(StgSysconReg(JH7110_STG_AW),
+		JH7110_STG_AW_CKREF_SRC_MASK, 2 << JH7110_STG_AW_CKREF_SRC_SHIFT);
+	update_physical_reg(StgSysconReg(JH7110_STG_AW), JH7110_STG_AW_CLKREQ,
+		JH7110_STG_AW_CLKREQ);
+
+	TRACE("PCIe%" B_PRIu32 " stg syscon after: aw %#" B_PRIx32
+		", rp_nep %#" B_PRIx32 "\n", fDomain,
+		read_physical_reg(StgSysconReg(JH7110_STG_AW)),
+		read_physical_reg(StgSysconReg(JH7110_STG_RP_NEP)));
+
+	// clocks and resets, in the order of the device tree
+	DeviceNodePutter<&gDeviceManager> fdtNode(
+		gDeviceManager->get_parent_node(fNode));
+	status_t status = B_OK;
+	for (size_t i = 0; status == B_OK && i < B_COUNT_OF(kJh7110Clocks); i++) {
+		fdt_clock clock;
+		status = clockReset->get_clock(fdtNode.Get(), kJh7110Clocks[i], 0,
+			&clock);
+		if (status == B_OK)
+			status = clockReset->enable_clock(clock, true);
+		if (status == B_OK && !clockReset->is_clock_enabled(clock))
+			status = B_ERROR;
+		TRACE("PCIe%" B_PRIu32 " clock %s: %s, %" B_PRId64 " Hz\n",
+			fDomain, kJh7110Clocks[i], strerror(status),
+			status == B_OK ? clockReset->get_clock_rate(clock) : 0);
+	}
+	for (size_t i = 0; status == B_OK && i < B_COUNT_OF(kJh7110Resets); i++) {
+		fdt_reset reset;
+		status = clockReset->get_reset(fdtNode.Get(), kJh7110Resets[i], 0,
+			&reset);
+		if (status == B_OK)
+			status = clockReset->set_reset(reset, false);
+		if (status == B_OK && clockReset->is_reset_asserted(reset))
+			status = B_ERROR;
+		TRACE("PCIe%" B_PRIu32 " reset %s released: %s\n", fDomain,
+			kJh7110Resets[i], strerror(status));
+	}
+	put_module(JH7110_CLOCK_RESET_MODULE_NAME);
+	if (status != B_OK)
+		return status;
+	sEnabledByDriver[fDomain] = true;
+
+	// the direct check must agree before the bridge registers are touched
+	status = CheckJH7110Port();
+	if (status != B_OK)
+		return status;
+
+	// PHY: PLL KVCO fine tuning, as the U-Boot and Linux PHY drivers do
+	phys_addr_t phy = fDomain == 0 ? JH7110_PCIE_PHY0_BASE
+		: JH7110_PCIE_PHY1_BASE;
+	TRACE("PCIe%" B_PRIu32 " PHY before: kvco level %#" B_PRIx32
+		", tune %#" B_PRIx32 ", pll ctl %#" B_PRIx32 "\n", fDomain,
+		read_physical_reg(phy + JH7110_PHY_KVCO_LEVEL),
+		read_physical_reg(phy + JH7110_PHY_KVCO_TUNE_SIGNAL),
+		read_physical_reg(phy + JH7110_PHY_PLL_CTL));
+	update_physical_reg(phy + JH7110_PHY_KVCO_LEVEL, 0xffffffff,
+		JH7110_PHY_KVCO_LEVEL_VALUE);
+	update_physical_reg(phy + JH7110_PHY_KVCO_TUNE_SIGNAL, 0xffffffff,
+		JH7110_PHY_KVCO_TUNE_VALUE);
+
+	SetPerst(true);
+	return B_OK;
+}
+
+
+//!	Second half: root port setup, as in U-Boot starfive_pcie_init_port().
+void
+PldaPCIController::SetupJH7110RootPort()
+{
+	// disable the physical functions except #0
+	for (uint32 i = 1; i < JH7110_PLDA_FUNC_COUNT; i++) {
+		update_physical_reg(StgSysconReg(JH7110_STG_AR),
+			JH7110_STG_AR_FUNC_MASK,
+			(i << JH7110_PLDA_PHY_FUNC_SHIFT) << JH7110_STG_AR_FUNC_SHIFT);
+		update_physical_reg(StgSysconReg(JH7110_STG_AW),
+			JH7110_STG_AW_FUNC_MASK, i << JH7110_PLDA_PHY_FUNC_SHIFT);
+		WriteReg(kPldaPciMisc, ReadReg(kPldaPciMisc) | PLDA_FUNCTION_DIS);
+	}
+	update_physical_reg(StgSysconReg(JH7110_STG_AR), JH7110_STG_AR_FUNC_MASK,
+		0);
+	update_physical_reg(StgSysconReg(JH7110_STG_AW), JH7110_STG_AW_FUNC_MASK,
+		0);
+
+	WriteReg(kPldaGenSettings, ReadReg(kPldaGenSettings) | PLDA_RP_ENABLE);
+	WriteReg(kPldaPciIds, (ReadReg(kPldaPciIds) & 0xff)
+		| (PCI_CLASS_BRIDGE_PCI_NORMAL << 8));
+	WriteReg(kPldaPmsgSupportRx,
+		ReadReg(kPldaPmsgSupportRx) & ~PLDA_PMSG_LTR_SUPPORT);
+	WriteReg(kPldaWinRom, ReadReg(kPldaWinRom) | PLDA_PREF_MEM_WIN_64_SUPPORT);
+
+	TRACE("PCIe%" B_PRIu32 " root port: gen %#" B_PRIx32 ", ids %#"
+		B_PRIx32 ", misc %#" B_PRIx32 ", winrom %#" B_PRIx32 ", ar %#" B_PRIx32
+		", aw %#" B_PRIx32 "\n", fDomain, ReadReg(kPldaGenSettings),
+		ReadReg(kPldaPciIds), ReadReg(kPldaPciMisc), ReadReg(kPldaWinRom),
+		read_physical_reg(StgSysconReg(JH7110_STG_AR)),
+		read_physical_reg(StgSysconReg(JH7110_STG_AW)));
+}
+
+
+status_t
+PldaPCIController::WaitForJH7110Link(bigtime_t timeout)
+{
+	bigtime_t start = system_time();
+	uint32 linkStatus;
+	while (true) {
+		linkStatus = read_physical_reg(StgSysconReg(JH7110_STG_LNKSTA));
+		if ((linkStatus & JH7110_STG_DATA_LINK_ACTIVE) != 0)
+			break;
+		if (system_time() - start >= timeout) {
+			dprintf("plda: PCIe%" B_PRIu32 " link down (status %#" B_PRIx32
+				")\n", fDomain, linkStatus);
+			return B_DEVICE_NOT_FOUND;
+		}
+		snooze(10000);
+	}
+
+	dprintf("plda: PCIe%" B_PRIu32 " link up after %" B_PRId64 " ms (status %#"
+		B_PRIx32 ")\n", fDomain, (system_time() - start) / 1000, linkStatus);
+	return B_OK;
+}
+
+
+/*!	Nobody assigned bus numbers and windows to the root port and the PCI bus
+	manager does not do it on this architecture: one bus behind the port, the
+	whole 32 bit memory range forwarded.
+*/
+void
+PldaPCIController::ConfigureJH7110Bridge()
+{
+	const pci_resource_range* memory = NULL;
+	for (int32 i = 0; i < fResourceRanges.Count(); i++) {
+		const pci_resource_range& range = fResourceRanges[i];
+		if (range.type == B_IO_MEMORY
+			&& (range.address_type & PCI_address_prefetchable) == 0
+			&& range.pci_address + range.size <= ((uint64)1 << 32)) {
+			memory = &range;
+			break;
+		}
+	}
+
+	vuint32* config = (vuint32*)fConfigBase;
+	config[PCI_primary_bus / 4] = (config[PCI_primary_bus / 4] & 0xff000000)
+		| (1 << 16) | (1 << 8) | 0;
+	fSecondaryBus = 1;
+
+	// I/O and prefetchable windows closed (base above limit)
+	config[PCI_io_base / 4] = 0x000000f0;
+	config[PCI_prefetchable_memory_base / 4] = 0x0000fff0;
+	config[PCI_prefetchable_memory_base_upper32 / 4] = 0;
+	config[PCI_prefetchable_memory_limit_upper32 / 4] = 0;
+
+	if (memory != NULL) {
+		config[PCI_memory_base / 4]
+			= jh7110_bridge_memory_reg(memory->pci_address)
+			| (uint32)jh7110_bridge_memory_reg(
+				memory->pci_address + memory->size - 1) << 16;
+	}
+
+	config[PCI_command / 4] = (config[PCI_command / 4] & 0xffff)
+		| PCI_command_memory | PCI_command_master;
+
+	TRACE("PCIe%" B_PRIu32 " bridge: buses %#" B_PRIx32 ", memory %#"
+		B_PRIx32 ", command %#" B_PRIx32 "\n", fDomain,
+		config[PCI_primary_bus / 4], config[PCI_memory_base / 4],
+		config[PCI_command / 4]);
+}
+
+
+#ifdef TRACE_PLDA
+void
+PldaPCIController::DumpJH7110Bus()
+{
+	uint32 value;
+	ReadConfig(0, 0, 0, PCI_vendor_id, 4, value);
+	dprintf("plda: PCIe%" B_PRIu32 " 00:00.0 id %#" B_PRIx32, fDomain, value);
+	ReadConfig(0, 0, 0, PCI_primary_bus, 4, value);
+	dprintf(", buses %#" B_PRIx32 "\n", value);
+
+	ReadConfig(fSecondaryBus, 0, 0, PCI_vendor_id, 4, value);
+	dprintf("plda: PCIe%" B_PRIu32 " %02x:00.0 id %#" B_PRIx32, fDomain,
+		fSecondaryBus, value);
+	if (value != 0xffffffff) {
+		uint32 classCode;
+		ReadConfig(fSecondaryBus, 0, 0, PCI_revision, 4, classCode);
+		dprintf(", class %#" B_PRIx32 ", BARs", classCode >> 8);
+		for (uint16 bar = 0; bar < 6; bar++) {
+			ReadConfig(fSecondaryBus, 0, 0, PCI_base_registers + bar * 4, 4,
+				value);
+			dprintf(" %#" B_PRIx32, value);
+		}
+	}
+	dprintf("\n");
+}
+#endif
 
 
 status_t
@@ -262,7 +604,17 @@ PldaPCIController::InitDriverInt(device_node* node)
 		" (%#" B_PRIxSIZE "), IRQ %" B_PRIu64 "\n", fDomain, fRegsPhysBase,
 		fConfigPhysBase, fConfigSize, irq);
 
-	CHECK_RET(CheckJH7110Port());
+	status_t status = CheckJH7110Port();
+	bool coldStart = status == B_DEV_NOT_READY;
+	if (coldStart) {
+		CHECK_RET(EnableJH7110Port(fdtModule, fdtDev));
+	} else if (status != B_OK) {
+		return status;
+	} else {
+		// the port may have been enabled by an earlier probe that did not
+		// see the link
+		CHECK_RET(WaitForJH7110Link(sEnabledByDriver[fDomain] ? 1000000 : 0));
+	}
 
 	fRegsArea.SetTo(map_physical_memory("PCI PLDA regs", fRegsPhysBase,
 		fRegsSize, B_ANY_KERNEL_ADDRESS,
@@ -274,8 +626,11 @@ PldaPCIController::InitDriverInt(device_node* node)
 		B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, (void**)&fConfigBase));
 	CHECK_RET(fConfigArea.Get());
 
+	if (coldStart)
+		SetupJH7110RootPort();
 #ifdef TRACE_PLDA
-	DumpAtr();
+	else
+		DumpAtr();
 #endif
 
 	// The firmware programmed the translation tables from its own device
@@ -293,10 +648,26 @@ PldaPCIController::InitDriverInt(device_node* node)
 			range.size, kPldaAtrTrslIdMemory);
 	}
 
-	// keep the secondary bus number set by the firmware
+	if (coldStart) {
+		// PERST# held for 100 ms, then released; at least 100 ms before the
+		// link may be used (PCIe CEM), U-Boot waits 300 ms
+		snooze(100000);
+		SetPerst(false);
+		snooze(300000);
+		CHECK_RET(WaitForJH7110Link(1000000));
+		snooze(100000);
+	}
+
+	// keep the secondary bus number set by the firmware, if any
 	uint32 busNumbers = *(vuint32*)(fConfigBase + PCI_primary_bus);
 	if (((busNumbers >> 8) & 0xff) != 0)
 		fSecondaryBus = (busNumbers >> 8) & 0xff;
+	else
+		ConfigureJH7110Bridge();
+
+#ifdef TRACE_PLDA
+	DumpJH7110Bus();
+#endif
 
 	if (msi_supported()) {
 		// There is a single MSI interface; the first controller with a
@@ -391,8 +762,9 @@ PldaPCIController::ReadConfig(uint8 bus, uint8 device, uint8 function,
 
 	addr_t address = ConfigAddress(bus, device, function, offset);
 	if (address == 0) {
-		value = 0xffffffff;
-		return ERANGE;
+		// filtered out or beyond the window: answer like an empty slot
+		value = size >= 4 ? 0xffffffff : (1u << (size * 8)) - 1;
+		return B_OK;
 	}
 
 	if (IsHiddenRootPortBar(bus, device, function, offset)) {
@@ -420,7 +792,7 @@ PldaPCIController::WriteConfig(uint8 bus, uint8 device, uint8 function,
 
 	addr_t address = ConfigAddress(bus, device, function, offset);
 	if (address == 0)
-		return ERANGE;
+		return B_OK;
 
 	if (IsHiddenRootPortBar(bus, device, function, offset))
 		return B_OK;
