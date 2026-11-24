@@ -121,6 +121,8 @@ ReadBatteryStatus(battery_driver_cookie* cookie,
 	acpi_battery_info* batteryStatus)
 {
 	TRACE("ReadBatteryStatus\n");
+	memset(batteryStatus, 0, sizeof(acpi_battery_info));
+
 	status_t status = B_ERROR;
 	if (!battery_present(cookie))
 		return B_DEV_NOT_READY;
@@ -175,6 +177,8 @@ ReadBatteryInfo(battery_driver_cookie* cookie,
 	acpi_extended_battery_info* batteryInfo)
 {
 	TRACE("ReadBatteryInfo\n");
+	memset(batteryInfo, 0, sizeof(acpi_extended_battery_info));
+
 	if (!battery_present(cookie))
 		return B_DEV_NOT_READY;
 
