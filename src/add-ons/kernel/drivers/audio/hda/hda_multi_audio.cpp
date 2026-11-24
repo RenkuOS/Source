@@ -530,6 +530,61 @@ hda_create_control_for_complex(hda_multi* multi, uint32* index, uint32 parent,
 }
 
 
+//!	Adds one record gain group for the given amplifier, at most two in all.
+static void
+hda_create_record_gain_control(hda_multi* multi, uint32* index, int32 parent,
+	hda_widget& widget, bool input, uint32 capabilities, int32 inputIndex,
+	uint32& stages)
+{
+	if (stages >= 2 || AMP_CAP_NUM_STEPS(capabilities) < 1)
+		return;
+
+	TRACE("  create record gain for nid %" B_PRIu32 " (%s amp)\n",
+		widget.node_id, input ? "input" : "output");
+	int32 group = hda_create_group_control(multi, index, parent, S_null,
+		stages == 0 ? "Input" : "Boost");
+	bool gain = true, mute = true;
+	hda_create_channel_control(multi, index, group, 0, widget, input,
+		capabilities, inputIndex, gain, mute);
+	stages++;
+}
+
+
+/*!	Publishes the record gain of an ADC without an input amplifier: follows
+	its active input towards the pin and uses the first two amplifiers on the
+	way, for example a capture selector's input amplifier ("Input") and the
+	output amplifier of the mux before it, which works as a mic boost
+	("Boost").
+*/
+static void
+hda_create_record_path_controls(hda_multi* multi, uint32* index,
+	int32 parent, hda_widget& converter)
+{
+	hda_audio_group* audioGroup = multi->group;
+	hda_widget* widget = &converter;
+	uint32 stages = 0;
+
+	// The bound also protects against loops in the connection lists.
+	for (uint32 depth = 0; widget != NULL && depth < 8 && stages < 2;
+			depth++) {
+		int32 connection = max_c(widget->active_input, 0);
+
+		// A pin's output amplifier is on its playback side.
+		if (widget->type != WT_PIN_COMPLEX) {
+			hda_create_record_gain_control(multi, index, parent, *widget,
+				false, widget->capabilities.output_amplifier, 0, stages);
+		}
+		hda_create_record_gain_control(multi, index, parent, *widget, true,
+			widget->capabilities.input_amplifier, connection, stages);
+
+		if (widget->type == WT_PIN_COMPLEX || widget->num_inputs == 0)
+			break;
+		widget = hda_audio_group_get_widget(audioGroup,
+			widget->inputs[connection]);
+	}
+}
+
+
 static status_t
 hda_create_controls_list(hda_multi* multi)
 {
@@ -603,8 +658,13 @@ hda_create_controls_list(hda_multi* multi)
 			continue;
 
 		uint32 capabilities = widget.capabilities.input_amplifier;
-		if (AMP_CAP_NUM_STEPS(capabilities) < 1)
+		if (AMP_CAP_NUM_STEPS(capabilities) < 1) {
+			if ((widget.flags & WIDGET_FLAG_INPUT_PATH) != 0) {
+				hda_create_record_path_controls(multi, &index, parent,
+					widget);
+			}
 			continue;
+		}
 
 		parent2 = hda_create_group_control(multi, &index,
 			parent, hda_find_multi_string(widget), "Input");
