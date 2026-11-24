@@ -39,6 +39,7 @@
 #define HDA_QUIRK_OVREF50	(1 << 11)
 #define HDA_QUIRK_OVREF80	(1 << 12)
 #define HDA_QUIRK_OVREF100	(1 << 13)
+#define HDA_QUIRK_RECORD_GAIN	(1 << 14)
 #define HDA_QUIRK_IVREF (HDA_QUIRK_IVREF50 | HDA_QUIRK_IVREF80 \
 	| HDA_QUIRK_IVREF100)
 #define HDA_QUIRK_OVREF (HDA_QUIRK_OVREF50 | HDA_QUIRK_OVREF80 \
@@ -49,6 +50,7 @@
 #define CIRRUSLOGIC_VENDORID		0x1013
 #define CONEXANT_VENDORID			0x14f1
 #define IDT_VENDORID				0x111d
+#define PARALLELS_VENDORID			0x1ab8
 #define REALTEK_VENDORID			0x10ec
 #define SIGMATEL_VENDORID			0x8384
 
@@ -102,6 +104,8 @@ static const struct {
 	{ 0x106b, 0x7200, CIRRUSLOGIC_VENDORID, 0x4208,
 		HDA_QUIRK_GPIO0, 0},						// MacBookAir 6,2
 	{ HDA_ALL, HDA_ALL, IDT_VENDORID, 0x76b2, HDA_QUIRK_GPIO0, 0},
+	{ HDA_ALL, HDA_ALL, PARALLELS_VENDORID, HDA_ALL,
+		HDA_QUIRK_RECORD_GAIN, 0},					// Parallels Desktop VM
 };
 
 
@@ -1376,6 +1380,11 @@ hda_audio_group_get_widgets(hda_audio_group* audioGroup, hda_stream* stream)
 		flags = WIDGET_FLAG_INPUT_PATH;
 	}
 
+	// The Parallels microphone is barely audible at 0 dB. Its record path
+	// starts halfway between 0 dB and the maximum: room noise there peaks
+	// around -30 dBFS, leaving headroom for speech.
+	bool recordGain = flags == WIDGET_FLAG_INPUT_PATH
+		&& (audioGroup->codec->quirks & HDA_QUIRK_RECORD_GAIN) != 0;
 	uint32 count = 0;
 
 	for (uint32 i = 0; i < audioGroup->widget_count && count < MAX_IO_WIDGETS;
@@ -1427,9 +1436,14 @@ hda_audio_group_get_widgets(hda_audio_group* audioGroup, hda_stream* stream)
 				hda_send_verbs(audioGroup->codec, &verb, NULL, 1);
 			}
 			if (widget.capabilities.input_amplifier != 0) {
+				uint32 caps = widget.capabilities.input_amplifier;
+				uint32 gain = AMP_CAP_OFFSET(caps);
+				if (recordGain) {
+					gain += (AMP_CAP_NUM_STEPS(caps) - AMP_CAP_OFFSET(caps))
+						/ 2;
+				}
 				TRACE("UNMUTE/SET INPUT GAIN widget %" B_PRIu32 " "
-					"(offset %" B_PRIu32 ")\n", widget.node_id,
-					AMP_CAP_OFFSET(widget.capabilities.input_amplifier));
+					"(gain %" B_PRIu32 ")\n", widget.node_id, gain);
 				for (uint32 i = 0; i < widget.num_inputs; i++) {
 					corb_t verb = MAKE_VERB(audioGroup->codec->addr,
 						widget.node_id,
@@ -1438,7 +1452,7 @@ hda_audio_group_get_widgets(hda_audio_group* audioGroup, hda_stream* stream)
 							| AMP_SET_RIGHT_CHANNEL
 							| AMP_SET_INPUT_INDEX(i)
 							| ((widget.active_input == (int32)i) ? 0 : AMP_MUTE)
-							| AMP_CAP_OFFSET(widget.capabilities.input_amplifier));
+							| gain);
 					hda_send_verbs(audioGroup->codec, &verb, NULL, 1);
 				}
 			}
