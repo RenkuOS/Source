@@ -11,6 +11,8 @@
 #include <ACPI.h>
 #include <KernelExport.h>
 
+#include <util/AutoLock.h>
+
 #include "thinkpad_charge_logic.h"
 
 
@@ -23,6 +25,9 @@ static const char* const kHotkeyIds[] = {
 	"LEN0268",
 	"IBM0068"
 };
+
+// Serializes reading and setting the thresholds.
+static mutex sThresholdsLock = MUTEX_INITIALIZER("thinkpad charge thresholds");
 
 
 static status_t
@@ -134,11 +139,14 @@ thinkpad_get_charge_thresholds(const char* batteryPath,
 	if (get_module(B_ACPI_MODULE_NAME, (module_info**)&acpi) != B_OK)
 		return B_NOT_SUPPORTED;
 
+	MutexLocker locker(sThresholdsLock);
+
 	acpi_handle hotkey;
 	int32 battery;
 	status_t status = read_thresholds(acpi, batteryPath, &hotkey, &battery,
 		thresholds);
 
+	locker.Unlock();
 	put_module(B_ACPI_MODULE_NAME);
 	return status;
 }
@@ -154,6 +162,8 @@ thinkpad_set_charge_thresholds(const char* batteryPath,
 	acpi_module_info* acpi;
 	if (get_module(B_ACPI_MODULE_NAME, (module_info**)&acpi) != B_OK)
 		return B_NOT_SUPPORTED;
+
+	MutexLocker locker(sThresholdsLock);
 
 	acpi_handle hotkey;
 	int32 battery;
@@ -175,6 +185,7 @@ thinkpad_set_charge_thresholds(const char* batteryPath,
 		}
 	}
 
+	locker.Unlock();
 	put_module(B_ACPI_MODULE_NAME);
 	return status;
 }
