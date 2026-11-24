@@ -71,6 +71,8 @@ virtual pipe_index					PipePreference();
 
 								// highest pixel clock (kHz) the sink path allows, 0 = no limit
 virtual	uint32						MaxPixelClock() { return 0; }
+								// whether a PLL setting exists for the pixel clock (kHz)
+virtual	bool						SupportsPixelClock(uint32 pixelClock) { return true; }
 
 protected:
 		void						_SetName(const char* name);
@@ -245,6 +247,7 @@ virtual status_t					SetDisplayMode(display_mode* mode,
 										uint32 colorMode);
 
 virtual	uint32						MaxPixelClock();
+virtual	bool						SupportsPixelClock(uint32 pixelClock);
 
 protected:
 virtual	addr_t						_DDCRegister();
