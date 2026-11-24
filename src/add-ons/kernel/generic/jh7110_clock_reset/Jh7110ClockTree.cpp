@@ -78,6 +78,8 @@ static const ClockDef kClocks[] = {
 	DEF1(SYS, APB0, kGate, 0, 0, SYS(APB_BUS)),
 	DEF1(SYS, AUDIO_ROOT, 0, 0, 4, PLL(PLL2_OUT)),
 	DEF1(SYS, MCLK_INNER, 0, 0, 7, SYS(AUDIO_ROOT)),
+	DEF1(SYS, PWMDAC_APB, kGate, 0, 0, SYS(APB0)),
+	DEF1(SYS, PWMDAC_CORE, kGate, 0, 9, SYS(AUDIO_ROOT)),
 	DEF1(SYS, QSPI_AHB, kGate, 0, 0, SYS(AHB1)),
 	DEF1(SYS, QSPI_APB, kGate, 0, 0, SYS(APB_BUS)),
 	DEF1(SYS, QSPI_REF_SRC, 0, 0, 5, PLL(PLL0_OUT)),
@@ -118,8 +120,6 @@ static const ClockDef kClocks[] = {
 	DEF1(SYS, I2C5_APB, kGate, 0, 0, SYS(APB0)),
 	DEF1(SYS, WDT_APB, kGate, 0, 0, SYS(APB0)),
 	DEF1(SYS, WDT_CORE, kGate, 0, 0, EXT(OSC)),
-	DEF1(SYS, PWMDAC_APB, kGate, 0, 0, SYS(APB0)),
-	DEF1(SYS, PWMDAC_CORE, kGate, 0, 9, SYS(AUDIO_ROOT)),
 
 	// AON
 	DEF1(AON, OSC_DIV4, 0, 0, 5, EXT(OSC)),
