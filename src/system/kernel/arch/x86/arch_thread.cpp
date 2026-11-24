@@ -213,8 +213,16 @@ arch_thread_context_switch(Thread* from, Thread* to)
 
 	// set TLS GDT entry to the current thread - since this action is
 	// dependent on the current CPU, we have to do it here
+#ifdef __x86_64__
+	// A thread that exits is moved to the kernel team, and never returns to
+	// userland. Its selectors may be ones of its old team's LDT, which the
+	// kernel team does not have: loading them would fault.
+	if (to->user_local_storage != 0 && to->team != team_get_kernel_team())
+		x86_set_tls_context(to);
+#else
 	if (to->user_local_storage != 0)
 		x86_set_tls_context(to);
+#endif
 
 	X86PagingStructures* activePagingStructures
 		= cpuData->arch.active_paging_structures;

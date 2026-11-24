@@ -79,10 +79,20 @@ struct arch_thread {
 
 
 struct arch_team {
+#ifdef __x86_64__
+	// The team's local descriptor table, made by the first
+	// THREAD_SET_LDT_ENTRY. It is never resized, and an entry once set always
+	// holds a segment that can be loaded, so the kernel can reload any
+	// selector of it a thread had loaded. NULL while the team has none.
+	uint64*			ldt;
+	int32			ldt_loaded;
+		// set once every CPU running a thread of the team has loaded ldt
+#else
 	// gcc treats empty structures as zero-length in C, but as if they contain
 	// a char in C++. So we have to put a dummy in to be able to use the struct
 	// from both in a consistent way.
 	char			dummy;
+#endif
 };
 
 

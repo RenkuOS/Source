@@ -488,6 +488,10 @@ Team::Team(team_id id, bool kernel)
 	// exit status -- setting initialized to false suffices
 	exit.initialized = false;
 
+	// The destructor runs arch_team_delete_team_struct() also when Create()
+	// fails before arch_team_init_team_struct().
+	memset(&arch_info, 0, sizeof(arch_info));
+
 	B_INITIALIZE_SPINLOCK(&signal_lock);
 
 	// init mutex
@@ -541,6 +545,8 @@ Team::~Team()
 
 	delete job_control_entry;
 		// usually already NULL and transferred to the parent
+
+	arch_team_delete_team_struct(this);
 
 	mutex_destroy(&fLock);
 }
@@ -2023,6 +2029,7 @@ exec_team(const char* path, char**& _flatArgs, size_t flatArgsSize,
 	// thread_atkernel_exit() might not be called at all
 
 	thread_reset_for_exec();
+	arch_team_reset_for_exec(team);
 
 	user_debug_prepare_for_exec();
 

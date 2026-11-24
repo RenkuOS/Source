@@ -12,6 +12,7 @@
 #include <arch/thread.h>
 
 #include <stddef.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <arch_thread_defs.h>
@@ -28,6 +29,7 @@
 #include <tracing.h>
 #include <util/AutoLock.h>
 #include <util/Random.h>
+#include <util/atomic.h>
 #include <vm/vm_types.h>
 #include <vm/VMAddressSpace.h>
 
@@ -155,7 +157,8 @@ normalized_selector(uint16 selector)
 }
 
 
-/*!	Loads the thread's saved FS state into the CPU.
+/*!	Loads the thread's saved FS state into the CPU. The team's LDT must be
+	loaded already, as the selector may be one of it.
 	Interrupts must be disabled.
 */
 static void
@@ -172,19 +175,52 @@ load_user_fs(Thread* thread)
 }
 
 
-/*!	Returns whether userland can hold \a selector in a data segment register,
-	so that the kernel can load it again: the null selector, or a selector of
-	a present data segment or readable code segment of DPL 3 in the GDT. (The
-	RPL does not matter for such a segment.)
+/*!	Returns whether \a value may be an entry of a team's LDT: a present,
+	writable 32-bit data segment of DPL 3.
+
+	Such a segment can be loaded into every data segment register and into SS,
+	and an entry never holds anything else once set. The kernel relies on that
+	whenever it loads a selector again that userland had loaded: on a context
+	switch, on sigreturn, and in IRET, which would fault in kernel mode. 16-bit
+	segments are refused because IRET to a 16-bit stack segment restores only
+	the low 16 bits of ESP, leaving bits of the kernel stack pointer in the
+	rest.
 */
 static bool
-is_valid_user_data_selector(uint16 selector)
+is_valid_ldt_descriptor(uint64 value)
+{
+	segment_descriptor descriptor;
+	memcpy(&descriptor, &value, sizeof(descriptor));
+	return descriptor.present == 1
+		&& descriptor.desc_type == DT_CODE_DATA_SEGMENT
+		&& (descriptor.type & DT_CODE_EXECUTE_ONLY) == 0
+		&& (descriptor.type & DT_DATA_WRITEABLE) != 0
+		&& descriptor.dpl == DPL_USER
+		&& descriptor.long_mode == 0
+		&& descriptor.d_b == 1;
+}
+
+
+/*!	Returns whether userland can hold \a selector in a data segment register,
+	so that the kernel can load it again: the null selector, a selector of a
+	present data segment or readable code segment of DPL 3 in the GDT, or one
+	of an entry of the team's LDT that has been set. (The RPL does not matter
+	for such a segment.)
+*/
+static bool
+is_valid_user_data_selector(Thread* thread, uint16 selector)
 {
 	if ((selector & ~3) == 0)
 		return true;
-	if ((selector & 4) != 0)
-		return false;
-			// there is no LDT
+
+	uint32 index = selector >> 3;
+	if ((selector & 4) != 0) {
+		// Every index is within the table. Once set, an entry stays valid,
+		// and the CPU has the table loaded, see get_team_ldt().
+		uint64* ldt = atomic_pointer_get(&thread->team->arch_info.ldt);
+		return ldt != NULL
+			&& is_valid_ldt_descriptor(atomic_get64((int64*)&ldt[index]));
+	}
 
 	struct {
 		uint16	limit;
@@ -192,7 +228,6 @@ is_valid_user_data_selector(uint16 selector)
 	} _PACKED gdtr;
 	asm volatile("sgdt %0" : "=m" (gdtr));
 
-	uint32 index = selector >> 3;
 	if (index * sizeof(uint64) + sizeof(uint64) - 1 > gdtr.limit)
 		return false;
 
@@ -228,6 +263,10 @@ x86_save_tls_context(Thread* thread)
 void
 x86_set_tls_context(Thread* thread)
 {
+	// The selectors may be ones of the team's LDT.
+	x86_64_set_ldt(smp_get_current_cpu(),
+		atomic_pointer_get(&thread->team->arch_info.ldt));
+
 	uint16 selector = thread->arch_info.user_ds_selector;
 	if (selector != 0 || read_ds_selector() != 0)
 		asm volatile("movw %0, %%ds" : : "r" (selector));
@@ -254,6 +293,134 @@ x86_64_reset_user_segments(Thread* thread)
 	thread->arch_info.user_es_selector = 0;
 	thread->arch_info.user_gs_base = 0;
 	x86_set_tls_context(thread);
+}
+
+
+//	#pragma mark - local descriptor table
+
+
+/*!	Returns the descriptor stored for an entry that is cleared: a present,
+	writable data segment with base 0 and limit 0. The entry must stay
+	loadable, see is_valid_ldt_descriptor().
+*/
+static uint64
+empty_ldt_descriptor()
+{
+	segment_descriptor descriptor = {};
+	descriptor.type = DT_DATA_WRITEABLE;
+	descriptor.desc_type = DT_CODE_DATA_SEGMENT;
+	descriptor.dpl = DPL_USER;
+	descriptor.present = 1;
+	descriptor.d_b = 1;
+
+	uint64 value;
+	memcpy(&value, &descriptor, sizeof(value));
+	return value;
+}
+
+
+static void
+load_new_team_ldt(void* _team, int cpu)
+{
+	Team* team = (Team*)_team;
+	if (thread_get_current_thread()->team == team)
+		x86_64_set_ldt(cpu, atomic_pointer_get(&team->arch_info.ldt));
+}
+
+
+/*!	Returns the team's LDT, and makes it if the team has none yet. On return
+	every CPU that runs a thread of the team has the table loaded, so a
+	selector of a new entry works wherever the team's threads are.
+*/
+static uint64*
+get_team_ldt(Team* team)
+{
+	uint64* ldt = atomic_pointer_get(&team->arch_info.ldt);
+	if (ldt == NULL) {
+		const size_t size = THREAD_LDT_ENTRY_COUNT * sizeof(uint64);
+		uint64* newLDT = (uint64*)malloc(size);
+		if (newLDT == NULL)
+			return NULL;
+		memset(newLDT, 0, size);
+
+		ldt = atomic_pointer_test_and_set(&team->arch_info.ldt, newLDT,
+			(uint64*)NULL);
+		if (ldt != NULL) {
+			// another thread of the team was faster
+			free(newLDT);
+		} else
+			ldt = newLDT;
+	}
+
+	if (atomic_get(&team->arch_info.ldt_loaded) == 0) {
+		// A thread switched in before the table existed runs without it. A
+		// second call does no harm, so whoever gets here does it.
+		call_all_cpus_sync(&load_new_team_ldt, team);
+		atomic_set(&team->arch_info.ldt_loaded, 1);
+	}
+	return ldt;
+}
+
+
+static status_t
+set_ldt_entry(const thread_ldt_entry& entry)
+{
+	if (entry.index >= THREAD_LDT_ENTRY_COUNT)
+		return B_BAD_INDEX;
+
+	uint64 descriptor = entry.descriptor[0]
+		| ((uint64)entry.descriptor[1] << 32);
+	if (descriptor == 0)
+		descriptor = empty_ldt_descriptor();
+	else if (!is_valid_ldt_descriptor(descriptor))
+		return B_BAD_VALUE;
+
+	uint64* ldt = get_team_ldt(thread_get_current_thread()->team);
+	if (ldt == NULL)
+		return B_NO_MEMORY;
+
+	// A thread that has the entry loaded already keeps the old segment until
+	// it loads the selector again, or the kernel does.
+	atomic_set64((int64*)&ldt[entry.index], (int64)descriptor);
+	return B_OK;
+}
+
+
+static void
+delete_team_ldt(Team* team)
+{
+	uint64* ldt = atomic_pointer_get_and_set(&team->arch_info.ldt,
+		(uint64*)NULL);
+	atomic_set(&team->arch_info.ldt_loaded, 0);
+	free(ldt);
+}
+
+
+void
+arch_team_delete_team_struct(Team* team)
+{
+	delete_team_ldt(team);
+}
+
+
+void
+arch_team_reset_for_exec(Team* team)
+{
+	// The old image's selectors may be ones of the LDT, which goes away. The
+	// default ones a new image starts with need none. The LDT is detached
+	// from the team first, so that loading them unloads it from this CPU too:
+	// with the table still loaded, the new image could load a selector of it
+	// once it is freed. Exec leaves the team only this thread that runs in
+	// userland, and every other CPU loads the LDT of a thread's team before
+	// it switches to that thread.
+	uint64* ldt;
+	{
+		InterruptsLocker locker;
+		ldt = atomic_pointer_get_and_set(&team->arch_info.ldt, (uint64*)NULL);
+		atomic_set(&team->arch_info.ldt_loaded, 0);
+		x86_64_reset_user_segments(thread_get_current_thread());
+	}
+	free(ldt);
 }
 
 
@@ -318,6 +485,20 @@ arch_thread_control(const char* subsystem, uint32 function, void* buffer,
 			thread->arch_info.user_gs_base = base;
 			x86_write_msr(IA32_MSR_KERNEL_GS_BASE, base);
 			return B_OK;
+		}
+
+		case THREAD_SET_LDT_ENTRY:
+		{
+			thread_ldt_entry entry;
+			if (bufferSize != sizeof(entry))
+				return B_BAD_VALUE;
+
+			if (!is_user_address_range(buffer, sizeof(entry))
+				|| user_memcpy(&entry, buffer, sizeof(entry)) < B_OK) {
+				return B_BAD_ADDRESS;
+			}
+
+			return set_ldt_entry(entry);
 		}
 
 		case THREAD_SET_FS_BASE:
@@ -695,7 +876,7 @@ arch_restore_signal_frame(struct signal_frame_data* signalFrameData)
 	const uint64 ip = signalFrameData->context.uc_mcontext.rip;
 	if ((cs != USER_CODE_SELECTOR && cs != USER32_CODE_SELECTOR)
 		|| ss != USER_DATA_SELECTOR || !x86_64_is_user_ip(cs, ip)
-		|| !is_valid_user_data_selector(fs)) {
+		|| !is_valid_user_data_selector(thread, fs)) {
 		dprintf("arch_restore_signal_frame(): thread %" B_PRId32 ": invalid "
 			"cs %#x, ss %#x, fs %#x, or rip %#" B_PRIx64 ". Killing "
 			"thread...\n", thread->id, cs, ss, fs, ip);
