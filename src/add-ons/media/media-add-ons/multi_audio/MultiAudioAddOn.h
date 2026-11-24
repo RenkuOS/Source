@@ -42,6 +42,13 @@ struct MultiAudioSlot {
 /*!	Watches /dev/audio/hmulti/ so that hot-plugged sound cards show up without
 	a media services restart. devfs posts entry-created/removed notifications
 	for published devices, which is what makes this work at all.
+
+	That alone misses one case: a legacy driver may keep a device path
+	published after the device went away (usb_audio does so until the last fd
+	is closed), and a replug then reuses the very same path without any
+	notification. The watcher therefore also watches /dev/bus/usb, whose
+	entries come and go with every USB device, and reconciles again shortly
+	after each change there.
 */
 class MultiAudioDeviceWatcher : public BLooper {
 public:
@@ -61,6 +68,9 @@ public:
 
 private:
 			void			_ArmRoot();
+			void			_ArmBus();
+			bool			_IsBusEvent(const BMessage* message) const;
+			void			_ScheduleDelayedRescans();
 			bool			_Rearm(const char* rootPath, BEntry* rootEntry,
 								uint32 depth, BList& paths);
 			bool			_IsWatched(const node_ref& nodeRef) const;
@@ -72,6 +82,10 @@ private:
 	BString					fRootPath;
 	BList					fWatched;
 		// node_ref*, the directories we currently hold a watch on
+	BList					fBusDirectories;
+		// node_ref*, the subset of fWatched below /dev/bus/usb
+	int32					fDelayedRescans;
+		// delayed rescans still to come; only touched on the looper thread
 	int32					fQuitting;
 		// set once the add-on starts tearing down
 };

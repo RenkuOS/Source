@@ -16,6 +16,7 @@
 #include <Entry.h>
 #include <FindDirectory.h>
 #include <File.h>
+#include <MessageRunner.h>
 #include <NodeMonitor.h>
 #include <Path.h>
 
@@ -32,6 +33,17 @@ static const char* const kDevicesRoot = "/dev/audio/hmulti/";
 
 //! Asks the watcher thread to reconcile; see MultiAudioDeviceWatcher::Rescan().
 static const uint32 kMsgRescan = 'maRS';
+
+//! A reconcile scheduled after a USB change; see _ScheduleDelayedRescans().
+static const uint32 kMsgDelayedRescan = 'maDR';
+
+//! Every USB device shows up here, whatever driver it is bound to.
+static const char* const kBusRoot = "/dev/bus/usb";
+
+//! How long after a USB change to reconcile. The audio driver publishes its
+//! device some time after the USB stack announced it; the second, later pass
+//! covers a slow enumeration.
+static const bigtime_t kDelayedRescans[] = { 1000000, 3000000 };
 
 
 //! instantiation function
@@ -53,6 +65,8 @@ MultiAudioDeviceWatcher::MultiAudioDeviceWatcher(MultiAudioAddOn* addOn,
 	fAddOn(addOn),
 	fRootPath(rootPath),
 	fWatched(),
+	fBusDirectories(),
+	fDelayedRescans(0),
 	fQuitting(0)
 {
 }
@@ -72,19 +86,33 @@ MultiAudioDeviceWatcher::MessageReceived(BMessage* message)
 			Rescan();
 			break;
 
+		case kMsgDelayedRescan:
+			if (fDelayedRescans > 0)
+				fDelayedRescans--;
+			Rescan();
+			break;
+
 		case B_NODE_MONITOR:
 		{
 			int32 opcode;
 			if (message->FindInt32("opcode", &opcode) != B_OK)
 				break;
+			if (opcode != B_ENTRY_CREATED && opcode != B_ENTRY_REMOVED
+				&& opcode != B_ENTRY_MOVED) {
+				break;
+			}
+
+			if (_IsBusEvent(message)) {
+				// The audio device is not published yet, if it ever is for
+				// this USB device; look again a little later.
+				_ScheduleDelayedRescans();
+				break;
+			}
 
 			// Reconcile wholesale instead of deriving the affected device from
 			// the message. It is idempotent, and it also picks up whole
 			// subdirectories (/dev/audio/hmulti/usb) appearing at once.
-			if (opcode == B_ENTRY_CREATED || opcode == B_ENTRY_REMOVED
-					|| opcode == B_ENTRY_MOVED) {
-				Rescan();
-			}
+			Rescan();
 			break;
 		}
 
@@ -111,6 +139,7 @@ MultiAudioDeviceWatcher::Rescan()
 	BList paths;
 
 	_ArmRoot();
+	_ArmBus();
 	bool scanned = _Rearm(fRootPath.String(), NULL, 0, paths);
 
 	// A root we could not even open is not evidence that every device went
@@ -153,6 +182,93 @@ MultiAudioDeviceWatcher::_ArmRoot()
 			return;
 
 		path = parent;
+	}
+}
+
+
+/*!	Watches /dev/bus/usb and the bus directories directly below it, whose
+	entries are the USB devices themselves. Already watched directories are
+	skipped, so this is cheap to call on every rescan; that is also how a bus
+	directory that appeared later gets its watch.
+*/
+void
+MultiAudioDeviceWatcher::_ArmBus()
+{
+	BDirectory root(kBusRoot);
+	if (root.InitCheck() != B_OK)
+		return;
+
+	BList directories;
+	node_ref rootRef;
+	if (root.GetNodeRef(&rootRef) == B_OK)
+		directories.AddItem(new (std::nothrow) node_ref(rootRef));
+
+	BEntry entry;
+	while (root.GetNextEntry(&entry) == B_OK) {
+		node_ref busRef;
+		if (entry.IsDirectory() && entry.GetNodeRef(&busRef) == B_OK)
+			directories.AddItem(new (std::nothrow) node_ref(busRef));
+	}
+
+	for (int32 i = 0; i < directories.CountItems(); i++) {
+		node_ref* nodeRef = (node_ref*)directories.ItemAt(i);
+		if (nodeRef == NULL)
+			continue;
+		if (_IsWatched(*nodeRef)) {
+			delete nodeRef;
+			continue;
+		}
+
+		_Watch(*nodeRef);
+		if (!_IsWatched(*nodeRef) || !fBusDirectories.AddItem(nodeRef))
+			delete nodeRef;
+	}
+}
+
+
+//!	Returns whether \a message reports a change in a watched /dev/bus/usb
+//!	directory rather than below the audio root.
+bool
+MultiAudioDeviceWatcher::_IsBusEvent(const BMessage* message) const
+{
+	static const char* const kDirectoryFields[]
+		= { "directory", "from directory", "to directory" };
+
+	dev_t device;
+	if (message->FindInt32("device", &device) != B_OK)
+		return false;
+
+	for (size_t field = 0; field < B_COUNT_OF(kDirectoryFields); field++) {
+		ino_t directory;
+		if (message->FindInt64(kDirectoryFields[field], &directory) != B_OK)
+			continue;
+
+		for (int32 i = 0; i < fBusDirectories.CountItems(); i++) {
+			const node_ref* bus = (const node_ref*)fBusDirectories.ItemAt(i);
+			if (bus != NULL && bus->device == device && bus->node == directory)
+				return true;
+		}
+	}
+
+	return false;
+}
+
+
+/*!	Asks for the reconciles of kDelayedRescans, unless a batch is still
+	pending: plugging in one device changes several entries at once.
+*/
+void
+MultiAudioDeviceWatcher::_ScheduleDelayedRescans()
+{
+	if (fDelayedRescans > 0 || atomic_get(&fQuitting) != 0)
+		return;
+
+	for (size_t i = 0; i < B_COUNT_OF(kDelayedRescans); i++) {
+		BMessage message(kMsgDelayedRescan);
+		if (BMessageRunner::StartSending(BMessenger(this), &message,
+				kDelayedRescans[i], 1) == B_OK) {
+			fDelayedRescans++;
+		}
 	}
 }
 
@@ -245,8 +361,11 @@ MultiAudioDeviceWatcher::_DropWatches()
 
 	for (int32 i = 0; i < fWatched.CountItems(); i++)
 		delete (node_ref*)fWatched.ItemAt(i);
+	for (int32 i = 0; i < fBusDirectories.CountItems(); i++)
+		delete (node_ref*)fBusDirectories.ItemAt(i);
 
 	fWatched.MakeEmpty();
+	fBusDirectories.MakeEmpty();
 }
 
 
