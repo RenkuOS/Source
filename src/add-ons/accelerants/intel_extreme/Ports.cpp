@@ -3118,6 +3118,32 @@ DigitalDisplayInterface::MaxPixelClock()
 }
 
 
+/*!	Whether SetDisplayMode() will find a PLL setting for the pixel clock (kHz). A TMDS sink on a
+	combo PHY port takes its clock from ComputeHdmiDpll(), which has none for some frequencies.
+*/
+bool
+DigitalDisplayInterface::SupportsPixelClock(uint32 pixelClock)
+{
+	if (!_IsComboPhyPort() || fPipe == NULL || _IsInternalPanel())
+		return true;
+
+	// as SetDisplayMode(): a port the BIOS lit goes by its transcoder, one we light by its sink
+	bool tmds = !fDisplayPortSink;
+	const uint32 transcoder = fPipe->Index() - INTEL_PIPE_A;
+	if (_IsPortLit(transcoder)) {
+		uint32 mode = (read32(ddi_func_ctl_register(transcoder)) & PIPE_DDI_MODESEL_MASK)
+			>> PIPE_DDI_MODESEL_SHIFT;
+		tmds = mode == PIPE_DDI_MODE_DVI || mode == PIPE_DDI_MODE_HDMI;
+	}
+	if (!tmds)
+		return true;
+
+	int p, q, k;
+	uint32 dco;
+	return ComputeHdmiDpll(pixelClock, &p, &q, &k, &dco);
+}
+
+
 // #pragma mark - Gen12 combo PHY port setup
 
 
