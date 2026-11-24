@@ -849,10 +849,16 @@ DefaultManager::_ConnectMixerToOutput()
 		goto finish;
 	}
 
+	// Without the chosen input among the free ones, this went on with the
+	// last one it looked at -- for the FA-101 at 192 kHz, which has three
+	// outputs where the other rates have five, its jacks 5/6. The first is
+	// the one a device's main outputs are on.
+	input = inputs[0];
 	for (int32 i = 0; i < count; i++) {
-		input = inputs[i];
-		if (input.destination.id == fPhysicalAudioOutInputID)
+		if (inputs[i].destination.id == fPhysicalAudioOutInputID) {
+			input = inputs[i];
 			break;
+		}
 	}
 
 	for (int i = 0; i < 6; i++) {
