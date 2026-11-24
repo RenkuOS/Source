@@ -376,6 +376,10 @@ protected:
 								const char* inputName, const char* name,
 								Vector<multi_mix_control>& Controls);
 			bool			_InitGainLimits(multi_mix_control& Control);
+			void			_CheckRawVolume(multi_mix_control& Control,
+								int16 current, int16 min, int16 max,
+								int16 resolution, float& currentGain);
+			float			_VolumeScale(int32 controlID) const;
 			uint8			_ActiveClockSelectorInput(ClockSelector* selector,
 								uint8 selectorId);
 
@@ -398,6 +402,8 @@ protected:
 			AudioControlsMap	fOutputTerminals;
 			// map to store output terminal and lookup them by control ID
 			AudioControlsMap	fInputTerminals;
+			// volume controls that report plain steps rather than 1/256 dB
+			Vector<int32>	fRawVolumeControls;
 };
 
 

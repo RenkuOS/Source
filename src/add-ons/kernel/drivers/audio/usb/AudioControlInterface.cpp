@@ -1801,6 +1801,51 @@ AudioControlInterface::_HarvestOutputFeatureUnits(_AudioControl* rootControl,
 }
 
 
+/*!	A volume is given in 1/256 dB (USB Audio 1.0, 5.2.2.4.3.2; the same in
+	2.0), but some devices report plain steps instead: the microphone of an
+	AUKEY PC-LM1E webcam answers GET_MIN 0, GET_MAX 63 and GET_RES 1, which
+	read as 1/256 dB is a range of a quarter of a decibel, and the mixer
+	shows a slider that does nothing. No volume control spans less than a
+	decibel, so a range that small is taken for steps: the control then
+	offers the device's own values, one per step, as Linux does when the
+	range it reads makes no sense in dB.
+*/
+void
+AudioControlInterface::_CheckRawVolume(multi_mix_control& Control,
+	int16 current, int16 min, int16 max, int16 resolution, float& currentGain)
+{
+	if (CS_FROM_CTLID(Control.id) != USB_AUDIO_VOLUME_CONTROL
+		|| max <= min || (int32)max - (int32)min >= 256) {
+		return;
+	}
+
+	Control.gain.min_gain = min;
+	Control.gain.max_gain = max;
+	Control.gain.granularity = resolution > 0 ? resolution : 1;
+	currentGain = current;
+
+	for (int32 i = 0; i < (int32)fRawVolumeControls.Count(); i++) {
+		if (fRawVolumeControls[i] == Control.id)
+			return;
+	}
+	fRawVolumeControls.PushBack(Control.id);
+	TRACE(ERR, "Control %s: range %d to %d is under 1 dB, using it as plain "
+		"steps\n", Control.name, min, max);
+}
+
+
+//!	The value of one unit of a volume control, in the mixer's units.
+float
+AudioControlInterface::_VolumeScale(int32 controlID) const
+{
+	for (int32 i = 0; i < (int32)fRawVolumeControls.Count(); i++) {
+		if (fRawVolumeControls[i] == controlID)
+			return 1.;
+	}
+	return 256.;
+}
+
+
 bool
 AudioControlInterface::_InitGainLimits(multi_mix_control& Control)
 {
@@ -1844,6 +1889,8 @@ AudioControlInterface::_InitGainLimits(multi_mix_control& Control)
 				= static_cast<float>(range.subranges[0].max) / 256.;
 			float res = static_cast<float>(range.subranges[0].res) / 256.;
 			Control.gain.granularity = res > 0. ? res : 1.;
+			_CheckRawVolume(Control, cur, range.subranges[0].min,
+				range.subranges[0].max, range.subranges[0].res, current);
 		} else {
 			TRACE(ERR, "R2 RANGE (%04x:%04x) fail:%#08x; %d bytes\n",
 				REQ_VALUE(Control.id), REQ_INDEX(Control.id), status, length);
@@ -1870,6 +1917,7 @@ AudioControlInterface::_InitGainLimits(multi_mix_control& Control)
 	Control.gain.max_gain = 100.;
 	Control.gain.granularity = 1.;
 
+	bool answered[B_COUNT_OF(gainInfos)] = {};
 	size_t actualLength = 0;
 	for (size_t i = 0; i < B_COUNT_OF(gainInfos); i++) {
 		status_t status = gUSBModule->send_request(fDevice->USBDevice(),
@@ -1887,8 +1935,14 @@ AudioControlInterface::_InitGainLimits(multi_mix_control& Control)
 
 		if (i == 0)
 			canControl = true;
+		answered[i] = true;
 
 		gainInfos[i].value = static_cast<float>(gainInfos[i].data) / 256.;
+	}
+
+	if (answered[0] && answered[1] && answered[2]) {
+		_CheckRawVolume(Control, gainInfos[0].data, gainInfos[1].data,
+			gainInfos[2].data, answered[3] ? gainInfos[3].data : 1, current);
 	}
 
 	// Not every device answers these sensibly. The Denon DN-HC4500 reports a
@@ -2580,7 +2634,8 @@ AudioControlInterface::GetMix(multi_mix_value_info* Info)
 			case USB_AUDIO_AC_FEATURE_UNIT:
 				switch(CS_FROM_CTLID(Info->values[i].id)) {
 					case USB_AUDIO_VOLUME_CONTROL:
-						Info->values[i].gain = static_cast<float>(data) / 256.;
+						Info->values[i].gain = static_cast<float>(data)
+							/ _VolumeScale(Info->values[i].id);
 						TRACE(MIX, "Gain control %d; channel: %d; is %f dB.\n",
 							ID_FROM_CTLID(Info->values[i].id),
 							CN_FROM_CTLID(Info->values[i].id),
@@ -2643,7 +2698,8 @@ AudioControlInterface::SetMix(multi_mix_value_info* Info)
 			case USB_AUDIO_AC_FEATURE_UNIT:
 				switch(CS_FROM_CTLID(Info->values[i].id)) {
 					case USB_AUDIO_VOLUME_CONTROL:
-						data = static_cast<int16>(Info->values[i].gain * 256.);
+						data = static_cast<int16>(Info->values[i].gain
+							* _VolumeScale(Info->values[i].id));
 						length = 2;
 						TRACE(MIX, "Gain control %d; channel: %d; "
 							"about to set to %f dB.\n",
