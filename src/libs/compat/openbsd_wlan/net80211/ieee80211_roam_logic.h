@@ -10,8 +10,8 @@
 /*
  * When a station should look for, and move to, another access point of
  * its ESS. Pure logic without kernel dependencies: the caller passes
- * RSSI values in the driver's units (higher is better, about 1 dB per
- * unit) and times in milliseconds of a monotonic clock.
+ * RSSI values from ieee80211_roam_level() (higher is better, about 1 dB
+ * per unit, 0 is none) and times in milliseconds of a monotonic clock.
  *
  * The signal of the current AP is smoothed (EWMA), so that single frames
  * do not decide anything.
@@ -55,6 +55,7 @@ struct ieee80211_roam_state {
 extern "C" {
 #endif
 
+int	ieee80211_roam_level(int, int);
 void	ieee80211_roam_avg_add(struct ieee80211_roam_avg *, int, long long);
 int	ieee80211_roam_avg_get(const struct ieee80211_roam_avg *);
 

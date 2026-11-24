@@ -12,6 +12,27 @@
 
 #include "ieee80211_roam_logic.h"
 
+/*
+ * The RSSI of a frame or of a node on one scale, where higher is better
+ * and 0 is none. ni_rssi is unsigned, so negative values wrap there.
+ * - mwx reports dBm and leaves max_rssi at 0. Its values are negative,
+ *   and wrapped they are still in order: -60 dBm is 196. (wpi has no
+ *   max_rssi either, but positive values; it never scans while
+ *   associated, so no roaming decision is made from them.)
+ * - iwm and iwx clip to max_rssi, but not below 0: what is above max_rssi
+ *   is a wrapped negative value. That is an AP below the scale, or a frame
+ *   without any energy measured; both count as the weakest signal.
+ */
+int
+ieee80211_roam_level(int rssi, int max_rssi)
+{
+	int level = rssi & 0xff;
+
+	if (max_rssi != 0 && level > max_rssi)
+		return 1;
+	return level;
+}
+
 void
 ieee80211_roam_avg_add(struct ieee80211_roam_avg *avg, int rssi,
     long long now)

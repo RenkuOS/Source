@@ -1384,7 +1384,8 @@ ieee80211_roam_input(struct ieee80211com *ic, struct ieee80211_node *ni,
     int rssi)
 {
 	if (rssi != 0)
-		ieee80211_roam_avg_add(&ni->ni_roam_avg, rssi,
+		ieee80211_roam_avg_add(&ni->ni_roam_avg,
+		    ieee80211_roam_level(rssi, ic->ic_max_rssi),
 		    ieee80211_roam_now());
 }
 
@@ -1402,9 +1403,9 @@ ieee80211_roam_switch(struct ieee80211com *ic, struct ieee80211_node *curbs,
 	/* The current AP may be missing from the scan when it is weak. */
 	cur = ieee80211_roam_avg_get(&ni->ni_roam_avg);
 	if (cur == 0 && curbs != NULL)
-		cur = curbs->ni_rssi;
+		cur = ieee80211_roam_level(curbs->ni_rssi, ic->ic_max_rssi);
 	if (selbs != curbs) {
-		cand = selbs->ni_rssi;
+		cand = ieee80211_roam_level(selbs->ni_rssi, ic->ic_max_rssi);
 		id = (unsigned int)a[2] << 24 | a[3] << 16 | a[4] << 8 | a[5];
 		if (id == 0)
 			id = 1;
@@ -1668,7 +1669,7 @@ ieee80211_end_scan(struct ifnet *ifp)
 #ifdef __HAIKU__
 		/*
 		 * It does: a weak AP's beacon is easily missed during the
-		 * scan. While its frames still come in, roam or stay as
+		 * scan. If a frame came in since the join, roam or stay as
 		 * the signal tells instead of dropping into a full scan.
 		 */
 		if (selbs == NULL || (curbs == NULL &&
