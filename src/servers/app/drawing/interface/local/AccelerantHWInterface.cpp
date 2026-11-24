@@ -1279,12 +1279,93 @@ void
 AccelerantHWInterface::SetCursor(ServerCursor* cursor)
 {
 	// cursor should never be NULL, but let us be safe!!
-	if (cursor == NULL || LockExclusiveAccess() == false)
+	if (cursor == NULL)
 		return;
 
+	if (fAccSetCursorBitmap != NULL) {
+		// Let HWInterface adopt the cursor first, so that the hardware gets
+		// it composed with the drag bitmap, if there is one.
+		HWInterface::SetCursor(cursor);
+		_UpdateHardwareCursor();
+		return;
+	}
+
+	if (LockExclusiveAccess() == false)
+		return;
+
+	bool cursorSet = _SetHardwareCursor(cursor);
+
+	UnlockExclusiveAccess();
+
+	fHardwareCursorEnabled = cursorSet;
+
+	HWInterface::SetCursor(cursor);
+		// HWInterface claims ownership of cursor.
+}
+
+
+void
+AccelerantHWInterface::SetDragBitmap(const ServerBitmap* bitmap,
+	const BPoint& offsetFromCursor)
+{
+	HWInterface::SetDragBitmap(bitmap, offsetFromCursor);
+
+	if (fAccSetCursorBitmap != NULL)
+		_UpdateHardwareCursor();
+}
+
+
+/*!	Pushes the cursor, composed with the drag bitmap if any, to the
+	hardware, or falls back to the software cursor if it is refused.
+*/
+void
+AccelerantHWInterface::_UpdateHardwareCursor()
+{
+	if (LockExclusiveAccess() == false)
+		return;
+
+	// every composite rebuild is followed by its own update under the
+	// exclusive lock, so the last push carries the newest composite
+	ServerCursorReference cursor = CursorAndDragBitmap();
+	if (!cursor.IsSet()) {
+		UnlockExclusiveAccess();
+		return;
+	}
+
+	bool wasEnabled = fHardwareCursorEnabled;
+	bool cursorSet = _SetHardwareCursor(cursor.Get());
+	fHardwareCursorEnabled = cursorSet;
+		// set under the lock, so an older update cannot overwrite it
+
+	UnlockExclusiveAccess();
+
+	if (wasEnabled && !cursorSet && LockParallelAccess()) {
+		// HWInterface did not draw the software cursor while the hardware
+		// cursor was enabled, so draw it now.
+		if (fFloatingOverlaysLock.Lock()) {
+			IntRect r = _CursorFrame();
+			_DrawCursor(r);
+			Invalidate(r);
+			fFloatingOverlaysLock.Unlock();
+		}
+		UnlockParallelAccess();
+	}
+}
+
+
+/*!	The exclusive access lock must be held. Returns whether the hardware
+	cursor shows \a cursor; the caller sets fHardwareCursorEnabled.
+*/
+bool
+AccelerantHWInterface::_SetHardwareCursor(ServerCursor* cursor)
+{
 	bool cursorSet = false;
 
-	if (fAccSetCursorBitmap != NULL) {
+	// the hook takes uint16 sizes, a large drag image would wrap
+	if (fAccSetCursorBitmap != NULL && cursor->Width() <= 0xffff
+		&& cursor->Height() <= 0xffff && cursor->BytesPerRow() <= 0xffff
+		&& cursor->GetHotSpot().x >= 0 && cursor->GetHotSpot().x <= 0xffff
+		&& cursor->GetHotSpot().y >= 0 && cursor->GetHotSpot().y <= 0xffff) {
 		// Bitmap cursor
 		// TODO are x and y switched for this, too?
 		uint16 xHotSpot = (uint16)cursor->GetHotSpot().x;
@@ -1301,6 +1382,7 @@ AccelerantHWInterface::SetCursor(ServerCursor* cursor)
 
 	if (!cursorSet && cursor->CursorData() != NULL && fAccSetCursorShape != NULL) {
 		// BeOS BCursor, 16x16 monochrome
+		// (a drag composite has no CursorData(), so never gets here)
 		uint8 size = cursor->CursorData()[0];
 		// CursorData()[1] is color depth (always monochrome)
 		// x and y are switched
@@ -1356,12 +1438,7 @@ AccelerantHWInterface::SetCursor(ServerCursor* cursor)
 	if (fAccShowCursor != NULL)
 		fAccShowCursor(cursorSet);
 
-	UnlockExclusiveAccess();
-
-	fHardwareCursorEnabled = cursorSet;
-
-	HWInterface::SetCursor(cursor);
-		// HWInterface claims ownership of cursor.
+	return cursorSet;
 }
 
 

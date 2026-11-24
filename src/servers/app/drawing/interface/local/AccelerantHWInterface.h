@@ -80,6 +80,8 @@ public:
 	virtual	void				SetCursor(ServerCursor* cursor);
 	virtual	void				SetCursorVisible(bool visible);
 	virtual	void				MoveCursorTo(float x, float y);
+	virtual	void				SetDragBitmap(const ServerBitmap* bitmap,
+									const BPoint& offsetFromCursor);
 
 	// frame buffer access
 	virtual	RenderingBuffer*	FrontBuffer() const;
@@ -107,6 +109,8 @@ private:
 			void				_RegionToRectParams(/*const*/ BRegion* region,
 									uint32* count) const;
 			uint32				_NativeColor(const rgb_color& color) const;
+			void				_UpdateHardwareCursor();
+			bool				_SetHardwareCursor(ServerCursor* cursor);
 			status_t			_FindBestMode(const display_mode& compareMode,
 									float compareAspectRatio,
 									display_mode& modeFound,
