@@ -705,6 +705,7 @@ update_output(intel_lpe_driver* driver)
 #define RT5640_POWER_ADC_FILTER		(1 << 15)	// MX-62
 #define RT5640_POWER_BOOST_IN3		(1 << 14)	// MX-64
 #define RT5640_POWER_MICBIAS1		(1 << 11)	// MX-64
+#define RT5640_POWER_LDO2			(1 << 2)	// MX-63, supplies IN1..IN3
 #define RT5640_POWER_RECORD_MIX		(3 << 10)	// MX-65: RECMIX L, R
 #define RT5640_MUTE_ADC1			((1 << 14) | (1 << 6))
 #define RT5640_ADC_ON				0x2f2f		// 0 dB, unmuted
@@ -718,6 +719,8 @@ static void
 microphone_on(intel_lpe_driver* driver)
 {
 	MutexLocker outputLocker(driver->outputLock);
+	rt5640_update(driver, RT5640_POWER_ANALOG1, RT5640_POWER_LDO2,
+		RT5640_POWER_LDO2);
 	rt5640_update(driver, RT5640_PWR_ANLG2,
 		RT5640_POWER_BOOST_IN3 | RT5640_POWER_MICBIAS1,
 		RT5640_POWER_BOOST_IN3 | RT5640_POWER_MICBIAS1);
@@ -744,6 +747,7 @@ microphone_off(intel_lpe_driver* driver)
 	rt5640_update(driver, RT5640_POWER_MIXER, RT5640_POWER_RECORD_MIX, 0);
 	rt5640_update(driver, RT5640_PWR_ANLG2,
 		RT5640_POWER_BOOST_IN3 | RT5640_POWER_MICBIAS1, 0);
+	rt5640_update(driver, RT5640_POWER_ANALOG1, RT5640_POWER_LDO2, 0);
 }
 
 
