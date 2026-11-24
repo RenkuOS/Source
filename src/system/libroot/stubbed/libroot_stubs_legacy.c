@@ -1298,6 +1298,7 @@ void _setDebugFlag() {}
 void _setjmp() {}
 void _stat_beos() {}
 void _stat_current() {}
+void _thread_call_exit_callbacks() {}
 void _thread_do_exit_notification() {}
 void _thread_do_exit_work() {}
 void _to_negative_error() {}
