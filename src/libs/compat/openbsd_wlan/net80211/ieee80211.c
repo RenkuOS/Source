@@ -77,6 +77,27 @@ ieee80211_begin_bgscan(struct ifnet *ifp)
 {
 	struct ieee80211com *ic = (void *)ifp;
 
+#ifdef __HAIKU__
+	if ((ic->ic_flags & IEEE80211_F_BGSCAN) ||
+	    ic->ic_state != IEEE80211_S_RUN)
+		return;
+
+	if (((ic->ic_flags & IEEE80211_F_RSNON) &&
+	    !ic->ic_bss->ni_port_valid) || ic->ic_bgscan_start == NULL ||
+	    ic->ic_bgscan_start(ic) != 0) {
+		ieee80211_roam_scan_failed(ic);
+		return;
+	}
+
+	/*
+	 * A management timer pending in RUN is the probe request sent
+	 * after missed beacons: the AP is fading. The scan answers the
+	 * same question and may find a better AP; without one it ends in
+	 * a full scan, as the timer would.
+	 */
+	ic->ic_mgt_timer = 0;
+	{
+#else
 	if ((ic->ic_flags & IEEE80211_F_BGSCAN) ||
 	    ic->ic_state != IEEE80211_S_RUN || ic->ic_mgt_timer != 0)
 		return;
@@ -85,6 +106,7 @@ ieee80211_begin_bgscan(struct ifnet *ifp)
 		return;
 
 	if (ic->ic_bgscan_start != NULL && ic->ic_bgscan_start(ic) == 0) {
+#endif
 		/*
 		 * Free the nodes table to ensure we get an up-to-date view
 		 * of APs around us. In particular, we need to kick out the

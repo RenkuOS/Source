@@ -34,6 +34,9 @@
 #define _NET80211_IEEE80211_NODE_H_
 
 #include <sys/tree.h>
+#ifdef __HAIKU__
+#include <net80211/ieee80211_roam_logic.h>
+#endif
 
 #define	IEEE80211_PSCAN_WAIT	5		/* passive scan wait */
 #define	IEEE80211_TRANS_WAIT	5		/* transition wait */
@@ -276,6 +279,9 @@ struct ieee80211_node {
 	/* hardware */
 	u_int32_t		ni_rstamp;	/* recv timestamp */
 	u_int8_t		ni_rssi;	/* recv ssi */
+#ifdef __HAIKU__
+	struct ieee80211_roam_avg ni_roam_avg;	/* smoothed ni_rssi */
+#endif
 
 	/* header */
 	u_int8_t		ni_macaddr[IEEE80211_ADDR_LEN];
@@ -614,6 +620,9 @@ void ieee80211_end_scan(struct ifnet *);
 void ieee80211_reset_scan(struct ifnet *);
 #ifdef __HAIKU__
 void ieee80211_notify_scan_done(struct ieee80211com *);
+void ieee80211_roam_input(struct ieee80211com *, struct ieee80211_node *,
+		int);
+void ieee80211_roam_scan_failed(struct ieee80211com *);
 #endif
 struct ieee80211_node *ieee80211_alloc_node(struct ieee80211com *,
 		const u_int8_t *);
