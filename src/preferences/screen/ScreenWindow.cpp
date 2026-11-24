@@ -151,6 +151,18 @@ refresh_rate_to_string(float refresh, BString &string,
 }
 
 
+/*!	Whether the driver's mode is one for the resolution, colors and combine
+	mode of \a selected.
+*/
+static bool
+is_mode_for(const screen_mode& mode, const screen_mode& selected)
+{
+	return mode.width == selected.width && mode.height == selected.height
+		&& mode.space == selected.space && mode.combine == selected.combine
+		&& isfinite(mode.refresh) && mode.refresh > 0;
+}
+
+
 static const char*
 screen_errors(status_t status)
 {
@@ -773,21 +785,109 @@ ScreenWindow::_CheckColorMenu()
 }
 
 
-/*!	Enable/disable refresh options according to current mode. */
+/*!	Enable/disable refresh options according to current mode. The refresh
+	rates of the driver's own modes for it are listed as well, and are always
+	enabled.
+*/
 void
 ScreenWindow::_CheckRefreshMenu()
 {
+	if (fOtherRefresh != NULL) {
+		// replace the driver's rates of the previous mode with this one's
+		for (int32 i = fRefreshMenu->CountItems(); i-- > 0;) {
+			BMessage* message = fRefreshMenu->ItemAt(i)->Message();
+			if (message != NULL && message->GetBool("listed", false))
+				delete fRefreshMenu->RemoveItem(i);
+		}
+
+		for (int32 i = 0; i < fScreenMode.CountModes(); i++) {
+			screen_mode mode = fScreenMode.ModeAt(i);
+			if (!is_mode_for(mode, fSelected))
+				continue;
+
+			// keep the rates sorted, in front of "Other…"
+			int32 index = 0;
+			float refresh = 0;
+			for (; index < fRefreshMenu->CountItems(); index++) {
+				BMenuItem* item = fRefreshMenu->ItemAt(index);
+				if (item == fOtherRefresh || item->Message() == NULL
+					|| item->Message()->FindFloat("refresh", &refresh) != B_OK
+					|| refresh >= mode.refresh)
+					break;
+			}
+			if (index < fRefreshMenu->CountItems() && refresh == mode.refresh)
+				continue;
+
+			BString name;
+			refresh_rate_to_string(mode.refresh, name);
+			BMessage* message = new BMessage(POP_REFRESH_MSG);
+			message->AddFloat("refresh", mode.refresh);
+			message->AddBool("listed", true);
+			fRefreshMenu->AddItem(new BMenuItem(name.String(), message), index);
+		}
+	}
+
 	float min, max;
-	if (fScreenMode.GetRefreshLimits(fSelected, min, max) != B_OK || min == max)
-		return;
+	bool hasLimits = fScreenMode.GetRefreshLimits(fSelected, min, max) == B_OK
+		&& min != max;
 
 	for (int32 i = fRefreshMenu->CountItems(); i-- > 0;) {
 		BMenuItem* item = fRefreshMenu->ItemAt(i);
 		BMessage* message = item->Message();
 		float refresh;
-		if (message != NULL && message->FindFloat("refresh", &refresh) == B_OK)
+		if (message == NULL || message->FindFloat("refresh", &refresh) != B_OK)
+			continue;
+
+		if (fOtherRefresh != NULL && _NearestListedRefresh(refresh) == refresh)
+			item->SetEnabled(true);
+		else if (hasLimits)
 			item->SetEnabled(refresh >= min && refresh <= max);
 	}
+}
+
+
+/*!	The refresh rate nearest to \a refresh among those of the driver's modes
+	for the selected resolution, or 0 if the driver has none for it.
+*/
+float
+ScreenWindow::_NearestListedRefresh(float refresh)
+{
+	float nearest = 0;
+	for (int32 i = 0; i < fScreenMode.CountModes(); i++) {
+		screen_mode mode = fScreenMode.ModeAt(i);
+		if (!is_mode_for(mode, fSelected))
+			continue;
+
+		if (nearest == 0
+			|| fabs(mode.refresh - refresh) < fabs(nearest - refresh))
+			nearest = mode.refresh;
+	}
+	return nearest;
+}
+
+
+/*!	To be called when the resolution has changed: the selected refresh rate
+	is kept if the driver has a mode with it for the new resolution, or if it
+	lies within the limits for it. Otherwise the nearest rate of the driver's
+	modes is selected, as a timing computed for the old rate may be one the
+	monitor or the driver cannot do.
+*/
+void
+ScreenWindow::_CheckSelectedRefresh()
+{
+	if (fOtherRefresh == NULL || isnan(fSelected.refresh))
+		return;
+
+	float nearest = _NearestListedRefresh(fSelected.refresh);
+	if (nearest == 0 || nearest == fSelected.refresh)
+		return;
+
+	float min, max;
+	if (fScreenMode.GetRefreshLimits(fSelected, min, max) == B_OK
+		&& fSelected.refresh >= min && fSelected.refresh <= max)
+		return;
+
+	fSelected.refresh = nearest;
 }
 
 
@@ -1064,6 +1164,7 @@ ScreenWindow::MessageReceived(BMessage* message)
 			message->FindInt32("height", &fSelected.height);
 
 			_CheckColorMenu();
+			_CheckSelectedRefresh();
 			_CheckRefreshMenu();
 
 			_UpdateMonitorView();
