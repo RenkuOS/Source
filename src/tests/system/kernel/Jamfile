@@ -19,6 +19,7 @@ if $(TARGET_ARCH) = x86_64 {
 	UsePrivateHeaders libroot ;
 	SubDirSysHdrs $(HAIKU_TOP) headers private system arch x86 ;
 	SimpleTest x86_64_segments_test : x86_64_segments_test.c ;
+	SimpleTest x86_64_debug_registers_test : x86_64_debug_registers_test.c ;
 }
 
 SimpleTest hello_avx : hello_avx.c ;
