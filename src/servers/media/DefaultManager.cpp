@@ -789,10 +789,15 @@ DefaultManager::_ConnectMixerToOutput()
 	if (fPhysicalAudioOutFromMixer.node != media_node::null) {
 		// Disconnect the old output. (The mixer should be in auto-stop mode,
 		// and stop the output on its own.)
+		// The old output may be gone already (its node released, which
+		// disconnected it): that must not keep the mixer from the new one.
 		status_t status = fRoster->Disconnect(fMixerToPhysicalAudioOut,
 			fPhysicalAudioOutFromMixer);
-		if (status != B_OK)
-			return status;
+		if (status != B_OK) {
+			syslog(LOG_NOTICE, "media_server: disconnecting the mixer from the"
+				" old output failed (%s); connecting it to the new one anyway\n",
+				strerror(status));
+		}
 
 		fMixerToPhysicalAudioOut.node = media_node::null;
 		fPhysicalAudioOutFromMixer.node = media_node::null;
