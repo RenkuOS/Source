@@ -514,10 +514,14 @@ INFORM("Volume::InitialVerify(%p, %p)\n", nextVolume, nextNextVolume);
 }
 
 
-void
+bool
 Volume::HandleGetLocationInfoRequest(BMessage* message)
 {
 	AutoLocker<BLocker> locker(fLock);
+
+	// The packages haven't been read yet, or reading them failed.
+	if (fActiveState == NULL)
+		return false;
 
 	// If the cached reply message is up-to-date, just send it.
 	int64 changeCount;
@@ -526,7 +530,7 @@ Volume::HandleGetLocationInfoRequest(BMessage* message)
 		locker.Unlock();
 		message->SendReply(&fLocationInfoReply, (BHandler*)NULL,
 			kCommunicationTimeout);
-		return;
+		return true;
 	}
 
 	// rebuild the reply message
@@ -540,7 +544,7 @@ Volume::HandleGetLocationInfoRequest(BMessage* message)
 			PackagesDeviceID()) != B_OK
 		|| fLocationInfoReply.AddInt64("packages directory node",
 			PackagesDirectoryID()) != B_OK) {
-		return;
+		return true;
 	}
 
 	for (PackageFileNameHashTable::Iterator it
@@ -552,7 +556,7 @@ Volume::HandleGetLocationInfoRequest(BMessage* message)
 		if (package->Info().Archive(&packageArchive) != B_OK
 			|| fLocationInfoReply.AddMessage(fieldName, &packageArchive)
 				!= B_OK) {
-			return;
+			return true;
 		}
 	}
 
@@ -572,18 +576,19 @@ Volume::HandleGetLocationInfoRequest(BMessage* message)
 			if (package->Info().Archive(&packageArchive) != B_OK
 				|| fLocationInfoReply.AddMessage("currently active packages",
 					&packageArchive) != B_OK) {
-				return;
+				return true;
 			}
 		}
 	}
 
 	if (fLocationInfoReply.AddInt64("change count", fChangeCount) != B_OK)
-		return;
+		return true;
 
 	locker.Unlock();
 
 	message->SendReply(&fLocationInfoReply, (BHandler*)NULL,
 		kCommunicationTimeout);
+	return true;
 }
 
 
@@ -1186,6 +1191,7 @@ Volume::_GetActivePackages(int fd)
 	// check whether that matches the expected state
 	if (_CheckActivePackagesMatchLatestState(request)) {
 		INFORM("The latest volume state is also the currently active one\n");
+		AutoLocker<BLocker> locker(fLock);
 		fActiveState = fLatestState;
 		return B_OK;
 	}
@@ -1219,6 +1225,7 @@ Volume::_GetActivePackages(int fd)
 	_DumpState(state);
 #endif
 
+	AutoLocker<BLocker> locker(fLock);
 	fActiveState = stateDeleter.Detach();
 	return B_OK;
 }

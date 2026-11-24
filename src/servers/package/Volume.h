@@ -30,7 +30,8 @@
 // A Volume object is accessed by two threads:
 // 1. The application thread: initially (c'tor and Init()) and when handling a
 //    location info request (HandleGetLocationInfoRequest()).
-// 2. The corresponding Root object's job thread (any other operation).
+// 2. The corresponding Root object's job thread (any other operation, and a
+//    location info request that came in before the packages were read).
 //
 // The only thread synchronization needed is for the status information accessed
 // by HandleGetLocationInfoRequest() and modified by the job thread. The data
@@ -76,7 +77,8 @@ public:
 									bool activeOnly);
 			void				InitialVerify(Volume* nextVolume,
 									Volume* nextNextVolume);
-			void				HandleGetLocationInfoRequest(BMessage* message);
+			bool				HandleGetLocationInfoRequest(BMessage* message);
+									// false: not answered, packages not read
 			void				HandleCommitTransactionRequest(
 									BMessage* message);
 
