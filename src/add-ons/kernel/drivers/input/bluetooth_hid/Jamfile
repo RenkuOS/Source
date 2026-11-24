@@ -25,5 +25,6 @@ KernelAddon bluetooth_hid :
 	JoystickProtocolHandler.cpp
 	KeyboardProtocolHandler.cpp
 	MouseProtocolHandler.cpp
+	MouseReportDecoder.cpp
 	TabletProtocolHandler.cpp
 ;

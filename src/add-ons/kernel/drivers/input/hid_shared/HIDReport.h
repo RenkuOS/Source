@@ -41,7 +41,16 @@ public:
 
 		void					SetReport(status_t status, uint8 *report,
 									size_t length);
+									// only stores, see NotifyListeners()
 		uint8 *					CurrentReport() { return fCurrentReport; };
+		status_t				ReportStatus() { return fReportStatus; };
+		void					NotifyListeners();
+
+#ifdef USERLAND_HID
+	static	void				(*sNotifyHook)(HIDReport *report);
+									// called where the kernel wakes the
+									// listeners, so tests can see what they see
+#endif
 
 #ifndef USERLAND_HID
 		status_t				SendReport();

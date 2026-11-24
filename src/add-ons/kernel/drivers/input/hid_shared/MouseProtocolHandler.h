@@ -8,6 +8,7 @@
 
 #include <InterfaceDefs.h>
 
+#include "MouseReportDecoder.h"
 #include "ProtocolHandler.h"
 
 
@@ -15,16 +16,10 @@ class HIDCollection;
 class HIDReportItem;
 
 
-#ifndef B_MAX_MOUSE_BUTTONS
-#	define B_MAX_MOUSE_BUTTONS		8
-#endif
-
-
 class MouseProtocolHandler : public ProtocolHandler {
 public:
-								MouseProtocolHandler(HIDReport &report,
-									HIDReportItem &xAxis,
-									HIDReportItem &yAxis);
+								MouseProtocolHandler(HIDCollection &collection,
+									HIDReport &report);
 
 	static	void				AddHandlers(HIDDevice &device,
 									HIDCollection &collection,
@@ -37,17 +32,7 @@ private:
 			status_t			_ReadReport(void *buffer, uint32 *cookie);
 
 			HIDReport &			fReport;
-
-			HIDReportItem &		fXAxis;
-			HIDReportItem &		fYAxis;
-			HIDReportItem *		fWheel;
-			HIDReportItem *		fHorizontalPan;
-			HIDReportItem *		fButtons[B_MAX_MOUSE_BUTTONS];
-
-			uint32				fLastButtons;
-			uint32				fClickCount;
-			bigtime_t			fLastClickTime;
-			bigtime_t			fClickSpeed;
+			MouseReportDecoder	fDecoder;
 };
 
 #endif // USB_MOUSE_PROTOCOL_HANDLER_H
