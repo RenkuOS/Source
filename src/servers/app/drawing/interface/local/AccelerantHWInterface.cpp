@@ -1355,6 +1355,7 @@ AccelerantHWInterface::_UpdateHardwareCursor()
 
 /*!	The exclusive access lock must be held. Returns whether the hardware
 	cursor shows \a cursor; the caller sets fHardwareCursorEnabled.
+	A hidden or obscured cursor stays hidden; SetCursorVisible() shows it.
 */
 bool
 AccelerantHWInterface::_SetHardwareCursor(ServerCursor* cursor)
@@ -1436,7 +1437,7 @@ AccelerantHWInterface::_SetHardwareCursor(ServerCursor* cursor)
 	}
 
 	if (fAccShowCursor != NULL)
-		fAccShowCursor(cursorSet);
+		fAccShowCursor(cursorSet && fCursorVisible);
 
 	return cursorSet;
 }
