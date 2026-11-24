@@ -26,6 +26,8 @@
 	After that the pins of all _AEI events trigger the interrupt of their
 	controller, and the event methods run in a thread when a pin changes
 	(for example when a USB OTG cable is plugged in or out).
+
+	A second module (baytrail_gpio.h) lets other drivers drive single pins.
 */
 
 
@@ -39,6 +41,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <baytrail_gpio.h>
 #include <lock.h>
 #include <arch/int.h>
 
@@ -253,6 +256,29 @@ write_level(gpio_controller* controller, uint32 pin, uint32 level)
 		dprintf("baytrail_gpio: %s pin %" B_PRIu32 ": output enabled\n",
 			controller->community->name, pin);
 	}
+}
+
+
+/*!	Makes \a pin an output at \a level, or an input if \a output is false.
+*/
+static void
+configure_pin(gpio_controller* controller, uint32 pin, bool output,
+	bool level)
+{
+	cpu_status state = disable_interrupts();
+	acquire_spinlock(&sRegisterLock);
+
+	volatile uint32* val = pad_register(controller, pin, PAD_VAL);
+	uint32 value = *val & ~(PAD_VAL_LEVEL | PAD_VAL_OUTPUT_DISABLE
+		| PAD_VAL_INPUT_DISABLE);
+	if (!output)
+		value |= PAD_VAL_OUTPUT_DISABLE;
+	else if (level)
+		value |= PAD_VAL_LEVEL;
+	*val = value;
+
+	release_spinlock(&sRegisterLock);
+	restore_interrupts(state);
 }
 
 
@@ -945,6 +971,61 @@ baytrail_gpio_uninit_driver(void* driverCookie)
 }
 
 
+//	#pragma mark - pins module
+
+
+static gpio_controller*
+find_controller(const char* community, uint32 pin)
+{
+	for (uint32 i = 0; i < B_COUNT_OF(kCommunities); i++) {
+		if (community == NULL || strcmp(kCommunities[i].name, community) != 0)
+			continue;
+
+		gpio_controller* controller = sControllers[i];
+		if (controller == NULL || !pad_in_range(controller, pin))
+			return NULL;
+		return controller;
+	}
+	return NULL;
+}
+
+
+static status_t
+baytrail_gpio_set_output(const char* community, uint32 pin, bool high)
+{
+	gpio_controller* controller = find_controller(community, pin);
+	if (controller == NULL)
+		return B_ENTRY_NOT_FOUND;
+
+	configure_pin(controller, pin, true, high);
+	return B_OK;
+}
+
+
+static status_t
+baytrail_gpio_set_input(const char* community, uint32 pin)
+{
+	gpio_controller* controller = find_controller(community, pin);
+	if (controller == NULL)
+		return B_ENTRY_NOT_FOUND;
+
+	configure_pin(controller, pin, false, false);
+	return B_OK;
+}
+
+
+static status_t
+baytrail_gpio_pins_std_ops(int32 op, ...)
+{
+	switch (op) {
+		case B_MODULE_INIT:
+		case B_MODULE_UNINIT:
+			return B_OK;
+	}
+	return B_ERROR;
+}
+
+
 module_dependency module_dependencies[] = {
 	{ B_DEVICE_MANAGER_MODULE_NAME, (module_info**)&sDeviceManager },
 	{}
@@ -968,7 +1049,20 @@ static driver_module_info sBaytrailGPIODriverModule = {
 };
 
 
+static baytrail_gpio_pins_module_info sBaytrailGPIOPinsModule = {
+	{
+		BAYTRAIL_GPIO_PINS_MODULE_NAME,
+		0,
+		baytrail_gpio_pins_std_ops
+	},
+
+	baytrail_gpio_set_output,
+	baytrail_gpio_set_input,
+};
+
+
 module_info* modules[] = {
 	(module_info*)&sBaytrailGPIODriverModule,
+	(module_info*)&sBaytrailGPIOPinsModule,
 	NULL
 };

@@ -3,6 +3,7 @@
 SubDir HAIKU_TOP src add-ons kernel drivers gpio baytrail_gpio ;
 
 UsePrivateKernelHeaders ;
+UsePrivateHeaders drivers ;
 
 SubDirHdrs [ FDirName $(HAIKU_TOP) src add-ons kernel bus_managers acpi acpica include ] ;
 SubDirHdrs [ FDirName $(HAIKU_TOP) src add-ons kernel bus_managers acpi acpica include platform ] ;
