@@ -708,7 +708,11 @@ update_output(intel_lpe_driver* driver)
 #define RT5640_POWER_LDO2			(1 << 2)	// MX-63, supplies IN1..IN3
 #define RT5640_POWER_RECORD_MIX		(3 << 10)	// MX-65: RECMIX L, R
 #define RT5640_MUTE_ADC1			((1 << 14) | (1 << 6))
-#define RT5640_ADC_ON				0x2f2f		// 0 dB, unmuted
+// The gains of the Linux UCM profile for this codec: IN3 boost at its
+// maximum (52 dB) and the ADC at +9 dB (0x2f is 0 dB, 0.375 dB a step).
+#define RT5640_BOOST_IN3_MASK		(0xf << 8)	// MX-0D
+#define RT5640_BOOST_IN3_52DB		(8 << 8)
+#define RT5640_ADC_ON				0x4747		// +9 dB, unmuted
 #define RT5640_ADC_MUTED			0xafaf
 
 
@@ -721,6 +725,8 @@ microphone_on(intel_lpe_driver* driver)
 	MutexLocker outputLocker(driver->outputLock);
 	rt5640_update(driver, RT5640_POWER_ANALOG1, RT5640_POWER_LDO2,
 		RT5640_POWER_LDO2);
+	rt5640_update(driver, RT5640_IN1_IN2, RT5640_BOOST_IN3_MASK,
+		RT5640_BOOST_IN3_52DB);
 	rt5640_update(driver, RT5640_PWR_ANLG2,
 		RT5640_POWER_BOOST_IN3 | RT5640_POWER_MICBIAS1,
 		RT5640_POWER_BOOST_IN3 | RT5640_POWER_MICBIAS1);
