@@ -424,12 +424,28 @@ ieee80211_inputm(struct ifnet *ifp, struct mbuf *m, struct ieee80211_node *ni,
 		*orxseq = nrxseq;
 	}
 	if (ic->ic_state > IEEE80211_S_SCAN) {
+#ifdef __HAIKU__
+		/*
+		 * In STA mode every frame comes with ic_bss, also the beacons
+		 * of other APs during a background scan. Only those of our
+		 * AP tell its signal.
+		 */
+		int ownap = ic->ic_opmode != IEEE80211_M_STA ||
+		    IEEE80211_ADDR_EQ(wh->i_addr2, ni->ni_bssid);
+
+		if (ownap && rxi->rxi_rssi != 0)
+#else
 		/* Only update RSSI if driver provided a valid value. */
 		if (rxi->rxi_rssi != 0)
+#endif
 			ni->ni_rssi = rxi->rxi_rssi;
 		ni->ni_rstamp = rxi->rxi_tstamp;
 		ni->ni_inact = 0;
 
+#ifdef __HAIKU__
+		if (ownap && ic->ic_opmode == IEEE80211_M_STA)
+			ieee80211_roam_input(ic, ni, rxi->rxi_rssi);
+#endif
 		if (ic->ic_state == IEEE80211_S_RUN && ic->ic_bgscan_start) {
 			/* Cancel or start background scan based on RSSI. */
 			if ((*ic->ic_node_checkrssi)(ic, ni))

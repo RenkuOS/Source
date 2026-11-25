@@ -281,6 +281,7 @@ struct ieee80211com {
 	uint32_t		ic_bgscan_fail;
 #ifdef __HAIKU__
 	bigtime_t		ic_last_raise_inact;
+	struct ieee80211_roam_state ic_roam;
 	struct timeout		ic_slowtimo;	/* drives if_watchdog */
 #endif
 	u_int8_t		ic_myaddr[IEEE80211_ADDR_LEN];
