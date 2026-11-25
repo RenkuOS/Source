@@ -159,6 +159,8 @@ static int32 sNextMethodCookie = 1;
 _BMethodAddOn_::_BMethodAddOn_(BInputServerMethod *method, const char *name,
 	const uchar *icon)
 	: fMethod(method),
+	fVectorIcon(NULL),
+	fVectorIconSize(0),
 	fMenu(NULL),
 	fCookie(sNextMethodCookie++)
 {
@@ -173,6 +175,7 @@ _BMethodAddOn_::_BMethodAddOn_(BInputServerMethod *method, const char *name,
 _BMethodAddOn_::~_BMethodAddOn_()
 {
 	free(fName);
+	free(fVectorIcon);
 	delete fMenu;
 }
 
@@ -213,6 +216,38 @@ _BMethodAddOn_::SetIcon(const uchar* icon)
 		return ((InputServer*)be_app)->MethodReplicant()->SendMessage(&msg);
 	else
 		return B_ERROR;
+}
+
+
+/*!	A vector icon is drawn at any size; the 16x16 icon stays as the fallback.
+*/
+status_t
+_BMethodAddOn_::SetVectorIcon(const uint8* data, size_t size)
+{
+	uint8* copy = NULL;
+	if (data != NULL && size > 0) {
+		copy = (uint8*)malloc(size);
+		if (copy == NULL)
+			return B_NO_MEMORY;
+		memcpy(copy, data, size);
+	} else
+		size = 0;
+
+	free(fVectorIcon);
+	fVectorIcon = copy;
+	fVectorIconSize = size;
+
+	if (((InputServer*)be_app)->MethodReplicant() == NULL)
+		return B_OK;
+
+	BMessage msg(IS_UPDATE_ICON);
+	msg.AddInt32("cookie", fCookie);
+	msg.AddData("icon", B_RAW_TYPE, fIcon, sizeof(fIcon));
+	if (fVectorIcon != NULL) {
+		msg.AddData("vector icon", B_VECTOR_ICON_TYPE, fVectorIcon,
+			fVectorIconSize);
+	}
+	return ((InputServer*)be_app)->MethodReplicant()->SendMessage(&msg);
 }
 
 
@@ -262,6 +297,10 @@ _BMethodAddOn_::AddMethod()
 	msg.AddInt32("cookie", fCookie);
 	msg.AddString("name", fName);
 	msg.AddData("icon", B_RAW_TYPE, fIcon, 16*16*1);
+	if (fVectorIcon != NULL) {
+		msg.AddData("vector icon", B_VECTOR_ICON_TYPE, fVectorIcon,
+			fVectorIconSize);
+	}
 	BMessage menuMsg;
 	if (fMenu != NULL)
 		fMenu->Archive(&menuMsg);

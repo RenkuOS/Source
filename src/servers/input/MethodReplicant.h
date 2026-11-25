@@ -27,7 +27,7 @@ class _EXPORT MethodReplicant;
 
 class MethodReplicant : public BView {
 	public:
-		MethodReplicant(const char* signature);
+		MethodReplicant(const char* signature, float size);
 
 		MethodReplicant(BMessage *);
 		// BMessage * based constructor needed to support archiving

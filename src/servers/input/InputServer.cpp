@@ -29,6 +29,7 @@
 #include <Message.h>
 #include <OS.h>
 #include <Path.h>
+#include <Resources.h>
 #include <Roster.h>
 #include <String.h>
 
@@ -56,7 +57,8 @@ BLocker InputServer::gInputMethodListLocker("is_method_queue_sem");
 KeymapMethod InputServer::gKeymapMethod;
 
 
-extern "C" _EXPORT BView* instantiate_deskbar_item();
+extern "C" _EXPORT BView* instantiate_deskbar_item(float maxWidth,
+	float maxHeight);
 
 
 // #pragma mark - InputDeviceListItem
@@ -231,6 +233,15 @@ InputServer::_InitKeyboardMouseStates()
 	HandleSetMousePosition(&msg, &msg);
 
 	fActiveMethod = &gKeymapMethod;
+
+	BResources* resources = AppResources();
+	if (resources != NULL) {
+		size_t size;
+		const void* icon = resources->LoadResource(B_VECTOR_ICON_TYPE, "Roman",
+			&size);
+		if (icon != NULL)
+			gKeymapMethod.fOwner->SetVectorIcon((const uint8*)icon, size);
+	}
 }
 
 
@@ -1999,9 +2010,9 @@ RegisterDevices(input_device_ref** devices)
 
 
 BView *
-instantiate_deskbar_item()
+instantiate_deskbar_item(float maxWidth, float maxHeight)
 {
-	return new MethodReplicant(INPUTSERVER_SIGNATURE);
+	return new MethodReplicant(INPUTSERVER_SIGNATURE, maxHeight);
 }
 
 
