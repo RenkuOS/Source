@@ -153,8 +153,12 @@
 
 // Network
 
-// Enables additional assertions in the tcp add-on.
-#define DEBUG_TCP_BUFFER_QUEUE			KDEBUG_LEVEL_2
+// Enables additional assertions in the tcp add-on. BufferQueue::Verify() walks
+// every queued segment each time it runs, which costs several hundred
+// microseconds per packet when a socket has megabytes waiting to be read, so
+// it is off even at KDEBUG_LEVEL_2; set it to KDEBUG_LEVEL_2 when working on
+// the tcp add-on.
+#define DEBUG_TCP_BUFFER_QUEUE			0
 
 
 #endif	// KERNEL_DEBUG_CONFIG_H
