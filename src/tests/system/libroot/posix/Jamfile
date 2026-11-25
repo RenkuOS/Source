@@ -52,6 +52,7 @@ SimpleTest posix_spawn_redir_test : posix_spawn_redir_test.c ;
 SimpleTest posix_spawn_redir_err : posix_spawn_redir_err.c ;
 SimpleTest posix_spawn_pipe_test : posix_spawn_pipe_test.c ;
 SimpleTest posix_spawn_pipe_err : posix_spawn_pipe_err.c ;
+SimpleTest posix_spawn_sigdef_test : posix_spawn_sigdef_test.c ;
 SimpleTest pthread_attr_stack_test : pthread_attr_stack_test.cpp ;
 SimpleTest thread_local_test : thread_local_test.cpp : [ TargetLibstdc++ ] ;
 
