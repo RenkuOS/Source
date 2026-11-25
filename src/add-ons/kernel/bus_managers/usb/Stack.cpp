@@ -114,17 +114,19 @@ Stack::GetUSBID(Object *object)
 	if (!Lock())
 		return fObjectMaxCount;
 
+	// 0 is not a valid ID, it marks an endpoint without a pipe, for example.
 	uint32 id = fObjectIndex;
-	uint32 tries = fObjectMaxCount;
+	uint32 tries = fObjectMaxCount - 1;
 	while (tries-- > 0) {
+		uint32 next = id + 1 < fObjectMaxCount ? id + 1 : 1;
 		if (fObjectArray[id] == NULL) {
-			fObjectIndex = (id + 1) % fObjectMaxCount;
+			fObjectIndex = next;
 			fObjectArray[id] = object;
 			Unlock();
 			return (usb_id)id;
 		}
 
-		id = (id + 1) % fObjectMaxCount;
+		id = next;
 	}
 
 	TRACE_ERROR("the stack has run out of usb_ids\n");
