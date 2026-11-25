@@ -343,7 +343,7 @@ embedded_controller_probe_ecdt()
 	if (ACPI_FAILURE(status))
 		return;
 
-	acpi_ec_cookie* sc = (acpi_ec_cookie*)malloc(sizeof(acpi_ec_cookie));
+	acpi_ec_cookie* sc = (acpi_ec_cookie*)calloc(1, sizeof(acpi_ec_cookie));
 	if (sc == NULL)
 		return;
 
