@@ -34,6 +34,7 @@
 #include <AppServerLink.h>
 #include <ServerProtocol.h>
 #include <WindowInfo.h>
+#include <WindowPrivate.h>
 
 
 static int sFailures = 0;
@@ -236,6 +237,137 @@ check_content(BBitmap* bitmap, BRect content, int32 x, int32 y,
 }
 
 
+/*!	The desktop window, Tracker's, of any team.
+*/
+static int32
+find_desktop_token()
+{
+	int32 count = 0;
+	int32* tokens = get_token_list(-1, &count);
+	int32 found = -1;
+	for (int32 i = 0; tokens != NULL && i < count && found < 0; i++) {
+		client_window_info* info = get_window_info(tokens[i]);
+		if (info == NULL)
+			continue;
+		if (info->feel == (uint32)kDesktopWindowFeel)
+			found = tokens[i];
+		free(info);
+	}
+	free(tokens);
+	return found;
+}
+
+
+static uint8
+alpha_at(BBitmap* bitmap, int32 x, int32 y)
+{
+	return ((const uint8*)bitmap->Bits())[y * bitmap->BytesPerRow() + x * 4
+		+ 3];
+}
+
+
+/*!	WINDOW_PREVIEW_FIT and WINDOW_PREVIEW_DECORATOR, on the window \a token,
+	whose 400x300 content is \a color with a blue marker at 20,20 - 59,59.
+*/
+static void
+test_flags(int32 token, rgb_color color)
+{
+	const rgb_color blue = make_color(0, 0, 255);
+	BRect content(0, 0, 399, 299);
+
+	// Without flags, all of the bitmap is used.
+	{
+		BBitmap bitmap(BRect(0, 0, 132, 299), B_RGB32);
+		BRect used;
+		status_t status = BPrivate::get_window_preview(token, &bitmap, 0,
+			&used);
+		check(status == B_OK && used == bitmap.Bounds(),
+			"no flags: all of the bitmap is used (%s, %gx%g)",
+			strerror(status), used.Width() + 1, used.Height() + 1);
+	}
+
+	// Fit: 4:3 in a square, at the left top, the rest untouched
+	{
+		BBitmap bitmap(BRect(0, 0, 199, 199), B_RGBA32);
+		memset(bitmap.Bits(), 0x11, bitmap.BitsLength());
+		BRect used;
+		status_t status = BPrivate::get_window_preview(token, &bitmap,
+			BPrivate::WINDOW_PREVIEW_FIT, &used);
+		check(status == B_OK && used == BRect(0, 0, 199, 149),
+			"fit 200x200: uses 200x150 (%s, %gx%g)", strerror(status),
+			used.Width() + 1, used.Height() + 1);
+		check(pixel_is(&bitmap, 20, 20, blue)
+			&& pixel_is(&bitmap, 100, 100, color),
+			"fit 200x200: the marker and the content are in place");
+		const uint8* below = (const uint8*)bitmap.Bits()
+			+ 150 * bitmap.BytesPerRow();
+		bool untouched = true;
+		for (int32 i = 0; i < 50 * bitmap.BytesPerRow(); i++)
+			untouched &= below[i] == 0x11;
+		check(untouched, "fit 200x200: the rest of the bitmap is untouched");
+	}
+
+	// Fit never scales up: 1:1 in a bigger bitmap
+	{
+		BBitmap bitmap(BRect(0, 0, 799, 599), B_RGB32);
+		BRect used;
+		status_t status = BPrivate::get_window_preview(token, &bitmap,
+			BPrivate::WINDOW_PREVIEW_FIT, &used);
+		check(status == B_OK && used == content,
+			"fit 800x600: uses 400x300 (%s, %gx%g)", strerror(status),
+			used.Width() + 1, used.Height() + 1);
+		check(pixel_is(&bitmap, 19, 19, color)
+			&& pixel_is(&bitmap, 20, 20, blue)
+			&& pixel_is(&bitmap, 59, 59, blue)
+			&& pixel_is(&bitmap, 60, 60, color),
+			"fit 800x600: 1:1, the marker's edges are exact");
+	}
+
+	// The decorator, 1:1: the content is inside the border, below the tab,
+	// and what is beside the tab is transparent.
+	{
+		BBitmap bitmap(BRect(0, 0, 999, 999), B_RGBA32);
+		BRect used;
+		status_t status = BPrivate::get_window_preview(token, &bitmap,
+			BPrivate::WINDOW_PREVIEW_FIT | BPrivate::WINDOW_PREVIEW_DECORATOR,
+			&used);
+		int32 width = used.IntegerWidth() + 1;
+		int32 height = used.IntegerHeight() + 1;
+		check(status == B_OK && width > 400 && height > 300,
+			"decorator: bigger than the content (%s, %" B_PRId32 "x%" B_PRId32
+			")", strerror(status), width, height);
+		if (status == B_OK && width > 400 && height > 300) {
+			int32 border = (width - 400) / 2;
+			int32 top = height - 300 - border;
+			check(pixel_is(&bitmap, border + 20, top + 20, blue)
+				&& pixel_is(&bitmap, border + 19, top + 19, color)
+				&& alpha_at(&bitmap, border + 200, top + 150) == 255,
+				"decorator: the content is at %" B_PRId32 ",%" B_PRId32,
+				border, top);
+			check(alpha_at(&bitmap, width / 2, height - 1) == 255
+				&& alpha_at(&bitmap, 0, height / 2) == 255,
+				"decorator: the border is opaque");
+			check(alpha_at(&bitmap, width - 2, 1) == 0,
+				"decorator: beside the tab is transparent (%d)",
+				alpha_at(&bitmap, width - 2, 1));
+		}
+	}
+
+	// The decorator, scaled to a thumbnail
+	{
+		BBitmap bitmap(BRect(0, 0, 159, 159), B_RGBA32);
+		BRect used;
+		status_t status = BPrivate::get_window_preview(token, &bitmap,
+			BPrivate::WINDOW_PREVIEW_FIT | BPrivate::WINDOW_PREVIEW_DECORATOR,
+			&used);
+		check(status == B_OK && used.IntegerWidth() == 159
+			&& used.IntegerHeight() < 159,
+			"decorator, fit 160x160: %s, %gx%g", strerror(status),
+			used.Width() + 1, used.Height() + 1);
+	}
+}
+
+
 static int64
 app_server_memory()
 {
@@ -415,6 +547,21 @@ test_composited()
 		check(status == B_OK, "after a change: %s", strerror(status));
 		check_content(&bitmap, content, 200, 150, yellow, "changed, covered");
 		check_content(&bitmap, content, 5, 290, yellow, "changed, visible");
+	}
+
+	// A is yellow now
+	test_flags(a.token, yellow);
+
+	// The desktop window, for a wallpaper preview
+	{
+		int32 desktop = find_desktop_token();
+		BBitmap bitmap(BRect(0, 0, 159, 119), B_RGB32);
+		BRect used;
+		status_t status = desktop < 0 ? B_NAME_NOT_FOUND
+			: BPrivate::get_window_preview(desktop, &bitmap,
+				BPrivate::WINDOW_PREVIEW_FIT, &used);
+		check(status == B_OK && used.IsValid(),
+			"desktop window %" B_PRId32 ": %s", desktop, strerror(status));
 	}
 
 	// Errors
