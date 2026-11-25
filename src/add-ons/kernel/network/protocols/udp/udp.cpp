@@ -1402,6 +1402,7 @@ udp_error_received(net_error error, net_error_data* errorData, net_buffer* buffe
 			notifyError = EMSGSIZE;
 			break;
 		case B_NET_ERROR_PARAMETER_PROBLEM:
+		case B_NET_ERROR_UNREACH_BEYONDSCOPE:
 			notifyError = ENOPROTOOPT;
 			break;
 
@@ -1431,7 +1432,7 @@ udp_process_ancillary_data_no_container(net_protocol *protocol,
 	net_buffer* buffer, void *data, size_t dataSize)
 {
 	return protocol->next->module->process_ancillary_data_no_container(
-		protocol, buffer, data, dataSize);
+		protocol->next, buffer, data, dataSize);
 }
 
 
