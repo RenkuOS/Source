@@ -276,6 +276,20 @@ Window::SetClipping(BRegion* stillAvailableOnScreen)
 			fTransparentRegion.IntersectWith(&fCompositeRegion);
 		}
 
+		// Glass is for windows with a border. A window drawing directly to
+		// its buffer, or taking over the screen, is left as it is.
+		fGlassBorderRegion.MakeEmpty();
+		fGlassContentRegion.MakeEmpty();
+		if (fLook != kDesktopWindowLook && fFeel != kDesktopWindowFeel
+			&& fLook != B_NO_BORDER_WINDOW_LOOK
+			&& (fFlags & kWindowScreenFlag) == 0
+			&& !ServerWindow()->HasDirectFrameBufferAccess()) {
+			GetContentRegion(&fGlassContentRegion);
+			fGlassContentRegion.IntersectWith(&fCompositeRegion);
+			fGlassBorderRegion = fCompositeRegion;
+			fGlassBorderRegion.Exclude(&fGlassContentRegion);
+		}
+
 		// The buffer can't be drawn to above or left of the screen, but other
 		// windows don't matter anymore: the window draws everything else. In
 		// the screen layout, it ends where the screen does.

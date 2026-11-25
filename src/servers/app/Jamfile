@@ -61,6 +61,7 @@ local app_server_src =
 	DrawState.cpp
 	EventDispatcher.cpp
 	EventStream.cpp
+	GlassBlur.cpp
 	InputManager.cpp
 	IntPoint.cpp
 	IntRect.cpp

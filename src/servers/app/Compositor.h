@@ -14,6 +14,8 @@
 #include <Rect.h>
 #include <Region.h>
 
+#include "GlassBlur.h"
+
 
 class Desktop;
 class RenderingBuffer;
@@ -32,6 +34,10 @@ class WindowWobble;
 	what is drawn many times per frame only reaches the screen once. Where
 	much of the screen changes, it is cut into bands, which are drawn by one
 	thread for each processor.
+
+	Parts of windows can be glass: what is behind them is blurred before they
+	are laid over it. The glass setting turns window borders, or whole
+	windows, to glass.
 */
 class Compositor {
 public:
@@ -72,6 +78,11 @@ public:
 			// The window is going away.
 			void				ForgetWobble(Window* window);
 
+			// What the glass setting says: 0 for no glass, 1 for window
+			// borders, 2 for whole windows; and how opaque, in percent, what
+			// is turned to glass is laid over the blur.
+			void				SetGlass(uint8 glass, uint8 opacity);
+
 private:
 			struct Wobble;
 			struct SceneEntry {
@@ -89,6 +100,11 @@ private:
 				BRegion			opaque;
 				BRegion			clear;
 				BRegion			edge;
+				// Where what is behind is blurred first, and the part that is
+				// turned to glass by the setting, laid over it at tintAlpha
+				BRegion			glass;
+				BRegion			tinted;
+				uint8			tintAlpha;
 			};
 
 	static	status_t			_ThreadEntry(void* data);
@@ -141,6 +157,38 @@ private:
 									const BPoint* points,
 									const BPoint* sources, uint8 alpha);
 
+			struct GlassWindow {
+				Window*			window;
+				BRect			bounds;
+				// Whether it is close enough to the damage for its glass to
+				// matter. Only then are the regions found out.
+				bool			nearby;
+				BRegion			glass;
+				BRegion			tinted;
+				// The part of the glass that can be seen, or that glass in
+				// front of it blurs
+				BRegion			visible;
+			};
+
+			void				_GetGlass(Window* window, BRegion& glass,
+									BRegion& tinted) const;
+			void				_GetGlassDamage(const BRegion& damage,
+									BRegion& changed, BRegion& drawn,
+									BRegion& glassReach);
+			const GlassWindow*	_GlassFor(const Window* window,
+									size_t& index) const;
+			void				_SavePixels(RenderingBuffer* target,
+									const BRegion& region,
+									std::vector<uint32>& pixels);
+			void				_RestorePixels(RenderingBuffer* target,
+									const BRegion& region,
+									const std::vector<uint32>& pixels);
+			void				_Blur(RenderingBuffer* target,
+									const BRegion& region);
+			void				_MixEdges(RenderingBuffer* target,
+									Window* window, const BRegion& region,
+									const std::vector<uint32>& sharp);
+
 private:
 			Desktop*			fDesktop;
 			BLocker				fLock;
@@ -177,6 +225,21 @@ private:
 			BLocker				fWobbleLock;
 			std::vector<Wobble*>
 								fWobbles;
+
+			uint8				fGlass;
+			uint8				fGlassOpacity;
+			bool				fBandHasGlass;
+			// The windows that may have glass, from the front to the back,
+			// as found by _GetGlassDamage()
+			std::vector<GlassWindow>
+								fGlassWindows;
+			// Glass is only drawn without bands.
+			GlassBlur			fGlassBlur;
+			std::vector<clipping_rect>
+								fBlurRects;
+			std::vector<uint32>	fSavedPixels;
+			std::vector<uint32>	fEdgePixels;
+
 			const void*			fSceneBits;
 			uint32				fSceneWidth;
 			uint32				fSceneHeight;

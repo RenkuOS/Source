@@ -146,6 +146,13 @@ public:
 									{ return fBufferInterface.IsSet()
 										&& (fFlags & B_TRANSPARENT_WINDOW)
 											!= 0; }
+			// The parts of the window that can be turned to glass by the glass
+			// setting: its border and tab, and its content area. Both are
+			// empty for windows that are never glass, such as the desktop.
+			const BRegion&		GlassBorderRegion() const
+									{ return fGlassBorderRegion; }
+			const BRegion&		GlassContentRegion() const
+									{ return fGlassContentRegion; }
 			// The part of the window that is transparent, its content area.
 			const BRegion&		TransparentRegion() const
 									{ return fTransparentRegion; }
@@ -506,6 +513,8 @@ private:
 
 			// After those, for the same reason.
 			uint32				fDecoratorGeneration;
+			BRegion				fGlassBorderRegion;
+			BRegion				fGlassContentRegion;
 };
 
 
