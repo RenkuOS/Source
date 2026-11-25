@@ -33,6 +33,7 @@ static uint8 sHWPGuaranteed;
 static uint8 sHWPEfficient;
 static uint8 sHWPHighest;
 static bool sHWPPackage;
+static uint8 sPerfCtlShift;
 
 static bool sAvoidBoost;
 
@@ -103,7 +104,7 @@ set_pstate(uint16 pstate)
 		entry->fLastUpdate = system_time();
 		entry->fCurrentPState = pstate;
 
-		x86_write_msr(IA32_MSR_PERF_CTL, pstate << 8);
+		x86_write_msr(IA32_MSR_PERF_CTL, (uint64)pstate << sPerfCtlShift);
 	}
 }
 
@@ -150,9 +151,11 @@ pstates_decrease_performance(int delta)
 
 
 static bool
-is_cpu_model_supported(cpu_ent* cpu)
+is_cpu_model_supported(cpu_ent* cpu, bool& _ratioInLowByte)
 {
 	uint8 model = cpu->arch.model + (cpu->arch.extended_model << 4);
+
+	_ratioInLowByte = false;
 
 	if (cpu->arch.vendor != VENDOR_INTEL)
 		return false;
@@ -162,6 +165,19 @@ is_cpu_model_supported(cpu_ent* cpu)
 
 	if (x86_check_feature(IA32_FEATURE_HWP, FEATURE_6_EAX))
 		return true;
+
+	// Before Sandy Bridge, the target ratio is written to the low byte of
+	// IA32_PERF_CTL instead of bits 15:8 (the ACPI _PSS control values
+	// on these machines are the plain ratio).
+	const uint8 kRatioInLowByteFamily6Models[] = {
+		0x25	// Westmere: Arrandale, Clarkdale
+	};
+	for (size_t i = 0; i < B_COUNT_OF(kRatioInLowByteFamily6Models); i++) {
+		if (model == kRatioInLowByteFamily6Models[i]) {
+			_ratioInLowByte = true;
+			return true;
+		}
+	}
 
 	const uint8 kSupportedFamily6Models[] = {
 		0x2a, 0x2d, 0x3a, 0x3c, 0x3d, 0x3e, 0x3f, 0x45, 0x46, 0x47, 0x4a,
@@ -237,11 +253,20 @@ init_pstates()
 	if (!x86_check_feature(IA32_FEATURE_APERFMPERF, FEATURE_6_ECX))
 		return B_ERROR;
 
+	bool ratioInLowByte = false;
 	int32 cpuCount = smp_get_num_cpus();
 	for (int32 i = 0; i < cpuCount; i++) {
-		if (!is_cpu_model_supported(&gCPU[i]))
+		if (!is_cpu_model_supported(&gCPU[i], ratioInLowByte))
 			return B_ERROR;
 	}
+
+	if (ratioInLowByte) {
+		// Without Enhanced SpeedStep, IA32_PERF_CTL is not usable.
+		if (!x86_check_feature(IA32_FEATURE_EXT_EST, FEATURE_EXT))
+			return B_ERROR;
+		sPerfCtlShift = 0;
+	} else
+		sPerfCtlShift = 8;
 
 	uint64 platformInfo = x86_read_msr(IA32_MSR_PLATFORM_INFO);
 	sHWPEPP = x86_check_feature(IA32_FEATURE_HWP_EPP, FEATURE_6_EAX);
@@ -249,8 +274,14 @@ init_pstates()
 		&& sHWPEPP);
 	sMinPState = (platformInfo >> 40) & 0xff;
 	sMaxPState = (platformInfo >> 8) & 0xff;
-	sBoostPState
-		= max_c(x86_read_msr(IA32_MSR_TURBO_RATIO_LIMIT) & 0xff, sMaxPState);
+	if (ratioInLowByte) {
+		// TODO: Turbo Boost is requested differently on these processors and
+		// is not supported yet; stay within the non-turbo range.
+		sBoostPState = sMaxPState;
+	} else {
+		sBoostPState = max_c(x86_read_msr(IA32_MSR_TURBO_RATIO_LIMIT) & 0xff,
+			sMaxPState);
+	}
 	/* x86_check_feature(IA32_FEATURE_HWP_PLR, FEATURE_6_EAX)) */
 	sHWPPackage = false;
 
