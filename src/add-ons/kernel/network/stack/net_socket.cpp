@@ -34,6 +34,7 @@
 #include <net_stat.h>
 
 #include "ancillary_data.h"
+#include "net_filter_private.h"
 #include "utility.h"
 
 
@@ -70,6 +71,13 @@ struct net_socket_private : net_socket,
 
 	bool						is_connected;
 	bool						is_in_socket_list;
+	bool						is_closed;
+
+	// the connection filter's last verdict for an unconnected datagram
+	// socket, valid while filter_generation is the filter's generation
+	uint32						filter_generation;
+	status_t					filter_status;
+	sockaddr_storage			filter_peer;
 };
 
 
@@ -94,7 +102,10 @@ net_socket_private::net_socket_private()
 	child_count(0),
 	select_pool(NULL),
 	is_connected(false),
-	is_in_socket_list(false)
+	is_in_socket_list(false),
+	is_closed(false),
+	filter_generation(0),
+	filter_status(B_OK)
 {
 	first_protocol = NULL;
 	first_info = NULL;
@@ -105,6 +116,7 @@ net_socket_private::net_socket_private()
 
 	address.ss_len = 0;
 	peer.ss_len = 0;
+	filter_peer.ss_len = 0;
 
 	mutex_init(&lock, "socket");
 
@@ -501,6 +513,7 @@ status_t
 socket_close(net_socket* _socket)
 {
 	net_socket_private* socket = (net_socket_private*)_socket;
+	socket->is_closed = true;
 	return socket->first_info->close(socket->first_protocol);
 }
 
@@ -514,9 +527,70 @@ socket_free(net_socket* _socket)
 }
 
 
+/*!	Cuts the established connections a changed firewall rule now denies
+	(NET_FILTER_ABORT): shuts down every connected IP socket of \a team (or
+	of any team) whose peer matches \a remote.
+*/
+static int32
+socket_filter_abort(team_id team, const sockaddr* remote)
+{
+	// The protocols' shutdown takes their own locks, which may call back
+	// into here for sSocketLock, so collect references first.
+	const int32 kMaxSockets = 256;
+	net_socket_private** sockets = new(std::nothrow)
+		net_socket_private*[kMaxSockets];
+	if (sockets == NULL)
+		return B_NO_MEMORY;
+	ArrayDeleter<net_socket_private*> socketsDeleter(sockets);
+
+	int32 count = 0;
+	{
+		MutexLocker locker(sSocketLock);
+		SocketList::Iterator iterator = sSocketList.GetIterator();
+		while (net_socket_private* socket = iterator.Next()) {
+			if (count == kMaxSockets)
+				break;
+			if (socket->family != AF_INET && socket->family != AF_INET6)
+				continue;
+			if ((team >= 0 && socket->owner != team)
+				|| socket->is_closed || socket->peer.ss_len == 0
+				|| (socket->options & SO_ACCEPTCONN) != 0
+				|| !net_filter_address_matches(remote,
+					(const sockaddr*)&socket->peer)) {
+				continue;
+			}
+			if (socket_acquire(socket))
+				sockets[count++] = socket;
+		}
+	}
+
+	for (int32 i = 0; i < count; i++) {
+		sockets[i]->first_info->shutdown(sockets[i]->first_protocol,
+			SHUT_RDWR);
+		sockets[i]->ReleaseReference();
+	}
+	return count;
+}
+
+
 status_t
 socket_control(net_socket* socket, uint32 op, void* data, size_t length)
 {
+	if (net_filter_is_op(op)) {
+		if (op != NET_FILTER_ABORT)
+			return net_filter_control(op, data, length);
+
+		net_filter_abort abort;
+		status_t status = net_filter_copy_abort_in(&abort, data, length);
+		if (status != B_OK)
+			return status;
+		abort.count = socket_filter_abort(abort.team,
+			(const sockaddr*)&abort.remote);
+		if (abort.count < 0)
+			return abort.count;
+		return net_filter_copy_abort_out(data, &abort);
+	}
+
 	switch (op) {
 		case FIONREAD:
 		{
@@ -1003,10 +1077,24 @@ socket_accept(net_socket* socket, struct sockaddr* address,
 		return B_BAD_VALUE;
 
 	net_socket* accepted;
-	status_t status = socket->first_info->accept(socket->first_protocol,
-		&accepted);
-	if (status != B_OK)
-		return status;
+	while (true) {
+		status_t status = socket->first_info->accept(socket->first_protocol,
+			&accepted);
+		if (status != B_OK)
+			return status;
+
+		status = net_filter_check(accepted, NET_FILTER_INCOMING,
+			(const sockaddr*)&accepted->peer,
+			(const sockaddr*)&accepted->address);
+		if (status == B_OK)
+			break;
+
+		// denied: drop it and wait for the next connection
+		socket_close(accepted);
+		socket_free(accepted);
+		if (status == B_INTERRUPTED)
+			return status;
+	}
 
 	if (address && *_addressLength > 0) {
 		memcpy(address, &accepted->peer, min_c(*_addressLength,
@@ -1064,6 +1152,11 @@ socket_connect(net_socket* socket, const struct sockaddr* address,
 		if (status != B_OK)
 			return status;
 	}
+
+	status_t status = net_filter_check(socket, NET_FILTER_OUTGOING, address,
+		(const sockaddr*)&socket->address);
+	if (status != B_OK)
+		return status;
 
 	return socket->first_info->connect(socket->first_protocol, address);
 }
@@ -1303,6 +1396,19 @@ socket_receive(net_socket* socket, msghdr* header, void* data, size_t length,
 	const size_t bytesReceived = buffer->size;
 	size_t bytesCopied = 0;
 
+	if (net_filter_is_dns(socket, buffer->source)) {
+		// a DNS answer: a copy for the connection filter's server
+		const size_t copyLength = min_c(bytesReceived, NET_FILTER_DNS_MAX);
+		void* copy = malloc(copyLength);
+		if (copy != NULL) {
+			if (gNetBufferModule.read(buffer, 0, copy, copyLength) == B_OK) {
+				net_filter_notify_dns(socket, NET_FILTER_INCOMING,
+					buffer->source, copy, copyLength, false);
+			}
+			free(copy);
+		}
+	}
+
 	size_t toRead = min_c(bytesReceived, length);
 	status = gNetBufferModule.read(buffer, 0, data, toRead);
 	if (status != B_OK) {
@@ -1413,6 +1519,37 @@ socket_send(net_socket* socket, msghdr* header, const void* data, size_t length,
 		status_t status = socket_bind(socket, NULL, 0);
 		if (status != B_OK)
 			return status;
+	}
+
+	if (socket->peer.ss_len == 0) {
+		// An unconnected datagram socket: ask the connection filter about
+		// each new destination (a connected one was asked in connect()).
+		net_socket_private* privateSocket = (net_socket_private*)socket;
+		const uint32 generation = net_filter_generation();
+		if (privateSocket->filter_generation != generation
+			|| privateSocket->filter_peer.ss_len != address->sa_len
+			|| memcmp(&privateSocket->filter_peer, address,
+				address->sa_len) != 0) {
+			status_t status = net_filter_check(socket, NET_FILTER_OUTGOING,
+				address, (const sockaddr*)&socket->address);
+			if (status == B_INTERRUPTED)
+				return status;
+			if (address->sa_len <= sizeof(sockaddr_storage)) {
+				memcpy(&privateSocket->filter_peer, address, address->sa_len);
+				privateSocket->filter_status = status;
+				privateSocket->filter_generation = generation;
+			}
+			if (status != B_OK)
+				return status;
+		} else if (privateSocket->filter_status != B_OK)
+			return privateSocket->filter_status;
+	}
+
+	if (net_filter_is_dns(socket, address)) {
+		// an allowed DNS query: a copy for the connection filter's server
+		// (the header is all it needs; (data, length) is the first iovec)
+		net_filter_notify_dns(socket, NET_FILTER_OUTGOING, address, data,
+			length, is_syscall());
 	}
 
 	// If the protocol has a send_data_no_buffer() hook, we use that one.
