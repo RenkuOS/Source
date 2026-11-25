@@ -215,6 +215,27 @@ __init_env_post_heap()
 }
 
 
+void
+__env_before_fork(void)
+{
+	lock_variables();
+}
+
+
+void
+__env_after_fork_child(void)
+{
+	environ_fork_hook();
+}
+
+
+void
+__env_after_fork_parent(void)
+{
+	unlock_variables();
+}
+
+
 //	#pragma mark - public API
 
 

@@ -48,6 +48,7 @@ SimpleTest user_thread_fork_test : user_thread_fork_test.cpp ;
 SimpleTest pthread_barrier_test : pthread_barrier_test.cpp ;
 SimpleTest pthread_clock_test : pthread_clock_test.cpp ;
 SimpleTest posix_spawn_test : posix_spawn_test.cpp ;
+SimpleTest posix_spawn_threads_test : posix_spawn_threads_test.c ;
 SimpleTest posix_spawn_redir_test : posix_spawn_redir_test.c ;
 SimpleTest posix_spawn_redir_err : posix_spawn_redir_err.c ;
 SimpleTest posix_spawn_pipe_test : posix_spawn_pipe_test.c ;

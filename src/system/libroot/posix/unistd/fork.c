@@ -185,7 +185,26 @@ fork(void)
 pid_t
 vfork(void)
 {
-	thread_id thread = _kern_fork();
+	thread_id thread;
+
+	// exec*() in the child takes the env and heap locks: none may be held now
+	defer_signals();
+	__env_before_fork();
+	__heap_before_fork();
+
+	thread = _kern_fork();
+	if (thread == 0) {
+		// we are the child
+		__heap_after_fork_child();
+		__env_after_fork_child();
+	} else {
+		// we are the parent
+		__heap_after_fork_parent();
+		__env_after_fork_parent();
+	}
+
+	undefer_signals();
+
 	if (thread < 0) {
 		// something went wrong
 		__set_errno(thread);
