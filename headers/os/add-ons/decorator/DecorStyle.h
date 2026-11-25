@@ -66,7 +66,8 @@
 /*!	Versions 1 and 2 were drafts: styles were built against them, with other
 	structure layouts, before the interface settled. Version 3 is the first
 	final one, and app_server refuses anything older. Version 4 adds rounded
-	corners on a composited desktop, version 5 glass frames.
+	corners on a composited desktop, version 5 glass frames and buttons
+	that light up under the mouse.
 */
 #define DECOR_STYLE_API_VERSION		5
 
@@ -218,6 +219,12 @@ typedef struct decor_tab {
 
 	// the style's own: free to use from layout() on
 	void*					cookie;
+
+	// in, from version 5
+	bool					hovered[DECOR_BUTTON_CAPACITY];
+		// by DECOR_BUTTON_*: the mouse is over the button, and no mouse
+		// button is held down elsewhere. At most one button of a window is
+		// hovered at a time; it is drawn again when this changes.
 } decor_tab;
 
 
@@ -459,7 +466,8 @@ typedef struct decor_style {
 	void					(*draw_button)(decor_window* window,
 								decor_canvas* canvas, int32 tab,
 								int32 button, decor_rect invalid);
-		// DECOR_BUTTON_*, pressed or not as tab->pressed says
+		// DECOR_BUTTON_*, pressed or not as tab->pressed says, and from
+		// version 5 hovered or not as tab->hovered says
 	void					(*draw_outline)(decor_window* window,
 								decor_canvas* canvas, decor_rect invalid);
 		// the outline while resizing; NULL draws a dotted line

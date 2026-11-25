@@ -12,6 +12,7 @@
 
 
 #include <math.h>
+#include <stddef.h>
 #include <string.h>
 
 #include <Window.h>
@@ -186,8 +187,13 @@ example_draw_button(decor_window* window, decor_canvas* canvas, int32 index,
 	const rgb_color base = canvas->ui_color(canvas, tab->button_focus
 		? B_WINDOW_TAB_COLOR : B_WINDOW_INACTIVE_TAB_COLOR);
 	const rgb_color mark = shade(base, 0.45f);
+	// decor_tab::hovered is from version 5: an older app_server's decor_tab
+	// is too small to have it
+	const bool hovered = tab->size >= offsetof(decor_tab, hovered)
+			+ sizeof(tab->hovered)
+		&& tab->hovered[button];
 	canvas->fill_rect(canvas, r, shade(base, tab->pressed[button]
-		? 0.8f : 1.3f));
+		? 0.8f : hovered ? 1.6f : 1.3f));
 	canvas->stroke_rect(canvas, r, mark);
 
 	const float inset = floorf((r.right - r.left) / 4);

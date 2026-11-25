@@ -123,7 +123,8 @@ StyleDecorAddOn::_AllocateDecorator(DesktopSettings& settings, BRect rect,
 
 StyleDecorator::Tab::Tab()
 	:
-	cookie(NULL)
+	cookie(NULL),
+	hoveredButton(-1)
 {
 }
 
@@ -669,6 +670,8 @@ StyleDecorator::_SyncIn() const
 		styleTab.pressed[DECOR_BUTTON_ZOOM] = tab->zoomPressed;
 		styleTab.pressed[DECOR_BUTTON_MINIMIZE] = tab->minimizePressed;
 		styleTab.highlighted = tab->isHighlighted;
+		for (int32 button = 0; button < DECOR_BUTTON_CAPACITY; button++)
+			styleTab.hovered[button] = button == tab->hoveredButton;
 		styleTab.location = tab->tabLocation;
 		styleTab.shown_title = tab->truncatedTitle.String();
 		styleTab.shown_title_length = tab->truncatedTitleLength;
@@ -831,6 +834,30 @@ StyleDecorator::HasGlassFrame() const
 }
 
 
+void
+StyleDecorator::SetHoveredButton(int32 tab, int32 button, BRegion* dirty)
+{
+	AutoWriteLocker _(fLocker);
+
+	for (int32 i = 0; i < fTabList.CountItems(); i++) {
+		Tab* styleTab = static_cast<Tab*>(fTabList.ItemAt(i));
+		int32 hovered = i == tab ? button : -1;
+		if (styleTab->hoveredButton == hovered)
+			continue;
+
+		if (dirty != NULL) {
+			BRect before = _ButtonRect(styleTab, styleTab->hoveredButton);
+			BRect after = _ButtonRect(styleTab, hovered);
+			if (before.IsValid())
+				dirty->Include(before);
+			if (after.IsValid())
+				dirty->Include(after);
+		}
+		styleTab->hoveredButton = hovered;
+	}
+}
+
+
 /*!	A glass frame is drawn with alpha, which would build up if it were drawn
 	over what it drew before: so what of it is drawn again starts out clear.
 */
@@ -848,6 +875,22 @@ StyleDecorator::_ClearGlass(BRect rect)
 		if (part.IsValid())
 			fDrawingEngine->FillRect(part, clear);
 	}
+}
+
+
+//!	Where a DECOR_BUTTON_* of \a tab is; invalid for -1 and missing ones.
+/*static*/ BRect
+StyleDecorator::_ButtonRect(Decorator::Tab* tab, int32 button)
+{
+	switch (button) {
+		case DECOR_BUTTON_CLOSE:
+			return tab->closeRect;
+		case DECOR_BUTTON_ZOOM:
+			return tab->zoomRect;
+		case DECOR_BUTTON_MINIMIZE:
+			return tab->minimizeRect;
+	}
+	return BRect();
 }
 
 
