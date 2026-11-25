@@ -95,5 +95,7 @@ UnitTestLib librootposixtest.so :
 	: be libgnu.so [ TargetLibstdc++ ] [ TargetLibsupc++ ]
 ;
 
+SimpleTest wchar_thread_test : wchar_thread_test.cpp : [ TargetLibstdc++ ] ;
+
 SubInclude HAIKU_TOP src tests system libroot posix math ;
 SubInclude HAIKU_TOP src tests system libroot posix string ;
