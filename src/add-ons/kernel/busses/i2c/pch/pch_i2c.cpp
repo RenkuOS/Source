@@ -193,10 +193,26 @@ pch_i2c_interrupt_handler(pch_i2c_sim_info* bus)
 		bus->wait_write.NotifyAll();
 		bus->wait_busy.NotifyAll();
 	}
-	if ((status & PCH_IC_INTR_STAT_RX_FULL) != 0)
+	if ((status & PCH_IC_INTR_STAT_RX_FULL) != 0) {
+		// RX_FULL is a level too: it stays up until the waiter reads the
+		// FIFO. Mask it like TX_EMPTY below; the reader unmasks it again
+		// before each wait.
+		write32(bus->registers + PCH_IC_INTR_MASK,
+			read32(bus->registers + PCH_IC_INTR_MASK)
+				& ~PCH_IC_INTR_STAT_RX_FULL);
 		bus->wait_read.NotifyAll();
-	if ((status & PCH_IC_INTR_STAT_TX_EMPTY) != 0)
+	}
+	if ((status & PCH_IC_INTR_STAT_TX_EMPTY) != 0) {
+		// TX_EMPTY is a level: it stays up while the FIFO is empty, which it
+		// is when a transfer starts. Mask it, or it fires again at once and
+		// the CPU taking the interrupt does nothing else; if that CPU is the
+		// one that would change the mask (all I/O interrupts go to CPU 0 on
+		// riscv64), the system hangs.
+		write32(bus->registers + PCH_IC_INTR_MASK,
+			read32(bus->registers + PCH_IC_INTR_MASK)
+				& ~PCH_IC_INTR_STAT_TX_EMPTY);
 		bus->wait_write.NotifyAll();
+	}
 	if ((status & PCH_IC_INTR_STAT_STOP_DET) != 0) {
 		bus->busy = 0;
 		bus->wait_busy.NotifyAll();
