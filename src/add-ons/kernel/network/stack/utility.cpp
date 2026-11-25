@@ -573,11 +573,15 @@ is_syscall(void)
 	from user space may only point into user space: user_memcpy() accepts any
 	range that does not cross into the kernel, so without this check a program
 	could make the kernel write to or read from a kernel address of its
-	choosing (airos-works/haiku#130).
+	choosing (airos-works/haiku#130). An empty buffer is not accessed, so it
+	passes, whatever its address: is_user_address_range() would test the byte
+	before it.
 */
 status_t
 check_request_buffer(const void* buffer, size_t size)
 {
+	if (size == 0)
+		return B_OK;
 	if (is_syscall() && !is_user_address_range(buffer, size))
 		return B_BAD_ADDRESS;
 

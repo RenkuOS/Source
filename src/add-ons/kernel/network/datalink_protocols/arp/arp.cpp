@@ -19,6 +19,7 @@
 #include <NetBufferUtilities.h>
 
 #include <generic_syscall.h>
+#include <kernel.h>
 #include <util/atomic.h>
 #include <util/AutoLock.h>
 #include <util/DoublyLinkedList.h>
@@ -851,6 +852,12 @@ arp_control(const char *subsystem, uint32 function, void *buffer,
 	struct arp_control control;
 	if (bufferSize != sizeof(struct arp_control))
 		return B_BAD_VALUE;
+
+	// A generic syscall always comes from user space. The buffer is read
+	// and, for ARP_GET_ENTRY and ARP_GET_ENTRIES, written: user_memcpy()
+	// alone would accept a kernel address (airos-works/haiku#130).
+	if (!is_user_address_range(buffer, sizeof(struct arp_control)))
+		return B_BAD_ADDRESS;
 
 	// only root may change the cache (airos-works/haiku#130)
 	if (function != ARP_GET_ENTRY && function != ARP_GET_ENTRIES
