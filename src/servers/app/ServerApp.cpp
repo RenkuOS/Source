@@ -3850,17 +3850,27 @@ ServerApp::_DispatchMessage(int32 code, BPrivate::LinkReceiver& link)
 			// Attached:
 			//	1) int32 the window's server token
 			//	2) int32 the bitmap's server token
+			//	3) uint32 flags, BPrivate::WINDOW_PREVIEW_*
+			// Returns, on success:
+			//	1) BRect the part of the bitmap that was drawn
 			int32 windowToken = -1;
 			int32 bitmapToken = -1;
+			uint32 flags = 0;
 			link.Read<int32>(&windowToken);
 			link.Read<int32>(&bitmapToken);
+			link.Read<uint32>(&flags);
 
 			status_t status = B_BAD_VALUE;
+			BRect used;
 			BReference<ServerBitmap> bitmap(GetBitmap(bitmapToken), true);
-			if (bitmap != NULL)
-				status = fDesktop->GetWindowPreview(windowToken, bitmap);
+			if (bitmap != NULL) {
+				status = fDesktop->GetWindowPreview(windowToken, bitmap, flags,
+					used);
+			}
 
 			fLink.StartMessage(status);
+			if (status == B_OK)
+				fLink.Attach<BRect>(used);
 			fLink.Flush();
 			break;
 		}

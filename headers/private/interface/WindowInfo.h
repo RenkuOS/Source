@@ -64,7 +64,15 @@ status_t get_window_order(int32 workspace, int32** _tokens, int32* _count);
 
 // RenkuOS: the window's contents, as the compositor has them, scaled into
 // the bitmap, which must be B_RGB32 or B_RGBA32 and known to app_server.
-status_t get_window_preview(int32 windowToken, BBitmap* bitmap);
+enum {
+	// keep the aspect ratio and never scale up, at the left top of the bitmap
+	WINDOW_PREVIEW_FIT			= 0x01,
+	// include the tab and the border
+	WINDOW_PREVIEW_DECORATOR	= 0x02
+};
+
+status_t get_window_preview(int32 windowToken, BBitmap* bitmap,
+	uint32 flags = 0, BRect* _used = NULL);
 
 }	// namespace BPrivate
 

@@ -275,7 +275,8 @@ public:
 			void				WriteWindowOrder(int32 workspace,
 									BPrivate::LinkSender& sender);
 			status_t			GetWindowPreview(int32 windowToken,
-									ServerBitmap* bitmap);
+									ServerBitmap* bitmap, uint32 flags,
+									BRect& used);
 
 			//! The window lock must be held when accessing a window list!
 			WindowList&			CurrentWindows();
