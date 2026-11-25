@@ -144,6 +144,15 @@ struct intel_lpe_driver {
 	sem_id					bufferReadySem;
 	sem_id					positionSem;
 	bool					capturing;
+	// guarded by outputLock
+	bool					microphoneActive;
+	bool					headsetMicrophone;
+
+	// mixer settings, in codec steps; guarded by outputLock
+	uint8					dacVolume[2];
+	bool					dacMuted;
+	uint8					adcLevel[2];
+	bool					adcMuted;
 
 	// Protects the output routing: speakers or headphones.
 	mutex					outputLock;
@@ -282,6 +291,8 @@ rt5640_probe(intel_lpe_driver* driver)
 
 static void start_dsp(intel_lpe_driver* driver);
 static void update_output(intel_lpe_driver* driver);
+static void select_microphone(intel_lpe_driver* driver);
+static bool detect_headset(intel_lpe_driver* driver);
 
 
 static status_t
@@ -309,10 +320,21 @@ jack_poll_thread(void* data)
 				last = status;
 				lastJD2 = gen2 & (1 << 11);
 
-				// JD1 is low while headphones are plugged in
-				MutexLocker outputLocker(driver->outputLock);
-				driver->headphonesPlugged = (status & RT5640_STATUS_JD) == 0;
-				update_output(driver);
+				// JD1 is low while headphones are plugged in; the output
+				// follows at once, the microphone once the plug is known
+				bool plugged = (status & RT5640_STATUS_JD) == 0;
+				{
+					MutexLocker outputLocker(driver->outputLock);
+					driver->headphonesPlugged = plugged;
+					driver->headsetMicrophone = false;
+					update_output(driver);
+					select_microphone(driver);
+				}
+				if (plugged && detect_headset(driver)) {
+					MutexLocker outputLocker(driver->outputLock);
+					driver->headsetMicrophone = true;
+					select_microphone(driver);
+				}
 			}
 		}
 		snooze(JACK_POLL_INTERVAL);
@@ -714,26 +736,91 @@ update_output(intel_lpe_driver* driver)
 
 
 // Recording from the internal microphone, a differential microphone on IN3
-// (Android: "IN3 Mode Control Differential", "Int Mic Switch On"). Its boost
-// (MX-0D) and the record mixers (MX-3B..3E) come with the playback setup;
-// this powers the path and opens the ADC.
+// (Android: "IN3 Mode Control Differential", "Int Mic Switch On"), or from
+// the microphone of a headset on IN2 (single ended, as Android and the Linux
+// bytcr_rt5640 machine driver set it up). The input modes and the IN2 boost
+// come with the playback setup; this powers the path and opens the ADC.
 #define RT5640_PWR_DIG2				0x62
 #define RT5640_STEREO_ADC_MIXER		0x27
 #define RT5640_ADC_VOLUME			0x1c
+#define RT5640_RECORD_MIXER_L		0x3c
+#define RT5640_RECORD_MIXER_R		0x3e
+#define RT5640_MICBIAS				0x93
+#define RT5640_PR_BIAS_CURRENT4		0x15
 
 #define RT5640_POWER_ADC			(3 << 1)	// MX-61: ADC L, R
 #define RT5640_POWER_ADC_FILTER		(1 << 15)	// MX-62
 #define RT5640_POWER_BOOST_IN3		(1 << 14)	// MX-64
+#define RT5640_POWER_BOOST_IN2		(1 << 12)	// MX-64
 #define RT5640_POWER_MICBIAS1		(1 << 11)	// MX-64
 #define RT5640_POWER_LDO2			(1 << 2)	// MX-63, supplies IN1..IN3
 #define RT5640_POWER_RECORD_MIX		(3 << 10)	// MX-65: RECMIX L, R
 #define RT5640_MUTE_ADC1			((1 << 14) | (1 << 6))
+// record mixer mutes (MX-3C, MX-3E): bit 2 is the IN3 boost, bit 4 IN2
+#define RT5640_RECORD_MUTE_IN3		(1 << 2)
+#define RT5640_RECORD_MUTE_IN2		(1 << 4)
 // The gains of the Linux UCM profile for this codec: IN3 boost at its
 // maximum (52 dB) and the ADC at +9 dB (0x2f is 0 dB, 0.375 dB a step).
 #define RT5640_BOOST_IN3_MASK		(0xf << 8)	// MX-0D
 #define RT5640_BOOST_IN3_52DB		(8 << 8)
 #define RT5640_ADC_ON				0x4747		// +9 dB, unmuted
 #define RT5640_ADC_MUTED			0xafaf
+#define RT5640_ADC_MUTE_BITS		0x8080		// MX-1C: L, R
+
+// Over-current detection on MICBIAS1 tells a headset from headphones: the
+// microphone ring of plain headphones shorts the bias to ground. Values of
+// the Linux driver for Bay Trail-CR boards: 2000 uA, scale factor 0.75.
+#define RT5640_MIC1_OVCD_ENABLE		(1 << 11)	// MX-93
+#define RT5640_MIC1_OVTH_MASK		(3 << 9)
+#define RT5640_MIC1_OVTH_2000UA		(2 << 9)
+#define RT5640_OVCD_STICKY			(1 << 11)	// MX-BE
+#define RT5640_OVCD_STATUS			(1 << 3)
+#define RT5640_OVCD_SCALE_0P75		0xa900		// PR-15
+#define HEADSET_SETTLE_TIME			100000
+#define HEADSET_DETECT_COUNT		5
+#define HEADSET_DETECT_TRIES		20
+
+
+static void
+microphone_bias(intel_lpe_driver* driver, bool on)
+{
+	rt5640_update(driver, RT5640_POWER_ANALOG1, RT5640_POWER_LDO2,
+		on ? RT5640_POWER_LDO2 : 0);
+	rt5640_update(driver, RT5640_PWR_ANLG2, RT5640_POWER_MICBIAS1,
+		on ? RT5640_POWER_MICBIAS1 : 0);
+}
+
+
+static uint16
+record_volume(intel_lpe_driver* driver)
+{
+	return (driver->adcLevel[0] << 8) | driver->adcLevel[1]
+		| (driver->adcMuted ? RT5640_ADC_MUTE_BITS : 0);
+}
+
+
+/*!	Routes the headset microphone while a headset is plugged in, the
+	internal microphone otherwise. Called with outputLock held.
+*/
+static void
+select_microphone(intel_lpe_driver* driver)
+{
+	if (!driver->microphoneActive)
+		return;
+
+	bool headset = driver->headphonesPlugged && driver->headsetMicrophone;
+	uint16 power = headset ? RT5640_POWER_BOOST_IN2 : RT5640_POWER_BOOST_IN3;
+	uint16 mutes = headset ? RT5640_RECORD_MUTE_IN3 : RT5640_RECORD_MUTE_IN2;
+
+	rt5640_update(driver, RT5640_PWR_ANLG2,
+		RT5640_POWER_BOOST_IN2 | RT5640_POWER_BOOST_IN3, power);
+	rt5640_update(driver, RT5640_RECORD_MIXER_L,
+		RT5640_RECORD_MUTE_IN2 | RT5640_RECORD_MUTE_IN3, mutes);
+	rt5640_update(driver, RT5640_RECORD_MIXER_R,
+		RT5640_RECORD_MUTE_IN2 | RT5640_RECORD_MUTE_IN3, mutes);
+	TRACE_ALWAYS("recording from the %s microphone\n",
+		headset ? "headset" : "internal");
+}
 
 
 /*!	Takes outputLock: the headphone path updates the same power registers
@@ -743,13 +830,9 @@ static void
 microphone_on(intel_lpe_driver* driver)
 {
 	MutexLocker outputLocker(driver->outputLock);
-	rt5640_update(driver, RT5640_POWER_ANALOG1, RT5640_POWER_LDO2,
-		RT5640_POWER_LDO2);
+	microphone_bias(driver, true);
 	rt5640_update(driver, RT5640_IN1_IN2, RT5640_BOOST_IN3_MASK,
 		RT5640_BOOST_IN3_52DB);
-	rt5640_update(driver, RT5640_PWR_ANLG2,
-		RT5640_POWER_BOOST_IN3 | RT5640_POWER_MICBIAS1,
-		RT5640_POWER_BOOST_IN3 | RT5640_POWER_MICBIAS1);
 	rt5640_update(driver, RT5640_POWER_MIXER, RT5640_POWER_RECORD_MIX,
 		RT5640_POWER_RECORD_MIX);
 	rt5640_update(driver, RT5640_PWR_DIG1, RT5640_POWER_ADC,
@@ -757,7 +840,9 @@ microphone_on(intel_lpe_driver* driver)
 	rt5640_update(driver, RT5640_PWR_DIG2, RT5640_POWER_ADC_FILTER,
 		RT5640_POWER_ADC_FILTER);
 	rt5640_update(driver, RT5640_STEREO_ADC_MIXER, RT5640_MUTE_ADC1, 0);
-	rt5640_write(driver, RT5640_ADC_VOLUME, RT5640_ADC_ON);
+	driver->microphoneActive = true;
+	select_microphone(driver);
+	rt5640_write(driver, RT5640_ADC_VOLUME, record_volume(driver));
 }
 
 
@@ -765,15 +850,112 @@ static void
 microphone_off(intel_lpe_driver* driver)
 {
 	MutexLocker outputLocker(driver->outputLock);
+	driver->microphoneActive = false;
 	rt5640_write(driver, RT5640_ADC_VOLUME, RT5640_ADC_MUTED);
 	rt5640_update(driver, RT5640_STEREO_ADC_MIXER, RT5640_MUTE_ADC1,
 		RT5640_MUTE_ADC1);
+	rt5640_update(driver, RT5640_RECORD_MIXER_L,
+		RT5640_RECORD_MUTE_IN2 | RT5640_RECORD_MUTE_IN3,
+		RT5640_RECORD_MUTE_IN2 | RT5640_RECORD_MUTE_IN3);
+	rt5640_update(driver, RT5640_RECORD_MIXER_R,
+		RT5640_RECORD_MUTE_IN2 | RT5640_RECORD_MUTE_IN3,
+		RT5640_RECORD_MUTE_IN2 | RT5640_RECORD_MUTE_IN3);
 	rt5640_update(driver, RT5640_PWR_DIG2, RT5640_POWER_ADC_FILTER, 0);
 	rt5640_update(driver, RT5640_PWR_DIG1, RT5640_POWER_ADC, 0);
 	rt5640_update(driver, RT5640_POWER_MIXER, RT5640_POWER_RECORD_MIX, 0);
 	rt5640_update(driver, RT5640_PWR_ANLG2,
-		RT5640_POWER_BOOST_IN3 | RT5640_POWER_MICBIAS1, 0);
-	rt5640_update(driver, RT5640_POWER_ANALOG1, RT5640_POWER_LDO2, 0);
+		RT5640_POWER_BOOST_IN2 | RT5640_POWER_BOOST_IN3, 0);
+	microphone_bias(driver, false);
+}
+
+
+/*!	Tells a headset from headphones after a plug was inserted, the way the
+	Linux rt5640 driver describes it: with MICBIAS1 on, over-current means
+	the microphone ring is shorted to ground. The plug may still be moving,
+	so the same result must come HEADSET_DETECT_COUNT times in a row.
+	Called from the jack thread without outputLock held.
+*/
+static bool
+detect_headset(intel_lpe_driver* driver)
+{
+	{
+		MutexLocker outputLocker(driver->outputLock);
+		microphone_bias(driver, true);
+		rt5640_write_private(driver, RT5640_PR_BIAS_CURRENT4,
+			RT5640_OVCD_SCALE_0P75);
+		rt5640_update(driver, RT5640_MICBIAS,
+			RT5640_MIC1_OVCD_ENABLE | RT5640_MIC1_OVTH_MASK,
+			RT5640_MIC1_OVCD_ENABLE | RT5640_MIC1_OVTH_2000UA);
+		rt5640_update(driver, RT5640_IRQ_CTRL2, RT5640_OVCD_STICKY,
+			RT5640_OVCD_STICKY);
+	}
+
+	bool headset = false;
+	int32 headsetCount = 0;
+	int32 headphoneCount = 0;
+	for (int32 i = 0; i < HEADSET_DETECT_TRIES; i++) {
+		rt5640_update(driver, RT5640_IRQ_CTRL2, RT5640_OVCD_STATUS, 0);
+		snooze(HEADSET_SETTLE_TIME);
+
+		uint16 status, control;
+		if (rt5640_read(driver, RT5640_INT_IRQ_ST, &status) != B_OK
+			|| (status & RT5640_STATUS_JD) != 0
+			|| rt5640_read(driver, RT5640_IRQ_CTRL2, &control) != B_OK) {
+			// unplugged again
+			break;
+		}
+		if ((control & RT5640_OVCD_STATUS) != 0) {
+			headsetCount = 0;
+			if (++headphoneCount == HEADSET_DETECT_COUNT)
+				break;
+		} else {
+			headphoneCount = 0;
+			if (++headsetCount == HEADSET_DETECT_COUNT) {
+				headset = true;
+				break;
+			}
+		}
+	}
+
+	MutexLocker outputLocker(driver->outputLock);
+	if (!driver->microphoneActive)
+		microphone_bias(driver, false);
+	TRACE_ALWAYS("jack: %s\n", headset ? "headset with microphone"
+		: "headphones without microphone");
+	return headset;
+}
+
+
+// Volume controls: the DAC1 digital volume (MX-19, 0.375 dB steps, 0xaf is
+// 0 dB) for both outputs, and the ADC digital volume (MX-1C, 0.375 dB steps,
+// 0x2f is 0 dB, bits 15 and 7 mute) for recording.
+#define RT5640_DAC1_VOLUME			0x19
+#define DAC_VOLUME_MAX				0xaf
+#define ADC_LEVEL_ZERO_DB			0x2f
+#define ADC_LEVEL_MAX				0x7f
+#define ADC_LEVEL_DEFAULT			0x47		// +9 dB, see RT5640_ADC_ON
+#define VOLUME_STEP					0.375f
+#define RT5640_STEREO_DAC_MIXER		0x2a
+#define RT5640_MUTE_DAC1			((1 << 14) | (1 << 6))	// MX-2A
+
+
+/*!	Called with outputLock held. */
+static void
+apply_playback_volume(intel_lpe_driver* driver)
+{
+	rt5640_write(driver, RT5640_DAC1_VOLUME,
+		(driver->dacVolume[0] << 8) | driver->dacVolume[1]);
+	rt5640_update(driver, RT5640_STEREO_DAC_MIXER, RT5640_MUTE_DAC1,
+		driver->dacMuted ? RT5640_MUTE_DAC1 : 0);
+}
+
+
+/*!	Called with outputLock held. */
+static void
+apply_record_volume(intel_lpe_driver* driver)
+{
+	if (driver->microphoneActive)
+		rt5640_write(driver, RT5640_ADC_VOLUME, record_volume(driver));
 }
 
 
@@ -796,6 +978,7 @@ setup_speaker_playback(intel_lpe_driver* driver)
 		if (kSpeakerPlayback[i].reg == 0x64)
 			snooze(1000);
 	}
+	apply_playback_volume(driver);
 	return B_OK;
 }
 
@@ -1081,11 +1264,79 @@ set_global_format(intel_lpe_driver* driver, multi_format_info* data)
 }
 
 
+// The multi_audio node expects a top level group holding a group per
+// channel strip, and in it the mute before the gain of the left and the
+// right channel.
+enum {
+	MIX_OUTPUT_GROUP = 100,
+	MIX_OUTPUT_STRIP,
+	MIX_OUTPUT_MUTE,
+	MIX_OUTPUT_LEFT,
+	MIX_OUTPUT_RIGHT,
+	MIX_INPUT_GROUP,
+	MIX_INPUT_STRIP,
+	MIX_INPUT_MUTE,
+	MIX_INPUT_LEFT,
+	MIX_INPUT_RIGHT,
+	MIX_CONTROL_END
+};
+
+
+static void
+init_mix_control(multi_mix_control* control, int32 id, uint32 flags,
+	int32 parent, int32 master, enum strind_id string, const char* name)
+{
+	memset(control, 0, sizeof(*control));
+	control->id = id;
+	control->flags = flags;
+	control->parent = parent;
+	control->master = master;
+	control->string = string;
+	if (name != NULL)
+		strlcpy(control->name, name, sizeof(control->name));
+}
+
+
 static status_t
 list_mix_controls(intel_lpe_driver* driver, multi_mix_control_info* data)
 {
-	// no gain controls yet; the system mixer sets the volume
-	data->control_count = 0;
+	const int32 count = MIX_CONTROL_END - MIX_OUTPUT_GROUP;
+	if (data->control_count < count)
+		return B_BAD_VALUE;
+
+	multi_mix_control* controls = data->controls;
+	init_mix_control(&controls[0], MIX_OUTPUT_GROUP, B_MULTI_MIX_GROUP, 0, 0,
+		S_OUTPUT, NULL);
+	init_mix_control(&controls[1], MIX_OUTPUT_STRIP, B_MULTI_MIX_GROUP,
+		MIX_OUTPUT_GROUP, 0, S_MASTER, NULL);
+	init_mix_control(&controls[2], MIX_OUTPUT_MUTE, B_MULTI_MIX_ENABLE,
+		MIX_OUTPUT_STRIP, 0, S_MUTE, NULL);
+	for (int32 i = 0; i < 2; i++) {
+		multi_mix_control* control = &controls[3 + i];
+		init_mix_control(control, MIX_OUTPUT_LEFT + i, B_MULTI_MIX_GAIN,
+			MIX_OUTPUT_STRIP, i == 0 ? 0 : MIX_OUTPUT_LEFT, S_GAIN, NULL);
+		control->gain.min_gain = -DAC_VOLUME_MAX * VOLUME_STEP;
+		control->gain.max_gain = 0;
+		control->gain.granularity = VOLUME_STEP;
+	}
+
+	init_mix_control(&controls[5], MIX_INPUT_GROUP, B_MULTI_MIX_GROUP, 0, 0,
+		S_INPUT, NULL);
+	init_mix_control(&controls[6], MIX_INPUT_STRIP, B_MULTI_MIX_GROUP,
+		MIX_INPUT_GROUP, 0, S_MIC, NULL);
+	init_mix_control(&controls[7], MIX_INPUT_MUTE, B_MULTI_MIX_ENABLE,
+		MIX_INPUT_STRIP, 0, S_MUTE, NULL);
+	for (int32 i = 0; i < 2; i++) {
+		multi_mix_control* control = &controls[8 + i];
+		init_mix_control(control, MIX_INPUT_LEFT + i, B_MULTI_MIX_GAIN,
+			MIX_INPUT_STRIP, i == 0 ? 0 : MIX_INPUT_LEFT, S_GAIN, NULL);
+		control->gain.min_gain = -ADC_LEVEL_ZERO_DB * VOLUME_STEP;
+		control->gain.max_gain
+			= (ADC_LEVEL_MAX - ADC_LEVEL_ZERO_DB) * VOLUME_STEP;
+		control->gain.granularity = VOLUME_STEP;
+	}
+
+	data->control_count = count;
 	return B_OK;
 }
 
@@ -1094,20 +1345,57 @@ static status_t
 list_mix_connections(intel_lpe_driver* driver,
 	multi_mix_connection_info* data)
 {
-	return B_ERROR;
+	data->actual_count = 0;
+	return B_OK;
 }
 
 
 static status_t
 list_mix_channels(intel_lpe_driver* driver, multi_mix_channel_info* data)
 {
-	return B_ERROR;
+	data->actual_count = 0;
+	return B_OK;
+}
+
+
+static uint8
+gain_to_steps(float gain, float zero, uint8 max)
+{
+	float steps = zero + gain / VOLUME_STEP + 0.5f;
+	// the value comes from user space: NaN fails this test as well
+	if (!(steps >= 0))
+		return 0;
+	if (steps > max)
+		return max;
+	return (uint8)steps;
 }
 
 
 static status_t
 get_mix(intel_lpe_driver* driver, multi_mix_value_info* data)
 {
+	MutexLocker outputLocker(driver->outputLock);
+	for (int32 i = 0; i < data->item_count; i++) {
+		multi_mix_value& value = data->values[i];
+		switch (value.id) {
+			case MIX_OUTPUT_MUTE:
+				value.enable = driver->dacMuted;
+				break;
+			case MIX_OUTPUT_LEFT:
+			case MIX_OUTPUT_RIGHT:
+				value.gain = ((float)driver->dacVolume[value.id
+					- MIX_OUTPUT_LEFT] - DAC_VOLUME_MAX) * VOLUME_STEP;
+				break;
+			case MIX_INPUT_MUTE:
+				value.enable = driver->adcMuted;
+				break;
+			case MIX_INPUT_LEFT:
+			case MIX_INPUT_RIGHT:
+				value.gain = ((float)driver->adcLevel[value.id
+					- MIX_INPUT_LEFT] - ADC_LEVEL_ZERO_DB) * VOLUME_STEP;
+				break;
+		}
+	}
 	return B_OK;
 }
 
@@ -1115,6 +1403,40 @@ get_mix(intel_lpe_driver* driver, multi_mix_value_info* data)
 static status_t
 set_mix(intel_lpe_driver* driver, multi_mix_value_info* data)
 {
+	MutexLocker outputLocker(driver->outputLock);
+	bool playback = false;
+	bool record = false;
+	for (int32 i = 0; i < data->item_count; i++) {
+		const multi_mix_value& value = data->values[i];
+		switch (value.id) {
+			case MIX_OUTPUT_MUTE:
+				driver->dacMuted = value.enable;
+				playback = true;
+				break;
+			case MIX_OUTPUT_LEFT:
+			case MIX_OUTPUT_RIGHT:
+				driver->dacVolume[value.id - MIX_OUTPUT_LEFT]
+					= gain_to_steps(value.gain, DAC_VOLUME_MAX,
+						DAC_VOLUME_MAX);
+				playback = true;
+				break;
+			case MIX_INPUT_MUTE:
+				driver->adcMuted = value.enable;
+				record = true;
+				break;
+			case MIX_INPUT_LEFT:
+			case MIX_INPUT_RIGHT:
+				driver->adcLevel[value.id - MIX_INPUT_LEFT]
+					= gain_to_steps(value.gain, ADC_LEVEL_ZERO_DB,
+						ADC_LEVEL_MAX);
+				record = true;
+				break;
+		}
+	}
+	if (playback)
+		apply_playback_volume(driver);
+	if (record)
+		apply_record_volume(driver);
 	return B_OK;
 }
 
@@ -1431,6 +1753,8 @@ intel_lpe_init_driver(device_node* node, void** _driverCookie)
 	for (int32 i = 0; i < LPE_STREAM_COUNT; i++)
 		driver->ringArea[i] = driver->tableArea[i] = -1;
 	driver->bufferReadySem = driver->positionSem = -1;
+	driver->dacVolume[0] = driver->dacVolume[1] = DAC_VOLUME_MAX;
+	driver->adcLevel[0] = driver->adcLevel[1] = ADC_LEVEL_DEFAULT;
 	mutex_init(&driver->lock, "intel_lpe");
 	mutex_init(&driver->dspLock, "intel_lpe dsp");
 	mutex_init(&driver->outputLock, "intel_lpe output");
