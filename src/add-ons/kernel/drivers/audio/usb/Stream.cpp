@@ -631,8 +631,8 @@ Stream::_SetupBuffers()
 	TRACE(INF, "rounded up fAreaSize:%d\n", fAreaSize);
 
 	// B_FULL_LOCK, not B_NO_LOCK: the client (media_addon_server) writes this
-	// area through ITS mapping while the kernel reads it through its own /
-	// the clone's mapping. With lazily-committed pages those two fault paths
+	// area through ITS mapping while the kernel reads it through the clone's
+	// mapping. With lazily-committed pages those two fault paths
 	// can end up on DIFFERENT pages for the same offsets (observed on
 	// x86_64 hrev59811: client-written audio invisible to the kernel ->
 	// eternal silence on USB). Pre-committing the pages makes every mapping
@@ -656,7 +656,10 @@ Stream::_SetupBuffers()
 	}
 
 	// The kernel is not allowed to touch userspace areas, so we clone our
-	// area into kernel space.
+	// area into kernel space. fArea carries user protection, so on a CPU with
+	// SMAP every kernel access through fBuffers is a fatal fault (seen as a
+	// panic in _RepackCapture on a Kaby Lake T470s over xHCI). All kernel
+	// reads and writes of the media buffers go through fKernelBuffers.
 	fKernelArea = clone_area("usb_audio cloned area", (void**)&fKernelBuffers,
 		B_ANY_ADDRESS, B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, fArea);
 	if (fKernelArea < 0) {
@@ -682,13 +685,11 @@ Stream::_SetupBuffers()
 
 	// The wire buffer - what queue_isochronous hands to the host controller -
 	// is a separate B_CONTIGUOUS kernel area (the same allocation policy hda
-	// uses for its DMA buffers). The USB finisher thread fills it at queue
-	// time from the ORIGINAL mixer area VA (fBuffers) - packing to 3-byte
-	// samples, or memcpy for native formats. It must not
-	// alias the mixer area, and no other context may be responsible for
-	// filling it: cross-context writes through clones of these areas are not
-	// reliably visible to the finisher on x86_64 hrev59811 (a wire capture
-	// showed 68% zeros while the writing context saw all buffers filled).
+	// uses for its DMA buffers). _StageWireChunk() fills it at queue time from
+	// the mixer area through fKernelBuffers - packing to 3-byte samples, or
+	// memcpy for native formats. It must not alias the mixer area, and it
+	// must not be filled anywhere else: on x86_64 hrev59811 a wire capture
+	// showed 68% zeros while the writing context saw all buffers filled.
 	{
 		size_t wireAreaSize = fSamplesCount * fWireSampleSize;
 		wireAreaSize = (wireAreaSize + (B_PAGE_SIZE - 1)) &~ (B_PAGE_SIZE - 1);
@@ -1347,22 +1348,18 @@ Stream::Stop()
 }
 
 
-// Build the wire chunk for an outgoing buffer at queue time, in the USB
-// finisher thread, reading the ORIGINAL buffer area VA (fBuffers). Rationale
-// (x86_64 hrev59811, proven by a wire capture): the controller's TD data is
-// snapshotted at submit; and kernel-CLONE writes made in the ioctl context
-// are NOT reliably visible to this thread - the captured wire stream was 68%
-// zeros while the ioctl context saw every buffer tone-filled. The original
-// area VA is the one view this thread provably reads correctly (B_FULL_LOCK
-// makes client writes visible there), so it is the single source of truth
-// for the wire.
+// Build the wire chunk for an outgoing buffer at queue time, reading the mixer
+// area through fKernelBuffers. This runs in the USB finisher thread and, for
+// the first buffers, in the thread that starts the stream. fBuffers must not
+// be read here: it is user-mapped, and SMAP turns the access into a panic.
+// fKernelBuffers is a clone, so it maps the same pages.
 void
 Stream::_StageWireChunk(size_t queuedBuffer, bool staleSlot)
 {
 	size_t framesPerBuffer = fSamplesCount / fBufferCount;
 	size_t mediaChunkSize = fMediaSampleSize * framesPerBuffer;
 	size_t wireChunkSize = fWireSampleSize * framesPerBuffer;
-	uint8* mediaChunk = fBuffers + mediaChunkSize * queuedBuffer;
+	uint8* mediaChunk = fKernelBuffers + mediaChunkSize * queuedBuffer;
 	uint8* wireChunk = fWireBuffers + wireChunkSize * queuedBuffer;
 
 	// DIAG (test_tone setting): put a generated 440Hz square wave on the wire
@@ -2142,10 +2139,9 @@ Stream::_RepackCapture(void* scratch, size_t& completed)
 				continue;
 
 			// Complete: convert into the media record buffer through the
-			// ORIGINAL area VA (fBuffers), in this (completion) thread -- the
-			// one view proven coherent with the client's mapping (see
-			// _StageWireChunk).
-			uint8* mediaChunk = fBuffers
+			// kernel clone (fKernelBuffers), in this (completion) thread. Not
+			// through fBuffers: it is user-mapped (see _StageWireChunk).
+			uint8* mediaChunk = fKernelBuffers
 				+ fCaptureSlot * framesPerBuffer * fMediaSampleSize;
 			if (fNeedsPacking) {
 				_Unpack24(slot, mediaChunk,

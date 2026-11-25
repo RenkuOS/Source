@@ -713,10 +713,10 @@ Device::Control(uint32 op, void* buffer, size_t length)
 
 		case B_MULTI_SET_BUFFERS:
 		{
-			// Our client (the multi_audio media add-on) clones our buffer
-			// areas into its team and tells us its base addresses here
+			// A client that clones our buffer areas into its team (the
+			// stock multi_audio add-on does not) tells us its addresses here
 			// (informational - the client reads/writes the pages through its
-			// clone; the driver reads them through the original area VA).
+			// clone; the driver accesses them through its kernel clone).
 			// The layout inside the area is unchanged - we only need
 			// buffer[0][0].base per direction.
 			multi_buffer_list list;
