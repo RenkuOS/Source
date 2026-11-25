@@ -332,8 +332,8 @@ rw_lock_wait(rw_lock* lock, bool writer, InterruptsSpinLocker& locker)
 
 	locker.Lock();
 	while (waiter.thread != NULL) {
-		// Woken, but not by rw_lock_unblock() (which dequeues us and clears
-		// waiter.thread) nor by rw_lock_destroy(): we are still queued and do
+		// Woken, but not by rw_lock_unblock() or rw_lock_destroy() (which
+		// dequeue us and clear waiter.thread): we are still queued and do
 		// not have the lock. Going on would make an uncounted reader (an
 		// "rw_lock_read_unlock(): lock not read-locked" panic later, hitting
 		// whoever unlocks next) and leave this stack frame in the queue
@@ -466,8 +466,11 @@ rw_lock_destroy(rw_lock* lock)
 		// dequeue
 		lock->waiters = waiter->next;
 
-		// unblock thread
-		thread_unblock(waiter->thread, B_ERROR);
+		// unblock thread; clearing waiter->thread tells rw_lock_wait() that
+		// it was dequeued and must not wait on
+		Thread* thread = waiter->thread;
+		waiter->thread = NULL;
+		thread_unblock(thread, B_ERROR);
 	}
 
 	lock->name = NULL;

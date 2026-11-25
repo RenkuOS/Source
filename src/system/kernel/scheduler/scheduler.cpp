@@ -494,6 +494,15 @@ scheduler_reschedule(int32 nextState)
 		return;
 	}
 
+	// Interrupt handlers run with rescheduling disabled on their CPU
+	// (io_interrupt_handler()), so that a handler that wakes a thread does
+	// not switch threads in the middle of the interrupt; the switch happens
+	// when the interrupt returns. Nothing blocks there.
+	if (thread->cpu->reschedule_disabled) {
+		ASSERT(nextState == B_THREAD_READY);
+		return;
+	}
+
 	// A thread that has preemption disabled is not preempted, but it is
 	// still switched out when it blocks or exits: before, this returned for
 	// those too (the ASSERT is compiled out of release builds), so the thread
