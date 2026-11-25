@@ -93,6 +93,8 @@ DesktopSettingsPrivate::_SetDefaults()
 	fCompositedDragTransparency = COMPOSITED_DRAG_TRANSPARENCY_DEFAULT;
 	fCompositedWobblyWindows = COMPOSITED_WOBBLY_WINDOWS_DEFAULT;
 	fCompositedWobbliness = COMPOSITED_WOBBLINESS_DEFAULT;
+	fCompositedGlass = COMPOSITED_GLASS_DEFAULT;
+	fCompositedGlassOpacity = COMPOSITED_GLASS_OPACITY_DEFAULT;
 	gDefaultHintingMode = HINTING_MODE_ON;
 	gSubpixelAverageWeight = 120;
 	gSubpixelOrderingRGB = true;
@@ -332,6 +334,18 @@ DesktopSettingsPrivate::_Load()
 				fCompositedWobbliness = wobbliness;
 			}
 
+			int8 glass;
+			if (settings.FindInt8("composited glass", &glass) == B_OK
+				&& glass >= 0 && glass <= 2) {
+				fCompositedGlass = glass;
+			}
+
+			int8 glassOpacity;
+			if (settings.FindInt8("composited glass opacity", &glassOpacity)
+					== B_OK && glassOpacity >= 0 && glassOpacity <= 100) {
+				fCompositedGlassOpacity = glassOpacity;
+			}
+
 			int8 averageWeight;
 			if (settings.FindInt8("subpixel average weight", &averageWeight)
 					== B_OK) {
@@ -505,6 +519,9 @@ DesktopSettingsPrivate::Save(uint32 mask)
 			settings.AddBool("composited wobbly windows",
 				fCompositedWobblyWindows);
 			settings.AddInt8("composited wobbliness", fCompositedWobbliness);
+			settings.AddInt8("composited glass", fCompositedGlass);
+			settings.AddInt8("composited glass opacity",
+				fCompositedGlassOpacity);
 			settings.AddInt8("subpixel average weight", gSubpixelAverageWeight);
 			settings.AddBool("subpixel ordering", gSubpixelOrderingRGB);
 
@@ -884,6 +901,36 @@ DesktopSettingsPrivate::CompositedWobbliness() const
 
 
 void
+DesktopSettingsPrivate::SetCompositedGlass(uint8 glass)
+{
+	fCompositedGlass = glass;
+	Save(kAppearanceSettings);
+}
+
+
+uint8
+DesktopSettingsPrivate::CompositedGlass() const
+{
+	return fCompositedGlass;
+}
+
+
+void
+DesktopSettingsPrivate::SetCompositedGlassOpacity(uint8 opacity)
+{
+	fCompositedGlassOpacity = opacity;
+	Save(kAppearanceSettings);
+}
+
+
+uint8
+DesktopSettingsPrivate::CompositedGlassOpacity() const
+{
+	return fCompositedGlassOpacity;
+}
+
+
+void
 DesktopSettingsPrivate::SetSubpixelAntialiasing(bool subpix)
 {
 	gSubpixelAntialiasing = subpix;
@@ -1126,6 +1173,20 @@ DesktopSettings::CompositedWobbliness() const
 }
 
 
+uint8
+DesktopSettings::CompositedGlass() const
+{
+	return fSettings->CompositedGlass();
+}
+
+
+uint8
+DesktopSettings::CompositedGlassOpacity() const
+{
+	return fSettings->CompositedGlassOpacity();
+}
+
+
 bool
 DesktopSettings::SubpixelAntialiasing() const
 {
@@ -1294,6 +1355,20 @@ void
 LockedDesktopSettings::SetCompositedWobbliness(uint8 wobbliness)
 {
 	fSettings->SetCompositedWobbliness(wobbliness);
+}
+
+
+void
+LockedDesktopSettings::SetCompositedGlass(uint8 glass)
+{
+	fSettings->SetCompositedGlass(glass);
+}
+
+
+void
+LockedDesktopSettings::SetCompositedGlassOpacity(uint8 opacity)
+{
+	fSettings->SetCompositedGlassOpacity(opacity);
 }
 
 
