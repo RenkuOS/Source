@@ -11,6 +11,7 @@
 #include "usb_private.h"
 
 #include <StackOrHeapArray.h>
+#include <util/AutoLock.h>
 
 
 Device::Device(Object* parent, int8 hubAddress, uint8 hubPort,
@@ -32,6 +33,8 @@ Device::Device(Object* parent, int8 hubAddress, uint8 hubPort,
 	fNode(NULL)
 {
 	TRACE("creating device\n");
+
+	recursive_lock_init(&fConfigurationLock, "usb device configuration");
 
 	fDefaultPipe = new(std::nothrow) ControlPipe(this);
 	if (fDefaultPipe == NULL) {
@@ -427,6 +430,7 @@ Device::~Device()
 	// Ensure we are gone from the stack before deleting public structures.
 	PutUSBID(true);
 	delete fDefaultPipe;
+	recursive_lock_destroy(&fConfigurationLock);
 
 	if (fConfigurations == NULL) {
 		// we didn't get far in device setup, so everything below is unneeded
@@ -540,6 +544,7 @@ Device::SetConfiguration(const usb_configuration_info* configuration)
 status_t
 Device::SetConfigurationAt(uint8 index)
 {
+	RecursiveLocker locker(fConfigurationLock);
 	if (!fAvailable)
 		return B_ERROR;
 	if (index >= fDeviceDescriptor.num_configurations)
@@ -657,6 +662,8 @@ Device::InitEndpoints(int32 interfaceIndex)
 status_t
 Device::Unconfigure(bool atDeviceLevel)
 {
+	RecursiveLocker locker(fConfigurationLock);
+
 	// If we only want to destroy our open pipes before setting
 	// another configuration unconfigure will be called with
 	// atDevice = false. otherwise we explicitly want to unconfigure
@@ -708,24 +715,84 @@ Device::ClearEndpoints(int32 interfaceIndex)
 }
 
 
+/*!	Suspends all pipes of the alternate setting. On failure, none stays
+	suspended, but their transfers may have ended already.
+*/
+status_t
+Device::_SuspendEndpoints(const usb_interface_info* interface)
+{
+	for (size_t i = 0; i < interface->endpoint_count; i++) {
+		BReference<Object> object(
+			GetStack()->GetObject(interface->endpoint[i].handle), true);
+		if (!object.IsSet())
+			continue;
+
+		status_t status = ((Pipe*)object.Get())->Suspend();
+		if (status != B_OK) {
+			_ResumeEndpoints(interface);
+			return status;
+		}
+	}
+
+	return B_OK;
+}
+
+
+void
+Device::_ResumeEndpoints(const usb_interface_info* interface)
+{
+	for (size_t i = 0; i < interface->endpoint_count; i++) {
+		BReference<Object> object(
+			GetStack()->GetObject(interface->endpoint[i].handle), true);
+		if (object.IsSet())
+			((Pipe*)object.Get())->Resume();
+	}
+}
+
+
 status_t
 Device::SetAltInterface(const usb_interface_info* interface)
 {
+	// Keeps other switches away, and the configuration and its pipes in place
+	// when the device is unplugged meanwhile.
+	RecursiveLocker locker(fConfigurationLock);
+
 	uint8 interfaceNumber = interface->descr->interface_number;
+	if (fCurrentConfiguration == NULL
+		|| interfaceNumber >= fCurrentConfiguration->interface_count)
+		return B_BAD_VALUE;
+
+	usb_interface_list* interfaceList
+		= &fCurrentConfiguration->interface[interfaceNumber];
+	if (interface->descr->alternate_setting >= interfaceList->alt_count)
+		return B_BAD_VALUE;
+	const usb_interface_info* active = interfaceList->active;
+
+	// End the transfers of the old setting before the device switches: some
+	// devices stop working when the setting changes under running isochronous
+	// transfers. The drivers are still there, so this is not a forced cancel.
+	status_t result = B_OK;
+	if (active != NULL)
+		result = _SuspendEndpoints(active);
+	if (result != B_OK)
+		return result;
+
 	// Tell the device to set the alternate settings
-	status_t result = fDefaultPipe->SendRequest(
+	result = fDefaultPipe->SendRequest(
 		USB_REQTYPE_INTERFACE_OUT | USB_REQTYPE_STANDARD,
 		USB_REQUEST_SET_INTERFACE,
 		interface->descr->alternate_setting, interfaceNumber, 0, NULL, 0, NULL);
-	if (result < B_OK)
+	if (result < B_OK) {
+		// The old setting and its pipes stay in use.
+		if (active != NULL)
+			_ResumeEndpoints(active);
 		return result;
+	}
 
 	// Clear the no longer active endpoints
 	ClearEndpoints(interfaceNumber);
 
 	// Update the active pointer of the interface list
-	usb_interface_list* interfaceList
-		= &fCurrentConfiguration->interface[interfaceNumber];
 	interfaceList->active
 		= &interfaceList->alt[interface->descr->alternate_setting];
 

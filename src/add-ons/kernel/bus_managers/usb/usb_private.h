@@ -373,6 +373,9 @@ virtual	void							SetDataToggle(bool toggle)
 		status_t						SubmitTransfer(Transfer *transfer);
 virtual	status_t						CancelQueuedTransfers(bool force);
 
+		status_t						Suspend();
+		void							Resume();
+
 		void							SetControllerCookie(void *cookie)
 											{ fControllerCookie = cookie; }
 		void *							ControllerCookie() const
@@ -387,6 +390,9 @@ protected:
 		friend class					Device;
 
 private:
+		void							_SetSuspended(bool suspended);
+
+private:
 		int8							fDeviceAddress;
 		uint8							fEndpointAddress;
 		pipeDirection					fDirection;
@@ -398,6 +404,7 @@ private:
 		int8							fHubAddress;
 		uint8							fHubPort;
 		bool							fDataToggle;
+		bool							fSuspended;
 		void *							fControllerCookie;
 };
 
@@ -629,6 +636,12 @@ protected:
 		bool							fInitOK;
 
 private:
+		status_t						_SuspendEndpoints(
+											const usb_interface_info* interface);
+		void							_ResumeEndpoints(
+											const usb_interface_info* interface);
+
+private:
 		bool							fAvailable;
 		bool							fIsRootHub;
 		usb_configuration_info *		fConfigurations;
@@ -637,6 +650,7 @@ private:
 		int8							fDeviceAddress;
 		int8							fHubAddress;
 		uint8							fHubPort;
+		recursive_lock					fConfigurationLock;
 		ControlPipe *					fDefaultPipe;
 		void *							fControllerCookie;
 		device_node*					fNode;

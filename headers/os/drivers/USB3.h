@@ -133,6 +133,15 @@ struct usb_module_info {
 	status_t						(*set_configuration)(usb_device device,
 										const usb_configuration_info *configuration);
 
+	/*
+	 *	Switch an interface to another alternate setting. Transfers queued on
+	 *	the endpoints of the old setting are cancelled first. Their callbacks
+	 *	run with B_CANCELED, also on the calling thread, so do not hold a lock
+	 *	that a callback takes. UHCI does not call those of isochronous
+	 *	transfers. On success the endpoint handles of the old setting are
+	 *	invalid. On failure they stay valid, but the transfers may be cancelled
+	 *	already and have to be queued again.
+	 */
 	status_t						(*set_alt_interface)(usb_device device,
 										const usb_interface_info *interface);
 
