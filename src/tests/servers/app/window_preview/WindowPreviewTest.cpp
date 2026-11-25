@@ -478,6 +478,114 @@ time_calls(int32 token, BBitmap* bitmap, int count)
 }
 
 
+/*!	Checks that the preview of \a test, whose content is \a color with a
+	blue marker, shows it.
+*/
+static void
+check_kept(TestWindow& test, rgb_color color, const char* what)
+{
+	BBitmap bitmap(BRect(0, 0, 199, 149), B_RGB32);
+	BRect content(0, 0, 399, 299);
+	status_t status = BPrivate::get_window_preview(test.token, &bitmap);
+	check(status == B_OK, "%s: %s", what, strerror(status));
+	if (status != B_OK)
+		return;
+	check_content(&bitmap, content, 40, 40, make_color(0, 0, 255), what);
+	check_content(&bitmap, content, 200, 150, color, what);
+}
+
+
+static void
+set_minimized(TestWindow& test, bool minimized)
+{
+	test.window->Lock();
+	test.window->Minimize(minimized);
+	test.window->Unlock();
+	if (minimized)
+		snooze(300000);
+	else
+		sync_window(test.window);
+}
+
+
+/*!	BPrivate::keep_window_previews(): hidden windows and windows on other
+	workspaces keep their last picture while it is on, and only then.
+*/
+static void
+test_keep(TestWindow& a, rgb_color color)
+{
+	// A window minimized before has no picture.
+	set_minimized(a, true);
+	status_t status = BPrivate::keep_window_previews(true);
+	check(status == B_OK, "keep_window_previews(true): %s", strerror(status));
+	BBitmap bitmap(BRect(0, 0, 199, 149), B_RGB32);
+	status = BPrivate::get_window_preview(a.token, &bitmap);
+	check(status == B_NOT_ALLOWED, "kept, but minimized before: %s",
+		strerror(status));
+	set_minimized(a, false);
+
+	set_minimized(a, true);
+	check_kept(a, color, "kept, minimized");
+
+	// moved while minimized: the picture is still found where it is
+	a.window->Lock();
+	a.window->MoveBy(37, 23);
+	a.window->Unlock();
+	snooze(200000);
+	check_kept(a, color, "kept, minimized and moved");
+	set_minimized(a, false);
+	check_kept(a, color, "kept, restored");
+
+	// a window that is shown again redraws, and its preview follows changes
+	const rgb_color cyan = make_color(0, 255, 255);
+	if (a.window->Lock()) {
+		a.view->SetColor(cyan);
+		a.window->Unlock();
+	}
+	sync_window(a.window);
+	check_kept(a, cyan, "kept, restored and changed");
+
+	a.window->Lock();
+	a.window->Hide();
+	a.window->Unlock();
+	snooze(200000);
+	check_kept(a, cyan, "kept, hidden");
+	a.window->Lock();
+	a.window->Show();
+	a.window->Unlock();
+	sync_window(a.window);
+
+	// on another workspace
+	a.window->Lock();
+	a.window->SetWorkspaces(
+		1 << ((current_workspace() + 1) % count_workspaces()));
+	a.window->Unlock();
+	snooze(300000);
+	check_kept(a, cyan, "kept, on another workspace");
+	a.window->Lock();
+	a.window->SetWorkspaces(1 << current_workspace());
+	a.window->Unlock();
+	sync_window(a.window);
+	check_kept(a, cyan, "kept, back on this workspace");
+
+	// When nobody wants them anymore, the kept pictures go.
+	set_minimized(a, true);
+	status = BPrivate::keep_window_previews(false);
+	check(status == B_OK, "keep_window_previews(false): %s", strerror(status));
+	status = BPrivate::get_window_preview(a.token, &bitmap);
+	check(status == B_NOT_ALLOWED, "no longer kept, minimized: %s",
+		strerror(status));
+	set_minimized(a, false);
+
+	if (a.window->Lock()) {
+		a.view->SetColor(color);
+		a.window->MoveBy(-37, -23);
+		a.window->Unlock();
+	}
+	sync_window(a.window);
+}
+
+
 static void
 test_composited()
 {
@@ -608,6 +716,8 @@ test_composited()
 		a.window->Unlock();
 		sync_window(a.window);
 	}
+
+	test_keep(a, yellow);
 
 	// Every token there could be, of every app and offscreen windows too
 	{
