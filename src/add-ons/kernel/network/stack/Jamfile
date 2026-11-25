@@ -10,6 +10,7 @@ KernelAddon stack :
 	domains.cpp
 	interfaces.cpp
 	net_buffer.cpp
+	net_filter.cpp
 	net_socket.cpp
 	notifications.cpp
 	link.cpp
