@@ -39,6 +39,30 @@ switch $(HAIKU_BUILD_PROFILE) {
 Echo "Starting build of type $(HAIKU_BUILD_TYPE) ..." ;
 
 
+rule AddRenkuOSPortsPackages
+{
+	# AddRenkuOSPortsPackages
+	#
+	# Adds the ports that the image takes from RenkuOSPorts, the RenkuOS fork
+	# of HaikuPorts, instead of from HaikuPorts: they carry Renku fixes that
+	# HaikuPorts doesn't take. RenkuOSPorts has no x86_64 package repository
+	# yet (RenkuOS/RenkuOSPorts#21), so each package is downloaded from a
+	# release and checked against its SHA-256. Once there is one, list these
+	# packages from it like any other.
+
+	if $(HAIKU_PACKAGING_ARCHS[1]) = x86_64 {
+		# RenkuOS/RenkuOSPorts#20: joining and rejoining WPA networks.
+		local wpaSupplicant = [ DownloadFile
+			wpa_supplicant-2.11.haiku.1-3-x86_64.hpkg
+			: https://github.com/idumych/Source/releases/download/ports-mirror/wpa_supplicant-2.11.haiku.1-3-x86_64.hpkg
+			:
+			: 09f540ffb85c559f029c0aba38ee088f8fa60e6f019ace81c2ce554d29068129 ] ;
+		AddPackageFilesToHaikuImage system packages : $(wpaSupplicant)
+			: nameFromMetaInfo ;
+	}
+}
+
+
 rule DefineDefaultBuildProfiles
 {
 	# release profiles
@@ -102,7 +126,8 @@ rule DefineDefaultBuildProfiles
 				timgmsoundfont
 				vision
 				wonderbrush
-				wpa_supplicant
+				# x86_64 takes RenkuOSPorts' build, see AddRenkuOSPortsPackages.
+				!x86_64 @{ wpa_supplicant }@
 				# Some packages can't be built with gcc2, so we install the gcc13
 				# secondary architecture package instead in this case
 				!gcc2 @{ nano p7zip python3.14 xz_utils }@
@@ -114,6 +139,8 @@ rule DefineDefaultBuildProfiles
 				nano
 				p7zip
 				;
+
+			AddRenkuOSPortsPackages ;
 
 			local architectureObject ;
 			for architectureObject in [ MultiArchSubDirSetup ] {
@@ -152,7 +179,8 @@ rule DefineDefaultBuildProfiles
 				pe
 				sounds_community_default
 				vision
-				wpa_supplicant
+				# x86_64 takes RenkuOSPorts' build, see AddRenkuOSPortsPackages.
+				!x86_64 @{ wpa_supplicant }@
 				# xz_utils can't be built with gcc2, so we install it for
 				# primary gcc 8 architectures or gcc 2 hybrids.
 				!gcc2 @{ nano p7zip xz_utils }@
@@ -166,6 +194,8 @@ rule DefineDefaultBuildProfiles
 				nano
 				p7zip
 				;
+
+			AddRenkuOSPortsPackages ;
 
 			AddOptionalHaikuImagePackages Development Git ;
 
