@@ -35,6 +35,10 @@
 #define COMPOSITED_DRAG_TRANSPARENCY_DEFAULT false
 #define COMPOSITED_WOBBLY_WINDOWS_DEFAULT false
 #define COMPOSITED_WOBBLINESS_DEFAULT 50
+// Glass: 0 is off, 1 turns window borders to glass, 2 whole windows. The
+// opacity, in percent, is how much of a window is laid over the blur.
+#define COMPOSITED_GLASS_DEFAULT 0
+#define COMPOSITED_GLASS_OPACITY_DEFAULT 70
 
 // These definitions provide the server something to use for default
 // system fonts.

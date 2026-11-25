@@ -472,6 +472,33 @@
 
 
 /*!
+	\var B_GLASS_WINDOW
+
+	Show a blurred view of what is behind the window wherever it isn't
+	opaque, like frosted glass.
+
+	The content area is drawn as with \c B_TRANSPARENT_WINDOW, and the
+	window picks its glass by the alpha of its pixels: what it draws with
+	alpha 255 is solid, what it leaves clear is clear glass, and what it draws
+	with partial alpha is laid over the blur, tinted by its color. Unlike with
+	\c B_TRANSPARENT_WINDOW, clicks on glass still go to the window.
+
+	The window's glass appears whenever the desktop is composited, whether
+	or not the user has turned glass on in the Appearance preferences, which
+	can also turn every window's border, or whole windows, to glass. A window
+	with this flag decides for itself which parts of its content area are
+	solid, whatever that setting is.
+
+	Without a compositor, the flag has no effect; see
+	\c B_TRANSPARENT_WINDOW for how to find out.
+
+	\note This flag is a RenkuOS extension (\c 0x40000000).
+
+	\since Renku
+*/
+
+
+/*!
 	\var B_NO_SERVER_SIDE_WINDOW_MODIFIERS
 
 	\since Haiku R1
@@ -692,6 +719,8 @@
 	       - \c B_CLOSE_ON_ESCAPE Close when the user pushes the Escape key.
 	       - \c B_TRANSPARENT_WINDOW Show what is behind where nothing is
 	            drawn, on a composited desktop.
+	       - \c B_GLASS_WINDOW Show what is behind blurred, like glass,
+	            where the window isn't opaque.
 	       - \c B_NO_SERVER_SIDE_WINDOW_MODIFIERS ??
 	\param workspace Mask that indicates which of the 32 potential workspace(s)
 	       the window should be displayed in or \c B_CURRENT_WORKSPACE or

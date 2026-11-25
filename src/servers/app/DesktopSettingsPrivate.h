@@ -99,6 +99,10 @@ public:
 			bool				CompositedWobblyWindows() const;
 			void				SetCompositedWobbliness(uint8 wobbliness);
 			uint8				CompositedWobbliness() const;
+			void				SetCompositedGlass(uint8 glass);
+			uint8				CompositedGlass() const;
+			void				SetCompositedGlassOpacity(uint8 opacity);
+			uint8				CompositedGlassOpacity() const;
 			void				SetHinting(uint8 hinting);
 			uint8				Hinting() const;
 			void				SetSubpixelAverageWeight(uint8 averageWeight);
@@ -138,6 +142,8 @@ private:
 			bool				fCompositedDragTransparency;
 			bool				fCompositedWobblyWindows;
 			uint8				fCompositedWobbliness;
+			uint8				fCompositedGlass;
+			uint8				fCompositedGlassOpacity;
 			BString				fControlLook;
 
 			server_read_only_memory& fShared;

@@ -96,6 +96,10 @@ struct Compositor::Wobble {
 };
 
 
+// Glass takes in what is behind it up to this many pixels away.
+static const int32 kBlurReach = GlassBlur::kReach;
+
+
 Compositor::Compositor(Desktop* desktop)
 	:
 	fDesktop(desktop),
@@ -116,6 +120,9 @@ Compositor::Compositor(Desktop* desktop)
 	fBandCount(0),
 	fNextBand(0),
 	fWobbleLock("compositor wobble"),
+	fGlass(0),
+	fGlassOpacity(100),
+	fBandHasGlass(false),
 	fSceneBits(NULL),
 	fSceneWidth(0),
 	fSceneHeight(0)
@@ -382,19 +389,31 @@ Compositor::_Composite(const BRegion& damage, BRegion* present)
 
 	RenderingBuffer* target = interface->DrawingBuffer();
 
-	BRegion remaining(damage);
+	BAutolock wobbleLocker(fWobbleLock);
+
+	// Glass needs more of what is behind it to be drawn again than what
+	// changes. What doesn't change is put back afterwards.
+	BRegion changed;
+	BRegion remaining;
+	BRegion glassReach;
+	_GetGlassDamage(damage, changed, remaining, glassReach);
 	BRegion bounds((BRect)target->Bounds());
+	changed.IntersectWith(&bounds);
 	remaining.IntersectWith(&bounds);
 
-	BRegion screenDamage(remaining);
+	BRegion keep(remaining);
+	keep.Exclude(&changed);
+	if (keep.CountRects() > 0)
+		_SavePixels(target, keep, fSavedPixels);
 
-	BAutolock wobbleLocker(fWobbleLock);
+	BRegion screenDamage(remaining);
 
 	// Going from the front to the back, find out which part of which window
 	// can be seen.
 	WindowList& windows = fDesktop->CurrentWindows();
 	int32 workspace = fDesktop->CurrentWorkspace();
 	size_t layerCount = 0;
+	size_t glassIndex = 0;
 	for (Window* window = windows.LastWindow();
 			window != NULL && remaining.CountRects() > 0;
 			window = window->PreviousWindow(workspace)) {
@@ -450,20 +469,35 @@ Compositor::_Composite(const BRegion& damage, BRegion* present)
 		layer->window = window;
 		layer->alpha = window->CompositeAlpha();
 		layer->wobble = wobble;
+		layer->tintAlpha = (uint32)fGlassOpacity * 255 / 100
+			* layer->alpha / 255;
+		layer->glass.MakeEmpty();
+		layer->tinted.MakeEmpty();
+		// A wobbling window isn't where its outline is: it has no glass.
+		if (wobble == NULL) {
+			const GlassWindow* glass = _GlassFor(window, glassIndex);
+			if (glass != NULL) {
+				layer->glass = glass->glass;
+				layer->tinted = glass->tinted;
+			}
+		}
 		layerCount++;
 
-		// Only what hides everything behind it ends the search here.
+		// Only what hides everything behind it ends the search here. Within
+		// the reach of glass, what is behind is drawn all the same: the glass
+		// is blurred from it before the window covers it again.
 		if (layer->alpha == 255 && wobble == NULL) {
-			if (window->IsTransparent()) {
-				BRegion opaque(shape.OpaqueRegion());
+			BRegion opaque(shape.OpaqueRegion());
+			if (window->IsTransparent())
 				opaque.Exclude(&window->TransparentRegion());
-				remaining.Exclude(&opaque);
-			} else
-				remaining.Exclude(&shape.OpaqueRegion());
+			opaque.Exclude(&layer->tinted);
+			opaque.Exclude(&glassReach);
+			remaining.Exclude(&opaque);
 		}
 	}
 
 	// What each window that isn't wobbling is drawn with
+	fBandHasGlass = false;
 	for (size_t i = 0; i < layerCount; i++) {
 		Layer* layer = fLayers[i];
 		layer->opaque = layer->region;
@@ -471,6 +505,11 @@ Compositor::_Composite(const BRegion& damage, BRegion* present)
 		layer->edge.MakeEmpty();
 		if (layer->wobble != NULL)
 			continue;
+
+		layer->glass.IntersectWith(&layer->region);
+		layer->tinted.IntersectWith(&layer->region);
+		if (layer->glass.CountRects() > 0)
+			fBandHasGlass = true;
 
 		Window* window = layer->window;
 		const WindowShape& shape = window->Shape();
@@ -489,6 +528,15 @@ Compositor::_Composite(const BRegion& damage, BRegion* present)
 			for (size_t c = 0; c < corners.size(); c++)
 				WindowShape::CoverageFor(corners[c].radius);
 		}
+
+		// The corners are drawn by their coverage, over what is behind them:
+		// blurred where they cover it, as it is where they don't, or the blur
+		// would show where they are cut off. The clear parts are drawn as they
+		// are, over the blur where they are glass.
+		layer->clear.Exclude(&layer->edge);
+		layer->tinted.Exclude(&layer->clear);
+		layer->tinted.Exclude(&layer->edge);
+		layer->opaque.Exclude(&layer->tinted);
 	}
 
 	// Then draw them from the back to the front.
@@ -503,12 +551,15 @@ Compositor::_Composite(const BRegion& damage, BRegion* present)
 	bool cursorLocked = interface->LockFloatingOverlays();
 	_DrawBands(screenDamage);
 
+	if (keep.CountRects() > 0)
+		_RestorePixels(target, keep, fSavedPixels);
+
 	if (present != NULL) {
-		present->Include(&screenDamage);
-		if (screenDamage.CountRects() > 0)
+		present->Include(&changed);
+		if (changed.CountRects() > 0)
 			interface->SetFramePending();
 	} else
-		interface->InvalidateRegion(screenDamage);
+		interface->InvalidateRegion(changed);
 	if (cursorLocked)
 		interface->UnlockFloatingOverlays();
 
@@ -559,9 +610,11 @@ Compositor::_DrawBands(const BRegion& damage)
 			* (rect.bottom - rect.top + 1);
 	}
 
+	// Glass reads what is drawn around it, which may be in the band of
+	// another thread.
 	int32 bandCount = min_c((int32)(fHelpers.size() + 1) * kBandsPerThread,
 		height / kMinBandHeight);
-	if (bandCount < 2 || pixels < kMinBandedPixels) {
+	if (bandCount < 2 || pixels < kMinBandedPixels || fBandHasGlass) {
 		_DrawBand(bounds, fShadowColumns);
 		return;
 	}
@@ -622,6 +675,20 @@ Compositor::_DrawBand(const BRect& band, std::vector<uint8>& shadowColumns)
 			continue;
 		}
 
+		part.IntersectWith(&layer->glass);
+		if (part.CountRects() > 0) {
+			// Only drawn without bands, see _DrawBands(). Before its own
+			// shadow, which the window's glass would take in otherwise.
+			BRegion edge(part);
+			edge.IntersectWith(&layer->edge);
+			if (edge.CountRects() > 0)
+				_SavePixels(target, edge, fEdgePixels);
+			_Blur(target, part);
+			if (edge.CountRects() > 0)
+				_MixEdges(target, window, edge, fEdgePixels);
+		}
+
+		part = clip;
 		part.IntersectWith(&layer->shadow);
 		if (part.CountRects() > 0)
 			_DrawShadow(target, window, part, shadowColumns);
@@ -633,8 +700,20 @@ Compositor::_DrawBand(const BRect& band, std::vector<uint8>& shadowColumns)
 
 		part = clip;
 		part.IntersectWith(&layer->edge);
-		if (part.CountRects() > 0)
-			_BlendEdges(target, window, part, layer->alpha);
+		if (part.CountRects() > 0) {
+			_BlendEdges(target, window, part,
+				layer->tinted.CountRects() > 0
+					? layer->tintAlpha : layer->alpha);
+		}
+
+		part = clip;
+		part.IntersectWith(&layer->tinted);
+		if (part.CountRects() > 0) {
+			if (layer->tintAlpha == 255)
+				_Copy(target, window, part);
+			else
+				_Blend(target, window, part, layer->tintAlpha);
+		}
 
 		part = clip;
 		part.IntersectWith(&layer->opaque);
@@ -721,6 +800,352 @@ Compositor::SceneChanged()
 	fScene.swap(scene);
 
 	Composite(damage);
+}
+
+
+void
+Compositor::SetGlass(uint8 glass, uint8 opacity)
+{
+	BAutolock _(fLock);
+	fGlass = glass;
+	fGlassOpacity = min_c(opacity, 100);
+}
+
+
+/*!	Finds out which parts of \a window are glass, and which of them are
+	turned to glass by the setting rather than by the window's own alpha.
+*/
+void
+Compositor::_GetGlass(Window* window, BRegion& glass, BRegion& tinted) const
+{
+	glass.MakeEmpty();
+	tinted.MakeEmpty();
+
+	// What the setting turns to glass is laid over the blur, which it would
+	// hide when fully opaque.
+	if (fGlass != 0 && fGlassOpacity < 100) {
+		tinted = window->GlassBorderRegion();
+		if (fGlass == 2 && !window->IsTransparent())
+			tinted.Include(&window->GlassContentRegion());
+	}
+	glass = tinted;
+
+	// A window that draws with alpha decides itself what is opaque.
+	if (fGlass == 2 && window->IsTransparent())
+		glass.Include(&window->GlassContentRegion());
+
+	// Where a window with B_GLASS_WINDOW isn't opaque, it is glass, with or
+	// without a border, whatever the setting is.
+	if (window->IsGlass())
+		glass.Include(&window->TransparentRegion());
+}
+
+
+static void
+extend_region(BRegion& region, int32 by)
+{
+	BRegion extended;
+	int32 count = region.CountRects();
+	for (int32 i = 0; i < count; i++) {
+		BRect rect = region.RectAt(i);
+		rect.InsetBy(-by, -by);
+		extended.Include(rect);
+	}
+	region = extended;
+}
+
+
+static BRect
+extend_frame(const BRect& frame, int32 by)
+{
+	BRect extended(frame);
+	extended.InsetBy(-by, -by);
+	return extended;
+}
+
+
+/*!	Finds out what has to be drawn again for \a damage when there is glass.
+
+	A pixel of glass changes when anything behind it changes within the reach
+	of the blur: \a changed is the damage and those pixels. Going from the
+	back to the front, the glass of one window can change that of another one
+	in front of it, but not its own.
+
+	To draw a pixel of glass, everything within that reach has to be drawn as
+	well, up to the window it belongs to, and with it the glass behind that
+	is there: \a glassReach is what is around the glass to be drawn, and
+	\a drawn is \a changed and that. What is only in \a drawn doesn't change,
+	and is put back as it was after it has been drawn.
+
+	Glass that is hidden doesn't count, unless glass in front of it blurs it.
+	Only the windows that are close enough to the damage for that to matter
+	are looked at closely.
+*/
+void
+Compositor::_GetGlassDamage(const BRegion& damage, BRegion& changed,
+	BRegion& drawn, BRegion& glassReach)
+{
+	changed = damage;
+	drawn = damage;
+	glassReach.MakeEmpty();
+	fGlassWindows.clear();
+	if (damage.CountRects() == 0)
+		return;
+
+	// The windows that can have glass, from the front to the back. Without
+	// the setting, only those that ask for it have any.
+	bool anyGlass = fGlass != 0;
+	WindowList& windows = fDesktop->CurrentWindows();
+	int32 workspace = fDesktop->CurrentWorkspace();
+	for (Window* window = windows.LastWindow(); window != NULL;
+			window = window->PreviousWindow(workspace)) {
+		if (window->IsHidden() || !window->IsBufferReady()
+			|| window->TopLayerStackWindow() != window) {
+			continue;
+		}
+
+		// A wobbling window has no glass, and hides nothing where its
+		// outline is.
+		const Wobble* wobble = _WobbleFor(window);
+		if (wobble != NULL && wobble->ready && !wobble->flat)
+			continue;
+
+		if (window->IsGlass())
+			anyGlass = true;
+
+		fGlassWindows.push_back(GlassWindow());
+		GlassWindow& entry = fGlassWindows.back();
+		entry.window = window;
+		entry.bounds = window->Shape().Bounds();
+		entry.nearby = false;
+	}
+	if (!anyGlass) {
+		fGlassWindows.clear();
+		return;
+	}
+
+	// Which of them are nearby, by their frames: from the back to the front,
+	// what changes can reach as far as the windows in front of it, and from
+	// the front to the back, what is drawn for that as far as those behind.
+	BRect reach = extend_frame(damage.Frame(), kBlurReach);
+	for (size_t i = fGlassWindows.size(); i-- > 0;) {
+		const BRect& bounds = fGlassWindows[i].bounds;
+		if (bounds.Intersects(reach))
+			reach = reach | extend_frame(bounds & reach, kBlurReach);
+	}
+	for (size_t i = 0; i < fGlassWindows.size(); i++) {
+		GlassWindow& entry = fGlassWindows[i];
+		if (!entry.bounds.Intersects(reach))
+			continue;
+
+		entry.nearby = true;
+		reach = reach | extend_frame(entry.bounds & reach, kBlurReach);
+	}
+
+	// From the front to the back, the glass that matters: hidden glass only
+	// where glass in between blurs it.
+	BRegion hidden;
+	bool hasGlass = false;
+	for (size_t i = 0; i < fGlassWindows.size(); i++) {
+		GlassWindow& entry = fGlassWindows[i];
+		if (!entry.nearby)
+			continue;
+
+		Window* window = entry.window;
+		_GetGlass(window, entry.glass, entry.tinted);
+		entry.glass.IntersectWith(&window->CompositeRegion());
+		entry.visible = entry.glass;
+		entry.visible.Exclude(&hidden);
+
+		if (window->CompositeAlpha() == 255) {
+			BRegion opaque(window->Shape().OpaqueRegion());
+			if (window->IsTransparent())
+				opaque.Exclude(&window->TransparentRegion());
+			opaque.Exclude(&entry.tinted);
+			hidden.Include(&opaque);
+		}
+		if (entry.visible.CountRects() > 0) {
+			BRegion around(entry.visible);
+			extend_region(around, kBlurReach);
+			hidden.Exclude(&around);
+			hasGlass = true;
+		}
+	}
+	if (!hasGlass)
+		return;
+
+	for (size_t i = fGlassWindows.size(); i-- > 0;) {
+		const GlassWindow& entry = fGlassWindows[i];
+		if (entry.visible.CountRects() == 0)
+			continue;
+
+		BRegion part(changed);
+		extend_region(part, kBlurReach);
+		part.IntersectWith(&entry.visible);
+		changed.Include(&part);
+	}
+
+	// From the front to the back, so that what is drawn of the glass of one
+	// window to be blurred by another one is drawn right as well.
+	drawn = changed;
+	for (size_t i = 0; i < fGlassWindows.size(); i++) {
+		BRegion around(drawn);
+		around.IntersectWith(&fGlassWindows[i].visible);
+		if (around.CountRects() == 0)
+			continue;
+		extend_region(around, kBlurReach);
+		drawn.Include(&around);
+		glassReach.Include(&around);
+	}
+}
+
+
+/*!	The glass of \a window, as found by _GetGlassDamage(), if it is close
+	enough to the damage to matter. The windows are looked up from the front
+	to the back, from \a index on.
+*/
+const Compositor::GlassWindow*
+Compositor::_GlassFor(const Window* window, size_t& index) const
+{
+	for (size_t i = index; i < fGlassWindows.size(); i++) {
+		if (fGlassWindows[i].window != window)
+			continue;
+
+		index = i + 1;
+		return fGlassWindows[i].nearby ? &fGlassWindows[i] : NULL;
+	}
+	return NULL;
+}
+
+
+void
+Compositor::_SavePixels(RenderingBuffer* target, const BRegion& region,
+	std::vector<uint32>& pixels)
+{
+	size_t total = 0;
+	int32 count = region.CountRects();
+	for (int32 i = 0; i < count; i++) {
+		clipping_rect rect = region.RectAtInt(i);
+		total += (size_t)(rect.right - rect.left + 1)
+			* (rect.bottom - rect.top + 1);
+	}
+	pixels.resize(total);
+
+	uint8* bits = (uint8*)target->Bits();
+	uint32 bytesPerRow = target->BytesPerRow();
+	uint32* saved = total > 0 ? &pixels[0] : NULL;
+	for (int32 i = 0; i < count; i++) {
+		clipping_rect rect = region.RectAtInt(i);
+		int32 width = rect.right - rect.left + 1;
+		for (int32 y = rect.top; y <= rect.bottom; y++) {
+			memcpy(saved, bits + y * bytesPerRow + rect.left * 4,
+				(size_t)width * 4);
+			saved += width;
+		}
+	}
+}
+
+
+//!	Puts back what _SavePixels() kept of the same \a region.
+void
+Compositor::_RestorePixels(RenderingBuffer* target, const BRegion& region,
+	const std::vector<uint32>& pixels)
+{
+	uint8* bits = (uint8*)target->Bits();
+	uint32 bytesPerRow = target->BytesPerRow();
+	const uint32* saved = pixels.empty() ? NULL : &pixels[0];
+	int32 count = region.CountRects();
+	for (int32 i = 0; i < count; i++) {
+		clipping_rect rect = region.RectAtInt(i);
+		int32 width = rect.right - rect.left + 1;
+		for (int32 y = rect.top; y <= rect.bottom; y++) {
+			memcpy(bits + y * bytesPerRow + rect.left * 4, saved,
+				(size_t)width * 4);
+			saved += width;
+		}
+	}
+}
+
+
+/*!	Blurs what has been drawn in \a region. What is drawn around it, within
+	the reach of the blur, is taken in as well, but left as it is.
+*/
+void
+Compositor::_Blur(RenderingBuffer* target, const BRegion& region)
+{
+	int32 count = region.CountRects();
+	fBlurRects.resize(count);
+	for (int32 i = 0; i < count; i++)
+		fBlurRects[i] = region.RectAtInt(i);
+	if (count == 0)
+		return;
+
+	fGlassBlur.Blur((uint8*)target->Bits(), target->BytesPerRow(),
+		target->Width(), target->Height(), &fBlurRects[0], count);
+}
+
+
+//!	How much of the pixel at \a x, \a y the corners of \a shape cover.
+static uint8
+edge_coverage(const WindowShape& shape, int32 x, int32 y)
+{
+	const std::vector<WindowShape::Corner>& corners = shape.Corners();
+	for (size_t c = 0; c < corners.size(); c++) {
+		const WindowShape::Corner& corner = corners[c];
+		if (x < corner.frame.left || x > corner.frame.right
+			|| y < corner.frame.top || y > corner.frame.bottom) {
+			continue;
+		}
+
+		const uint8* coverage = WindowShape::CoverageFor(corner.radius);
+		if (coverage == NULL)
+			return 255;
+
+		int32 row = y - (int32)corner.frame.top;
+		if (corner.kind == WindowShape::LEFT_BOTTOM
+			|| corner.kind == WindowShape::RIGHT_BOTTOM) {
+			row = corner.radius - 1 - row;
+		}
+		int32 column = x - (int32)corner.frame.left;
+		if (corner.kind == WindowShape::RIGHT_TOP
+			|| corner.kind == WindowShape::RIGHT_BOTTOM) {
+			column = corner.radius - 1 - column;
+		}
+		return coverage[row * corner.radius + column];
+	}
+	return 255;
+}
+
+
+/*!	Goes from what is behind a window's corners as it is, \a sharp, as kept
+	by _SavePixels() for the same \a region, to its blur, by how much of each
+	pixel the corners cover.
+*/
+void
+Compositor::_MixEdges(RenderingBuffer* target, Window* window,
+	const BRegion& region, const std::vector<uint32>& sharp)
+{
+	const WindowShape& shape = window->Shape();
+	uint8* bits = (uint8*)target->Bits();
+	uint32 bytesPerRow = target->BytesPerRow();
+	const uint8* saved = (const uint8*)&sharp[0];
+
+	int32 count = region.CountRects();
+	for (int32 i = 0; i < count; i++) {
+		clipping_rect rect = region.RectAtInt(i);
+		for (int32 y = rect.top; y <= rect.bottom; y++) {
+			uint8* dst = bits + y * bytesPerRow + rect.left * 4;
+			for (int32 x = rect.left; x <= rect.right; x++) {
+				uint32 cover = edge_coverage(shape, x, y);
+				uint32 inverse = 255 - cover;
+				dst[0] = (dst[0] * cover + saved[0] * inverse + 127) / 255;
+				dst[1] = (dst[1] * cover + saved[1] * inverse + 127) / 255;
+				dst[2] = (dst[2] * cover + saved[2] * inverse + 127) / 255;
+				saved += 4;
+				dst += 4;
+			}
+		}
+	}
 }
 
 
