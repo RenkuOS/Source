@@ -23,6 +23,8 @@ multi_audio_control_generic(cookie_type* cookie, uint32 op, void* arg, size_t le
 					!= B_OK)
 				return B_BAD_ADDRESS;
 
+			// the driver may fill fewer channels than are copied back
+			memset(channels, 0, sizeof(channels));
 			originalChannels = description.channels;
 			description.channels = channels;
 			if (description.request_channel_count > 16)
@@ -44,7 +46,7 @@ multi_audio_control_generic(cookie_type* cookie, uint32 op, void* arg, size_t le
 		{
 			multi_channel_enable* data = (multi_channel_enable*)arg;
 			multi_channel_enable enable;
-			uint32 enable_bits;
+			uint32 enable_bits = 0;
 			uchar* orig_enable_bits;
 
 			if (user_memcpy(&enable, data, sizeof(enable)) != B_OK
