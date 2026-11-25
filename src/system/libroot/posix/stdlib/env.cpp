@@ -18,6 +18,7 @@
 #include <stdlib_private.h>
 #include <syscall_utils.h>
 #include <user_runtime.h>
+#include <user_thread.h>
 
 
 static const char* const kEnvLockName = "env lock";
@@ -28,9 +29,13 @@ static char **sManagedEnviron;
 char **environ = NULL;
 
 
+/*!	Signals stay deferred while the lock is held: a signal handler on this
+	thread may call fork(), which is async-signal-safe and takes the lock.
+*/
 static inline void
 lock_variables(void)
 {
+	defer_signals();
 	mutex_lock(&sEnvLock);
 }
 
@@ -39,6 +44,7 @@ static inline void
 unlock_variables(void)
 {
 	mutex_unlock(&sEnvLock);
+	undefer_signals();
 }
 
 
@@ -205,13 +211,6 @@ __init_env(const struct user_space_program_args *args)
 	// protect our implementation
 	environ = args->env;
 	sManagedEnviron = NULL;
-}
-
-
-void
-__init_env_post_heap()
-{
-	atfork(environ_fork_hook);
 }
 
 
