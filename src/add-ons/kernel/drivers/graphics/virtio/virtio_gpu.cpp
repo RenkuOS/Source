@@ -125,9 +125,15 @@ virtio_gpu_drain_queues(virtio_gpu_driver_info* info)
 }
 
 
+/*!	Sends \a cmd and waits for \a response. When \a headerSize is not 0,
+	the first \a headerSize bytes of the command and the rest go in separate
+	descriptors, as Linux does for commands with trailing data: Parallels
+	Desktop fails RESOURCE_ATTACH_BACKING with ERR_INVALID_PARAMETER when its
+	memory entries share the header's descriptor.
+*/
 status_t
 virtio_gpu_send_cmd(virtio_gpu_driver_info* info, void *cmd, size_t cmdSize, void *response,
-    size_t responseSize)
+    size_t responseSize, size_t headerSize = 0)
 {
 	struct virtio_gpu_ctrl_hdr *hdr = (struct virtio_gpu_ctrl_hdr *)info->commandBuffer;
 	struct virtio_gpu_ctrl_hdr *responseHdr = (struct virtio_gpu_ctrl_hdr *)response;
@@ -140,11 +146,21 @@ virtio_gpu_send_cmd(virtio_gpu_driver_info* info, void *cmd, size_t cmdSize, voi
 	physical_entry entries[] {
 		{ info->commandPhysAddr, cmdSize },
 		{ info->commandPhysAddr + cmdSize, responseSize },
+		{ 0, 0 },
 	};
+	size_t readCount = 1;
+	if (headerSize != 0 && headerSize < cmdSize) {
+		entries[2] = entries[1];
+		entries[0].size = headerSize;
+		entries[1].address = info->commandPhysAddr + headerSize;
+		entries[1].size = cmdSize - headerSize;
+		readCount = 2;
+	}
 	if (!info->virtio->queue_is_empty(info->controlQueue))
 		return B_ERROR;
 
-	status_t status = info->virtio->queue_request_v(info->controlQueue, entries, 1, 1, NULL);
+	status_t status = info->virtio->queue_request_v(info->controlQueue, entries, readCount, 1,
+		NULL);
 	if (status != B_OK)
 		return status;
 
@@ -290,7 +306,11 @@ virtio_gpu_attach_backing(virtio_gpu_driver_info* info, int resourceId)
 		backing.backing.nr_entries++;
 	}
 
-	virtio_gpu_send_cmd(info, &backing, sizeof(backing), &response, sizeof(response));
+	// Send only the entries in use, in their own descriptor.
+	size_t cmdSize = sizeof(backing.backing)
+		+ backing.backing.nr_entries * sizeof(backing.entries[0]);
+	virtio_gpu_send_cmd(info, &backing, cmdSize, &response, sizeof(response),
+		sizeof(backing.backing));
 
 	if (response.type != VIRTIO_GPU_RESP_OK_NODATA) {
 		ERROR("virtio_gpu_attach_backing failed: %d\n", response.type);
