@@ -101,10 +101,13 @@
 #define PLAYBACK_BUFFER_TIME \
 	((bigtime_t)PLAYBACK_BUFFER_FRAMES * 1000000 / PLAYBACK_RATE)
 
-// How the playback thread waits for the next buffer: it sleeps most of a
-// buffer after a change, then checks every POLL_INTERVAL.
+// How the playback thread waits for the next buffer: woken by the position
+// message of the DSP, or, without its interrupt, by polling: sleeping most
+// of a buffer after a change, then checking every POLL_INTERVAL.
 #define POLL_INTERVAL				500
 #define POLL_EARLY_WAKEUP			3000
+// short enough that a lost position message does not skip a buffer
+#define POSITION_TIMEOUT			(PLAYBACK_BUFFER_TIME / 4)
 #define EXCHANGE_TIMEOUT			500000
 
 
@@ -139,6 +142,7 @@ struct intel_lpe_driver {
 	int32					running;
 	thread_id				playbackThread;
 	sem_id					bufferReadySem;
+	sem_id					positionSem;
 	bool					capturing;
 
 	// Protects the output routing: speakers or headphones.
@@ -372,6 +376,20 @@ read_firmware(uint8** _data, size_t* _size)
 }
 
 
+/*!	Called from the DSP interrupt for each period a stream completed. */
+static void
+position_reported(void* cookie, uint32 direction)
+{
+	intel_lpe_driver* driver = (intel_lpe_driver*)cookie;
+	if (direction == LPE_PLAYBACK)
+		release_sem_etc(driver->positionSem, 1, B_DO_NOT_RESCHEDULE);
+
+	static int32 sFirst = 0;
+	if (atomic_add(&sFirst, 1) == 0)
+		TRACE_ALWAYS("position messages from the DSP arrive\n");
+}
+
+
 static status_t
 boot_dsp(intel_lpe_driver* driver)
 {
@@ -391,6 +409,8 @@ boot_dsp(intel_lpe_driver* driver)
 
 	MutexLocker dspLocker(driver->dspLock);
 	status = lpe_dsp_init(&driver->dsp);
+	driver->dsp.positionHook = position_reported;
+	driver->dsp.hookCookie = driver;
 	if (status == B_OK) {
 		driver->dspInitialized = true;
 		status = lpe_dsp_boot(&driver->dsp, image, size);
@@ -815,7 +835,11 @@ playback_thread(void* data)
 		uint32 current = (uint32)(position.host_posn / PLAYBACK_BUFFER_SIZE)
 			% PLAYBACK_BUFFERS;
 		if (current == last) {
-			snooze(POLL_INTERVAL);
+			if (driver->dsp.interruptsEnabled) {
+				acquire_sem_etc(driver->positionSem, 1, B_RELATIVE_TIMEOUT,
+					POSITION_TIMEOUT);
+			} else
+				snooze(POLL_INTERVAL);
 			continue;
 		}
 		last = current;
@@ -842,7 +866,8 @@ playback_thread(void* data)
 		restore_interrupts(state);
 
 		release_sem_etc(driver->bufferReadySem, 1, B_DO_NOT_RESCHEDULE);
-		snooze(PLAYBACK_BUFFER_TIME - POLL_EARLY_WAKEUP);
+		if (!driver->dsp.interruptsEnabled)
+			snooze(PLAYBACK_BUFFER_TIME - POLL_EARLY_WAKEUP);
 	}
 	return 0;
 }
@@ -857,6 +882,8 @@ playback_start(intel_lpe_driver* driver)
 	int32 count;
 	if (get_sem_count(driver->bufferReadySem, &count) == B_OK && count > 0)
 		acquire_sem_etc(driver->bufferReadySem, count, B_RELATIVE_TIMEOUT, 0);
+	if (get_sem_count(driver->positionSem, &count) == B_OK && count > 0)
+		acquire_sem_etc(driver->positionSem, count, B_RELATIVE_TIMEOUT, 0);
 
 	status_t status;
 	{
@@ -1403,6 +1430,7 @@ intel_lpe_init_driver(device_node* node, void** _driverCookie)
 	driver->playbackThread = -1;
 	for (int32 i = 0; i < LPE_STREAM_COUNT; i++)
 		driver->ringArea[i] = driver->tableArea[i] = -1;
+	driver->bufferReadySem = driver->positionSem = -1;
 	mutex_init(&driver->lock, "intel_lpe");
 	mutex_init(&driver->dspLock, "intel_lpe dsp");
 	mutex_init(&driver->outputLock, "intel_lpe output");
@@ -1430,8 +1458,15 @@ intel_lpe_init_driver(device_node* node, void** _driverCookie)
 		if (driver->bufferReadySem < 0)
 			status = driver->bufferReadySem;
 	}
+	if (status == B_OK) {
+		driver->positionSem = create_sem(0, "intel_lpe position");
+		if (driver->positionSem < 0)
+			status = driver->positionSem;
+	}
 	if (status != B_OK) {
 		TRACE_ALWAYS("probe failed: %s\n", strerror(status));
+		if (driver->bufferReadySem >= 0)
+			delete_sem(driver->bufferReadySem);
 		delete_rings(driver);
 		mutex_destroy(&driver->outputLock);
 		mutex_destroy(&driver->dspLock);
@@ -1466,6 +1501,7 @@ intel_lpe_uninit_driver(void* driverCookie)
 	if (driver->dspInitialized)
 		lpe_dsp_uninit(&driver->dsp);
 	delete_sem(driver->bufferReadySem);
+	delete_sem(driver->positionSem);
 	delete_rings(driver);
 	mutex_destroy(&driver->outputLock);
 	mutex_destroy(&driver->dspLock);

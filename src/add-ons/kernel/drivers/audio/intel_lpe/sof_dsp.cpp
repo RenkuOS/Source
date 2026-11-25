@@ -14,6 +14,7 @@
 
 #include <ACPI.h>
 #include <KernelExport.h>
+#include <arch/int.h>
 
 #include <stdio.h>
 #include <string.h>
@@ -156,12 +157,22 @@ parse_lpe_resources(acpi_resource* resource, void* context)
 			length = resource->Data.Memory32.AddressLength;
 			break;
 		case ACPI_RESOURCE_TYPE_IRQ:
-			if (dsp->irq == 0)
+			if (dsp->irq == 0) {
 				dsp->irq = resource->Data.Irq.Interrupts[0];
+				dsp->irqLevel
+					= resource->Data.Irq.Triggering == ACPI_LEVEL_SENSITIVE;
+				dsp->irqActiveLow
+					= resource->Data.Irq.Polarity == ACPI_ACTIVE_LOW;
+			}
 			return AE_OK;
 		case ACPI_RESOURCE_TYPE_EXTENDED_IRQ:
-			if (dsp->irq == 0)
+			if (dsp->irq == 0) {
 				dsp->irq = resource->Data.ExtendedIrq.Interrupts[0];
+				dsp->irqLevel = resource->Data.ExtendedIrq.Triggering
+					== ACPI_LEVEL_SENSITIVE;
+				dsp->irqActiveLow = resource->Data.ExtendedIrq.Polarity
+					== ACPI_ACTIVE_LOW;
+			}
 			return AE_OK;
 		default:
 			return AE_OK;
@@ -185,6 +196,8 @@ lpe_dsp_init(lpe_dsp* dsp)
 	memset(dsp, 0, sizeof(*dsp));
 	dsp->area = -1;
 	dsp->pciArea = -1;
+	dsp->replySem = -1;
+	B_INITIALIZE_SPINLOCK(&dsp->lock);
 
 	acpi_module_info* acpi;
 	if (get_module(B_ACPI_MODULE_NAME, (module_info**)&acpi) != B_OK)
@@ -251,6 +264,9 @@ lpe_dsp_init(lpe_dsp* dsp)
 }
 
 
+static int32 lpe_dsp_interrupt(void* data);
+
+
 void
 lpe_dsp_uninit(lpe_dsp* dsp)
 {
@@ -258,6 +274,10 @@ lpe_dsp_uninit(lpe_dsp* dsp)
 		// put the DSP back into reset, with its interrupts masked
 		shim_update64(dsp, SHIM_IMRX, 0x3, 0x3);
 		shim_update64(dsp, SHIM_IMRD, 0x3, 0x3);
+		if (dsp->interruptsEnabled) {
+			remove_io_interrupt_handler(dsp->irq, lpe_dsp_interrupt, dsp);
+			dsp->interruptsEnabled = false;
+		}
 		shim_update64(dsp, SHIM_CSR,
 			SHIM_BYT_CSR_RST | SHIM_BYT_CSR_VECTOR_SEL,
 			SHIM_BYT_CSR_RST | SHIM_BYT_CSR_VECTOR_SEL);
@@ -267,6 +287,10 @@ lpe_dsp_uninit(lpe_dsp* dsp)
 	if (dsp->pciArea >= 0) {
 		delete_area(dsp->pciArea);
 		dsp->pciArea = -1;
+	}
+	if (dsp->replySem >= 0) {
+		delete_sem(dsp->replySem);
+		dsp->replySem = -1;
 	}
 }
 
@@ -453,6 +477,21 @@ handle_fw_ready(lpe_dsp* dsp)
 }
 
 
+struct pipeline_ids {
+	uint32	pipeline;
+	uint32	host;
+	uint32	buffer;
+	uint32	dai;
+	uint32	scheduler;
+};
+
+// playback: host -> buffer -> SSP0, capture: SSP0 -> buffer -> host
+static const pipeline_ids kPipelines[LPE_STREAM_COUNT] = {
+	{ 1, 1, 2, 3, 4 },
+	{ 2, 5, 6, 7, 8 },
+};
+
+
 /*!	Handles a message the DSP sent, if there is one, and tells the DSP that
 	the host is done with it.
 */
@@ -477,9 +516,21 @@ handle_dsp_message(lpe_dsp* dsp)
 			handle_fw_ready(dsp);
 		else if ((header[1] & SOF_GLB_TYPE_MASK) == SOF_IPC_GLB_TRACE_MSG) {
 			// trace positions: nothing to do without a trace buffer
+		} else if ((header[1] & (SOF_GLB_TYPE_MASK | SOF_CMD_TYPE_MASK))
+				== (SOF_IPC_GLB_STREAM_MSG | SOF_IPC_STREAM_POSITION)) {
+			// the low 16 bits of the command name the host component
+			uint32 component = header[1] & 0xffff;
+			for (uint32 i = 0; i < LPE_STREAM_COUNT; i++) {
+				if (component == kPipelines[i].host && dsp->positionHook != NULL)
+					dsp->positionHook(dsp->hookCookie, i);
+			}
 		} else {
-			TRACE_ALWAYS("DSP message %#" B_PRIx32 " (%" B_PRIu32 " bytes)\n",
-				header[1], header[0]);
+			// this runs in the interrupt handler: do not flood the log
+			static int32 sReported = 0;
+			if (atomic_add(&sReported, 1) < 20) {
+				TRACE_ALWAYS("DSP message %#" B_PRIx32 " (%" B_PRIu32
+					" bytes)\n", header[1], header[0]);
+			}
 		}
 	}
 
@@ -487,6 +538,78 @@ handle_dsp_message(lpe_dsp* dsp)
 	shim_update64(dsp, SHIM_IPCD, SHIM_BYT_IPC_BUSY | SHIM_BYT_IPC_DONE,
 		SHIM_BYT_IPC_DONE);
 	return true;
+}
+
+
+/*!	The doorbell interrupt, as in Linux's atom_irq_handler() and
+	atom_irq_thread(). A reply (IPCX DONE) wakes send_message(), which reads
+	it; a message from the DSP (IPCD BUSY) is handled here. Each source is
+	masked while it is pending, so the level interrupt does not repeat.
+*/
+static int32
+lpe_dsp_interrupt(void* data)
+{
+	lpe_dsp* dsp = (lpe_dsp*)data;
+	int32 result = B_UNHANDLED_INTERRUPT;
+
+	acquire_spinlock(&dsp->lock);
+	uint64 ipcx = shim_read64(dsp, SHIM_IPCX);
+	uint64 ipcd = shim_read64(dsp, SHIM_IPCD);
+	uint64 imrx = shim_read64(dsp, SHIM_IMRX);
+
+	if ((ipcx & SHIM_BYT_IPC_DONE) != 0 && (imrx & SHIM_IMRX_DONE) == 0) {
+		shim_update64(dsp, SHIM_IMRX, SHIM_IMRX_DONE, SHIM_IMRX_DONE);
+		release_sem_etc(dsp->replySem, 1, B_DO_NOT_RESCHEDULE);
+		result = B_INVOKE_SCHEDULER;
+	}
+	if ((ipcd & SHIM_BYT_IPC_BUSY) != 0 && (imrx & SHIM_IMRX_BUSY) == 0) {
+		handle_dsp_message(dsp);
+		if (result == B_UNHANDLED_INTERRUPT)
+			result = B_HANDLED_INTERRUPT;
+	}
+	release_spinlock(&dsp->lock);
+
+	// a reply or the position hook may have released a semaphore
+	return result == B_UNHANDLED_INTERRUPT ? result : B_INVOKE_SCHEDULER;
+}
+
+
+/*!	Switches the doorbells from polling to interrupts once the firmware
+	runs. Without a usable interrupt the driver keeps polling.
+*/
+static void
+enable_interrupts(lpe_dsp* dsp)
+{
+	if (dsp->irq == 0)
+		return;
+	dsp->replySem = create_sem(0, "intel_lpe IPC reply");
+	if (dsp->replySem < 0)
+		return;
+
+	if (dsp->irqLevel) {
+		arch_int_configure_io_interrupt(dsp->irq, B_LEVEL_TRIGGERED,
+			dsp->irqActiveLow ? B_LOW_ACTIVE_POLARITY : B_HIGH_ACTIVE_POLARITY);
+	}
+	if (install_io_interrupt_handler(dsp->irq, lpe_dsp_interrupt, dsp, 0)
+			!= B_OK) {
+		TRACE_ALWAYS("cannot use IRQ %" B_PRIu32 ", polling the DSP\n",
+			dsp->irq);
+		delete_sem(dsp->replySem);
+		dsp->replySem = -1;
+		return;
+	}
+
+	cpu_status state = disable_interrupts();
+	acquire_spinlock(&dsp->lock);
+	dsp->interruptsEnabled = true;
+	// messages from the DSP interrupt; replies only while one is awaited
+	shim_update64(dsp, SHIM_IMRX, SHIM_IMRX_BUSY | SHIM_IMRX_DONE,
+		SHIM_IMRX_DONE);
+	release_spinlock(&dsp->lock);
+	restore_interrupts(state);
+	TRACE_ALWAYS("DSP doorbells on IRQ %" B_PRIu32 " (%s, active %s)\n",
+		dsp->irq, dsp->irqLevel ? "level" : "edge",
+		dsp->irqActiveLow ? "low" : "high");
 }
 
 
@@ -545,6 +668,7 @@ lpe_dsp_boot(lpe_dsp* dsp, const uint8* image, size_t size)
 	}
 
 	log_state(dsp, "running");
+	enable_interrupts(dsp);
 	return B_OK;
 }
 
@@ -552,7 +676,7 @@ lpe_dsp_boot(lpe_dsp* dsp, const uint8* image, size_t size)
 void
 lpe_dsp_poll_messages(lpe_dsp* dsp)
 {
-	if (dsp->area >= 0 && dsp->ready)
+	if (dsp->area >= 0 && dsp->ready && !dsp->interruptsEnabled)
 		handle_dsp_message(dsp);
 }
 
@@ -579,17 +703,39 @@ send_message(lpe_dsp* dsp, const void* message, size_t size, void* reply,
 	}
 
 	mailbox_write(dsp, dsp->hostBoxOffset, message, size);
-	shim_write64(dsp, SHIM_IPCX, SHIM_BYT_IPC_BUSY);
+	if (dsp->interruptsEnabled) {
+		// a reply that timed out earlier may have left a count behind
+		while (acquire_sem_etc(dsp->replySem, 1, B_RELATIVE_TIMEOUT, 0)
+				== B_OK) {
+		}
+		cpu_status state = disable_interrupts();
+		acquire_spinlock(&dsp->lock);
+		shim_update64(dsp, SHIM_IMRX, SHIM_IMRX_DONE, 0);
+		shim_write64(dsp, SHIM_IPCX, SHIM_BYT_IPC_BUSY);
+		release_spinlock(&dsp->lock);
+		restore_interrupts(state);
 
-	bigtime_t timeout = system_time() + IPC_TIMEOUT;
-	while ((shim_read64(dsp, SHIM_IPCX) & SHIM_BYT_IPC_DONE) == 0) {
-		handle_dsp_message(dsp);
-		if (system_time() > timeout) {
+		status_t status = acquire_sem_etc(dsp->replySem, 1,
+			B_RELATIVE_TIMEOUT, IPC_TIMEOUT);
+		if (status != B_OK
+			&& (shim_read64(dsp, SHIM_IPCX) & SHIM_BYT_IPC_DONE) == 0) {
 			TRACE_ALWAYS("IPC %#" B_PRIx32 ": no reply\n", command);
 			log_state(dsp, "IPC timeout");
 			return B_TIMED_OUT;
 		}
-		spin(50);
+	} else {
+		shim_write64(dsp, SHIM_IPCX, SHIM_BYT_IPC_BUSY);
+
+		bigtime_t timeout = system_time() + IPC_TIMEOUT;
+		while ((shim_read64(dsp, SHIM_IPCX) & SHIM_BYT_IPC_DONE) == 0) {
+			handle_dsp_message(dsp);
+			if (system_time() > timeout) {
+				TRACE_ALWAYS("IPC %#" B_PRIx32 ": no reply\n", command);
+				log_state(dsp, "IPC timeout");
+				return B_TIMED_OUT;
+			}
+			spin(50);
+		}
 	}
 
 	sof_ipc_reply header;
@@ -602,8 +748,15 @@ send_message(lpe_dsp* dsp, const void* message, size_t size, void* reply,
 		mailbox_read(dsp, dsp->hostBoxOffset, reply, length & ~3);
 	}
 
-	// clear DONE: the host has read the reply
+	// clear DONE: the host has read the reply; the DONE interrupt stays
+	// masked until the next message
+	cpu_status state = disable_interrupts();
+	acquire_spinlock(&dsp->lock);
 	shim_update64(dsp, SHIM_IPCX, SHIM_BYT_IPC_DONE, 0);
+	if (dsp->interruptsEnabled)
+		shim_update64(dsp, SHIM_IMRX, SHIM_IMRX_DONE, SHIM_IMRX_DONE);
+	release_spinlock(&dsp->lock);
+	restore_interrupts(state);
 
 	if (header.error < 0) {
 		TRACE_ALWAYS("IPC %#" B_PRIx32 " failed: error %" B_PRId32 "\n",
@@ -620,21 +773,6 @@ init_header(sof_ipc_cmd_hdr* header, size_t size, uint32 command)
 	header->size = size;
 	header->cmd = command;
 }
-
-
-struct pipeline_ids {
-	uint32	pipeline;
-	uint32	host;
-	uint32	buffer;
-	uint32	dai;
-	uint32	scheduler;
-};
-
-// playback: host -> buffer -> SSP0, capture: SSP0 -> buffer -> host
-static const pipeline_ids kPipelines[LPE_STREAM_COUNT] = {
-	{ 1, 1, 2, 3, 4 },
-	{ 2, 5, 6, 7, 8 },
-};
 
 
 static status_t
@@ -811,9 +949,9 @@ lpe_dsp_start_stream(lpe_dsp* dsp, uint32 direction,
 	params.params.sample_valid_bytes = 2;
 	params.params.sample_container_bytes = 2;
 	params.params.host_period_bytes = buffer->periodBytes;
-	// no position messages: the firmware writes the position into the
-	// stream mailbox every period instead
-	params.params.no_stream_position = 1;
+	// a position message every period wakes the driver; the firmware also
+	// keeps the position in the stream mailbox up to date
+	params.params.no_stream_position = dsp->interruptsEnabled ? 0 : 1;
 	params.params.cont_update_posn = 1;
 	params.params.chmap[0] = 3;
 		// SOF_CHMAP_FL

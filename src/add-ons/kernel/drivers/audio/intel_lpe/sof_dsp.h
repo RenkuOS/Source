@@ -13,6 +13,7 @@
 #define INTEL_LPE_SOF_DSP_H
 
 
+#include <KernelExport.h>
 #include <OS.h>
 
 
@@ -287,11 +288,17 @@ struct sof_ipc_stream_posn {
 #define LPE_STREAM_COUNT			2
 
 
+// Called from the interrupt handler when the DSP reports that a stream
+// finished a period.
+typedef void (*lpe_position_hook)(void* cookie, uint32 direction);
+
 struct lpe_dsp {
 	phys_addr_t		physicalBase;
 	size_t			length;
 	phys_addr_t		pciBase;
 	uint32			irq;
+	bool			irqLevel;
+	bool			irqActiveLow;
 
 	area_id			area;
 	uint8*			registers;
@@ -309,6 +316,13 @@ struct lpe_dsp {
 
 	bool			pipelineCreated[LPE_STREAM_COUNT];
 	uint32			positionOffset[LPE_STREAM_COUNT];
+
+	// after the boot, the doorbells raise interrupts instead of being polled
+	bool			interruptsEnabled;
+	spinlock		lock;
+	sem_id			replySem;
+	lpe_position_hook positionHook;
+	void*			hookCookie;
 };
 
 // the host buffer of a stream: a page table (one page) followed by
