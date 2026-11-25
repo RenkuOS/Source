@@ -74,6 +74,8 @@ const uint32 kMsgJoinNetwork = 'join';
 const uint32 kMinIconWidth = 16;
 const uint32 kMinIconHeight = 16;
 
+const bigtime_t kRescanInterval = 30000000;
+
 
 //	#pragma mark - NetworkStatusView
 
@@ -82,7 +84,8 @@ NetworkStatusView::NetworkStatusView(BRect frame, int32 resizingMode,
 		bool inDeskbar)
 	: BView(frame, kDeskbarItemName, resizingMode,
 		B_WILL_DRAW | B_TRANSPARENT_BACKGROUND | B_FRAME_EVENTS),
-	fInDeskbar(inDeskbar)
+	fInDeskbar(inDeskbar),
+	fLastScan(0)
 {
 	_Init();
 
@@ -101,7 +104,8 @@ NetworkStatusView::NetworkStatusView(BRect frame, int32 resizingMode,
 
 NetworkStatusView::NetworkStatusView(BMessage* archive)
 	: BView(archive),
-	fInDeskbar(false)
+	fInDeskbar(false),
+	fLastScan(0)
 {
 	app_info info;
 	if (be_app->GetAppInfo(&info) == B_OK
@@ -412,6 +416,14 @@ NetworkStatusView::MouseDown(BPoint point)
 		device.GetNetworks(networks, networksCount);
 		networksCount = WirelessNetworkMenuItem::MergeSameName(networks,
 			networksCount, associated);
+		// Reading the networks does not scan while connected; look again for
+		// the next time the menu opens. Not while still connecting, the scan
+		// would leave the channel of the AP.
+		if (device.HasLink() && !associated.empty()
+			&& system_time() - fLastScan >= kRescanInterval
+			&& device.Scan(false, false) == B_OK) {
+			fLastScan = system_time();
+		}
 		for (uint32 i = 0; i < networksCount; i++) {
 			const wireless_network& network = networks[i];
 			BMessage* message = new BMessage(kMsgJoinNetwork);

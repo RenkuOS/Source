@@ -64,6 +64,7 @@ class NetworkStatusView : public BView {
 		std::map<BString, int32>
 						fInterfaceStatuses;
 		bool			fInDeskbar;
+		bigtime_t		fLastScan;
 		BBitmap*		fTrayIcons[kStatusCount];
 		BBitmap*		fNotifyIcons[kStatusCount];
 };

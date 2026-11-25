@@ -189,16 +189,14 @@ wlan_control(void* cookie, uint32 op, void* arg, size_t length)
 			if (op != SIOCS80211)
 				return B_BAD_VALUE;
 
-			// SIOCS80211SCAN is a no-op, scans cannot actually be initiated.
-			// But we can at least check if one is already in progress.
-			status_t status = EBUSY;
-
+			// Go through the driver, for its lock against a concurrent stop.
 			IFF_LOCKGIANT(ifp);
-			if (ic->ic_state == IEEE80211_S_SCAN || (ic->ic_flags & IEEE80211_F_BGSCAN) != 0)
-				status = EINPROGRESS;
+			status_t status = ifp->if_ioctl(ifp, SIOCS80211SCAN, NULL);
 			IFF_UNLOCKGIANT(ifp);
 
-			return status;
+			// The driver was restarted meanwhile. BNetworkDevice::Scan() would
+			// take ENXIO for a missing VAP.
+			return status == ENXIO ? EBUSY : status;
 		}
 
 		case IEEE80211_IOC_SCAN_RESULTS: {
@@ -224,8 +222,16 @@ wlan_control(void* cookie, uint32 op, void* arg, size_t length)
 				const bool associated = ic->ic_opmode == IEEE80211_M_STA
 					&& ic->ic_state == IEEE80211_S_RUN;
 				if (status == B_OK && nodereq_all.na_nodes != 0 && associated
-						&& IEEE80211_ADDR_EQ(nodereq.nr_bssid, ic->ic_bss->ni_bssid))
+						&& IEEE80211_ADDR_EQ(nodereq.nr_bssid, ic->ic_bss->ni_bssid)) {
+					// A beacon received outside of a scan creates the node
+					// again, but without its security settings. Take those
+					// from ic_bss, and the signal of the beacon, as for the
+					// other APs.
+					const int8_t rssi = nodereq.nr_rssi;
+					ieee80211_node2req(ic, ic->ic_bss, &nodereq);
+					nodereq.nr_rssi = rssi;
 					sawBss = true;
+				}
 				if (status == B_OK && nodereq_all.na_nodes == 0 && associated
 						&& !sawBss) {
 					// ic_bss is not in the node table, and a background scan

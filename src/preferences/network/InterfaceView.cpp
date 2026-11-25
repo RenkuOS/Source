@@ -32,6 +32,7 @@
 static const uint32 kMsgInterfaceToggle = 'onof';
 static const uint32 kMsgInterfaceRenegotiate = 'redo';
 static const uint32 kMsgJoinNetwork = 'join';
+static const bigtime_t kRescanInterval = 30000000;
 
 
 /*!	Match by SSID (BSSID only for hidden networks), not
@@ -57,7 +58,8 @@ same_network(const wireless_network& a, const wireless_network& b)
 InterfaceView::InterfaceView()
 	:
 	BGroupView(B_VERTICAL),
-	fPulseCount(0)
+	fPulseCount(0),
+	fLastScan(0)
 {
 	SetFlags(Flags() | B_PULSE_NEEDED);
 
@@ -304,6 +306,12 @@ InterfaceView::_Update(bool updateWirelessNetworks)
 			snooze(50 * 1000);
 
 			device.GetNetworks(networks, networksCount);
+		} else if (device.HasLink() && !associated.empty()
+			&& system_time() - fLastScan >= kRescanInterval) {
+			// Reading the networks does not scan while connected; look
+			// again now and then. The list is complete once the scan ends.
+			if (device.Scan(false, false) == B_OK)
+				fLastScan = system_time();
 		}
 
 		ArrayDeleter<wireless_network> networksDeleter(networks);

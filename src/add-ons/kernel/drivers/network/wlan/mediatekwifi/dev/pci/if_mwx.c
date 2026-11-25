@@ -2160,9 +2160,9 @@ mwx_attach(struct device *parent, struct device *self, void *aux)
 	ic->ic_newstate = mwx_newstate;
 #ifdef __HAIKU__
 	/*
-	 * Every read of scan results starts a background scan here, and
-	 * the firmware scan keeps the radio off channel, so unicast traffic
-	 * dies while associated. No roaming until that is solved.
+	 * The firmware scan keeps the radio off channel, so unicast traffic
+	 * dies while associated. No background scan and no roaming until
+	 * that is solved.
 	 */
 	ic->ic_bgscan_start = NULL;
 #else
