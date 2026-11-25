@@ -73,6 +73,9 @@ enum {
 
 status_t get_window_preview(int32 windowToken, BBitmap* bitmap,
 	uint32 flags = 0, BRect* _used = NULL);
+// RenkuOS: while this application wants it, hidden windows and windows on
+// other workspaces keep their last picture for get_window_preview().
+status_t keep_window_previews(bool keep);
 
 }	// namespace BPrivate
 

@@ -450,7 +450,8 @@ Desktop::Desktop(uid_t userID, const char* targetScreen)
 
 	fFocus(NULL),
 	fFront(NULL),
-	fBack(NULL)
+	fBack(NULL),
+	fKeepWindowPreviews(0)
 {
 	memset(fLastWorkspaceFocus, 0, sizeof(fLastWorkspaceFocus));
 
@@ -1499,7 +1500,7 @@ Desktop::HideWindow(Window* window, bool fromMinimize)
 		}
 	}
 
-	window->ReleaseBuffer();
+	window->ReleaseBuffer(fKeepWindowPreviews > 0);
 
 	NotifyWindowHidden(window, fromMinimize);
 
@@ -2620,6 +2621,31 @@ preview_span(int32 index, int32 count, int32 start, int32 length,
 }
 
 
+/*!	RenkuOS: while \a keep has been asked for more often than it has been
+	taken back, windows keep their buffers when they are hidden or leave the
+	current workspace, so that GetWindowPreview() can show their last
+	picture. When nobody asks anymore, the kept buffers are freed.
+*/
+void
+Desktop::KeepWindowPreviews(bool keep)
+{
+	AutoWriteLocker _(fWindowLock);
+
+	if (keep) {
+		fKeepWindowPreviews++;
+		return;
+	}
+	if (fKeepWindowPreviews == 0 || --fKeepWindowPreviews > 0)
+		return;
+
+	for (Window* window = fAllWindows.FirstWindow(); window != NULL;
+			window = window->NextWindow(kAllWindowList)) {
+		if (window->IsBufferKept())
+			window->ReleaseBuffer();
+	}
+}
+
+
 /*!	RenkuOS: draws the contents of the window \a windowToken, as they are in
 	its compositor buffer, into \a bitmap, and sets \a used to the part of the
 	bitmap that was drawn. Each pixel of the bitmap is the average of the
@@ -2664,16 +2690,27 @@ Desktop::GetWindowPreview(int32 windowToken, ServerBitmap* bitmap,
 			return B_BAD_VALUE;
 	}
 
+	// A hidden window, or one on another workspace, has nothing to show,
+	// unless its buffer was kept.
 	WindowBufferHWInterface* interface = window->BufferInterface();
-	if (interface == NULL || window->IsHidden() || !window->IsBufferReady())
+	if (interface == NULL || !window->IsBufferReady()
+		|| (window->IsHidden() && !window->IsBufferKept())) {
 		return B_NOT_ALLOWED;
+	}
 
 	const WindowBuffer& buffer = interface->Buffer();
 	const WindowShape& shape = window->Shape();
 	BRegion outline(shape.OpaqueRegion());
 	outline.Include(&shape.EdgeRegion());
+
+	// A kept buffer, and the shape, stay where the window was, even if it has
+	// been moved since.
+	BRect frame = window->Frame();
+	if (window->IsBufferKept())
+		frame.OffsetTo(buffer.Frame().LeftTop() - window->BufferOffset());
+
 	BRect content = (flags & BPrivate::WINDOW_PREVIEW_DECORATOR) != 0
-		? outline.Frame() : window->Frame();
+		? outline.Frame() : frame;
 	BRect available = content & buffer.Frame();
 	if (buffer.InitCheck() != B_OK || !available.IsValid())
 		return B_NOT_ALLOWED;
@@ -2716,7 +2753,7 @@ Desktop::GetWindowPreview(int32 windowToken, ServerBitmap* bitmap,
 	// needed, the pixels of the edge region are decided by the shape.
 	const BRegion availableRegion(available);
 	BRegion inside(shape.OpaqueRegion());
-	inside.Include(window->Frame());
+	inside.Include(frame);
 	BRegion outside(availableRegion);
 	outside.Exclude(&inside);
 	ArrayDeleter<uint8> mask;
@@ -3385,7 +3422,7 @@ Desktop::_UpdateFloating(int32 previousWorkspace, int32 nextWorkspace,
 			_Windows(previousWorkspace).RemoveWindow(floating);
 			floating->SetCurrentWorkspace(-1);
 			_HideWindow(floating);
-			floating->ReleaseBuffer();
+			floating->ReleaseBuffer(fKeepWindowPreviews > 0);
 
 			if (FocusWindow() == floating)
 				SetFocusWindow();
@@ -3641,7 +3678,7 @@ Desktop::_ChangeWindowWorkspaces(Window* window, uint32 oldWorkspaces,
 				if (i == CurrentWorkspace()) {
 					// remove its appearance from the current workspace
 					window->SetCurrentWorkspace(-1);
-					window->ReleaseBuffer();
+					window->ReleaseBuffer(fKeepWindowPreviews > 0);
 
 					if (!window->IsHidden())
 						_HideWindow(window);
@@ -4216,7 +4253,7 @@ Desktop::_SetWorkspace(int32 index, bool moveFocusWindow)
 
 		window->SetCurrentWorkspace(-1);
 		// Like a hidden window, it redraws when it can be seen again.
-		window->ReleaseBuffer();
+		window->ReleaseBuffer(fKeepWindowPreviews > 0);
 	}
 
 	fPreviousWorkspace = fCurrentWorkspace;

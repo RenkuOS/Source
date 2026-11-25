@@ -127,6 +127,7 @@ Window::Window(const BRect& frame, const char *name,
 
 	fBufferReady(false),
 	fBufferLost(false),
+	fBufferKept(false),
 	fHasRoundedCorners(false),
 	fCompositeAlpha(255),
 	fDecoratorGeneration(0)
@@ -215,6 +216,13 @@ Window::SetClipping(BRegion* stillAvailableOnScreen)
 	GetFullRegion(&fVisibleRegion);
 
 	if (fBufferInterface.IsSet()) {
+		if (fBufferKept) {
+			// Shown again: the kept picture is old, so the window is redrawn
+			// before it is shown, as with a new buffer.
+			fBufferKept = false;
+			fBufferReady = false;
+		}
+
 		BRect previousBounds = fShape.Bounds();
 		bool wasReady = fBufferReady;
 
@@ -361,18 +369,25 @@ Window::ShapeContains(const BPoint& where) const
 /*!	The window lock must be held for writing.
 */
 void
-Window::ReleaseBuffer()
+Window::ReleaseBuffer(bool keepContents)
 {
 	if (!fBufferInterface.IsSet())
 		return;
 
-	// The Painter has to let go of the memory. Nothing can draw to the window
-	// either until its clipping is rebuilt when it is shown.
-	fDrawingEngine->SetHWInterface(NULL);
-	fBufferInterface->ReleaseBuffer();
-	fDrawingEngine->SetHWInterface(fBufferInterface.Get());
+	if (keepContents && fBufferReady)
+		fBufferKept = true;
+	else {
+		// The Painter has to let go of the memory.
+		fDrawingEngine->SetHWInterface(NULL);
+		fBufferInterface->ReleaseBuffer();
+		fDrawingEngine->SetHWInterface(fBufferInterface.Get());
 
-	fBufferReady = false;
+		fBufferReady = false;
+		fBufferKept = false;
+	}
+
+	// Nothing can draw to the window until its clipping is rebuilt when it is
+	// shown.
 	fVisibleRegion.MakeEmpty();
 	fVisibleContentRegionValid = false;
 	fEffectiveDrawingRegionValid = false;

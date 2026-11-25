@@ -1911,6 +1911,26 @@ get_window_preview(int32 windowToken, BBitmap* bitmap, uint32 flags,
 	return code;
 }
 
+/*!	RenkuOS: with \a keep, windows keep their last picture when they are
+	hidden or leave the current workspace, so that get_window_preview() can
+	still show it, until this application takes it back or quits. Windows
+	that were hidden before have no picture until they are shown again. Each
+	kept picture costs the memory of the window's buffer.
+*/
+status_t
+keep_window_previews(bool keep)
+{
+	BPrivate::AppServerLink link;
+	link.StartMessage(AS_KEEP_WINDOW_PREVIEWS);
+	link.Attach<bool>(keep);
+
+	int32 code;
+	status_t status = link.FlushWithReply(code);
+	if (status != B_OK)
+		return status;
+	return code;
+}
+
 
 }	// namespace BPrivate
 

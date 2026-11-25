@@ -274,6 +274,9 @@ public:
 									BPrivate::LinkSender& sender);
 			void				WriteWindowOrder(int32 workspace,
 									BPrivate::LinkSender& sender);
+			// While at least one application asks for it, hidden windows and
+			// windows on other workspaces keep their last picture.
+			void				KeepWindowPreviews(bool keep);
 			status_t			GetWindowPreview(int32 windowToken,
 									ServerBitmap* bitmap, uint32 flags,
 									BRect& used);
@@ -403,6 +406,7 @@ private:
 
 			ObjectDeleter<Compositor>
 								fCompositor;
+			int32				fKeepWindowPreviews;
 };
 
 #endif	// DESKTOP_H

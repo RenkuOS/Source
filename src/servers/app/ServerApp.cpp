@@ -110,6 +110,7 @@ ServerApp::ServerApp(Desktop* desktop, port_id clientReplyPort,
 	fViewCursor(NULL),
 	fCursorHideLevel(0),
 	fIsActive(false),
+	fKeepsWindowPreviews(false),
 	fMemoryAllocator(new (std::nothrow) ClientMemoryAllocator(this), true),
 	fAppFontManager(NULL),
 	fScreenObserver(NULL),
@@ -176,6 +177,8 @@ ServerApp::~ServerApp()
 	snooze(20000);
 
 	fDesktop->RevertScreenModes(fTemporaryDisplayModeChange);
+	if (fKeepsWindowPreviews)
+		fDesktop->KeepWindowPreviews(false);
 
 	_StopScreenObserver();
 
@@ -3842,6 +3845,23 @@ ServerApp::_DispatchMessage(int32 code, BPrivate::LinkReceiver& link)
 			fLink.Flush();
 			break;
 		}
+		case AS_KEEP_WINDOW_PREVIEWS:
+		{
+			// RenkuOS: see BPrivate::keep_window_previews().
+			//
+			// Attached:
+			//	1) bool whether this application wants them kept
+			bool keep;
+			if (link.Read<bool>(&keep) == B_OK && keep != fKeepsWindowPreviews) {
+				fKeepsWindowPreviews = keep;
+				fDesktop->KeepWindowPreviews(keep);
+			}
+
+			fLink.StartMessage(B_OK);
+			fLink.Flush();
+			break;
+		}
+
 		case AS_GET_WINDOW_PREVIEW:
 		{
 			// RenkuOS: draws a window's contents into one of the client's
