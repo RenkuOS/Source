@@ -398,7 +398,9 @@ receive_bytes(const i2c_bus *bus, uint8 *readBuffer, ssize_t readLength)
 //	#pragma mark - exported functions
 
 
-//!	Combined i2c send+receive format
+/*!	Combined i2c send+receive format. A part of length 0 is left out: that
+	gives a send without a receive, or a receive on its own.
+*/
 status_t
 i2c_send_receive_callback(const i2c_bus *bus, uint32 slaveAddress, const uint8 *writeBuffer,
 	size_t writeLength, uint8 *readBuffer, size_t readLength)
@@ -410,29 +412,33 @@ i2c_send_receive_callback(const i2c_bus *bus, uint32 slaveAddress, const uint8 *
 	if (slaveAddress > 0xff)
 		return B_BAD_VALUE;
 
-	status = send_start_condition(bus);
-	if (status != B_OK)
-		return status;
+	if (writeLength > 0 || readLength == 0) {
+		status = send_start_condition(bus);
+		if (status != B_OK)
+			return status;
 
-	status = send_slave_address(bus, slaveAddress, true);
-	if (status != B_OK)
-		goto err;
+		status = send_slave_address(bus, slaveAddress, true);
+		if (status != B_OK)
+			goto err;
 
-	status = send_bytes(bus, writeBuffer, writeLength);
-	if (status != B_OK)
-		goto err;
+		status = send_bytes(bus, writeBuffer, writeLength);
+		if (status != B_OK)
+			goto err;
+	}
 
-	status = send_start_condition(bus);
-	if (status != B_OK)
-		return status;
+	if (readLength > 0) {
+		status = send_start_condition(bus);
+		if (status != B_OK)
+			return status;
 
-	status = send_slave_address(bus, slaveAddress, false);
-	if (status != B_OK)
-		goto err;
+		status = send_slave_address(bus, slaveAddress, false);
+		if (status != B_OK)
+			goto err;
 
-	status = receive_bytes(bus, readBuffer, readLength);
-	if (status != B_OK)
-		goto err;
+		status = receive_bytes(bus, readBuffer, readLength);
+		if (status != B_OK)
+			goto err;
+	}
 
 	return send_stop_condition(bus);
 
