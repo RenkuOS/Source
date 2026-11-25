@@ -146,7 +146,9 @@ set_frame_buffer_registers(uint32 offset, uint32 hStart)
 		if (sharedInfo.device_type.InGroup(INTEL_GROUP_HAS)
 			|| sharedInfo.device_type.InGroup(INTEL_GROUP_VLV)
 			|| sharedInfo.device_type.InGroup(INTEL_GROUP_CHV)
+			|| sharedInfo.device_type.InGroup(INTEL_GROUP_BDW)
 //			|| sharedInfo.device_type.InGroup(INTEL_GROUP_SKY)
+			|| sharedInfo.device_type.InGroup(INTEL_GROUP_KBY)
 			|| sharedInfo.device_type.InGroup(INTEL_GROUP_ALD)) {
 			uint32 offsetValue = ((uint32)mode.v_display_start << 16) | hStart;
 			write32(INTEL_DISPLAY_A_OFFSET_HAS + offset, offsetValue);
