@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: MIT
+
+SubDir HAIKU_TOP src bin sonyctl ;
+
+UsePrivateHeaders drivers ;
+
+Application sonyctl :
+	sonyctl.cpp
+;

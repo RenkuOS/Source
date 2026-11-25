@@ -7,7 +7,9 @@
  * Sony Notebook Control (ACPI device SNY5001) of Sony VAIO laptops: the Fn
  * hotkeys and the VAIO/ASSIST buttons, published as a keyboard device
  * (/dev/input/keyboard/sony_snc/0) that the input_server keyboard add-on
- * picks up like any other keyboard.
+ * picks up like any other keyboard, and a control device
+ * (/dev/power/sony_snc/0, see headers/private/drivers/sony_snc.h) for battery
+ * care, the thermal profile, the touchpad and the wireless switch state.
  *
  * Only the handle based SNC interface (SN00/SN02/SN03/SN07, VAIO models from
  * about 2010 on) is supported. The firmware lists its functions as 16-bit
@@ -26,6 +28,7 @@
 
 #include <keyboard_mouse_driver.h>
 #include <kernel.h>
+#include <sony_snc.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,8 +37,10 @@
 
 #define SONY_SNC_MODULE_NAME			"drivers/power/sony_snc/driver_v1"
 #define SONY_SNC_KEYBOARD_MODULE_NAME	"drivers/power/sony_snc/keyboard_v1"
+#define SONY_SNC_CONTROL_MODULE_NAME	"drivers/power/sony_snc/control_v1"
 
 #define SONY_SNC_KEYBOARD_BASENAME		"input/keyboard/sony_snc/%d"
+#define SONY_SNC_CONTROL_BASENAME		"power/sony_snc/%d"
 #define SONY_SNC_PATHID_GENERATOR		"sony_snc/path_id"
 
 #define SONY_SNC_HID					"SNY5001"
@@ -51,6 +56,25 @@
 #define SNC_HOTKEY_READ					0x0200
 
 #define SNC_NOTIFY_HANDLE_BASE			0x90
+
+// battery care (handles 0x0115, 0x0136, 0x013f)
+#define SNC_BATTERY_CARE_GET			0x0000
+#define SNC_BATTERY_CARE_SET			0x0100
+#define SNC_BATTERY_HEALTH_GET			0x0200
+
+// thermal profile (handle 0x0122)
+#define SNC_THERMAL_HANDLE				0x0122
+#define SNC_THERMAL_GET_PROFILES		0x0000
+#define SNC_THERMAL_GET					0x0100
+#define SNC_THERMAL_SET					0x0200
+
+// touchpad (handles 0x0105, 0x0148)
+#define SNC_TOUCHPAD_GET				0x0000
+#define SNC_TOUCHPAD_SET				0x0100
+
+// wireless (handles 0x0124, 0x0135)
+#define SNC_WIRELESS_SWITCH_GET			0x0200
+#define SNC_RADIO_LIST_SIZE				32
 
 // hotkey codes reported by handle 0x0100; bit 7 is set on press
 #define SNC_HOTKEY_PRESSED				0x80
@@ -84,6 +108,14 @@ typedef struct sony_snc_device {
 	uint16					handles[SNC_MAX_HANDLES];
 	uint32					event_mask;
 	bool					notify_installed;
+
+	// handles of the functions offered through the control device, 0 if
+	// the firmware does not list them
+	uint16					battery_care_handle;
+	uint16					touchpad_handle;
+	uint16					wireless_handle;
+	bool					has_thermal;
+	uint32					radios;
 
 	sem_id					lock;
 		// protects the key queue; only taken in thread context (the ACPI
@@ -257,6 +289,91 @@ snc_setup_handles(sony_snc_device* device)
 }
 
 
+/*!	Evaluates an SNC method taking an integer argument and returning a buffer
+	(SN06), copying at most \a size bytes of it.
+*/
+static status_t
+snc_call_buffer(sony_snc_device* device, const char* method, uint32 argument,
+	uint8* data, size_t size)
+{
+	acpi_object_type argObject;
+	argObject.object_type = ACPI_TYPE_INTEGER;
+	argObject.integer.integer = argument;
+	acpi_objects args;
+	args.count = 1;
+	args.pointer = &argObject;
+
+	acpi_data buffer;
+	buffer.pointer = NULL;
+	buffer.length = ACPI_ALLOCATE_BUFFER;
+
+	status_t status = device->acpi->evaluate_method(device->acpi_cookie,
+		method, &args, &buffer);
+	if (status != B_OK)
+		return status;
+
+	acpi_object_type* object = (acpi_object_type*)buffer.pointer;
+	if (object == NULL || object->object_type != ACPI_TYPE_BUFFER) {
+		free(buffer.pointer);
+		return B_BAD_DATA;
+	}
+
+	memset(data, 0xff, size);
+	memcpy(data, object->buffer.buffer, min_c(size, object->buffer.length));
+	free(buffer.pointer);
+	return B_OK;
+}
+
+
+static uint16
+snc_first_handle(sony_snc_device* device, const uint16* handles, size_t count)
+{
+	for (size_t i = 0; i < count; i++) {
+		if (snc_find_handle(device, handles[i]) >= 0)
+			return handles[i];
+	}
+	return 0;
+}
+
+
+static void
+snc_setup_features(sony_snc_device* device)
+{
+	static const uint16 kBatteryCareHandles[] = { 0x0115, 0x0136, 0x013f };
+	static const uint16 kTouchpadHandles[] = { 0x0105, 0x0148 };
+	static const uint16 kWirelessHandles[] = { 0x0124, 0x0135 };
+
+	device->battery_care_handle = snc_first_handle(device,
+		kBatteryCareHandles, B_COUNT_OF(kBatteryCareHandles));
+	device->touchpad_handle = snc_first_handle(device, kTouchpadHandles,
+		B_COUNT_OF(kTouchpadHandles));
+	device->wireless_handle = snc_first_handle(device, kWirelessHandles,
+		B_COUNT_OF(kWirelessHandles));
+	device->has_thermal = snc_find_handle(device, SNC_THERMAL_HANDLE) >= 0;
+
+	// The radios are listed by codes in the SN06 buffer of the wireless
+	// handle, terminated by 0xff.
+	device->radios = 0;
+	if (device->wireless_handle != 0) {
+		uint8 list[SNC_RADIO_LIST_SIZE];
+		int32 offset = snc_find_handle(device, device->wireless_handle);
+		if (snc_call_buffer(device, "SN06", (uint32)offset, list, sizeof(list))
+				== B_OK) {
+			for (size_t i = 0; i < sizeof(list) && list[i] != 0xff; i++) {
+				if (list[i] == 0x00)
+					device->radios |= SONY_SNC_RADIO_WLAN;
+				else if (list[i] == 0x10)
+					device->radios |= SONY_SNC_RADIO_BLUETOOTH;
+				else if ((list[i] & 0xf0) == 0x20 || (list[i] & 0xf0) == 0x50)
+					device->radios |= SONY_SNC_RADIO_WWAN;
+				else if (list[i] == 0x30)
+					device->radios |= SONY_SNC_RADIO_WIMAX;
+			}
+		}
+	}
+}
+
+
 static void
 snc_enable_events(sony_snc_device* device)
 {
@@ -374,6 +491,228 @@ snc_notify_handler(acpi_handle _device, uint32 value, void* context)
 
 	TRACE("hotkey 0x%02" B_PRIx32 "\n", result & 0xff);
 	snc_queue_key(device, result & 0xff, when);
+}
+
+
+//	#pragma mark - functions of the control device
+
+
+static uint32
+snc_battery_care_limit(uint32 result)
+{
+	if ((result & 0x01) == 0)
+		return 0;
+
+	switch ((result & 0x30) >> 4) {
+		case 1:
+			return 80;
+		case 2:
+			return 50;
+		case 3:
+			return 100;
+	}
+	return 0;
+}
+
+
+static void
+snc_get_status(sony_snc_device* device, sony_snc_status& status)
+{
+	memset(&status, 0, sizeof(status));
+	status.api_version = SONY_SNC_API_VERSION;
+
+	uint32 result;
+	if (device->battery_care_handle != 0
+		&& snc_call_handle(device, device->battery_care_handle,
+			SNC_BATTERY_CARE_GET, &result) == B_OK) {
+		status.features |= SONY_SNC_FEATURE_BATTERY_CARE;
+		status.battery_care_limit = snc_battery_care_limit(result);
+
+		// handle 0x0115 has no health status
+		if (device->battery_care_handle != 0x0115
+			&& snc_call_handle(device, device->battery_care_handle,
+				SNC_BATTERY_HEALTH_GET, &result) == B_OK) {
+			status.features |= SONY_SNC_FEATURE_BATTERY_HEALTH;
+			status.battery_health = result & 0xff;
+		}
+	}
+
+	if (device->has_thermal
+		&& snc_call_handle(device, SNC_THERMAL_HANDLE, SNC_THERMAL_GET_PROFILES,
+			&result) == B_OK) {
+		// The firmware reports the optional profiles as a bit mask whose
+		// bits match the profile numbers (bit 0 silent, bit 1 performance).
+		status.thermal_profiles = (1 << SONY_SNC_THERMAL_BALANCED)
+			| ((result & 0x1) != 0 ? 1 << SONY_SNC_THERMAL_SILENT : 0)
+			| ((result & 0x2) != 0 ? 1 << SONY_SNC_THERMAL_PERFORMANCE : 0);
+		if (snc_call_handle(device, SNC_THERMAL_HANDLE, SNC_THERMAL_GET,
+				&result) == B_OK) {
+			status.features |= SONY_SNC_FEATURE_THERMAL;
+			status.thermal_profile = result & 0xff;
+		}
+	}
+
+	if (device->touchpad_handle != 0
+		&& snc_call_handle(device, device->touchpad_handle, SNC_TOUCHPAD_GET,
+			&result) == B_OK) {
+		// the firmware reports whether the touchpad is disabled
+		status.features |= SONY_SNC_FEATURE_TOUCHPAD;
+		status.touchpad_enabled = (result & 0x01) == 0;
+	}
+
+	if (device->wireless_handle != 0
+		&& snc_call_handle(device, device->wireless_handle,
+			SNC_WIRELESS_SWITCH_GET, &result) == B_OK) {
+		status.features |= SONY_SNC_FEATURE_WIRELESS;
+		status.wireless_switch_on = (result & 0x01) != 0;
+		status.radios = device->radios;
+
+		// each radio has its own address; bit 1 is set when it is not
+		// blocked in software
+		static const struct {
+			uint32	radio;
+			uint32	address;
+		} kRadios[] = {
+			{ SONY_SNC_RADIO_WLAN, 0x0300 },
+			{ SONY_SNC_RADIO_BLUETOOTH, 0x0500 },
+			{ SONY_SNC_RADIO_WWAN, 0x0700 },
+			{ SONY_SNC_RADIO_WIMAX, 0x0900 },
+		};
+		for (size_t i = 0; i < B_COUNT_OF(kRadios); i++) {
+			if ((device->radios & kRadios[i].radio) != 0
+				&& snc_call_handle(device, device->wireless_handle,
+					kRadios[i].address, &result) == B_OK
+				&& (result & 0x02) != 0) {
+				status.radios_enabled |= kRadios[i].radio;
+			}
+		}
+	}
+}
+
+
+static status_t
+snc_set_battery_care(sony_snc_device* device, uint32 limit)
+{
+	if (device->battery_care_handle == 0)
+		return B_NOT_SUPPORTED;
+
+	// Limit in bits 5:4 (01 80%, 10 50%, 11 100%), also stored in the
+	// battery (bits 7:6) except with handle 0x013f; bit 0 enables the limit.
+	uint32 command = 0;
+	switch (limit) {
+		case 0:
+			break;
+		case 50:
+			command = 0x20;
+			break;
+		case 80:
+			command = 0x10;
+			break;
+		case 100:
+			command = 0x30;
+			break;
+		default:
+			return B_BAD_VALUE;
+	}
+	if (command != 0) {
+		if (device->battery_care_handle != 0x013f)
+			command |= command << 2;
+		command = (command | 0x01) << 16;
+	}
+
+	uint32 result;
+	return snc_call_handle(device, device->battery_care_handle,
+		command | SNC_BATTERY_CARE_SET, &result);
+}
+
+
+static status_t
+snc_set_thermal_profile(sony_snc_device* device, uint32 profile)
+{
+	if (!device->has_thermal)
+		return B_NOT_SUPPORTED;
+
+	uint32 profiles;
+	status_t status = snc_call_handle(device, SNC_THERMAL_HANDLE,
+		SNC_THERMAL_GET_PROFILES, &profiles);
+	if (status != B_OK)
+		return status;
+
+	// balanced is always available, the others only if listed
+	if (profile > SONY_SNC_THERMAL_PERFORMANCE
+		|| (profile != SONY_SNC_THERMAL_BALANCED
+			&& (profiles & profile) == 0)) {
+		return B_BAD_VALUE;
+	}
+
+	uint32 result;
+	return snc_call_handle(device, SNC_THERMAL_HANDLE,
+		(profile << 16) | SNC_THERMAL_SET, &result);
+}
+
+
+static status_t
+snc_set_touchpad(sony_snc_device* device, uint32 enabled)
+{
+	if (device->touchpad_handle == 0)
+		return B_NOT_SUPPORTED;
+	if (enabled > 1)
+		return B_BAD_VALUE;
+
+	// the firmware expects 1 to disable the touchpad
+	uint32 result;
+	return snc_call_handle(device, device->touchpad_handle,
+		((enabled == 0 ? 1 : 0) << 16) | SNC_TOUCHPAD_SET, &result);
+}
+
+
+//	#pragma mark - control device module API
+
+
+static status_t
+sony_snc_control_close(void* cookie)
+{
+	return B_OK;
+}
+
+
+static status_t
+sony_snc_control_ioctl(void* _cookie, uint32 op, void* arg, size_t length)
+{
+	sony_snc_cookie* cookie = (sony_snc_cookie*)_cookie;
+	sony_snc_device* device = cookie->device;
+
+	if (arg == NULL || !IS_USER_ADDRESS(arg))
+		return B_BAD_ADDRESS;
+
+	switch (op) {
+		case SONY_SNC_GET_STATUS:
+		{
+			sony_snc_status status;
+			snc_get_status(device, status);
+			return user_memcpy(arg, &status,
+				min_c(length, sizeof(sony_snc_status)));
+		}
+
+		case SONY_SNC_SET_BATTERY_CARE:
+		case SONY_SNC_SET_THERMAL_PROFILE:
+		case SONY_SNC_SET_TOUCHPAD:
+		{
+			uint32 value;
+			if (length < sizeof(value)
+				|| user_memcpy(&value, arg, sizeof(value)) != B_OK) {
+				return B_BAD_ADDRESS;
+			}
+
+			if (op == SONY_SNC_SET_BATTERY_CARE)
+				return snc_set_battery_care(device, value);
+			if (op == SONY_SNC_SET_THERMAL_PROFILE)
+				return snc_set_thermal_profile(device, value);
+			return snc_set_touchpad(device, value);
+		}
+	}
+
+	return B_DEV_INVALID_IOCTL;
 }
 
 
@@ -573,6 +912,7 @@ sony_snc_init_driver(device_node* node, void** _driverCookie)
 	sDeviceManager->put_node(parent);
 
 	snc_setup_handles(device);
+	snc_setup_features(device);
 
 	status_t status = device->acpi->install_notify_handler(
 		device->acpi_cookie, ACPI_DEVICE_NOTIFY, snc_notify_handler, device);
@@ -622,9 +962,14 @@ sony_snc_register_child_devices(void* driverCookie)
 
 	char name[B_DEV_NAME_LENGTH];
 	snprintf(name, sizeof(name), SONY_SNC_KEYBOARD_BASENAME, pathID);
-
-	return sDeviceManager->publish_device(device->node, name,
+	status_t status = sDeviceManager->publish_device(device->node, name,
 		SONY_SNC_KEYBOARD_MODULE_NAME);
+	if (status != B_OK)
+		return status;
+
+	snprintf(name, sizeof(name), SONY_SNC_CONTROL_BASENAME, pathID);
+	return sDeviceManager->publish_device(device->node, name,
+		SONY_SNC_CONTROL_MODULE_NAME);
 }
 
 
@@ -674,8 +1019,32 @@ struct device_module_info sony_snc_keyboard_module = {
 };
 
 
+struct device_module_info sony_snc_control_module = {
+	{
+		SONY_SNC_CONTROL_MODULE_NAME,
+		0,
+		NULL
+	},
+
+	sony_snc_init_device,
+	sony_snc_uninit_device,
+	NULL,	// removed
+
+	sony_snc_open,
+	sony_snc_control_close,
+	sony_snc_free,
+	sony_snc_read,
+	sony_snc_write,
+	NULL,	// io
+	sony_snc_control_ioctl,
+	NULL,	// select
+	NULL	// deselect
+};
+
+
 module_info* modules[] = {
 	(module_info*)&sony_snc_driver_module,
 	(module_info*)&sony_snc_keyboard_module,
+	(module_info*)&sony_snc_control_module,
 	NULL
 };

@@ -102,6 +102,7 @@ SYSTEM_BIN = [ FFilterByBuildFeatures
 	setversion
 	setvolume
 	shutdown
+	sonyctl@x86,x86_64
 	strace
 	su
 	sysinfo
