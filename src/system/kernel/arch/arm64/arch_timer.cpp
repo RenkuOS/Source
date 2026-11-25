@@ -63,7 +63,10 @@ arch_init_timer(kernel_args *args)
 	dprintf("arm64 timer: virtual timer interrupt %" B_PRId32 "\n", sTimerIrq);
 
 	WRITE_SPECIALREG(CNTV_CTL_EL0, TIMER_DISABLED);
-	install_io_interrupt_handler(sTimerIrq, &arch_timer_interrupt, NULL, 0);
+	// Each CPU has its own timer PPI, so do not serialize all CPUs' ticks
+	// and timer hooks on the vector lock (like the x86 local APIC timer).
+	install_io_interrupt_handler(sTimerIrq, &arch_timer_interrupt, NULL,
+		B_NO_LOCK_VECTOR);
 
 	return B_OK;
 }
