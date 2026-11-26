@@ -74,6 +74,8 @@ extern void* gFDT;
 #define CLK_MUX_SHIFT			24
 #define CLK_MUX_MASK			(0x3fu << CLK_MUX_SHIFT)
 #define CLK_DIV_MASK			0x00ffffffu
+#define CLK_USB_125M			(95 * 4)	// divider of PLL0, 4 bits
+#define USB_125M_MHZ			125
 #define PLL0_PD					0x18
 #define PLL0_FBDIV				0x1c
 #define PLL0_FRAC				0x20
@@ -514,6 +516,14 @@ set_point(int32 index)
 	sSyscon[PLL0_PREDIV / 4] = (syscon(PLL0_PREDIV) & ~PLL_PREDIV_MASK)
 		| prediv;
 	sSyscon[PLL0_FBDIV / 4] = (syscon(PLL0_FBDIV) & ~PLL_FBDIV_MASK) | fbdiv;
+
+	// The 125 MHz clock of the USB 2.0 PHY is a divider of PLL0 too: keep
+	// it at its rate (every point is a multiple of it)
+	if (sPoints[index].mhz % USB_125M_MHZ == 0
+		&& sPoints[index].mhz / USB_125M_MHZ <= 0xf) {
+		sCrg[CLK_USB_125M / 4] = (crg(CLK_USB_125M) & ~CLK_DIV_MASK)
+			| (sPoints[index].mhz / USB_125M_MHZ);
+	}
 
 	release_spinlock(&sSwitchLock);
 	restore_interrupts(state);
