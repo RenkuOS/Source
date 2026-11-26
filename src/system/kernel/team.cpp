@@ -1428,6 +1428,22 @@ delete_team_user_data(Team* team)
 }
 
 
+/*!	Deletes the user timers of a team whose main thread never ran.
+	The team's CPU time timers hold references to the team, and only
+	team_shutdown_team() deletes them otherwise, so the team, and with it its
+	I/O context, would never be deleted.
+	The caller must still hold a reference to the team and must not hold its
+	lock.
+*/
+static void
+delete_unstarted_team_timers(Team* team)
+{
+	team->Lock();
+	team->DeleteUserTimers(false);
+	team->Unlock();
+}
+
+
 static status_t
 copy_user_process_args(const char* const* userFlatArgs, size_t flatArgsSize,
 	int32 argCount, int32 envCount, char**& _flatArgs)
@@ -1746,8 +1762,10 @@ load_image_internal(char**& _flatArgs, size_t flatArgsSize, int32 argCount,
 
 	// get the parent team
 	Team* parent = Team::Get(parentID);
-	if (parent == NULL)
+	if (parent == NULL) {
+		delete_unstarted_team_timers(team);
 		return B_BAD_TEAM_ID;
+	}
 	BReference<Team> parentReference(parent, true);
 
 	parent->LockTeamAndProcessGroup();
@@ -1914,6 +1932,7 @@ err2:
 err1:
 	if (parentIOContext != NULL)
 		vfs_put_io_context(parentIOContext);
+	delete_unstarted_team_timers(team);
 
 	return status;
 }
@@ -2320,6 +2339,7 @@ err3:
 err2:
 	free(forkArgs);
 err1:
+	delete_unstarted_team_timers(team);
 	team->ReleaseReference();
 
 	return status;
