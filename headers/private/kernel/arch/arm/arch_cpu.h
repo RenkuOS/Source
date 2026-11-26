@@ -112,6 +112,7 @@ arm_get_fp(void)
 
 
 void arch_cpu_invalidate_TLB_page(addr_t page);
+void arm_sync_icache_page(phys_addr_t physicalAddress);
 
 static inline void
 arch_cpu_pause(void)

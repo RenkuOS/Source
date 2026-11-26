@@ -14,6 +14,7 @@
 
 #include <arch/cpu.h>
 #include <boot/kernel_args.h>
+#include <vm/vm.h>
 
 
 status_t
@@ -71,6 +72,48 @@ arch_cpu_sync_icache(void *address, size_t len)
 	uint32 Rd = 0;
 	asm volatile ("mcr p15, 0, %[c7format], c7, c5, 0"
 		: : [c7format] "r" (Rd) );
+}
+
+
+/*!	Makes the code in a physical page visible to the instruction fetches of
+	every CPU. The page may just have been written through a data cache (by
+	the file cache when a file is written and then mapped, a loader or a JIT),
+	and the instruction caches may still hold what was at this address before.
+	The page is cleaned to the point of unification by address, which on a
+	multiprocessor is carried out by the other CPUs too, then the instruction
+	caches and branch predictors of all CPUs are invalidated.
+	The calling thread must be pinned to its CPU.
+*/
+void
+arm_sync_icache_page(phys_addr_t physicalAddress)
+{
+	addr_t virtualAddress;
+	void* handle;
+	if (vm_get_physical_page_current_cpu(physicalAddress, &virtualAddress,
+			&handle) != B_OK) {
+		panic("arm_sync_icache_page(): could not map page %#" B_PRIxPHYSADDR,
+			physicalAddress);
+		return;
+	}
+
+	uint32 ctr;
+	asm volatile ("mrc p15, 0, %0, c0, c0, 1" : "=r" (ctr));
+	const addr_t lineSize = 4 << ((ctr >> 16) & 0xf);
+
+	dsb();
+	for (addr_t line = virtualAddress; line < virtualAddress + B_PAGE_SIZE;
+			line += lineSize) {
+		// DCCMVAU: clean to the point of unification
+		asm volatile ("mcr p15, 0, %0, c7, c11, 1" : : "r" (line) : "memory");
+	}
+	dsb();
+	vm_put_physical_page_current_cpu(virtualAddress, handle);
+
+	// ICIALLUIS and BPIALLIS
+	asm volatile ("mcr p15, 0, %0, c7, c1, 0" : : "r" (0) : "memory");
+	asm volatile ("mcr p15, 0, %0, c7, c1, 6" : : "r" (0) : "memory");
+	dsb();
+	isb();
 }
 
 
