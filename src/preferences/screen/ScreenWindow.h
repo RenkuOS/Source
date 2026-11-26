@@ -47,6 +47,8 @@ private:
 			void			_CheckResolutionMenu();
 			void			_CheckColorMenu();
 			void			_CheckRefreshMenu();
+			float			_NearestListedRefresh(float refresh);
+			void			_CheckSelectedRefresh();
 
 			void			_UpdateActiveMode();
 			void			_UpdateActiveMode(int32 workspace);
