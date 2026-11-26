@@ -2932,6 +2932,9 @@ XHCI::ControllerHalt()
 }
 
 
+static const bigtime_t kResetTimeout = 10000000;
+
+
 status_t
 XHCI::ControllerReset()
 {
@@ -2939,12 +2942,15 @@ XHCI::ControllerReset()
 		ReadOpReg(XHCI_CMD), ReadOpReg(XHCI_STS));
 	WriteOpReg(XHCI_CMD, ReadOpReg(XHCI_CMD) | CMD_HCRST);
 
-	if (WaitOpBits(XHCI_CMD, CMD_HCRST, 0) != B_OK) {
-		TRACE_ERROR("ControllerReset() failed CMD_HCRST\n");
+	// The specification sets no limit for the reset; Linux waits up to
+	// 10 seconds for HCRST and for CNR.
+	if (WaitOpBits(XHCI_CMD, CMD_HCRST, 0, kResetTimeout) != B_OK) {
+		TRACE_ERROR("ControllerReset() failed CMD_HCRST, sts: 0x%" B_PRIx32
+			"\n", ReadOpReg(XHCI_STS));
 		return B_ERROR;
 	}
 
-	if (WaitOpBits(XHCI_STS, STS_CNR, 0) != B_OK) {
+	if (WaitOpBits(XHCI_STS, STS_CNR, 0, kResetTimeout) != B_OK) {
 		TRACE_ERROR("ControllerReset() failed STS_CNR\n");
 		return B_ERROR;
 	}
@@ -4130,23 +4136,26 @@ XHCI::ReadOpReg(uint32 reg)
 
 
 inline status_t
-XHCI::WaitOpBits(uint32 reg, uint32 mask, uint32 expected)
+XHCI::WaitOpBits(uint32 reg, uint32 mask, uint32 expected, bigtime_t timeout)
 {
-	int loops = 0;
+	bigtime_t start = system_time();
+	bool reported = false;
 	uint32 value = ReadOpReg(reg);
 	while ((value & mask) != expected) {
 		snooze(1000);
 		value = ReadOpReg(reg);
-		if (loops == 100) {
+		bigtime_t waited = system_time() - start;
+		if (!reported && waited > 100000) {
 			TRACE("delay waiting on reg 0x%" B_PRIX32 " match 0x%" B_PRIX32
 				" (0x%" B_PRIX32 ")\n",	reg, expected, mask);
-		} else if (loops > 250) {
+			reported = true;
+		}
+		if (waited > timeout) {
 			TRACE_ERROR("timeout waiting on reg 0x%" B_PRIX32
-				" match 0x%" B_PRIX32 " (0x%" B_PRIX32 ")\n", reg, expected,
-				mask);
+				" match 0x%" B_PRIX32 " (0x%" B_PRIX32 "), value 0x%" B_PRIX32
+				"\n", reg, expected, mask, value);
 			return B_ERROR;
 		}
-		loops++;
 	}
 	return B_OK;
 }
