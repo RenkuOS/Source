@@ -52,7 +52,7 @@ printf(const char *format, ...)
 	int length = vsnprintf(buffer, sizeof(buffer), format, args);
 	va_end(args);
 
-	_kern_write(STDERR_FILENO, 0, buffer, length);
+	_kern_write(STDERR_FILENO, -1, buffer, length);
 
 	return length;
 }
