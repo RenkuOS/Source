@@ -970,6 +970,21 @@ NetServer::_AutoJoinNetwork(const BMessage& message)
 		} else if (networkMessage.FindString("name", &networkName) == B_OK)
 			status = device.GetNetwork(networkName, network);
 
+		if (status == B_OK
+			&& network.authentication_mode > B_NETWORK_AUTHENTICATION_NONE
+			&& !networkMessage.HasString("authentication")
+			&& !networkMessage.HasString("password")) {
+			// A name-only entry (see _RememberNetwork()) of a protected
+			// network: the wpa_supplicant has no password for it, or it would
+			// have stored the network with its authentication mode, so it
+			// could only ask the user for one. Its dialog keeps it from
+			// handling any event while it is open, which stalls a join that
+			// is in progress, and every auto-join retry would open another.
+			printf("auto join network \"%s\": skipped, no password\n",
+				network.name);
+			continue;
+		}
+
 		if (status == B_OK) {
 			status = _JoinNetwork(message, mac != NULL ? &link : NULL,
 				network.name);
@@ -1138,14 +1153,26 @@ NetServer::_RememberNetwork(const BMessage& message)
 {
 	const char* name = message.GetString("name", NULL);
 
+	BNetworkDevice device(message.GetString("device", ""));
 	wireless_network network;
 	BNetworkAddress address;
+	bool found = false;
 	if (name == NULL && message.FindFlat("address", &address) == B_OK
-		&& BNetworkDevice(message.GetString("device", "")).GetNetwork(address,
-			network) == B_OK) {
+		&& device.GetNetwork(address, network) == B_OK) {
 		name = network.name;
+		found = true;
 	}
 	if (name == NULL || name[0] == '\0')
+		return;
+
+	// A protected network is stored by the wpa_supplicant itself, with its
+	// authentication mode, when the user asks it to save the configuration;
+	// it keeps the password in its keyring. A name-only entry would only make
+	// auto-join ask for the password again on every start.
+	if (!found && device.GetNetwork(name, network) == B_OK)
+		found = true;
+	if (!found
+		|| network.authentication_mode > B_NETWORK_AUTHENTICATION_NONE)
 		return;
 
 	uint32 cookie = 0;
