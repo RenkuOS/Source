@@ -1706,16 +1706,20 @@ AVCodecDecoder::_DeinterlaceAndColorConvertVideoFrame()
 		return B_NO_MEMORY;
 	}
 
-	// Convert into the caller's buffer when the conversion cannot write
-	// beyond it: the converters work on blocks of up to 64 bytes, so the
-	// buffer must be aligned to them and the rows a multiple of them, with
-	// no padding (fDecodedData has 64 bytes alignment and 63 more bytes).
+	// The converters work on blocks of up to 64 bytes, so the last block of
+	// a row can spill into the next row unless the rows are a multiple of
+	// them, with no padding. Only then can the conversion go into the
+	// caller's buffer (aligned to 64 bytes too; fDecodedData has that
+	// alignment and 63 more bytes), and only then can it be split between
+	// threads: otherwise the last row of one slice could spill into the
+	// first row of the next while another thread writes it.
 	uint8_t* target = fDecodedData;
 	uint32 bytesPerRow = fHeader.u.raw_video.bytes_per_row;
+	bool wholeBlockRows = bytesPerRow == (uint32)displayWidth * 4
+		&& bytesPerRow % 64 == 0;
 	if (fConvertTarget != NULL && !useDeinterlacedPicture
 		&& fOutputColorSpace == B_RGB32
-		&& ((addr_t)fConvertTarget & 63) == 0
-		&& bytesPerRow == (uint32)displayWidth * 4 && bytesPerRow % 64 == 0) {
+		&& ((addr_t)fConvertTarget & 63) == 0 && wholeBlockRows) {
 		target = fConvertTarget;
 	}
 
@@ -1753,7 +1757,8 @@ AVCodecDecoder::_DeinterlaceAndColorConvertVideoFrame()
 #endif
 		} else {
 #if USE_SWS_FOR_COLOR_SPACE_CONVERSION
-			if (_ScaleFrameThreaded(displayWidth, displayHeight) != B_OK) {
+			if (!wholeBlockRows
+				|| _ScaleFrameThreaded(displayWidth, displayHeight) != B_OK) {
 				sws_scale(fSwsContext, fRawDecodedPicture->data,
 					fRawDecodedPicture->linesize, 0, displayHeight,
 					fPostProcessedDecodedPicture->data,
@@ -1775,13 +1780,18 @@ AVCodecDecoder::_DeinterlaceAndColorConvertVideoFrame()
 
 
 #if USE_SWS_FOR_COLOR_SPACE_CONVERSION
+static const int kMaxConversionThreads = 8;
+
+
 /*!	\brief Creates the color conversion context, with one slice thread per
-	CPU.
+	CPU, up to kMaxConversionThreads.
 
 	The conversion to RGB is the most expensive part of decoding at high
 	resolutions (a 1080p frame takes about 25 ms on one core of a JH7110),
 	and libswscale splits it into horizontal slices when it has threads.
 	Those are only used through sws_scale_frame(), see _ScaleFrameThreaded().
+	The decoder has its own threads too, so many cores gain little from more
+	conversion threads.
 */
 SwsContext*
 AVCodecDecoder::_CreateSwsContext(int width, int height, AVPixelFormat format)
@@ -1800,7 +1810,8 @@ AVCodecDecoder::_CreateSwsContext(int width, int height, AVPixelFormat format)
 		av_opt_set_int(context, "dsth", height, 0);
 		av_opt_set_int(context, "dst_format", outputFormat, 0);
 		av_opt_set_int(context, "sws_flags", SWS_FAST_BILINEAR, 0);
-		av_opt_set_int(context, "threads", info.cpu_count, 0);
+		av_opt_set_int(context, "threads",
+			min_c((int)info.cpu_count, kMaxConversionThreads), 0);
 		if (sws_init_context(context, NULL, NULL) >= 0)
 			return context;
 		sws_freeContext(context);
