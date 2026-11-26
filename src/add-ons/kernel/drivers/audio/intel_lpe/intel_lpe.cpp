@@ -109,6 +109,8 @@
 // short enough that a lost position message does not skip a buffer
 #define POSITION_TIMEOUT			(PLAYBACK_BUFFER_TIME / 4)
 #define EXCHANGE_TIMEOUT			500000
+// After about 5 seconds of silence the output amplifiers are powered down.
+#define IDLE_BUFFERS				(5 * PLAYBACK_RATE / PLAYBACK_BUFFER_FRAMES)
 
 
 struct intel_lpe_driver {
@@ -159,6 +161,12 @@ struct intel_lpe_driver {
 	bool					headphonesPlugged;
 	bool					outputActive;
 	bool					headphoneAmpOn;
+	bool					speakerPowered;
+	bool					outputIdle;
+	// silent buffers in a row, counted by the playback thread; the jack
+	// thread powers the output down and up, woken through idleSem
+	int32					silentBuffers;
+	sem_id					idleSem;
 
 	// Playback position, written by the playback thread.
 	spinlock				positionLock;
@@ -337,7 +345,19 @@ jack_poll_thread(void* data)
 				}
 			}
 		}
-		snooze(JACK_POLL_INTERVAL);
+		// power the output down after a while of silence, and up again as
+		// soon as the playback thread sees sound
+		bool idle = atomic_get(&driver->silentBuffers) >= IDLE_BUFFERS;
+		if (idle != driver->outputIdle) {
+			MutexLocker outputLocker(driver->outputLock);
+			driver->outputIdle = idle;
+			update_output(driver);
+			TRACE_ALWAYS("output %s\n", idle ? "idle, amplifiers off"
+				: "in use, amplifiers on");
+		}
+
+		acquire_sem_etc(driver->idleSem, 1, B_RELATIVE_TIMEOUT,
+			JACK_POLL_INTERVAL);
 	}
 	return B_OK;
 }
@@ -713,25 +733,52 @@ headphone_off(intel_lpe_driver* driver)
 }
 
 
+// the speaker path: class D amplifier, speaker mixers and volumes
+#define RT5640_POWER_CLASS_D		(1 << 0)	// MX-61
+#define RT5640_POWER_SPEAKER_MIX	(3 << 12)	// MX-65
+#define RT5640_POWER_SPEAKER_VOLUME	(3 << 14)	// MX-66
+
+
+/*!	Called with outputLock held, the speaker volume muted. */
+static void
+speaker_power(intel_lpe_driver* driver, bool on)
+{
+	rt5640_update(driver, RT5640_PWR_DIG1, RT5640_POWER_CLASS_D,
+		on ? RT5640_POWER_CLASS_D : 0);
+	rt5640_update(driver, RT5640_POWER_MIXER, RT5640_POWER_SPEAKER_MIX,
+		on ? RT5640_POWER_SPEAKER_MIX : 0);
+	rt5640_update(driver, RT5640_POWER_VOLUME, RT5640_POWER_SPEAKER_VOLUME,
+		on ? RT5640_POWER_SPEAKER_VOLUME : 0);
+	driver->speakerPowered = on;
+}
+
+
 /*!	Routes playback to the headphones while they are plugged in, else to
-	the speakers; both are off when nothing plays. Called with outputLock
-	held.
+	the speakers; both are off when nothing plays or after IDLE_BUFFERS of
+	silence, to save power. Called with outputLock held.
 */
 static void
 update_output(intel_lpe_driver* driver)
 {
-	bool speaker = driver->outputActive && !driver->headphonesPlugged;
-	bool headphones = driver->outputActive && driver->headphonesPlugged;
+	bool active = driver->outputActive && !driver->outputIdle;
+	bool speaker = active && !driver->headphonesPlugged;
+	bool headphones = active && driver->headphonesPlugged;
 
-	if (!speaker)
+	if (!speaker) {
 		rt5640_write(driver, RT5640_SPEAKER_VOLUME, RT5640_SPEAKER_MUTED);
+		if (driver->speakerPowered)
+			speaker_power(driver, false);
+	}
 	if (!headphones && driver->headphoneAmpOn)
 		headphone_off(driver);
 
 	if (headphones && !driver->headphoneAmpOn)
 		headphone_on(driver);
-	if (speaker)
+	if (speaker) {
+		if (!driver->speakerPowered)
+			speaker_power(driver, true);
 		rt5640_write(driver, RT5640_SPEAKER_VOLUME, RT5640_SPEAKER_ON);
+	}
 }
 
 
@@ -986,6 +1033,32 @@ setup_speaker_playback(intel_lpe_driver* driver)
 //	#pragma mark - playback
 
 
+/*!	Counts the silent buffers in a row, and wakes the jack thread when the
+	output should be powered down or up.
+*/
+static void
+count_silence(intel_lpe_driver* driver, uint32 buffer)
+{
+	const uint32* words = (const uint32*)(driver->ring[LPE_PLAYBACK]
+		+ buffer * PLAYBACK_BUFFER_SIZE);
+	bool silent = true;
+	for (size_t i = 0; i < PLAYBACK_BUFFER_SIZE / sizeof(uint32); i++) {
+		if (words[i] != 0) {
+			silent = false;
+			break;
+		}
+	}
+
+	if (silent) {
+		// stops counting at IDLE_BUFFERS
+		if (atomic_get(&driver->silentBuffers) < IDLE_BUFFERS
+			&& atomic_add(&driver->silentBuffers, 1) == IDLE_BUFFERS - 1)
+			release_sem_etc(driver->idleSem, 1, B_DO_NOT_RESCHEDULE);
+	} else if (atomic_get_and_set(&driver->silentBuffers, 0) >= IDLE_BUFFERS)
+		release_sem_etc(driver->idleSem, 1, B_DO_NOT_RESCHEDULE);
+}
+
+
 static uint32
 current_buffer(intel_lpe_driver* driver, uint32 direction)
 {
@@ -1027,6 +1100,7 @@ playback_thread(void* data)
 		}
 		last = current;
 		bigtime_t now = system_time();
+		count_silence(driver, current);
 
 		// Both streams run off the same SSP clock, so each playback buffer
 		// change comes with one complete record buffer: the one the DSP is
@@ -1072,8 +1146,12 @@ playback_start(intel_lpe_driver* driver)
 	{
 		MutexLocker outputLocker(driver->outputLock);
 		status = setup_speaker_playback(driver);
-		// the setup leaves the headphone amplifier off
+		// the setup leaves the headphone amplifier off and powers the
+		// speaker path
 		driver->headphoneAmpOn = false;
+		driver->speakerPowered = true;
+		driver->outputIdle = false;
+		atomic_set(&driver->silentBuffers, 0);
 	}
 	if (status != B_OK)
 		return status;
@@ -1752,7 +1830,7 @@ intel_lpe_init_driver(device_node* node, void** _driverCookie)
 	driver->playbackThread = -1;
 	for (int32 i = 0; i < LPE_STREAM_COUNT; i++)
 		driver->ringArea[i] = driver->tableArea[i] = -1;
-	driver->bufferReadySem = driver->positionSem = -1;
+	driver->bufferReadySem = driver->positionSem = driver->idleSem = -1;
 	driver->dacVolume[0] = driver->dacVolume[1] = DAC_VOLUME_MAX;
 	driver->adcLevel[0] = driver->adcLevel[1] = ADC_LEVEL_DEFAULT;
 	mutex_init(&driver->lock, "intel_lpe");
@@ -1787,10 +1865,17 @@ intel_lpe_init_driver(device_node* node, void** _driverCookie)
 		if (driver->positionSem < 0)
 			status = driver->positionSem;
 	}
+	if (status == B_OK) {
+		driver->idleSem = create_sem(0, "intel_lpe idle");
+		if (driver->idleSem < 0)
+			status = driver->idleSem;
+	}
 	if (status != B_OK) {
 		TRACE_ALWAYS("probe failed: %s\n", strerror(status));
 		if (driver->bufferReadySem >= 0)
 			delete_sem(driver->bufferReadySem);
+		if (driver->positionSem >= 0)
+			delete_sem(driver->positionSem);
 		delete_rings(driver);
 		mutex_destroy(&driver->outputLock);
 		mutex_destroy(&driver->dspLock);
@@ -1826,6 +1911,7 @@ intel_lpe_uninit_driver(void* driverCookie)
 		lpe_dsp_uninit(&driver->dsp);
 	delete_sem(driver->bufferReadySem);
 	delete_sem(driver->positionSem);
+	delete_sem(driver->idleSem);
 	delete_rings(driver);
 	mutex_destroy(&driver->outputLock);
 	mutex_destroy(&driver->dspLock);
