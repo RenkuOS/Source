@@ -26,6 +26,9 @@
 #include <vm/vm.h>
 
 #include "xhci.h"
+#ifdef __riscv
+#include "xhci_jh7110.h"
+#endif
 #include "xhci_isochronous.h"
 
 
@@ -239,6 +242,48 @@ init_device_acpi(device_node* node, xhci_pci_sim_info* bus)
 }
 
 
+#ifdef __riscv
+/*!	Device tree attachment: the USB controller of the StarFive JH7110, whose
+	glue (xhci_jh7110.cpp) brings it up and tells where its xHCI registers
+	are. Like the ACPI one, it is described by a synthetic pci_info.
+*/
+static status_t
+init_device_fdt(device_node* node, xhci_pci_sim_info* bus)
+{
+	device_node* fdtNode = gDeviceManager->get_parent_node(node);
+	phys_addr_t address;
+	uint64 length;
+	uint32 irq;
+	status_t status = jh7110_usb_init(fdtNode, &address, &length, &irq);
+	gDeviceManager->put_node(fdtNode);
+	if (status != B_OK)
+		return status;
+	if (irq == 0 || irq > 0xff) {
+		TRACE_MODULE_ERROR("FDT: interrupt %" B_PRIu32 " out of range\n", irq);
+		return B_DEVICE_NOT_FOUND;
+	}
+
+	pci_info* info = &bus->pciinfo;
+	memset(info, 0, sizeof(pci_info));
+	info->vendor_id = 0xffff;
+	info->device_id = 0xffff;
+	info->class_base = PCI_serial_bus;
+	info->class_sub = PCI_usb;
+	info->class_api = PCI_usb_xhci;
+	info->u.h0.base_registers[0] = (uint32)address;
+	info->u.h0.base_registers[1] = (uint32)(address >> 32);
+	info->u.h0.base_register_flags[0] = PCI_address_type_64;
+	info->u.h0.base_register_sizes[0] = length != 0 ? length : 0x10000;
+	info->u.h0.interrupt_line = irq;
+
+	bus->trb_prefetch_quirk = false;
+	bus->pci = NULL;
+	bus->device = NULL;
+	return B_OK;
+}
+#endif
+
+
 //	#pragma mark -
 
 
@@ -331,7 +376,21 @@ init_device(device_node* node, void** device_cookie)
 		device_node* parent = gDeviceManager->get_parent_node(node);
 		gDeviceManager->get_attr_string(parent, B_DEVICE_BUS, &busName, false);
 		bool isACPI = busName != NULL && strcmp(busName, "acpi") == 0;
+		bool isFDT = busName != NULL && strcmp(busName, "fdt") == 0;
 		gDeviceManager->put_node(parent);
+#ifdef __riscv
+		if (isFDT) {
+			status_t status = init_device_fdt(node, bus);
+			if (status != B_OK) {
+				free(bus);
+				return status;
+			}
+			*device_cookie = bus;
+			return B_OK;
+		}
+#else
+		(void)isFDT;
+#endif
 		if (isACPI) {
 			status_t status = init_device_acpi(node, bus);
 			if (status != B_OK) {
@@ -422,6 +481,19 @@ supports_device(device_node* parent)
 		// Elsewhere xHCI controllers are only attached through PCI.
 		return 0.0f;
 	}
+
+#ifdef __riscv
+	if (strcmp(bus, "fdt") == 0) {
+		const char* compatible;
+		if (gDeviceManager->get_attr_string(parent, "fdt/compatible",
+				&compatible, false) == B_OK
+			&& strcmp(compatible, "starfive,jh7110-usb") == 0) {
+			TRACE_MODULE("JH7110 USB controller found!\n");
+			return 0.8f;
+		}
+		return 0.0f;
+	}
+#endif
 
 	if (strcmp(bus, "pci") != 0)
 		return 0.0f;
