@@ -25,6 +25,7 @@ SYSTEM_BIN += [ FFilterByBuildFeatures
 	screenshot
 	setcontrollook
 	setdecor
+	sonyctl@x86,x86_64
 	spamdbm
 	translate
 	WindowShade

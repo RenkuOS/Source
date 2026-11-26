@@ -33,6 +33,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 
 #define SONY_SNC_MODULE_NAME			"drivers/power/sony_snc/driver_v1"
@@ -698,6 +699,12 @@ sony_snc_control_ioctl(void* _cookie, uint32 op, void* arg, size_t length)
 		case SONY_SNC_SET_THERMAL_PROFILE:
 		case SONY_SNC_SET_TOUCHPAD:
 		{
+			// The charge limit, the thermal profile and the touchpad are
+			// for the system to change, not for any program: the status
+			// stays open to everyone.
+			if (geteuid() != 0)
+				return B_NOT_ALLOWED;
+
 			uint32 value;
 			if (length < sizeof(value)
 				|| user_memcpy(&value, arg, sizeof(value)) != B_OK) {
