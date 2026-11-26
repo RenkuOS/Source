@@ -37,6 +37,7 @@
 
 #include <ApplicationPrivate.h>
 #include <AppServerLink.h>
+#include <BitmapPrivate.h>
 #include <ColorConversion.h>
 #include <DecorInfo.h>
 #include <DefaultColors.h>
@@ -1864,6 +1865,50 @@ get_window_order(int32 workspace, int32** _tokens, int32* _count)
 	link.Read(*_tokens, count * sizeof(int32));
 	*_count = count;
 	return B_OK;
+}
+
+
+/*!	RenkuOS: copies what the compositor has of the window \a windowToken, its
+	contents without the decorator, into \a bitmap, scaled to fill it. Covered
+	and off-screen windows show their own contents.
+
+	\a flags can change that: with WINDOW_PREVIEW_DECORATOR, the tab and the
+	border are included, and what is beside the tab or cut off at a rounded
+	corner is transparent. With WINDOW_PREVIEW_FIT, the picture keeps its
+	aspect ratio and is never scaled up; it is drawn at the left top of the
+	bitmap, and the rest is left as it is. If \a _used isn't NULL, it is set
+	to the part of the bitmap that was drawn.
+
+	The bitmap must be B_RGB32 or B_RGBA32, and have a server side, as bitmaps
+	without B_BITMAP_NO_SERVER_LINK do: app_server writes the pixels into it
+	directly. Fails with B_NOT_SUPPORTED if the desktop isn't composited, with
+	B_BAD_VALUE if there is no such window, and with B_NOT_ALLOWED if the
+	window has nothing to show right now, as when it is hidden.
+*/
+status_t
+get_window_preview(int32 windowToken, BBitmap* bitmap, uint32 flags,
+	BRect* _used)
+{
+	if (bitmap == NULL || bitmap->InitCheck() != B_OK)
+		return B_BAD_VALUE;
+
+	int32 bitmapToken = BBitmap::Private(bitmap).ServerToken();
+	if (bitmapToken < 0)
+		return B_BAD_VALUE;
+
+	BPrivate::AppServerLink link;
+	link.StartMessage(AS_GET_WINDOW_PREVIEW);
+	link.Attach<int32>(windowToken);
+	link.Attach<int32>(bitmapToken);
+	link.Attach<uint32>(flags);
+
+	int32 code;
+	status_t status = link.FlushWithReply(code);
+	if (status != B_OK)
+		return status;
+	if (code == B_OK && _used != NULL)
+		link.Read<BRect>(_used);
+	return code;
 }
 
 

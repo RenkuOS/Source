@@ -57,10 +57,12 @@
 #include "Screen.h"
 #include "ScreenManager.h"
 #include "ServerApp.h"
+#include "ServerBitmap.h"
 #include "ServerConfig.h"
 #include "ServerCursor.h"
 #include "ServerWindow.h"
 #include "SystemPalette.h"
+#include "WindowBuffer.h"
 #include "WindowPrivate.h"
 #include "Window.h"
 #include "Workspace.h"
@@ -2598,6 +2600,243 @@ Desktop::WriteWindowOrder(int32 workspace, BPrivate::LinkSender& sender)
 	sender.Flush();
 
 	UnlockSingleWindow();
+}
+
+
+/*!	The source pixels, \a from up to \a to, of the pixel \a index of \a count,
+	when \a length pixels from \a start are scaled to \a count. Only \a first
+	to \a last can be read; the pixels next to them stand in for the others.
+	At most 4096 pixels are taken, so that the sums of a 4096 by 4096 block
+	still fit into 32 bits.
+*/
+static void
+preview_span(int32 index, int32 count, int32 start, int32 length,
+	int32 first, int32 last, int32& from, int32& to)
+{
+	from = start + (int32)((int64)index * length / count);
+	to = start + (int32)((int64)(index + 1) * length / count);
+	from = max_c(first, min_c(from, last));
+	to = max_c(from + 1, min_c(min_c(to, last + 1), from + 4096));
+}
+
+
+/*!	RenkuOS: draws the contents of the window \a windowToken, as they are in
+	its compositor buffer, into \a bitmap, and sets \a used to the part of the
+	bitmap that was drawn. Each pixel of the bitmap is the average of the
+	pixels it covers.
+
+	Without flags, the window's content area is scaled to fill the bitmap.
+	With BPrivate::WINDOW_PREVIEW_DECORATOR, the tab and the border are
+	included, and what is beside the tab or cut off at a rounded corner is
+	transparent. With BPrivate::WINDOW_PREVIEW_FIT, the picture keeps its
+	aspect ratio and is never scaled up; it is drawn at the left top, and the
+	rest of the bitmap is left as it is.
+*/
+status_t
+Desktop::GetWindowPreview(int32 windowToken, ServerBitmap* bitmap,
+	uint32 flags, BRect& used)
+{
+	if (!fCompositor.IsSet())
+		return B_NOT_SUPPORTED;
+
+	if (!bitmap->IsValid() || bitmap->Overlay() != NULL
+		|| (bitmap->ColorSpace() != B_RGB32
+			&& bitmap->ColorSpace() != B_RGBA32)) {
+		return B_BAD_VALUE;
+	}
+
+	// The window can't go away while the lock is held: ~ServerWindow() gives
+	// up the token before it removes the window, which needs the lock.
+	AutoReadLocker locker(fWindowLock);
+
+	::Window* window = NULL;
+	{
+		PthreadMutexLocker tokenLocker(BPrivate::gDefaultTokens.GetLock());
+		::ServerWindow* serverWindow;
+		if (BPrivate::gDefaultTokens.GetToken(windowToken, B_SERVER_TOKEN,
+				(void**)&serverWindow) != B_OK) {
+			return B_BAD_VALUE;
+		}
+		// An offscreen window isn't on the desktop, and isn't protected by
+		// the lock.
+		window = serverWindow->Window();
+		if (window == NULL || window->IsOffscreenWindow())
+			return B_BAD_VALUE;
+	}
+
+	WindowBufferHWInterface* interface = window->BufferInterface();
+	if (interface == NULL || window->IsHidden() || !window->IsBufferReady())
+		return B_NOT_ALLOWED;
+
+	const WindowBuffer& buffer = interface->Buffer();
+	const WindowShape& shape = window->Shape();
+	BRegion outline(shape.OpaqueRegion());
+	outline.Include(&shape.EdgeRegion());
+	BRect content = (flags & BPrivate::WINDOW_PREVIEW_DECORATOR) != 0
+		? outline.Frame() : window->Frame();
+	BRect available = content & buffer.Frame();
+	if (buffer.InitCheck() != B_OK || !available.IsValid())
+		return B_NOT_ALLOWED;
+
+	const int32 contentLeft = (int32)content.left;
+	const int32 contentTop = (int32)content.top;
+	const int32 contentWidth = content.IntegerWidth() + 1;
+	const int32 contentHeight = content.IntegerHeight() + 1;
+
+	int32 width = bitmap->Width();
+	int32 height = bitmap->Height();
+	if ((flags & BPrivate::WINDOW_PREVIEW_FIT) != 0) {
+		if (width >= contentWidth && height >= contentHeight) {
+			width = contentWidth;
+			height = contentHeight;
+		} else if ((int64)width * contentHeight
+				> (int64)height * contentWidth) {
+			width = max_c(1, (int64)height * contentWidth / contentHeight);
+		} else
+			height = max_c(1, (int64)width * contentHeight / contentWidth);
+	}
+	used.Set(0, 0, width - 1, height - 1);
+
+	ArrayDeleter<int32> columns(new(std::nothrow) int32[2 * width]);
+	if (!columns.IsSet())
+		return B_NO_MEMORY;
+	for (int32 x = 0; x < width; x++) {
+		preview_span(x, width, contentLeft, contentWidth,
+			(int32)available.left, (int32)available.right, columns[2 * x],
+			columns[2 * x + 1]);
+	}
+
+	// What isn't part of the window, beside the tab or cut off at a rounded
+	// corner, is left out, by a mask of the available pixels, if there is
+	// any of it.
+	const int32 maskLeft = (int32)available.left;
+	const int32 maskTop = (int32)available.top;
+	const int32 maskWidth = available.IntegerWidth() + 1;
+	// The content area always counts as part of it. Where the mask is
+	// needed, the pixels of the edge region are decided by the shape.
+	const BRegion availableRegion(available);
+	BRegion inside(shape.OpaqueRegion());
+	inside.Include(window->Frame());
+	BRegion outside(availableRegion);
+	outside.Exclude(&inside);
+	ArrayDeleter<uint8> mask;
+	if (outside.CountRects() > 0) {
+		const size_t size = (size_t)maskWidth * (available.IntegerHeight() + 1);
+		mask.SetTo(new(std::nothrow) uint8[size]);
+		if (!mask.IsSet())
+			return B_NO_MEMORY;
+		memset(mask.Get(), 0, size);
+
+		inside.IntersectWith(&availableRegion);
+		for (int32 i = 0; i < inside.CountRects(); i++) {
+			clipping_rect rect = inside.RectAtInt(i);
+			for (int32 y = rect.top; y <= rect.bottom; y++) {
+				memset(mask.Get() + (y - maskTop) * maskWidth + rect.left
+					- maskLeft, 255, rect.right - rect.left + 1);
+			}
+		}
+		BRegion edge(shape.EdgeRegion());
+		edge.IntersectWith(&availableRegion);
+		for (int32 i = 0; i < edge.CountRects(); i++) {
+			clipping_rect rect = edge.RectAtInt(i);
+			for (int32 y = rect.top; y <= rect.bottom; y++) {
+				for (int32 x = rect.left; x <= rect.right; x++) {
+					if (shape.Contains(BPoint(x, y)))
+						mask[(y - maskTop) * maskWidth + x - maskLeft] = 255;
+				}
+			}
+		}
+	}
+
+	// Where the window draws its own alpha, it is kept.
+	const bool opaque = !window->IsTransparent();
+	const uint32 sourceBytesPerRow = buffer.BytesPerRow();
+
+	uint8* row = bitmap->Bits();
+	for (int32 y = 0; y < height; y++, row += bitmap->BytesPerRow()) {
+		int32 top;
+		int32 bottom;
+		preview_span(y, height, contentTop, contentHeight,
+			(int32)available.top, (int32)available.bottom, top, bottom);
+
+		// The sums are divided by multiplying with 2^32 / count, which only
+		// changes with the size of the block.
+		uint32 lastCount = 0;
+		uint64 inverse = 0;
+
+		uint8* target = row;
+		for (int32 x = 0; x < width; x++, target += 4) {
+			const int32 left = columns[2 * x];
+			const int32 right = columns[2 * x + 1];
+			const uint8* sourceRow = buffer.PixelAt(left, top);
+			const uint8* maskRow = mask.IsSet() ? mask.Get()
+				+ (top - maskTop) * maskWidth + left - maskLeft : NULL;
+			const uint32 count = (uint32)(right - left) * (bottom - top);
+			if (count == 1) {
+				target[0] = sourceRow[0];
+				target[1] = sourceRow[1];
+				target[2] = sourceRow[2];
+				target[3] = maskRow != NULL && maskRow[0] == 0 ? 0
+					: opaque ? 255 : sourceRow[3];
+				continue;
+			}
+
+			if (opaque && maskRow == NULL) {
+				uint32 sum[3] = { 0, 0, 0 };
+				for (int32 sourceY = top; sourceY < bottom; sourceY++) {
+					const uint8* source = sourceRow;
+					for (int32 sourceX = left; sourceX < right; sourceX++) {
+						sum[0] += source[0];
+						sum[1] += source[1];
+						sum[2] += source[2];
+						source += 4;
+					}
+					sourceRow += sourceBytesPerRow;
+				}
+				if (count != lastCount) {
+					lastCount = count;
+					inverse = ((uint64)1 << 32) / count + 1;
+				}
+				target[0] = (sum[0] * inverse) >> 32;
+				target[1] = (sum[1] * inverse) >> 32;
+				target[2] = (sum[2] * inverse) >> 32;
+				target[3] = 255;
+				continue;
+			}
+
+			// Otherwise, the colors are weighted by the alpha, so that what
+			// isn't there doesn't show.
+			uint64 sum[3] = { 0, 0, 0 };
+			uint32 alphaSum = 0;
+			for (int32 sourceY = top; sourceY < bottom; sourceY++) {
+				const uint8* source = sourceRow;
+				for (int32 sourceX = 0; sourceX < right - left; sourceX++) {
+					uint32 alpha = opaque ? 255 : source[3];
+					if (maskRow != NULL && maskRow[sourceX] == 0)
+						alpha = 0;
+					sum[0] += source[0] * alpha;
+					sum[1] += source[1] * alpha;
+					sum[2] += source[2] * alpha;
+					alphaSum += alpha;
+					source += 4;
+				}
+				sourceRow += sourceBytesPerRow;
+				if (maskRow != NULL)
+					maskRow += maskWidth;
+			}
+
+			if (alphaSum == 0) {
+				target[0] = target[1] = target[2] = target[3] = 0;
+				continue;
+			}
+			target[0] = sum[0] / alphaSum;
+			target[1] = sum[1] / alphaSum;
+			target[2] = sum[2] / alphaSum;
+			target[3] = alphaSum / count;
+		}
+	}
+
+	return B_OK;
 }
 
 
