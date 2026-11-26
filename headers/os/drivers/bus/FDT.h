@@ -29,6 +29,11 @@ typedef struct fdt_device_module_info {
 	struct fdt_interrupt_map* (*get_interrupt_map)(struct fdt_device* dev);
 	void (*print_interrupt_map)(struct fdt_interrupt_map* interruptMap);
 	uint32 (*lookup_interrupt_map)(struct fdt_interrupt_map* interruptMap, uint32 childAddr, uint32 childIrq);
+
+	// Reads a property of any device tree node, whether its driver is
+	// initialized or not (unlike get_prop(), which needs its fdt_device).
+	const void* (*get_node_prop)(device_node* node, const char* name,
+		int* len);
 } fdt_device_module_info;
 
 

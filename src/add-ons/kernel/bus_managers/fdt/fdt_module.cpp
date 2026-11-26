@@ -378,6 +378,23 @@ fdt_device_get_prop(fdt_device* dev, const char* name, int* len)
 }
 
 
+/*!	Like fdt_device_get_prop(), but works from the device node alone: it does
+	not need the node's driver to be initialized, so that a driver can read
+	the properties of child nodes that are not (anymore).
+*/
+static const void*
+fdt_device_get_node_prop(device_node* node, const char* name, int* len)
+{
+	uint32 fdtNode;
+	if (node == NULL || gDeviceManager->get_attr_uint32(node, "fdt/node",
+			&fdtNode, false) != B_OK) {
+		return NULL;
+	}
+
+	return fdt_getprop(gFDT, (int)fdtNode, name, len);
+}
+
+
 static uint32
 fdt_get_address_cells(const void* fdt, int node)
 {
@@ -777,6 +794,7 @@ fdt_device_module_info gDeviceModule = {
 	fdt_device_get_interrupt_map,
 	fdt_device_print_interrupt_map,
 	fdt_device_lookup_interrupt_map,
+	fdt_device_get_node_prop,
 };
 
 
