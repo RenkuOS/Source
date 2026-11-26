@@ -374,7 +374,9 @@ public:
 		// stores them one after another, each as a usb_stream_packet_header
 		// followed by its data; packets without data are left out. It
 		// returns the number of bytes stored, B_TIMED_OUT, or another error
-		// when the stream has ended. There is one stream per device.
+		// when the stream has ended. Each isochronous input endpoint of a
+		// device can have its own stream, up to four per device. packetSize
+		// and bufferSize have to fit in 32 bits.
 		status_t					StartIsochronousStream(size_t packetSize,
 										uint32 packetsPerTransfer = 32,
 										uint32 transferCount = 4,

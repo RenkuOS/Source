@@ -223,6 +223,10 @@ status_t
 BUSBEndpoint::StartIsochronousStream(size_t packetSize,
 	uint32 packetsPerTransfer, uint32 transferCount, size_t bufferSize) const
 {
+	// usb_raw takes them as 32 bit values: do not let a larger one wrap
+	if (packetSize > UINT32_MAX || bufferSize > UINT32_MAX)
+		return B_BAD_VALUE;
+
 	usb_raw_command command;
 	command.stream_start.interface = fInterface->Index();
 	command.stream_start.endpoint = fIndex;
