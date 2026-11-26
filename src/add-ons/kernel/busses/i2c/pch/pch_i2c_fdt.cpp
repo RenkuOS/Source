@@ -10,10 +10,7 @@
  * PCI front-ends. The children of the device tree node are registered as I2C
  * devices, with their first "compatible" string as hardware ID.
  *
- * The SCL counts follow the DesignWare databook equations, as U-Boot's
- * dw_i2c_calc_timing() does:
- *   SCL high = (HCNT + SPKLEN + 3) / clock + fall time
- *   SCL low  = (LCNT + 1) / clock - fall time + rise time
+ * The SCL counts are computed in dw_i2c_timing.h.
  */
 
 
@@ -24,6 +21,7 @@
 #include <ACPI.h>
 #include <ByteOrder.h>
 
+#include "dw_i2c_timing.h"
 #include "pch_i2c.h"
 
 #include <bus/FDT.h>
@@ -37,15 +35,6 @@ typedef struct {
 
 
 static const char* const kCompatible = "snps,designware-i2c";
-
-// minimum SCL high and low times (I2C specification), in ns
-#define SS_MIN_HIGH_NS		4000
-#define SS_MIN_LOW_NS		4700
-#define FS_MIN_HIGH_NS		600
-#define FS_MIN_LOW_NS		1300
-#define HD_STA_OFFSET		3
-#define SPIKE_COUNT			1		// IC_*_SPKLEN after reset
-
 
 static fdt_device_module_info*
 get_fdt(device_node* node, fdt_device** _dev)
@@ -68,44 +57,6 @@ get_prop_u32(fdt_device_module_info* module, fdt_device* dev,
 	if (prop == NULL || length < 4)
 		return defaultValue;
 	return B_BENDIAN_TO_HOST_INT32(*prop);
-}
-
-
-static uint32
-ns_to_counts(uint64 clock, uint32 ns)
-{
-	return (uint32)((clock * ns + 999999999) / 1000000000);
-}
-
-
-/*!	HCNT and LCNT for a bus speed, back-solved from the minimum SCL times and
-	then stretched evenly to reach the requested period.
-*/
-static void
-compute_scl_counts(uint64 clock, uint32 speed, uint32 minHighNs,
-	uint32 minLowNs, uint32 riseNs, uint32 fallNs, uint16* _hcnt,
-	uint16* _lcnt)
-{
-	int32 fall = ns_to_counts(clock, fallNs);
-	int32 rise = ns_to_counts(clock, riseNs);
-	int32 hcnt = (int32)ns_to_counts(clock, minHighNs) - fall - HD_STA_OFFSET
-		- SPIKE_COUNT;
-	int32 lcnt = (int32)ns_to_counts(clock, minLowNs) - rise + fall - 1;
-	if (hcnt < 6)
-		hcnt = 6;
-	if (lcnt < 8)
-		lcnt = 8;
-
-	// the period these counts give, against the one asked for
-	int32 period = (int32)(clock / speed);
-	int32 total = hcnt + SPIKE_COUNT + HD_STA_OFFSET + lcnt + 1 + rise;
-	if (period > total) {
-		int32 extra = period - total;
-		hcnt += extra / 2;
-		lcnt += extra - extra / 2;
-	}
-	*_hcnt = (uint16)min_c(hcnt, 0xffff);
-	*_lcnt = (uint16)min_c(lcnt, 0xffff);
 }
 
 
@@ -274,10 +225,12 @@ init_device(device_node* node, void** device_cookie)
 	// fast mode, so use the standard mode counts for it when the device
 	// tree asks for 100 kHz
 	uint16 ssHcnt, ssLcnt, fsHcnt, fsLcnt;
-	compute_scl_counts(clock, 100000, SS_MIN_HIGH_NS, SS_MIN_LOW_NS,
+	dw_i2c_compute_scl_counts(clock, 100000, DW_I2C_SS_MIN_HIGH_NS,
+		DW_I2C_SS_MIN_LOW_NS,
 		get_prop_u32(module, dev, "i2c-scl-rising-time-ns", 1000), fallNs,
 		&ssHcnt, &ssLcnt);
-	compute_scl_counts(clock, 400000, FS_MIN_HIGH_NS, FS_MIN_LOW_NS,
+	dw_i2c_compute_scl_counts(clock, 400000, DW_I2C_FS_MIN_HIGH_NS,
+		DW_I2C_FS_MIN_LOW_NS,
 		get_prop_u32(module, dev, "i2c-scl-rising-time-ns", 300), fallNs,
 		&fsHcnt, &fsLcnt);
 	if (speed <= 100000) {
@@ -295,7 +248,7 @@ init_device(device_node* node, void** device_cookie)
 	bus->info.ss_lcnt = ssLcnt;
 	bus->info.fs_hcnt = fsHcnt;
 	bus->info.fs_lcnt = fsLcnt;
-	bus->info.sda_hold_time = max_c(ns_to_counts(clock, holdNs), 1);
+	bus->info.sda_hold_time = max_c(dw_i2c_ns_to_counts(clock, holdNs), 1);
 	bus->info.driver_node = node;
 	bus->info.scan_bus = fdt_scan_bus;
 	bus->info.clear_on_read = true;

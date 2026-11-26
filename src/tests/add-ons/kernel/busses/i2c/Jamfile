@@ -1,0 +1,5 @@
+SubDir HAIKU_TOP src tests add-ons kernel busses i2c ;
+
+SubDirHdrs [ FDirName $(HAIKU_TOP) src add-ons kernel busses i2c pch ] ;
+
+SimpleTest dw_i2c_timing_test : dw_i2c_timing_test.cpp ;
