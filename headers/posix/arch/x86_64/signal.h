@@ -49,8 +49,10 @@ struct fpu_state {
 	unsigned short		cs;
 	unsigned short		ss;
 	unsigned char		trap_number;
+	unsigned char		_reserved_485;
+	unsigned short		fs;
 
-	unsigned char		_available_485_511[27];
+	unsigned char		_available_488_511[24];
 };
 
 

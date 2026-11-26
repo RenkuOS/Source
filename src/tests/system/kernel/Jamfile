@@ -14,6 +14,13 @@ SimpleTest fifo_poll_test : fifo_poll_test.cpp ;
 SimpleTest signal_fpu_test : signal_fpu_test.cpp ;
 SimpleTest signal_suspend_resume_test : signal_suspend_resume_test.cpp ;
 
+if $(TARGET_ARCH) = x86_64 {
+	UsePrivateSystemHeaders ;
+	UsePrivateHeaders libroot ;
+	SubDirSysHdrs $(HAIKU_TOP) headers private system arch x86 ;
+	SimpleTest x86_64_segments_test : x86_64_segments_test.c ;
+}
+
 SimpleTest hello_avx : hello_avx.c ;
 local avxSource = [ FGristFiles hello_avx.c ] ;
 local avxObject = $(avxSource:S=$(SUFOBJ)) ;

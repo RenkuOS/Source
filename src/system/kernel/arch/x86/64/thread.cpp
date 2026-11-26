@@ -11,6 +11,7 @@
 
 #include <arch/thread.h>
 
+#include <stddef.h>
 #include <string.h>
 
 #include <arch_thread_defs.h>
@@ -25,6 +26,7 @@
 #include <thread.h>
 #include <tls.h>
 #include <tracing.h>
+#include <util/AutoLock.h>
 #include <util/Random.h>
 #include <vm/vm_types.h>
 #include <vm/VMAddressSpace.h>
@@ -93,12 +95,165 @@ x86_restart_syscall(iframe* frame)
 }
 
 
+// Wine reads the FS selector of the interrupted code here.
+static_assert(offsetof(fpu_state, fs) == 486,
+	"the signal frame layout is part of the userland ABI");
+
+
+static inline uint16
+read_fs_selector()
+{
+	uint16 selector;
+	asm volatile("movw %%fs, %0" : "=r" (selector));
+	return selector;
+}
+
+
+static inline uint16
+read_ds_selector()
+{
+	uint16 selector;
+	asm volatile("movw %%ds, %0" : "=r" (selector));
+	return selector;
+}
+
+
+static inline uint16
+read_es_selector()
+{
+	uint16 selector;
+	asm volatile("movw %%es, %0" : "=r" (selector));
+	return selector;
+}
+
+
+/*!	Returns the FS base the thread uses while its FS selector is 0: the one
+	set with THREAD_SET_FS_BASE, or else its TLS.
+*/
+static inline uint64
+user_fs_base(Thread* thread)
+{
+	if (thread->arch_info.user_fs_base != 0)
+		return thread->arch_info.user_fs_base;
+	return thread->user_local_storage;
+}
+
+
+/*!	Returns \a selector, or 0 if it is one of the null selectors 0 to 3 (the
+	RPL bits do not make another segment of it).
+
+	The kernel keeps only 0 for them. Loading any of them leaves the segment
+	base to the CPU: Intel CPUs clear it, while AMD CPUs before Zen 2 keep the
+	base the register had (Linux's X86_BUG_NULL_SEG), which may be the one of
+	another thread. For 0, the kernel writes the FS base it keeps for the
+	thread.
+*/
+static inline uint16
+normalized_selector(uint16 selector)
+{
+	return (selector & ~3) == 0 ? 0 : selector;
+}
+
+
+/*!	Loads the thread's saved FS state into the CPU.
+	Interrupts must be disabled.
+*/
+static void
+load_user_fs(Thread* thread)
+{
+	// A selector other than 0 is loaded again even when FS holds it already:
+	// FS keeps the descriptor it was loaded from, which may have changed
+	// since.
+	uint16 selector = normalized_selector(thread->arch_info.user_fs_selector);
+	if (selector != 0 || read_fs_selector() != 0)
+		asm volatile("movw %0, %%fs" : : "r" (selector));
+	if (selector == 0)
+		x86_write_msr(IA32_MSR_FS_BASE, user_fs_base(thread));
+}
+
+
+/*!	Returns whether userland can hold \a selector in a data segment register,
+	so that the kernel can load it again: the null selector, or a selector of
+	a present data segment or readable code segment of DPL 3 in the GDT. (The
+	RPL does not matter for such a segment.)
+*/
+static bool
+is_valid_user_data_selector(uint16 selector)
+{
+	if ((selector & ~3) == 0)
+		return true;
+	if ((selector & 4) != 0)
+		return false;
+			// there is no LDT
+
+	struct {
+		uint16	limit;
+		uint64	base;
+	} _PACKED gdtr;
+	asm volatile("sgdt %0" : "=m" (gdtr));
+
+	uint32 index = selector >> 3;
+	if (index * sizeof(uint64) + sizeof(uint64) - 1 > gdtr.limit)
+		return false;
+
+	segment_descriptor descriptor;
+	memcpy(&descriptor, (uint8*)gdtr.base + index * sizeof(uint64),
+		sizeof(descriptor));
+	return descriptor.present == 1
+		&& descriptor.desc_type == DT_CODE_DATA_SEGMENT
+		&& descriptor.dpl == DPL_USER
+		&& ((descriptor.type & DT_CODE_EXECUTE_ONLY) == 0
+			|| (descriptor.type & DT_CODE_READABLE) == DT_CODE_READABLE);
+}
+
+
+/*!	Saves the user FS, DS and ES selectors of \a thread, which must be the
+	one running on this CPU. The kernel never loads these registers itself, so
+	they still hold what userland left in them. A null selector is saved as 0,
+	see normalized_selector().
+	Interrupts must be disabled.
+*/
+void
+x86_save_tls_context(Thread* thread)
+{
+	thread->arch_info.user_fs_selector = normalized_selector(read_fs_selector());
+	thread->arch_info.user_ds_selector = normalized_selector(read_ds_selector());
+	thread->arch_info.user_es_selector = normalized_selector(read_es_selector());
+}
+
+
+/*!	Loads the user segment state of \a thread into the CPU.
+	Interrupts must be disabled.
+*/
 void
 x86_set_tls_context(Thread* thread)
 {
-	// Set FS segment base address to the TLS segment.
-	x86_write_msr(IA32_MSR_FS_BASE, thread->user_local_storage);
+	uint16 selector = thread->arch_info.user_ds_selector;
+	if (selector != 0 || read_ds_selector() != 0)
+		asm volatile("movw %0, %%ds" : : "r" (selector));
+	selector = thread->arch_info.user_es_selector;
+	if (selector != 0 || read_es_selector() != 0)
+		asm volatile("movw %0, %%es" : : "r" (selector));
+
+	load_user_fs(thread);
 	x86_write_msr(IA32_MSR_KERNEL_GS_BASE, thread->arch_info.user_gs_base);
+}
+
+
+/*!	Gives the current thread the segment state a new thread starts with:
+	64-bit code with its TLS in FS, whatever an image it replaced with exec()
+	had set.
+*/
+void
+x86_64_reset_user_segments(Thread* thread)
+{
+	InterruptsLocker locker;
+	thread->arch_info.user_fs_base = 0;
+	thread->arch_info.user_fs_selector = 0;
+	thread->arch_info.user_ds_selector = 0;
+	thread->arch_info.user_es_selector = 0;
+	thread->arch_info.user_gs_base = 0;
+	x86_set_tls_context(thread);
 }
 
 
@@ -162,6 +317,47 @@ arch_thread_control(const char* subsystem, uint32 function, void* buffer,
 			Thread* thread = thread_get_current_thread();
 			thread->arch_info.user_gs_base = base;
 			x86_write_msr(IA32_MSR_KERNEL_GS_BASE, base);
+			return B_OK;
+		}
+
+		case THREAD_SET_FS_BASE:
+		{
+			uint64 base;
+			if (bufferSize != sizeof(base))
+				return B_BAD_VALUE;
+
+			if (!is_user_address_range(buffer, sizeof(base))
+				|| user_memcpy(&base, buffer, sizeof(base)) < B_OK) {
+				return B_BAD_ADDRESS;
+			}
+
+			// WRMSR faults in kernel mode on a non-canonical base. Every
+			// user address is canonical, and no other base is of use.
+			if (base > USER_TOP)
+				return B_BAD_VALUE;
+
+			Thread* thread = thread_get_current_thread();
+			InterruptsLocker locker;
+			thread->arch_info.user_fs_base = base;
+			thread->arch_info.user_fs_selector = 0;
+			load_user_fs(thread);
+			return B_OK;
+		}
+
+		case THREAD_GET_FS_BASE:
+		case THREAD_GET_GS_BASE:
+		{
+			if (bufferSize != sizeof(uint64))
+				return B_BAD_VALUE;
+
+			Thread* thread = thread_get_current_thread();
+			uint64 base = function == THREAD_GET_FS_BASE
+				? user_fs_base(thread) : thread->arch_info.user_gs_base;
+
+			if (!is_user_address_range(buffer, sizeof(base))
+				|| user_memcpy(buffer, &base, sizeof(base)) < B_OK) {
+				return B_BAD_ADDRESS;
+			}
 			return B_OK;
 		}
 	}
@@ -394,6 +590,8 @@ arch_setup_signal_frame(Thread* thread, struct sigaction* action,
 	signalFrameData->context.uc_mcontext.fpu.fp_fxsave.cs = frame->cs;
 	signalFrameData->context.uc_mcontext.fpu.fp_fxsave.ss = frame->ss;
 	signalFrameData->context.uc_mcontext.fpu.fp_fxsave.trap_number = frame->vector;
+	const uint16 fsSelector = read_fs_selector();
+	signalFrameData->context.uc_mcontext.fpu.fp_fxsave.fs = fsSelector;
 
 	// Fill in signalFrameData->context.uc_stack.
 	signal_get_user_stack(frame->user_sp, &signalFrameData->context.uc_stack);
@@ -448,6 +646,16 @@ arch_setup_signal_frame(Thread* thread, struct sigaction* action,
 	frame->cs = USER_CODE_SELECTOR;
 	frame->ss = USER_DATA_SELECTOR;
 
+	// The handler also expects its TLS in FS, which the interrupted code may
+	// have replaced: 32-bit code, or code that had loaded FS (loading even the
+	// null selector clears the FS base on Intel CPUs). Returning from the
+	// handler restores the interrupted FS.
+	{
+		InterruptsLocker locker;
+		thread->arch_info.user_fs_selector = 0;
+		load_user_fs(thread);
+	}
+
 	return B_OK;
 }
 
@@ -479,15 +687,18 @@ arch_restore_signal_frame(struct signal_frame_data* signalFrameData)
 	// GS base has already been swapped back in, so check them before any of
 	// the frame is changed. The kernel only ever stores these values in a
 	// signal frame, so a program that returns the frame it was given always
-	// passes.
+	// passes. FS is loaded here, in kernel mode, so it is checked the same
+	// way.
 	const uint16 cs = signalFrameData->context.uc_mcontext.fpu.fp_fxsave.cs;
 	const uint16 ss = signalFrameData->context.uc_mcontext.fpu.fp_fxsave.ss;
+	const uint16 fs = signalFrameData->context.uc_mcontext.fpu.fp_fxsave.fs;
 	const uint64 ip = signalFrameData->context.uc_mcontext.rip;
 	if ((cs != USER_CODE_SELECTOR && cs != USER32_CODE_SELECTOR)
-		|| ss != USER_DATA_SELECTOR || !x86_64_is_user_ip(cs, ip)) {
+		|| ss != USER_DATA_SELECTOR || !x86_64_is_user_ip(cs, ip)
+		|| !is_valid_user_data_selector(fs)) {
 		dprintf("arch_restore_signal_frame(): thread %" B_PRId32 ": invalid "
-			"cs %#x, ss %#x, or rip %#" B_PRIx64 ". Killing thread...\n",
-			thread->id, cs, ss, ip);
+			"cs %#x, ss %#x, fs %#x, or rip %#" B_PRIx64 ". Killing "
+			"thread...\n", thread->id, cs, ss, fs, ip);
 		kill_thread(thread->id);
 		return B_BAD_VALUE;
 	}
@@ -519,6 +730,12 @@ arch_restore_signal_frame(struct signal_frame_data* signalFrameData)
 
 	frame->cs = cs;
 	frame->ss = ss;
+
+	{
+		InterruptsLocker locker;
+		thread->arch_info.user_fs_selector = normalized_selector(fs);
+		load_user_fs(thread);
+	}
 
 	memcpy(thread->arch_info.user_fpu_state,
 		(void*)&signalFrameData->context.uc_mcontext.fpu, min_c(gFPUSaveLength, sizeof(savefpu)));
