@@ -64,10 +64,12 @@
 
 
 /*!	Versions 1 and 2 were drafts: styles were built against them, with other
-	structure layouts, before the interface settled. This is the first
-	final version, and app_server refuses anything older.
+	structure layouts, before the interface settled. Version 3 is the first
+	final one, and app_server refuses anything older. Version 4 adds rounded
+	corners on a composited desktop, version 5 glass frames and buttons
+	that light up under the mouse.
 */
-#define DECOR_STYLE_API_VERSION		3
+#define DECOR_STYLE_API_VERSION		5
 
 
 #ifdef __cplusplus
@@ -217,6 +219,12 @@ typedef struct decor_tab {
 
 	// the style's own: free to use from layout() on
 	void*					cookie;
+
+	// in, from version 5
+	bool					hovered[DECOR_BUTTON_CAPACITY];
+		// by DECOR_BUTTON_*: the mouse is over the button, and no mouse
+		// button is held down elsewhere. At most one button of a window is
+		// hovered at a time; it is drawn again when this changes.
 } decor_tab;
 
 
@@ -262,7 +270,40 @@ typedef struct decor_window {
 
 	// the style's own: free to use from create_window() on
 	void*					cookie;
+
+	// in, from version 4
+	bool					corners_cut;
+		// the compositor cuts off the corners that rounded_shape() gives,
+		// and the border should follow them, as with canvas->stroke_corner()
+
+	// in, from version 5
+	bool					glass;
+		// the frame is glass now: the style asked for it with
+		// DECOR_STYLE_GLASS, and the desktop is composited. Before the style
+		// draws, what it draws over is clear; what it draws keeps its alpha,
+		// and what is behind the window shows through it, blurred. Draw with
+		// B_OP_ALPHA and B_ALPHA_COMPOSITE to build up partial alpha. When
+		// this is false, draw an opaque frame.
 } decor_window;
+
+
+/*!	A rectangle of a frame's outline, and the radius each of its corners is
+	cut off by on a composited desktop (0 keeps a corner square).
+*/
+typedef struct decor_shape_rect {
+	decor_rect				rect;
+	int32					left_top;
+	int32					right_top;
+	int32					left_bottom;
+	int32					right_bottom;
+} decor_shape_rect;
+
+enum {
+	DECOR_CORNER_LEFT_TOP = 0,
+	DECOR_CORNER_RIGHT_TOP,
+	DECOR_CORNER_LEFT_BOTTOM,
+	DECOR_CORNER_RIGHT_BOTTOM
+};
 
 
 /*!	A gradient fill: linear, from \c start to \c end, through up to
@@ -364,6 +405,13 @@ struct decor_canvas {
 	bool					(*copy_to_front)(decor_canvas* canvas);
 	void					(*set_copy_to_front)(decor_canvas* canvas,
 								bool enabled);
+
+	// from version 4: the line of a border along a corner the compositor
+	// cuts off; \a left_top is the corner square's, \a corner a
+	// DECOR_CORNER_*
+	void					(*stroke_corner)(decor_canvas* canvas,
+								decor_point left_top, int32 radius,
+								int32 corner, rgb_color color);
 };
 
 
@@ -418,7 +466,8 @@ typedef struct decor_style {
 	void					(*draw_button)(decor_window* window,
 								decor_canvas* canvas, int32 tab,
 								int32 button, decor_rect invalid);
-		// DECOR_BUTTON_*, pressed or not as tab->pressed says
+		// DECOR_BUTTON_*, pressed or not as tab->pressed says, and from
+		// version 5 hovered or not as tab->hovered says
 	void					(*draw_outline)(decor_window* window,
 								decor_canvas* canvas, decor_rect invalid);
 		// the outline while resizing; NULL draws a dotted line
@@ -451,7 +500,24 @@ typedef struct decor_style {
 	// the system colours changed; called before the frame is drawn again
 	void					(*update_colors)(decor_window* window,
 								decor_canvas* canvas);
+
+	// from version 4: rounds the corners of the frame's outline, given as
+	// the frame (first) and its tabs, by setting their radii; NULL keeps
+	// them square
+	void					(*rounded_shape)(decor_window* window,
+								decor_shape_rect* shape, int32 count);
+
+	// from version 5: DECOR_STYLE_* flags
+	uint32					flags;
 } decor_style;
+
+
+//!	decor_style flags, from version 5
+enum {
+	DECOR_STYLE_GLASS		= 0x01
+		// the frame is glass on a composited desktop, whatever the user's
+		// glass setting is; see decor_window::glass
+};
 
 
 #ifdef __cplusplus

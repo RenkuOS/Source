@@ -40,6 +40,7 @@
 #include "RoundedDecorator.h"
 #include "ServerApp.h"
 #include "ServerWindow.h"
+#include "StyleDecorator.h"
 #include "WindowBehaviour.h"
 #include "WindowBuffer.h"
 #include "Workspace.h"
@@ -129,7 +130,8 @@ Window::Window(const BRect& frame, const char *name,
 	fBufferLost(false),
 	fHasRoundedCorners(false),
 	fCompositeAlpha(255),
-	fDecoratorGeneration(0)
+	fDecoratorGeneration(0),
+	fGlassFrame(false)
 {
 	_InitWindowStack();
 
@@ -276,6 +278,24 @@ Window::SetClipping(BRegion* stillAvailableOnScreen)
 			fTransparentRegion.IntersectWith(&fCompositeRegion);
 		}
 
+		// Glass is for windows with a border. A window drawing directly to
+		// its buffer, or taking over the screen, is left as it is.
+		fGlassBorderRegion.MakeEmpty();
+		fGlassContentRegion.MakeEmpty();
+		if (fLook != kDesktopWindowLook && fFeel != kDesktopWindowFeel
+			&& fLook != B_NO_BORDER_WINDOW_LOOK
+			&& (fFlags & kWindowScreenFlag) == 0
+			&& !ServerWindow()->HasDirectFrameBufferAccess()) {
+			GetContentRegion(&fGlassContentRegion);
+			fGlassContentRegion.IntersectWith(&fCompositeRegion);
+			fGlassBorderRegion = fCompositeRegion;
+			fGlassBorderRegion.Exclude(&fGlassContentRegion);
+		}
+
+		StyleDecorator* style = dynamic_cast<StyleDecorator*>(Decorator());
+		fGlassFrame = style != NULL && style->HasGlassFrame()
+			&& fGlassBorderRegion.CountRects() > 0;
+
 		// The buffer can't be drawn to above or left of the screen, but other
 		// windows don't matter anymore: the window draws everything else. In
 		// the screen layout, it ends where the screen does.
@@ -344,8 +364,9 @@ Window::ShapeContains(const BPoint& where) const
 	if (!fShape.Contains(where))
 		return false;
 
-	// What the window hasn't drawn at all can't be clicked.
-	if (fTransparentRegion.Contains(where) && fBufferReady) {
+	// What the window hasn't drawn at all can't be clicked, but glass is
+	// still part of the window.
+	if (!IsGlass() && fTransparentRegion.Contains(where) && fBufferReady) {
 		const WindowBuffer& buffer = fBufferInterface->Buffer();
 		int32 x = (int32)where.x;
 		int32 y = (int32)where.y;
@@ -1578,7 +1599,7 @@ void
 Window::SetFlags(uint32 flags, BRegion* updateRegion)
 {
 	// Turning transparency on or off changes how the whole window is drawn.
-	if (((fFlags ^ flags) & B_TRANSPARENT_WINDOW) != 0
+	if (((fFlags ^ flags) & (B_TRANSPARENT_WINDOW | B_GLASS_WINDOW)) != 0
 		&& fBufferInterface.IsSet() && updateRegion != NULL) {
 		BRegion full;
 		GetFullRegion(&full);
@@ -1955,6 +1976,7 @@ Window::ValidWindowFlags()
 		| B_AUTO_UPDATE_SIZE_LIMITS
 		| B_CLOSE_ON_ESCAPE
 		| B_TRANSPARENT_WINDOW
+		| B_GLASS_WINDOW
 		| B_NO_SERVER_SIDE_WINDOW_MODIFIERS
 		| kWindowScreenFlag
 		| kAcceptKeyboardFocusFlag;

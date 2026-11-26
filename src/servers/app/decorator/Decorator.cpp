@@ -605,11 +605,14 @@ Decorator::GetFootprint()
 
 
 /*!	\brief Returns our Desktop object pointer
+
+	It is set in the constructor and never changes, so no lock is needed. The
+	decorator's lock may already be held: StyleDecorator calls this while
+	GetFootprint() holds it for reading.
 */
 ::Desktop*
 Decorator::GetDesktop()
 {
-	AutoReadLocker _(fLocker);
 	return fDesktop;
 }
 

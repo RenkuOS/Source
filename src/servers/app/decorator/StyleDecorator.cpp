@@ -17,6 +17,7 @@
 
 #include <WindowPrivate.h>
 
+#include "Desktop.h"
 #include "DesktopSettings.h"
 #include "DrawingEngine.h"
 #include "ServerFont.h"
@@ -122,7 +123,8 @@ StyleDecorAddOn::_AllocateDecorator(DesktopSettings& settings, BRect rect,
 
 StyleDecorator::Tab::Tab()
 	:
-	cookie(NULL)
+	cookie(NULL),
+	hoveredButton(-1)
 {
 }
 
@@ -166,6 +168,8 @@ StyleDecorator::Draw(BRect updateRect)
 {
 	if (!_HasStyle() || fTabList.CountItems() == 0)
 		return;
+
+	_ClearGlass(updateRect);
 
 	if (_StyleHas(offsetof(decor_style, draw) + sizeof(fStyle->draw))
 		&& fStyle->draw != NULL) {
@@ -647,6 +651,9 @@ StyleDecorator::_SyncIn() const
 	for (int32 region = 1; region < DECOR_REGION_COUNT; region++)
 		fWindow.highlights[region] = RegionHighlight((Region)region);
 	fWindow.outline_resizing = IsOutlineResizing();
+	fWindow.corners_cut = RoundedDecorator::IsActive(
+		const_cast<StyleDecorator*>(this)->GetDesktop());
+	fWindow.glass = HasGlassFrame();
 	fWindow.outline_frame = to_decor_rect(BRect(fFrame.LeftTop(),
 		fFrame.RightBottom() + fOutlinesDelta));
 
@@ -663,6 +670,8 @@ StyleDecorator::_SyncIn() const
 		styleTab.pressed[DECOR_BUTTON_ZOOM] = tab->zoomPressed;
 		styleTab.pressed[DECOR_BUTTON_MINIMIZE] = tab->minimizePressed;
 		styleTab.highlighted = tab->isHighlighted;
+		for (int32 button = 0; button < DECOR_BUTTON_CAPACITY; button++)
+			styleTab.hovered[button] = button == tab->hoveredButton;
 		styleTab.location = tab->tabLocation;
 		styleTab.shown_title = tab->truncatedTitle.String();
 		styleTab.shown_title_length = tab->truncatedTitleLength;
@@ -770,9 +779,118 @@ StyleDecorator::_DrawButton(Decorator::Tab* tab, int32 button, bool direct,
 	_SyncIn();
 	const bool copyToFront = fDrawingEngine->CopyToFrontEnabled();
 	fDrawingEngine->SetCopyToFrontEnabled(direct);
+	_ClearGlass(rect);
 	fStyle->draw_button(&fWindow, fCanvas, index, button,
 		to_decor_rect(rect));
 	fDrawingEngine->SetCopyToFrontEnabled(copyToFront);
+}
+
+
+/*!	The outline the compositor cuts the corners off, with the radii the
+	style gives it. A style without rounded_shape() keeps square corners.
+*/
+void
+StyleDecorator::GetRoundedShape(std::vector<Decorator::ShapeRect>& shape) const
+{
+	GetShape(shape);
+	if (!_HasStyle() || !_StyleHas(offsetof(decor_style, rounded_shape)
+			+ sizeof(fStyle->rounded_shape))
+		|| fStyle->rounded_shape == NULL) {
+		return;
+	}
+
+	std::vector<decor_shape_rect> styleShape(shape.size());
+	for (size_t i = 0; i < shape.size(); i++) {
+		styleShape[i].rect = to_decor_rect(shape[i].rect);
+		styleShape[i].left_top = 0;
+		styleShape[i].right_top = 0;
+		styleShape[i].left_bottom = 0;
+		styleShape[i].right_bottom = 0;
+	}
+
+	_SyncIn();
+	fStyle->rounded_shape(&fWindow, &styleShape[0], styleShape.size());
+
+	for (size_t i = 0; i < shape.size(); i++) {
+		shape[i].leftTop = std::max((int32)0, styleShape[i].left_top);
+		shape[i].rightTop = std::max((int32)0, styleShape[i].right_top);
+		shape[i].leftBottom = std::max((int32)0, styleShape[i].left_bottom);
+		shape[i].rightBottom = std::max((int32)0, styleShape[i].right_bottom);
+	}
+}
+
+
+bool
+StyleDecorator::HasGlassFrame() const
+{
+	if (!_HasStyle() || !_StyleHas(offsetof(decor_style, flags)
+			+ sizeof(fStyle->flags))
+		|| (fStyle->flags & DECOR_STYLE_GLASS) == 0) {
+		return false;
+	}
+
+	Desktop* desktop = const_cast<StyleDecorator*>(this)->GetDesktop();
+	return desktop != NULL && desktop->GetCompositor() != NULL;
+}
+
+
+void
+StyleDecorator::SetHoveredButton(int32 tab, int32 button, BRegion* dirty)
+{
+	AutoWriteLocker _(fLocker);
+
+	for (int32 i = 0; i < fTabList.CountItems(); i++) {
+		Tab* styleTab = static_cast<Tab*>(fTabList.ItemAt(i));
+		int32 hovered = i == tab ? button : -1;
+		if (styleTab->hoveredButton == hovered)
+			continue;
+
+		if (dirty != NULL) {
+			BRect before = _ButtonRect(styleTab, styleTab->hoveredButton);
+			BRect after = _ButtonRect(styleTab, hovered);
+			if (before.IsValid())
+				dirty->Include(before);
+			if (after.IsValid())
+				dirty->Include(after);
+		}
+		styleTab->hoveredButton = hovered;
+	}
+}
+
+
+/*!	A glass frame is drawn with alpha, which would build up if it were drawn
+	over what it drew before: so what of it is drawn again starts out clear.
+*/
+void
+StyleDecorator::_ClearGlass(BRect rect)
+{
+	if (!HasGlassFrame() || !rect.IsValid())
+		return;
+
+	const BRegion& footprint = GetFootprint();
+	const rgb_color clear = { 0, 0, 0, 0 };
+	int32 count = footprint.CountRects();
+	for (int32 i = 0; i < count; i++) {
+		BRect part = footprint.RectAt(i) & rect;
+		if (part.IsValid())
+			fDrawingEngine->FillRect(part, clear);
+	}
+}
+
+
+//!	Where a DECOR_BUTTON_* of \a tab is; invalid for -1 and missing ones.
+/*static*/ BRect
+StyleDecorator::_ButtonRect(Decorator::Tab* tab, int32 button)
+{
+	switch (button) {
+		case DECOR_BUTTON_CLOSE:
+			return tab->closeRect;
+		case DECOR_BUTTON_ZOOM:
+			return tab->zoomRect;
+		case DECOR_BUTTON_MINIMIZE:
+			return tab->minimizeRect;
+	}
+	return BRect();
 }
 
 

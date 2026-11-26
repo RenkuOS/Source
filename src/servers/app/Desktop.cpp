@@ -60,6 +60,7 @@
 #include "ServerConfig.h"
 #include "ServerCursor.h"
 #include "ServerWindow.h"
+#include "StyleDecorator.h"
 #include "SystemPalette.h"
 #include "WindowPrivate.h"
 #include "Window.h"
@@ -386,6 +387,7 @@ MouseFilter::Filter(BMessage* message, EventTarget** _target, int32* _viewToken,
 	}
 
 	fDesktop->SetLastMouseState(where, buttons, window);
+	fDesktop->UpdateButtonHover();
 
 	fDesktop->NotifyMouseEvent(message);
 
@@ -441,6 +443,7 @@ Desktop::Desktop(uid_t userID, const char* targetScreen)
 
 	fMouseEventWindow(NULL),
 	fWindowUnderMouse(NULL),
+	fHoverWindow(NULL),
 	fLockedFocusWindow(NULL),
 	fViewUnderMouse(B_NULL_TOKEN),
 	fLastMousePosition(B_ORIGIN),
@@ -540,8 +543,11 @@ Desktop::Init()
 		fCompositor.SetTo(new(std::nothrow) Compositor(this));
 		if (fCompositor.IsSet() && fCompositor->InitCheck() != B_OK)
 			fCompositor.Unset();
-		if (fCompositor.IsSet())
+		if (fCompositor.IsSet()) {
 			HWInterface()->SetPageFlipping(true);
+			fCompositor->SetGlass(fSettings->CompositedGlass(),
+				fSettings->CompositedGlassOpacity());
+		}
 	}
 	debug_printf("app_server: desktop is %scomposited\n",
 		fCompositor.IsSet() ? "" : "not ");
@@ -1473,6 +1479,11 @@ Desktop::HideWindow(Window* window, bool fromMinimize)
 		fLockedFocusWindow = NULL;
 	}
 
+	if (fHoverWindow == window) {
+		_SetButtonHover(window, -1, -1);
+		fHoverWindow = NULL;
+	}
+
 	if (window->InWorkspace(fCurrentWorkspace)) {
 		_UpdateSubsetWorkspaces(window);
 		_HideWindow(window);
@@ -2095,6 +2106,47 @@ Desktop::ViewUnderMouse(const Window* window)
 		return fViewUnderMouse;
 
 	return B_NULL_TOKEN;
+}
+
+
+/*!	Lights up the button of a style's frame that the mouse is over, as the
+	style's decor_tab::hovered says, and puts out the one lit before. While
+	a mouse button is held, only the window that gets the mouse events has
+	one lit. You need to have the all window lock held.
+*/
+void
+Desktop::UpdateButtonHover()
+{
+	Window* window = WindowAt(fLastMousePosition);
+	if (fLastMouseButtons != 0 && window != fMouseEventWindow)
+		window = NULL;
+
+	int32 tab = -1;
+	int32 button = -1;
+	if (window != NULL
+		&& dynamic_cast<StyleDecorator*>(window->Decorator()) != NULL) {
+		switch (window->Decorator()->RegionAt(fLastMousePosition, tab)) {
+			case Decorator::REGION_CLOSE_BUTTON:
+				button = DECOR_BUTTON_CLOSE;
+				break;
+			case Decorator::REGION_ZOOM_BUTTON:
+				button = DECOR_BUTTON_ZOOM;
+				break;
+			case Decorator::REGION_MINIMIZE_BUTTON:
+				button = DECOR_BUTTON_MINIMIZE;
+				break;
+			default:
+				break;
+		}
+	}
+	if (button < 0)
+		window = NULL;
+
+	if (fHoverWindow != NULL && fHoverWindow != window)
+		_SetButtonHover(fHoverWindow, -1, -1);
+	fHoverWindow = window;
+	if (window != NULL)
+		_SetButtonHover(window, tab, button);
 }
 
 
@@ -3565,10 +3617,27 @@ Desktop::_SendFakeMouseMoved(Window* window)
 		SetCursor(NULL);
 	}
 
+	UpdateButtonHover();
+
 	UnlockAllWindows();
 
 	if (target != NULL)
 		EventDispatcher().SendFakeMouseMoved(*target, viewToken);
+}
+
+
+//!	You need to have the all window lock held.
+void
+Desktop::_SetButtonHover(Window* window, int32 tab, int32 button)
+{
+	StyleDecorator* style = dynamic_cast<StyleDecorator*>(window->Decorator());
+	if (style == NULL)
+		return;
+
+	BRegion dirty;
+	style->SetHoveredButton(tab, button, &dirty);
+	if (dirty.CountRects() > 0)
+		window->ProcessDirtyRegion(dirty);
 }
 
 

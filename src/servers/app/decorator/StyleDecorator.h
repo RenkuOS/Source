@@ -11,6 +11,7 @@
 #include <decorator/DecorStyle.h>
 
 #include "DecorManager.h"
+#include "RoundedDecorator.h"
 #include "TabDecorator.h"
 
 
@@ -41,7 +42,7 @@ private:
 	the rest, as app_server's own decorators do. What doesn't depend on how
 	the frame is laid out comes from TabDecorator.
 */
-class StyleDecorator : public TabDecorator {
+class StyleDecorator : public TabDecorator, public RoundedDecorator {
 public:
 								StyleDecorator(DesktopSettings& settings,
 									BRect frame, Desktop* desktop,
@@ -61,11 +62,27 @@ public:
 									int32* minHeight, int32* maxWidth,
 									int32* maxHeight) const;
 
+	// RoundedDecorator
+	virtual	void				GetRoundedShape(
+									std::vector<Decorator::ShapeRect>& shape)
+										const;
+
+			// Whether the frame is glass: the style asked for it, and the
+			// desktop is composited.
+			bool				HasGlassFrame() const;
+
+			// Which button the mouse is over: a DECOR_BUTTON_* of \a tab,
+			// or -1 for none. Adds what needs drawing again to \a dirty.
+			void				SetHoveredButton(int32 tab, int32 button,
+									BRegion* dirty);
+
 protected:
 	struct Tab : public Decorator::Tab {
 								Tab();
 
 		void*					cookie;
+		int32					hoveredButton;
+			// DECOR_BUTTON_*, or -1
 	};
 
 	virtual	Decorator::Tab*		_AllocateNewTab();
@@ -117,6 +134,9 @@ private:
 									bool direct, BRect rect);
 			bool				_HasStyle() const;
 			bool				_StyleHas(size_t end) const;
+			void				_ClearGlass(BRect rect);
+	static	BRect				_ButtonRect(Decorator::Tab* tab,
+									int32 button);
 
 			const decor_style*	fStyle;
 	mutable	decor_window		fWindow;
