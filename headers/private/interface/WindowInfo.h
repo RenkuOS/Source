@@ -12,6 +12,8 @@
 #include <SupportDefs.h>
 
 
+class BBitmap;
+
 struct window_info {
 	team_id		team;
 	int32		server_token;
@@ -59,6 +61,10 @@ namespace BPrivate {
 
 status_t get_application_order(int32 workspace, team_id** _apps, int32* _count);
 status_t get_window_order(int32 workspace, int32** _tokens, int32* _count);
+
+// RenkuOS: the window's contents, as the compositor has them, scaled into
+// the bitmap, which must be B_RGB32 or B_RGBA32 and known to app_server.
+status_t get_window_preview(int32 windowToken, BBitmap* bitmap);
 
 }	// namespace BPrivate
 

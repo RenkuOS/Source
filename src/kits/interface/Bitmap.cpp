@@ -73,6 +73,13 @@ BBitmap::Private::ReconnectToAppServer()
 }
 
 
+int32
+BBitmap::Private::ServerToken() const
+{
+	return fBitmap->_ServerToken();
+}
+
+
 /*!	\brief Returns the number of bytes per row needed to store the actual
 		   bitmap data (not including any padding) given a color space and a
 		   row width.

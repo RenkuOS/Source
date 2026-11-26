@@ -3842,6 +3842,28 @@ ServerApp::_DispatchMessage(int32 code, BPrivate::LinkReceiver& link)
 			fLink.Flush();
 			break;
 		}
+		case AS_GET_WINDOW_PREVIEW:
+		{
+			// RenkuOS: draws a window's contents into one of the client's
+			// bitmaps, see BPrivate::get_window_preview().
+			//
+			// Attached:
+			//	1) int32 the window's server token
+			//	2) int32 the bitmap's server token
+			int32 windowToken = -1;
+			int32 bitmapToken = -1;
+			link.Read<int32>(&windowToken);
+			link.Read<int32>(&bitmapToken);
+
+			status_t status = B_BAD_VALUE;
+			BReference<ServerBitmap> bitmap(GetBitmap(bitmapToken), true);
+			if (bitmap != NULL)
+				status = fDesktop->GetWindowPreview(windowToken, bitmap);
+
+			fLink.StartMessage(status);
+			fLink.Flush();
+			break;
+		}
 		case AS_GET_SUBPIXEL_ANTIALIASING:
 		{
 			DesktopSettings settings(fDesktop);
