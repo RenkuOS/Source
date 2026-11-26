@@ -704,7 +704,7 @@ BPrivateScreen::GetRotation(int32* degrees)
 	link.StartMessage(AS_SCREEN_GET_ROTATION);
 	link.Attach<int32>(ID());
 
-	status_t status;
+	status_t status = B_ERROR;
 	if (link.FlushWithReply(status) == B_OK && status == B_OK)
 		link.Read<int32>(degrees);
 

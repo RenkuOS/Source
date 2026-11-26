@@ -106,6 +106,7 @@ private:
 			status_t			_UpdateModeList();
 			status_t			_UpdateFrameBufferConfig();
 			status_t			_UpdateBackBuffer();
+			BRect				_DrawingBounds() const;
 			void				_RegionToRectParams(/*const*/ BRegion* region,
 									uint32* count) const;
 			uint32				_NativeColor(const rgb_color& color) const;

@@ -699,7 +699,7 @@ AccelerantHWInterface::SetMode(const display_mode& mode)
 	}
 	fShownPage = 0;
 	fWritePage = 0;
-	fPageBehind.Set((BRect)fFrontBuffer->Bounds());
+	fPageBehind.Set(_DrawingBounds());
 
 	// notify all listeners about the mode change
 	_NotifyFrameBufferChanged();
@@ -788,6 +788,19 @@ AccelerantHWInterface::_UpdateModeList()
 	always B_RGBA32, which keeps the drawing backend simple; _CopyToFront()
 	converts it to the front buffer's color space.
 */
+/*!	The bounds of what is drawn into: the back buffer if there is one. On a
+	screen turned by 90 or 270 degrees it has the front buffer's width and
+	height swapped.
+*/
+BRect
+AccelerantHWInterface::_DrawingBounds() const
+{
+	if (fBackBuffer.IsSet())
+		return (BRect)fBackBuffer->Bounds();
+	return (BRect)fFrontBuffer->Bounds();
+}
+
+
 status_t
 AccelerantHWInterface::_UpdateBackBuffer()
 {
@@ -1575,7 +1588,7 @@ AccelerantHWInterface::SetPageFlipping(bool enable)
 				fFlipping = false;
 				if (fShownPage != 0) {
 					fWritePage = 0;
-					HWInterface::CopyBackToFront((BRect)fFrontBuffer->Bounds());
+					HWInterface::CopyBackToFront(_DrawingBounds());
 					fAccMoveDisplay(0, 0);
 					fShownPage = 0;
 					_kern_frame_buffer_update(
@@ -1600,7 +1613,7 @@ AccelerantHWInterface::SetPageFlipping(bool enable)
 		fDisplayMode.virtual_height = 0;
 	} else {
 		fFlipping = true;
-		fPageBehind.Set((BRect)fFrontBuffer->Bounds());
+		fPageBehind.Set(_DrawingBounds());
 	}
 	WriteUnlock();
 
