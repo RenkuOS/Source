@@ -9,9 +9,40 @@
 #define DRAW_BITMAP_NEAREST_NEIGHBOR_H
 
 #include "Painter.h"
+#include "ParallelRows.h"
 
 
 struct DrawBitmapNearestNeighborCopy {
+	struct Rows {
+		agg::rendering_buffer*	bitmap;
+		const uint16*			xIndices;
+		const uint16*			yIndices;
+		uint8*					dst;
+		uint32					dstBPR;
+		int32					xIndexL;
+		int32					xIndexR;
+		int32					y1;
+	};
+
+	static void
+	DrawRows(void* cookie, int32 first, int32 count)
+	{
+		const Rows& rows = *(const Rows*)cookie;
+		uint8* dst = rows.dst + (size_t)first * rows.dstBPR;
+		for (int32 y = rows.y1 + first; y < rows.y1 + first + count; y++) {
+			// buffer offset into source (top row)
+			const uint8* src = rows.bitmap->row_ptr(rows.yIndices[y]);
+			// buffer handle for destination to be incremented per pixel
+			uint32* d = (uint32*)dst;
+
+			for (int32 x = rows.xIndexL; x <= rows.xIndexR; x++) {
+				*d = *(uint32*)(src + rows.xIndices[x]);
+				d++;
+			}
+			dst += rows.dstBPR;
+		}
+	}
+
 	static void
 	Draw(const Painter* painter, PainterAggInterface& aggInterface,
 		agg::rendering_buffer& bitmap, BPoint offset,
@@ -119,17 +150,14 @@ struct DrawBitmapNearestNeighborCopy {
 		//printf("x: %ld - %ld\n", xIndexL, xIndexR);
 		//printf("y: %ld - %ld\n", y1, y2);
 
-			for (; y1 <= y2; y1++) {
-				// buffer offset into source (top row)
-				const uint8* src = bitmap.row_ptr(yIndices[y1]);
-				// buffer handle for destination to be incremented per pixel
-				uint32* d = (uint32*)dst;
-
-				for (int32 x = xIndexL; x <= xIndexR; x++) {
-					*d = *(uint32*)(src + xIndices[x]);
-					d++;
-				}
-				dst += dstBPR;
+			// large areas (video frames) on several cores
+			Rows rows = { &bitmap, xIndices, yIndices, dst, dstBPR, xIndexL,
+				xIndexR, y1 };
+			int32 count = y2 - y1 + 1;
+			if (!parallel_rows(count,
+					(size_t)(xIndexR - xIndexL + 1) * 4 * count, DrawRows,
+					&rows)) {
+				DrawRows(&rows, 0, count);
 			}
 		} while (baseRenderer.next_clip_box());
 

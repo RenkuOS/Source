@@ -20,11 +20,39 @@
 #include "drawing_support.h"
 
 #include "DrawingEngine.h"
+#include "ParallelRows.h"
 #include "RenderingBuffer.h"
 #include "SystemPalette.h"
 
 
 using std::nothrow;
+
+
+namespace {
+
+struct RowCopy {
+	uint8*			dst;
+	const uint8*	src;
+	uint32			dstBPR;
+	uint32			srcBPR;
+	int32			bytes;
+};
+
+
+static void
+copy_rows(void* cookie, int32 first, int32 count)
+{
+	const RowCopy& copy = *(const RowCopy*)cookie;
+	uint8* dst = copy.dst + (size_t)first * copy.dstBPR;
+	const uint8* src = copy.src + (size_t)first * copy.srcBPR;
+	for (int32 i = 0; i < count; i++) {
+		memcpy(dst, src, copy.bytes);
+		dst += copy.dstBPR;
+		src += copy.srcBPR;
+	}
+}
+
+}	// namespace
 
 
 HWInterfaceListener::HWInterfaceListener()
@@ -725,6 +753,14 @@ HWInterface::_CopyToFront(uint8* src, uint32 srcBPR, int32 x, int32 y,
 			if (bytes > 0) {
 				// offset to left top pixel in dest buffer
 				dst += y * dstBPR + x * 4;
+				// large areas on several cores: frame buffers written
+				// without the CPU cache are slow to write from one
+				RowCopy copy = { dst, src, dstBPR, srcBPR, bytes };
+				int32 rows = bottom - y + 1;
+				if (parallel_rows(rows, (size_t)bytes * rows, copy_rows,
+						&copy)) {
+					break;
+				}
 				// copy
 				for (; y <= bottom; y++) {
 					// bytes is guaranteed to be multiple of 4

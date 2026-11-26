@@ -11,12 +11,40 @@
 #include "IntPoint.h"
 #include "IntRect.h"
 #include "Painter.h"
+#include "ParallelRows.h"
 #include "SystemPalette.h"
 
 
 template<class BlendType>
 struct DrawBitmapNoScale {
 public:
+	// A BlendType that sets this to true only reads its arguments in
+	// BlendRow(), so that rows can be blended on several threads at once.
+	static const bool kIndependentRows = false;
+
+	struct Rows {
+		DrawBitmapNoScale*	self;
+		uint8*				dst;
+		const uint8*		src;
+		uint32				dstBPR;
+		uint32				srcBPR;
+		int32				width;
+	};
+
+	static void
+	BlendRows(void* cookie, int32 first, int32 count)
+	{
+		const Rows& rows = *(const Rows*)cookie;
+		uint8* dst = rows.dst + (size_t)first * rows.dstBPR;
+		const uint8* src = rows.src + (size_t)first * rows.srcBPR;
+		for (int32 i = 0; i < count; i++) {
+			static_cast<BlendType*>(rows.self)->BlendRow(dst, src,
+				rows.width);
+			dst += rows.dstBPR;
+			src += rows.srcBPR;
+		}
+	}
+
 	void
 	Draw(PainterAggInterface& aggInterface, agg::rendering_buffer& bitmap,
 		uint32 bytesPerSourcePixel, IntPoint offset, BRect destinationRect)
@@ -71,6 +99,18 @@ public:
 						+ (fRect.top  - offset.y) * srcBPR
 						+ (fRect.left - offset.x) * bytesPerSourcePixel;
 
+					// large areas (video frames) on several cores
+					int32 width = fRect.right - fRect.left + 1;
+					int32 count = fRect.bottom - fRect.top + 1;
+					if (BlendType::kIndependentRows) {
+						Rows rows = { this, dstHandle, srcHandle, dstBPR,
+							srcBPR, width };
+						if (parallel_rows(count, (size_t)width * 4 * count,
+								BlendRows, &rows)) {
+							continue;
+						}
+					}
+
 					for (; fRect.top <= fRect.bottom; fRect.top++) {
 						static_cast<BlendType*>(this)->BlendRow(dstHandle,
 							srcHandle, fRect.right - fRect.left + 1);
@@ -123,6 +163,8 @@ struct CMap8Over : public DrawBitmapNoScale<CMap8Over>
 
 struct Bgr32Copy : public DrawBitmapNoScale<Bgr32Copy>
 {
+	static const bool kIndependentRows = true;
+
 	void BlendRow(uint8* dst, const uint8* src, int32 numPixels)
 	{
 		memcpy(dst, src, numPixels * 4);
