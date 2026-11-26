@@ -978,8 +978,11 @@ static gpio_controller*
 find_controller(const char* community, uint32 pin)
 {
 	for (uint32 i = 0; i < B_COUNT_OF(kCommunities); i++) {
-		if (community == NULL || strcmp(kCommunities[i].name, community) != 0)
+		// a community by its name or by the _UID of its ACPI device
+		if (community == NULL || (strcmp(kCommunities[i].name, community) != 0
+				&& strcmp(kCommunities[i].uid, community) != 0)) {
 			continue;
+		}
 
 		gpio_controller* controller = sControllers[i];
 		if (controller == NULL || !pad_in_range(controller, pin))
@@ -1010,6 +1013,18 @@ baytrail_gpio_set_input(const char* community, uint32 pin)
 		return B_ENTRY_NOT_FOUND;
 
 	configure_pin(controller, pin, false, false);
+	return B_OK;
+}
+
+
+static status_t
+baytrail_gpio_get_level(const char* community, uint32 pin, bool* _high)
+{
+	gpio_controller* controller = find_controller(community, pin);
+	if (controller == NULL)
+		return B_ENTRY_NOT_FOUND;
+
+	*_high = read_level(controller, pin) != 0;
 	return B_OK;
 }
 
@@ -1058,6 +1073,7 @@ static baytrail_gpio_pins_module_info sBaytrailGPIOPinsModule = {
 
 	baytrail_gpio_set_output,
 	baytrail_gpio_set_input,
+	baytrail_gpio_get_level,
 };
 
 
