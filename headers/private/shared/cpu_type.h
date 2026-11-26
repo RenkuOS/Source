@@ -200,7 +200,7 @@ get_cpu_vendor_string(enum cpu_vendor cpuVendor)
 	static const char* vendorStrings[] = {
 		NULL, "AMD", "Cyrix", "IDT", "Intel", "National Semiconductor", "Rise",
 		"Transmeta", "VIA", "IBM", "Motorola", "NEC", "Hygon", "Sun",
-		"Fujitsu", "SiFive"
+		"Fujitsu", "SiFive", "Arm", "Apple", "Qualcomm"
 	};
 
 	if ((size_t)cpuVendor >= sizeof(vendorStrings) / sizeof(const char*))
@@ -301,6 +301,94 @@ get_intel_brand_id_string(uint8 brandId, uint32 signature)
 #endif	/* __i386__ || __x86_64__ */
 
 
+/*!	Names the core from its MIDR_EL1 value (the arm64 cpuModel); unlisted
+	parts are shown in hex. Not thread safe, like parse_intel().
+*/
+static const char*
+get_arm64_model_string(enum cpu_vendor cpuVendor, uint32 midr)
+{
+	// Part numbers as in Linux' arch/arm64/include/asm/cputype.h
+	static const struct {
+		uint8		implementer;
+		uint16		part;
+		const char*	name;
+	} kParts[] = {
+		{ 0x41, 0xd03, "Cortex-A53" },
+		{ 0x41, 0xd04, "Cortex-A35" },
+		{ 0x41, 0xd05, "Cortex-A55" },
+		{ 0x41, 0xd07, "Cortex-A57" },
+		{ 0x41, 0xd08, "Cortex-A72" },
+		{ 0x41, 0xd09, "Cortex-A73" },
+		{ 0x41, 0xd0a, "Cortex-A75" },
+		{ 0x41, 0xd0b, "Cortex-A76" },
+		{ 0x41, 0xd0c, "Neoverse-N1" },
+		{ 0x41, 0xd0d, "Cortex-A77" },
+		{ 0x41, 0xd40, "Neoverse-V1" },
+		{ 0x41, 0xd41, "Cortex-A78" },
+		{ 0x41, 0xd44, "Cortex-X1" },
+		{ 0x41, 0xd46, "Cortex-A510" },
+		{ 0x41, 0xd47, "Cortex-A710" },
+		{ 0x41, 0xd48, "Cortex-X2" },
+		{ 0x41, 0xd49, "Neoverse-N2" },
+		{ 0x41, 0xd4f, "Neoverse-V2" },
+		{ 0x51, 0x001, "Oryon" },
+		{ 0x51, 0x800, "Kryo 2XX Gold" },
+		{ 0x51, 0x801, "Kryo 2XX Silver" },
+		{ 0x51, 0x802, "Kryo 3XX Gold" },
+		{ 0x51, 0x803, "Kryo 3XX Silver" },
+		{ 0x51, 0x804, "Kryo 4XX Gold" },
+		{ 0x51, 0x805, "Kryo 4XX Silver" },
+		{ 0x51, 0xc00, "Falkor" },
+		{ 0x61, 0x022, "M1 Icestorm" },
+		{ 0x61, 0x023, "M1 Firestorm" },
+		{ 0x61, 0x024, "M1 Pro Icestorm" },
+		{ 0x61, 0x025, "M1 Pro Firestorm" },
+		{ 0x61, 0x028, "M1 Max Icestorm" },
+		{ 0x61, 0x029, "M1 Max Firestorm" },
+		{ 0x61, 0x032, "M2 Blizzard" },
+		{ 0x61, 0x033, "M2 Avalanche" },
+		{ 0x61, 0x034, "M2 Pro Blizzard" },
+		{ 0x61, 0x035, "M2 Pro Avalanche" },
+		{ 0x61, 0x038, "M2 Max Blizzard" },
+		{ 0x61, 0x039, "M2 Max Avalanche" },
+	};
+	static char buffer[32];
+
+	unsigned implementer = (midr >> 24) & 0xff;
+	unsigned part = (midr >> 4) & 0xfff;
+	size_t i;
+	for (i = 0; i < sizeof(kParts) / sizeof(kParts[0]); i++) {
+		if (kParts[i].implementer == implementer && kParts[i].part == part)
+			return kParts[i].name;
+	}
+
+	// The vendor string already names a known implementer.
+	if (get_cpu_vendor_string(cpuVendor) != NULL)
+		snprintf(buffer, sizeof(buffer), "part 0x%03x", part);
+	else {
+		snprintf(buffer, sizeof(buffer), "Implementer 0x%02x part 0x%03x",
+			implementer, part);
+	}
+	return buffer;
+}
+
+
+/*!	Returns the instruction set level, e.g. "ARMv8.4-A", from the package's
+	isa_level, or NULL if the platform has none. Not thread safe.
+*/
+static inline const char*
+get_cpu_isa_string(enum cpu_platform platform, uint32 isaLevel)
+{
+	static char buffer[16];
+
+	if (platform != B_CPU_ARM_64 || isaLevel == 0)
+		return NULL;
+	snprintf(buffer, sizeof(buffer), "ARMv%u.%u-A",
+		(unsigned)((isaLevel >> 8) & 0xff), (unsigned)(isaLevel & 0xff));
+	return buffer;
+}
+
+
 static const char*
 get_cpu_model_string(enum cpu_platform platform, enum cpu_vendor cpuVendor,
 	uint32 cpuModel)
@@ -311,6 +399,9 @@ get_cpu_model_string(enum cpu_platform platform, enum cpu_vendor cpuVendor,
 
 	(void)cpuVendor;
 	(void)cpuModel;
+
+	if (platform == B_CPU_ARM_64)
+		return get_arm64_model_string(cpuVendor, cpuModel);
 
 	if (platform == B_CPU_RISC_V) {
 		// the model is the low 32 bits of marchid

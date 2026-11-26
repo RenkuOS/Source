@@ -538,7 +538,10 @@ enum cpu_vendor {
 	B_CPU_VENDOR_HYGON,
 	B_CPU_VENDOR_SUN,
 	B_CPU_VENDOR_FUJITSU,
-	B_CPU_VENDOR_SIFIVE
+	B_CPU_VENDOR_SIFIVE,
+	B_CPU_VENDOR_ARM,
+	B_CPU_VENDOR_APPLE,
+	B_CPU_VENDOR_QUALCOMM
 };
 
 typedef struct {
@@ -548,6 +551,9 @@ typedef struct {
 typedef struct {
 	enum cpu_vendor			vendor;
 	uint32					cache_line_size;
+	uint32					isa_level;
+		/* arm64: (major << 8) | minor of ARMv<major>.<minor>-A; 0 if unknown.
+		   Fits the union's existing size on every architecture. */
 } cpu_topology_package_info;
 
 typedef struct {

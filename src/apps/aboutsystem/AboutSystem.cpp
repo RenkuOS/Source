@@ -1101,6 +1101,8 @@ SysInfoView::_GetCPUInfo()
 	enum cpu_platform platform = B_CPU_UNKNOWN;
 	enum cpu_vendor cpuVendor = B_CPU_VENDOR_UNKNOWN;
 	uint32 cpuModel = 0;
+	uint32 isaLevel = 0;
+	bool coreFound = false;
 
 	for (uint32 i = 0; i < topologyNodeCount; i++) {
 		switch (topology[i].type) {
@@ -1110,10 +1112,14 @@ SysInfoView::_GetCPUInfo()
 
 			case B_TOPOLOGY_PACKAGE:
 				cpuVendor = topology[i].data.package.vendor;
+				isaLevel = topology[i].data.package.isa_level;
 				break;
 
 			case B_TOPOLOGY_CORE:
-				cpuModel = topology[i].data.core.model;
+				// the first core's: cores may differ (big.LITTLE)
+				if (!coreFound)
+					cpuModel = topology[i].data.core.model;
+				coreFound = true;
 				break;
 
 			default:
@@ -1123,10 +1129,21 @@ SysInfoView::_GetCPUInfo()
 
 	delete[] topology;
 
+	const char* vendor = get_cpu_vendor_string(cpuVendor);
+	const char* model = get_cpu_model_string(platform, cpuVendor, cpuModel);
+
 	BString cpuType;
-	cpuType << get_cpu_vendor_string(cpuVendor) << " "
-		<< get_cpu_model_string(platform, cpuVendor, cpuModel)
-		<< " @ " << _GetCPUFrequency();
+	if (vendor != NULL)
+		cpuType << vendor << " ";
+	cpuType << (model != NULL ? model : B_TRANSLATE("Unknown"));
+
+	const char* isa = get_cpu_isa_string(platform, isaLevel);
+	if (isa != NULL)
+		cpuType << " · " << isa;
+
+	BString frequency = _GetCPUFrequency();
+	if (!frequency.IsEmpty())
+		cpuType << " @ " << frequency;
 
 	return cpuType;
 }
@@ -1138,6 +1155,10 @@ SysInfoView::_GetCPUFrequency()
 	BString clockSpeed;
 
 	long int frequency = get_rounded_cpu_speed();
+	if (frequency <= 0) {
+		// unknown, e.g. on arm64, which has no register for the core clock
+		return clockSpeed;
+	}
 	if (frequency < 1000) {
 		clockSpeed.SetToFormat(B_TRANSLATE_COMMENT("%ld MHz",
 			"750 Mhz (CPU clock speed)"), frequency);

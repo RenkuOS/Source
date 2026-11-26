@@ -3,6 +3,7 @@ SubDir HAIKU_TOP src system kernel arch arm64 ;
 SubDirHdrs $(HAIKU_TOP) src add-ons kernel bus_managers acpi acpica include ;
 SubDirHdrs $(SUBDIR) $(DOTDOT) generic ;
 UsePrivateKernelHeaders ;
+UsePrivateHeaders shared ;
 
 SEARCH_SOURCE += [ FDirName $(SUBDIR) $(DOTDOT) generic ] ;
 SEARCH_SOURCE += [ FDirName $(SUBDIR) $(DOTDOT) arm ] ;
