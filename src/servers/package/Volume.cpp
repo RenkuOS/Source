@@ -527,9 +527,11 @@ Volume::HandleGetLocationInfoRequest(BMessage* message)
 	int64 changeCount;
 	if (fLocationInfoReply.FindInt64("change count", &changeCount) == B_OK
 		&& changeCount == fChangeCount) {
+		// Send a copy: the other thread may rebuild the cached reply as soon
+		// as the lock is released.
+		BMessage reply(fLocationInfoReply);
 		locker.Unlock();
-		message->SendReply(&fLocationInfoReply, (BHandler*)NULL,
-			kCommunicationTimeout);
+		message->SendReply(&reply, (BHandler*)NULL, kCommunicationTimeout);
 		return true;
 	}
 
@@ -584,10 +586,10 @@ Volume::HandleGetLocationInfoRequest(BMessage* message)
 	if (fLocationInfoReply.AddInt64("change count", fChangeCount) != B_OK)
 		return true;
 
+	BMessage reply(fLocationInfoReply);
 	locker.Unlock();
 
-	message->SendReply(&fLocationInfoReply, (BHandler*)NULL,
-		kCommunicationTimeout);
+	message->SendReply(&reply, (BHandler*)NULL, kCommunicationTimeout);
 	return true;
 }
 

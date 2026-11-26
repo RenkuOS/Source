@@ -38,6 +38,9 @@
 // are encapsulated in a VolumeState, which is protected by Volume::fLock. The
 // lock must be held by the app thread when accessing the data (it reads only)
 // and by the job thread when modifying the data (not needed when reading).
+// Since both threads can answer a location info request, the cached reply
+// (fLocationInfoReply) is also protected by fLock; it is only sent as a copy
+// made while holding the lock.
 
 
 using BPackageKit::BPrivate::BActivationTransaction;
