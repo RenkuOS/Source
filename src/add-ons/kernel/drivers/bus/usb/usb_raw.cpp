@@ -104,6 +104,9 @@ usb_raw_device_added(usb_device newDevice, void **cookie)
 
 
 static void usb_raw_stream_stop(raw_device *device);
+static int32 usb_raw_stream_take(raw_device *device, raw_stream **streams,
+	usb_pipe pipe, int32 interface);
+static void usb_raw_stream_stop_taken(raw_stream **streams, int32 count);
 static void usb_raw_stream_callback(void *cookie, status_t status, void *data,
 	size_t actualLength);
 
@@ -267,9 +270,13 @@ usb_raw_free(void *cookie)
 
 	raw_device *device = (raw_device *)cookie;
 	device->reference_count--;
+	raw_stream *streams[MAX_STREAMS];
+	int32 streamCount = 0;
 	if (device->device != 0 && device->reference_count == 0) {
-		// nobody is left to read from it
-		usb_raw_stream_stop(device);
+		// Nobody is left to read from it. Stopping a stream waits for its
+		// transfers, so it is done below, without the device list lock that
+		// every open and every device arrival or removal needs.
+		streamCount = usb_raw_stream_take(device, streams, 0, -1);
 	}
 	if (device->device == 0 && device->reference_count == 0) {
 		// the device is gone and this was its last user
@@ -281,6 +288,9 @@ usb_raw_free(void *cookie)
 	}
 
 	mutex_unlock(&gDeviceListLock);
+
+	// taken out, the streams no longer refer to the device
+	usb_raw_stream_stop_taken(streams, streamCount);
 	return B_OK;
 }
 
@@ -417,7 +427,9 @@ usb_raw_stream_callback(void *cookie, status_t status, void *data,
 		for (uint32 i = 0; i < stream->packets_per_transfer; i++) {
 			const usb_iso_packet_descriptor &descriptor
 				= transfer->descriptors[i];
-			size_t length = descriptor.actual_length;
+			// actual_length is signed: a negative value is no data
+			size_t length = descriptor.actual_length > 0
+				? (size_t)descriptor.actual_length : 0;
 			if (length > stream->packet_size)
 				length = stream->packet_size;
 
@@ -486,14 +498,10 @@ usb_raw_stream_free(raw_stream *stream)
 }
 
 
+/*!	Stops a stream that was taken out of its slot, and frees it. */
 static void
-usb_raw_stream_stop_slot(raw_device *device, int32 slot)
+usb_raw_stream_stop_stream(raw_stream *stream)
 {
-	mutex_lock(&device->stream_lock);
-	raw_stream *stream = device->streams[slot];
-	device->streams[slot] = NULL;
-	mutex_unlock(&device->stream_lock);
-
 	if (stream == NULL)
 		return;
 
@@ -533,12 +541,60 @@ usb_raw_stream_stop_slot(raw_device *device, int32 slot)
 }
 
 
+/*!	Takes the streams of the device out of their slots, all of them, or with
+	\a pipe only the one of that pipe, or with \a interface >= 0 only those
+	of that interface. Taken out, a stream can be stopped without the stream
+	lock of the device: nothing else finds it any more. Returns how many
+	streams were put in \a streams.
+*/
+static int32
+usb_raw_stream_take(raw_device *device, raw_stream **streams, usb_pipe pipe,
+	int32 interface)
+{
+	int32 count = 0;
+	mutex_lock(&device->stream_lock);
+	for (int32 i = 0; i < MAX_STREAMS; i++) {
+		raw_stream *stream = device->streams[i];
+		if (stream == NULL || (pipe != 0 && stream->pipe != pipe)
+			|| (interface >= 0 && stream->interface != (uint32)interface)) {
+			continue;
+		}
+		device->streams[i] = NULL;
+		streams[count++] = stream;
+	}
+	mutex_unlock(&device->stream_lock);
+	return count;
+}
+
+
+//!	Stops the streams that usb_raw_stream_take() took out.
+static void
+usb_raw_stream_stop_taken(raw_stream **streams, int32 count)
+{
+	for (int32 i = 0; i < count; i++)
+		usb_raw_stream_stop_stream(streams[i]);
+}
+
+
 //!	Stops every stream of the device.
 static void
 usb_raw_stream_stop(raw_device *device)
 {
-	for (int32 i = 0; i < MAX_STREAMS; i++)
-		usb_raw_stream_stop_slot(device, i);
+	raw_stream *streams[MAX_STREAMS];
+	usb_raw_stream_stop_taken(streams,
+		usb_raw_stream_take(device, streams, 0, -1));
+}
+
+
+//!	Stops the stream of one endpoint, if it has one.
+static void
+usb_raw_stream_stop_pipe(raw_device *device, usb_pipe pipe)
+{
+	if (pipe == 0)
+		return;
+	raw_stream *streams[MAX_STREAMS];
+	usb_raw_stream_stop_taken(streams,
+		usb_raw_stream_take(device, streams, pipe, -1));
 }
 
 
@@ -546,14 +602,9 @@ usb_raw_stream_stop(raw_device *device)
 static void
 usb_raw_stream_stop_interface(raw_device *device, uint32 interface)
 {
-	for (int32 i = 0; i < MAX_STREAMS; i++) {
-		mutex_lock(&device->stream_lock);
-		bool match = device->streams[i] != NULL
-			&& device->streams[i]->interface == interface;
-		mutex_unlock(&device->stream_lock);
-		if (match)
-			usb_raw_stream_stop_slot(device, i);
-	}
+	raw_stream *streams[MAX_STREAMS];
+	usb_raw_stream_stop_taken(streams,
+		usb_raw_stream_take(device, streams, 0, (int32)interface));
 }
 
 
@@ -591,11 +642,7 @@ usb_raw_stream_start(raw_device *device, uint32 interface, usb_pipe pipe,
 		bufferSize = minimum;
 
 	// A new stream replaces the endpoint's old one, and needs a free slot.
-	mutex_lock(&device->stream_lock);
-	int32 old = usb_raw_stream_slot(device, pipe);
-	mutex_unlock(&device->stream_lock);
-	if (old >= 0)
-		usb_raw_stream_stop_slot(device, old);
+	usb_raw_stream_stop_pipe(device, pipe);
 
 	raw_stream *stream = (raw_stream *)calloc(1, sizeof(raw_stream));
 	if (stream == NULL)
@@ -619,7 +666,9 @@ usb_raw_stream_start(raw_device *device, uint32 interface, usb_pipe pipe,
 	for (uint32 i = 0; allocated && i < transferCount; i++) {
 		raw_stream_transfer &transfer = stream->transfers[i];
 		transfer.stream = stream;
-		transfer.data = (uint8 *)malloc(packetSize * packetsPerTransfer);
+		// cleared: a reader is only given what the device wrote, but this
+		// memory is the device's to write and never held kernel data
+		transfer.data = (uint8 *)calloc(packetsPerTransfer, packetSize);
 		transfer.descriptors = (usb_iso_packet_descriptor *)malloc(
 			sizeof(usb_iso_packet_descriptor) * packetsPerTransfer);
 		if (transfer.data == NULL || transfer.descriptors == NULL)
@@ -632,23 +681,29 @@ usb_raw_stream_start(raw_device *device, uint32 interface, usb_pipe pipe,
 	}
 
 	// Take a free slot in one go: a camera's video and sound streams may be
-	// started at the same time from two threads.
+	// started at the same time from two threads. Another start on the same
+	// endpoint may have put its stream in meanwhile: one pipe has one stream.
+	// The stream is locked and running before the device's stream lock is
+	// released, as usb_raw_stream_read() does, so a stop that finds it now
+	// waits for the transfers below instead of freeing it under them.
 	mutex_lock(&device->stream_lock);
 	int32 slot = -1;
-	for (int32 i = 0; i < MAX_STREAMS; i++) {
+	bool busy = usb_raw_stream_slot(device, pipe) >= 0;
+	for (int32 i = 0; !busy && i < MAX_STREAMS; i++) {
 		if (device->streams[i] == NULL) {
 			slot = i;
 			device->streams[i] = stream;
 			break;
 		}
 	}
-	mutex_unlock(&device->stream_lock);
 	if (slot < 0) {
+		mutex_unlock(&device->stream_lock);
 		usb_raw_stream_free(stream);
 		return B_BUSY;
 	}
 
 	mutex_lock(&stream->lock);
+	mutex_unlock(&device->stream_lock);
 	stream->running = true;
 	status_t status = B_OK;
 	for (uint32 i = 0; i < transferCount; i++) {
@@ -664,7 +719,7 @@ usb_raw_stream_start(raw_device *device, uint32 interface, usb_pipe pipe,
 	if (status != B_OK) {
 		dprintf(DRIVER_NAME ": queueing a stream transfer failed: %s\n",
 			strerror(status));
-		usb_raw_stream_stop_slot(device, slot);
+		usb_raw_stream_stop_pipe(device, pipe);
 		return status;
 	}
 
@@ -701,7 +756,11 @@ usb_raw_stream_read(raw_device *device, usb_pipe pipe, void *userData,
 
 	status_t status = B_OK;
 	size_t total = 0;
-	bigtime_t end = system_time() + timeout;
+	// B_INFINITE_TIMEOUT, or anything that would overflow, waits for ever
+	bigtime_t now = system_time();
+	bigtime_t end = timeout <= 0 ? now
+		: timeout >= B_INFINITE_TIMEOUT - now ? B_INFINITE_TIMEOUT
+		: now + timeout;
 
 	while (true) {
 		stream->last_read = system_time();
@@ -1497,7 +1556,8 @@ usb_raw_ioctl(void *cookie, uint32 op, void *buffer, size_t length)
 		{
 			if (length < sizeof(command.stream_read))
 				return B_BUFFER_OVERFLOW;
-			if (!IS_USER_ADDRESS(command.stream_read.data))
+			if (!is_user_address_range(command.stream_read.data,
+					command.stream_read.length))
 				return B_BAD_ADDRESS;
 
 			status_t result = usb_raw_stream_read(device, 0,
@@ -1529,7 +1589,8 @@ usb_raw_ioctl(void *cookie, uint32 op, void *buffer, size_t length)
 		{
 			if (length < sizeof(command.stream_read_endpoint))
 				return B_BUFFER_OVERFLOW;
-			if (!IS_USER_ADDRESS(command.stream_read_endpoint.data))
+			if (!is_user_address_range(command.stream_read_endpoint.data,
+					command.stream_read_endpoint.length))
 				return B_BAD_ADDRESS;
 
 			status = B_OK;
@@ -1573,11 +1634,7 @@ usb_raw_ioctl(void *cookie, uint32 op, void *buffer, size_t length)
 			usb_pipe pipe = usb_raw_stream_pipe(device,
 				command.stream_stop_endpoint.interface,
 				command.stream_stop_endpoint.endpoint);
-			mutex_lock(&device->stream_lock);
-			int32 slot = pipe != 0 ? usb_raw_stream_slot(device, pipe) : -1;
-			mutex_unlock(&device->stream_lock);
-			if (slot >= 0)
-				usb_raw_stream_stop_slot(device, slot);
+			usb_raw_stream_stop_pipe(device, pipe);
 			command.stream_stop_endpoint.status = B_USB_RAW_STATUS_SUCCESS;
 			break;
 		}
