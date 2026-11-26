@@ -175,7 +175,8 @@ AddNewDriversToPackage input :
 	hyperv_kbd@x86,x86_64,arm64
 	i2c_elan@x86,x86_64,arm64
 	i2c_goodix@x86,x86_64
-	i2c_hid
+	i2c_hid@x86,x86_64,arm64
+		# finds its devices through ACPI only
 	rmi4_smbus@x86,x86_64
 	virtio_input
 	;
