@@ -26,6 +26,7 @@ status_t wait_for_team(team_id id, status_t *returnCode);
 void team_remove_team(Team *team, pid_t& _signalGroup);
 port_id team_shutdown_team(Team *team);
 void team_delete_team(Team *team, port_id debuggerPort);
+void team_exec_handed_over(void);
 
 Team *team_get_kernel_team(void);
 team_id team_get_kernel_team_id(void);

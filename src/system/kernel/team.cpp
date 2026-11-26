@@ -86,6 +86,7 @@ struct team_arg {
 	uint32	flags;
 	port_id	error_port;
 	uint32	error_token;
+	sigset_t	signal_mask;
 };
 
 #define TEAM_ARGS_FLAG_NO_ASLR	0x01
@@ -445,6 +446,7 @@ Team::Team(team_id id, bool kernel)
 	realtime_sem_context = NULL;
 	xsi_sem_context = NULL;
 	death_entry = NULL;
+	exec_args = NULL;
 
 	dead_children.condition_variable.Init(&dead_children, "team children");
 	dead_children.count = 0;
@@ -1957,44 +1959,37 @@ team_kill_other_threads_locked(TeamLocker &teamLocker, thread_id threadNotBeKill
 }
 
 
-/*!	Almost shuts down the current team and loads a new image into it.
-	If successful, this function does not return and will takeover ownership of
-	the arguments provided.
-	This function may only be called in a userland team (caused by one of the
-	exec*() syscalls).
+/*!	Almost shuts down the current team and loads the image described by
+	\a teamArgs into it.
+	Must be called by the team's main thread. If successful, this function
+	does not return. It takes over ownership of \a teamArgs in either case.
 */
 static status_t
-exec_team(const char* path, char**& _flatArgs, size_t flatArgsSize,
-	int32 argCount, int32 envCount, mode_t umask)
+exec_team_args(struct team_arg* teamArgs)
 {
 	// NOTE: Since this function normally doesn't return, don't use automatic
 	// variables that need destruction in the function scope.
-	char** flatArgs = _flatArgs;
-	Team* team = thread_get_current_thread()->team;
-	struct team_arg* teamArgs;
+	Thread* currentThread = thread_get_current_thread();
+	Team* team = currentThread->team;
+	const char* path = teamArgs->path;
 	const char* threadName;
 	thread_id nubThreadID = -1;
-
-	TRACE(("exec_team(path = \"%s\", argc = %" B_PRId32 ", envCount = %"
-		B_PRId32 "): team %" B_PRId32 "\n", path, argCount, envCount,
-		team->id));
-
-	T(ExecTeam(path, argCount, flatArgs, envCount, flatArgs + argCount + 1));
-
-	// switching the kernel at run time is probably not a good idea :)
-	if (team == team_get_kernel_team())
-		return B_NOT_ALLOWED;
-
-	// we currently need to be single threaded here
-	// TODO: make the current thread the team's main thread?
-	Thread* currentThread = thread_get_current_thread();
-	if (currentThread != team->main_thread)
-		return B_NOT_ALLOWED;
+	status_t status;
 
 	// The debug nub thread, a pure kernel thread, is allowed to survive.
 	// We iterate through the thread list to make sure that there's no other
 	// thread.
 	TeamLocker teamLocker(team);
+
+	if (team->exec_args != NULL && team->exec_args != teamArgs) {
+		// Another thread has handed its exec over to us. We perform it when
+		// handling the SIGKILLTHR it has sent us on our way out of the kernel.
+		teamLocker.Unlock();
+		free_team_arg(teamArgs);
+		return B_BUSY;
+	}
+	team->exec_args = NULL;
+
 	InterruptsSpinLocker debugInfoLocker(team->debug_info.lock);
 
 	if (team->debug_info.flags & B_TEAM_DEBUG_DEBUGGER_INSTALLED)
@@ -2009,15 +2004,7 @@ exec_team(const char* path, char**& _flatArgs, size_t flatArgsSize,
 
 	teamLocker.Unlock();
 
-	status_t status = create_team_arg(&teamArgs, path, flatArgs, flatArgsSize,
-		argCount, envCount, umask, -1, 0);
-	if (status != B_OK)
-		return status;
-
-	_flatArgs = NULL;
-		// args are owned by the team_arg structure now
-
-	team->SetArgs(path, teamArgs->flat_args + 1, argCount - 1);
+	team->SetArgs(path, teamArgs->flat_args + 1, teamArgs->arg_count - 1);
 
 	// TODO: remove team resources if there are any left
 	// thread_atkernel_exit() might not be called at all
@@ -2101,6 +2088,77 @@ exec_team(const char* path, char**& _flatArgs, size_t flatArgsSize,
 	// We return a status here since the signal that is sent by the
 	// call above is not immediately handled.
 	return B_ERROR;
+}
+
+
+/*!	Hands the exec described by \a teamArgs over to the team's main thread
+	and makes the calling thread exit. Takes over ownership of \a teamArgs.
+*/
+static status_t
+hand_exec_to_main_thread(Team* team, struct team_arg* teamArgs)
+{
+	teamArgs->signal_mask = thread_get_current_thread()->sig_block_mask;
+
+	TeamLocker teamLocker(team);
+
+	// If the team is being shut down or exec'ed already, we are about to be
+	// killed anyway.
+	if (team->death_entry == NULL && team->exec_args == NULL) {
+		team->exec_args = teamArgs;
+		teamArgs = NULL;
+
+		Signal signal(SIGKILLTHR, SI_USER, B_OK, team->id);
+		send_signal_to_thread(team->main_thread, signal,
+			B_DO_NOT_RESCHEDULE);
+	}
+
+	teamLocker.Unlock();
+
+	if (teamArgs != NULL)
+		free_team_arg(teamArgs);
+
+	exit_thread(B_OK);
+	return B_OK;
+}
+
+
+/*!	Loads a new image into the current team.
+	If successful, this function does not return and will takeover ownership of
+	the arguments provided.
+	This function may only be called in a userland team (caused by one of the
+	exec*() syscalls).
+*/
+static status_t
+exec_team(const char* path, char**& _flatArgs, size_t flatArgsSize,
+	int32 argCount, int32 envCount, mode_t umask)
+{
+	char** flatArgs = _flatArgs;
+	Team* team = thread_get_current_thread()->team;
+	struct team_arg* teamArgs;
+
+	TRACE(("exec_team(path = \"%s\", argc = %" B_PRId32 ", envCount = %"
+		B_PRId32 "): team %" B_PRId32 "\n", path, argCount, envCount,
+		team->id));
+
+	T(ExecTeam(path, argCount, flatArgs, envCount, flatArgs + argCount + 1));
+
+	// switching the kernel at run time is probably not a good idea :)
+	if (team == team_get_kernel_team())
+		return B_NOT_ALLOWED;
+
+	status_t status = create_team_arg(&teamArgs, path, flatArgs, flatArgsSize,
+		argCount, envCount, umask, -1, 0);
+	if (status != B_OK)
+		return status;
+
+	_flatArgs = NULL;
+		// args are owned by the team_arg structure now
+
+	// Only the main thread can exec, since its ID is the team ID.
+	if (thread_get_current_thread() != team->main_thread)
+		return hand_exec_to_main_thread(team, teamArgs);
+
+	return exec_team_args(teamArgs);
 }
 
 
@@ -3254,6 +3312,12 @@ team_shutdown_team(Team* team)
 	// created and debugger changes from taking place.
 	team->state = TEAM_STATE_SHUTDOWN;
 
+	// drop an exec handed over to us that we won't perform anymore
+	if (team->exec_args != NULL) {
+		free_team_arg(team->exec_args);
+		team->exec_args = NULL;
+	}
+
 	// delete all timers
 	team->DeleteUserTimers(false);
 
@@ -3268,6 +3332,31 @@ team_shutdown_team(Team* team)
 	team_kill_other_threads_locked(teamLocker);
 
 	return debuggerPort;
+}
+
+
+/*!	Called by the team's main thread when handling a SIGKILLTHR sent by
+	another thread of the team that has handed its exec over to it. Performs
+	that exec and doesn't return.
+*/
+void
+team_exec_handed_over(void)
+{
+	Thread* thread = thread_get_current_thread();
+
+	// We don't need the team lock: other threads only set exec_args while it
+	// is NULL, and only the main thread, which we are, clears it, in
+	// exec_team_args() or team_shutdown_team().
+	struct team_arg* teamArgs = thread->team->exec_args;
+
+	// the new image inherits the signal mask of the thread that called exec
+	atomic_and(&thread->flags, ~THREAD_FLAGS_OLD_SIGMASK);
+	sigprocmask(SIG_SETMASK, &teamArgs->signal_mask, NULL);
+
+	exec_team_args(teamArgs);
+
+	// the exec failed fatally and exit_thread() has been called
+	thread_exit();
 }
 
 

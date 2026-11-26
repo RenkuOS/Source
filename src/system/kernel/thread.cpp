@@ -2596,6 +2596,11 @@ thread_reset_for_exec(void)
 	// reset signals
 	thread->ResetSignalsOnExec();
 
+	// An exec handed over to the main thread can interrupt a syscall, which
+	// must not be restarted in the new image.
+	atomic_and(&thread->flags,
+		~(THREAD_FLAGS_RESTART_SYSCALL | THREAD_FLAGS_SYSCALL_RESTARTED));
+
 	// reset thread CPU time clock
 	InterruptsSpinLocker timeLocker(thread->time_lock);
 	thread->cpu_clock_offset = -thread->CPUTime(false);

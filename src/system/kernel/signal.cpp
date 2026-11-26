@@ -1202,6 +1202,25 @@ handle_signals(Thread* thread)
 						continue;
 					}
 
+					if (!killTeam && thread == team->main_thread) {
+						// A real SIGKILLTHR sent to the main thread while an
+						// exec is handed over to it, e.g. by
+						// kill_thread(main), collapses with the hand-over's
+						// one, and the exec runs instead. We accept that
+						// outcome of the race: the exec ends the old image's
+						// main thread as well.
+						teamLocker.Lock();
+						bool execHandedOver = team->exec_args != NULL
+							&& !team->exit.initialized;
+						teamLocker.Unlock();
+
+						if (execHandedOver) {
+							signalHandledCaller.Done();
+							team_exec_handed_over();
+								// won't return
+						}
+					}
+
 					if (killTeam || thread == team->main_thread) {
 						// The signal is terminal for the team or the thread is
 						// the main thread. In either case the team is going
