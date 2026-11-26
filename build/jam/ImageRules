@@ -1605,7 +1605,9 @@ rule BuildCDBootImageEFI image : bootfloppy : bootefi : extrafiles
 	Depends $(image) : $(bootfloppy) ;
 	Depends $(image) : $(bootefi) ;
 	Depends $(image) : $(extrafiles) ;
-	BOOTIMG on $(image) = $(bootfloppy) ;
+	if $(bootfloppy) {
+		BOOTIMG on $(image) = -b $(bootfloppy) -eltorito-alt-boot ;
+	}
 
 	if $(HAIKU_NIGHTLY_BUILD) = 1 {
 		VOLID on $(image) = haiku-nightly-$(TARGET_ARCH) ;
@@ -1620,8 +1622,8 @@ rule BuildCDBootImageEFI image : bootfloppy : bootefi : extrafiles
 actions BuildCDBootImageEFI1
 {
 	$(RM) $(<)
-	xorriso -as mkisofs -b $(BOOTIMG) -eltorito-alt-boot -no-emul-boot -e $(BOOTEFI) \
-		-r -J -V $(VOLID) -o $(<) $(>[1]) $(>[2]) $(>[3-])
+	xorriso -as mkisofs $(BOOTIMG) -no-emul-boot -e $(BOOTEFI) \
+		-r -J -V $(VOLID) -o $(<) $(>)
 }
 
 

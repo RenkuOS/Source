@@ -40,7 +40,13 @@ if $(TARGET_ARCH) = ppc {
 				MakeLocateDebug $(efiPartition) : system boot ;
 				BuildEfiSystemPartition $(efiPartition) : $(efiLoader) ;
 
-				BuildCDBootImageEFI $(HAIKU_CD_BOOT_IMAGE) : $(HAIKU_BOOT_FLOPPY)
+				# arm and arm64 have no BIOS floppy El Torito entry.
+				local bootFloppy = $(HAIKU_BOOT_FLOPPY) ;
+				if $(TARGET_ARCH) in arm arm64 {
+					bootFloppy = ;
+				}
+
+				BuildCDBootImageEFI $(HAIKU_CD_BOOT_IMAGE) : $(bootFloppy)
 					: $(efiPartition) : $(extras) ;
 			}
 		}
