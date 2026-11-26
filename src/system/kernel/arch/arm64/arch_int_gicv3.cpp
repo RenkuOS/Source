@@ -6,6 +6,9 @@
 
 #include "arch_int_gicv3.h"
 
+#include <cpu.h>
+#include <interrupts.h>
+
 #include "debug.h"
 #include "gicv3_regs.h"
 #include "smp.h"

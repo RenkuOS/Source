@@ -314,7 +314,7 @@ fdt_device_init_driver(device_node* node, void** cookie)
 		gDeviceManager->get_parent_node(node));
 	driver_module_info* parentModule;
 	void* parentDev;
-	ASSERT(gDeviceManager->get_driver(
+	ASSERT_ALWAYS(gDeviceManager->get_driver(
 		parent.Get(), &parentModule, &parentDev) >= B_OK);
 	if (parentModule == (driver_module_info*)&gDeviceModule)
 		dev->bus = ((fdt_device*)parentDev)->bus;
@@ -358,7 +358,7 @@ fdt_device_get_name(fdt_device* dev)
 	ASSERT(dev != NULL);
 
 	uint32 fdtNode;
-	ASSERT(gDeviceManager->get_attr_uint32(
+	ASSERT_ALWAYS(gDeviceManager->get_attr_uint32(
 		dev->node, "fdt/node", &fdtNode, false) >= B_OK);
 
 	return fdt_get_name(gFDT, (int)fdtNode, NULL);
@@ -371,7 +371,7 @@ fdt_device_get_prop(fdt_device* dev, const char* name, int* len)
 	ASSERT(dev != NULL);
 
 	uint32 fdtNode;
-	ASSERT(gDeviceManager->get_attr_uint32(
+	ASSERT_ALWAYS(gDeviceManager->get_attr_uint32(
 		dev->node, "fdt/node", &fdtNode, false) >= B_OK);
 
 	return fdt_getprop(gFDT, (int)fdtNode, name, len);
@@ -420,7 +420,7 @@ fdt_device_get_reg(fdt_device* dev, uint32 ord, uint64* regs, uint64* len)
 	ASSERT(dev != NULL);
 
 	uint32 fdtNode;
-	ASSERT(gDeviceManager->get_attr_uint32(
+	ASSERT_ALWAYS(gDeviceManager->get_attr_uint32(
 		dev->node, "fdt/node", &fdtNode, false) >= B_OK);
 
 	int propLen;
@@ -506,7 +506,7 @@ fdt_device_get_interrupt(fdt_device* dev, uint32 index,
 	ASSERT(dev != NULL);
 
 	uint32 fdtNode;
-	ASSERT(gDeviceManager->get_attr_uint32(
+	ASSERT_ALWAYS(gDeviceManager->get_attr_uint32(
 		dev->node, "fdt/node", &fdtNode, false) >= B_OK);
 
 	int propLen;
@@ -546,7 +546,8 @@ fdt_device_get_interrupt(fdt_device* dev, uint32 index,
 
 		if (interruptController != NULL && interruptParent != 0) {
 			fdt_bus* bus;
-			ASSERT(gDeviceManager->get_driver(dev->bus, NULL, (void**)&bus) >= B_OK);
+			ASSERT_ALWAYS(gDeviceManager->get_driver(dev->bus, NULL,
+				(void**)&bus) >= B_OK);
 			*interruptController = fdt_bus_node_by_phandle(bus, interruptParent);
 		}
 
@@ -560,7 +561,7 @@ fdt_device_get_interrupt(fdt_device* dev, uint32 index,
 		uint32 phandle = fdt32_to_cpu(*(prop + 2 * index));
 
 		fdt_bus* bus;
-		ASSERT(gDeviceManager->get_driver(
+		ASSERT_ALWAYS(gDeviceManager->get_driver(
 			dev->bus, NULL, (void**)&bus) >= B_OK);
 
 		*interruptController = fdt_bus_node_by_phandle(bus, phandle);
@@ -577,7 +578,7 @@ static struct fdt_interrupt_map *
 fdt_device_get_interrupt_map(struct fdt_device* dev)
 {
 	int fdtNode;
-	ASSERT(gDeviceManager->get_attr_uint32(
+	ASSERT_ALWAYS(gDeviceManager->get_attr_uint32(
 		dev->node, "fdt/node", (uint32*)&fdtNode, false) >= B_OK);
 
 	ObjectDeleter<struct fdt_interrupt_map> interrupt_map(new struct fdt_interrupt_map());

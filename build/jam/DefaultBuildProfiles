@@ -144,6 +144,12 @@ rule DefineDefaultBuildProfiles
 			HAIKU_IMAGE_SIZE ?= 650 ;
 			HAIKU_NIGHTLY_BUILD = 1 ;
 
+			# The arm64 nightlies are the user-facing RenkuOS images: build them
+			# without the costly KDEBUG_LEVEL 2 checks, like a Haiku release.
+			if $(HAIKU_PACKAGING_ARCHS[1]) = arm64 {
+				HAIKU_KDEBUG_LEVEL ?= 1 ;
+			}
+
 			AddHaikuImageSystemPackages
 				mandoc
 				noto
@@ -305,6 +311,12 @@ rule DefineDefaultBuildProfiles
 	# Uncomment in official release branch.
 	#HAIKU_DEFINES += HAIKU_OFFICIAL_RELEASE ;
 	#TARGET_DEFINES += HAIKU_OFFICIAL_RELEASE ;
+
+	# Overrides KDEBUG_LEVEL in kernel_debug_config.h for everything built for
+	# the target, so the kernel, its add-ons and the boot loader agree.
+	if $(HAIKU_KDEBUG_LEVEL) {
+		TARGET_DEFINES += KDEBUG_LEVEL=$(HAIKU_KDEBUG_LEVEL) ;
+	}
 
 
 	# If a build profile was specified on the command line, now is the time to
