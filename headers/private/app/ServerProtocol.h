@@ -387,6 +387,11 @@ enum {
 	AS_SET_COMPOSITED_WOBBLINESS,
 	AS_GET_COMPOSITED_WOBBLINESS,
 
+	// A window's contents from its compositor buffer, scaled into a bitmap
+	AS_GET_WINDOW_PREVIEW,
+	// Hidden windows and windows on other workspaces keep their last picture
+	AS_KEEP_WINDOW_PREVIEWS,
+
 	AS_LAST_CODE
 };
 

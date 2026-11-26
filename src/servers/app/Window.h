@@ -151,7 +151,13 @@ public:
 									{ return fTransparentRegion; }
 			// When the window can't be seen for a while, its buffer can go. It
 			// comes back on its own when the window is shown and drawn again.
-			void				ReleaseBuffer();
+			// With \a keepContents, the buffer and its last picture stay, for
+			// window previews, but nothing draws to it until it is shown.
+			void				ReleaseBuffer(bool keepContents = false);
+			bool				IsBufferKept() const { return fBufferKept; }
+			// Where the buffer starts, relative to the window's frame, when its
+			// clipping was last set.
+			BPoint				BufferOffset() const { return fBufferOffset; }
 			// When compositing, how much of what is behind the window shows
 			// through it: 255 is opaque. Used while the window is dragged.
 			void				SetCompositeAlpha(uint8 alpha);
@@ -500,6 +506,7 @@ private:
 			BPoint				fBufferOffset;
 			bool				fBufferReady;
 			bool				fBufferLost;
+			bool				fBufferKept;
 			bool				fHasRoundedCorners;
 			uint8				fCompositeAlpha;
 			BRegion				fTransparentRegion;

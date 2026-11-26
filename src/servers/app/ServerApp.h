@@ -164,6 +164,7 @@ private:
 									// 0 = cursor visible
 
 			bool				fIsActive;
+			bool				fKeepsWindowPreviews;
 
 			BReference<ClientMemoryAllocator> fMemoryAllocator;
 

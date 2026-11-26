@@ -12,6 +12,8 @@
 #include <SupportDefs.h>
 
 
+class BBitmap;
+
 struct window_info {
 	team_id		team;
 	int32		server_token;
@@ -59,6 +61,21 @@ namespace BPrivate {
 
 status_t get_application_order(int32 workspace, team_id** _apps, int32* _count);
 status_t get_window_order(int32 workspace, int32** _tokens, int32* _count);
+
+// RenkuOS: the window's contents, as the compositor has them, scaled into
+// the bitmap, which must be B_RGB32 or B_RGBA32 and known to app_server.
+enum {
+	// keep the aspect ratio and never scale up, at the left top of the bitmap
+	WINDOW_PREVIEW_FIT			= 0x01,
+	// include the tab and the border
+	WINDOW_PREVIEW_DECORATOR	= 0x02
+};
+
+status_t get_window_preview(int32 windowToken, BBitmap* bitmap,
+	uint32 flags = 0, BRect* _used = NULL);
+// RenkuOS: while this application wants it, hidden windows and windows on
+// other workspaces keep their last picture for get_window_preview().
+status_t keep_window_previews(bool keep);
 
 }	// namespace BPrivate
 

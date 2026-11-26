@@ -110,6 +110,7 @@ ServerApp::ServerApp(Desktop* desktop, port_id clientReplyPort,
 	fViewCursor(NULL),
 	fCursorHideLevel(0),
 	fIsActive(false),
+	fKeepsWindowPreviews(false),
 	fMemoryAllocator(new (std::nothrow) ClientMemoryAllocator(this), true),
 	fAppFontManager(NULL),
 	fScreenObserver(NULL),
@@ -176,6 +177,8 @@ ServerApp::~ServerApp()
 	snooze(20000);
 
 	fDesktop->RevertScreenModes(fTemporaryDisplayModeChange);
+	if (fKeepsWindowPreviews)
+		fDesktop->KeepWindowPreviews(false);
 
 	_StopScreenObserver();
 
@@ -3839,6 +3842,55 @@ ServerApp::_DispatchMessage(int32 code, BPrivate::LinkReceiver& link)
 			DesktopSettings settings(fDesktop);
 			fLink.StartMessage(B_OK);
 			fLink.Attach<uint8>(settings.CompositedWobbliness());
+			fLink.Flush();
+			break;
+		}
+		case AS_KEEP_WINDOW_PREVIEWS:
+		{
+			// RenkuOS: see BPrivate::keep_window_previews().
+			//
+			// Attached:
+			//	1) bool whether this application wants them kept
+			bool keep;
+			if (link.Read<bool>(&keep) == B_OK && keep != fKeepsWindowPreviews) {
+				fKeepsWindowPreviews = keep;
+				fDesktop->KeepWindowPreviews(keep);
+			}
+
+			fLink.StartMessage(B_OK);
+			fLink.Flush();
+			break;
+		}
+
+		case AS_GET_WINDOW_PREVIEW:
+		{
+			// RenkuOS: draws a window's contents into one of the client's
+			// bitmaps, see BPrivate::get_window_preview().
+			//
+			// Attached:
+			//	1) int32 the window's server token
+			//	2) int32 the bitmap's server token
+			//	3) uint32 flags, BPrivate::WINDOW_PREVIEW_*
+			// Returns, on success:
+			//	1) BRect the part of the bitmap that was drawn
+			int32 windowToken = -1;
+			int32 bitmapToken = -1;
+			uint32 flags = 0;
+			link.Read<int32>(&windowToken);
+			link.Read<int32>(&bitmapToken);
+			link.Read<uint32>(&flags);
+
+			status_t status = B_BAD_VALUE;
+			BRect used;
+			BReference<ServerBitmap> bitmap(GetBitmap(bitmapToken), true);
+			if (bitmap != NULL) {
+				status = fDesktop->GetWindowPreview(windowToken, bitmap, flags,
+					used);
+			}
+
+			fLink.StartMessage(status);
+			if (status == B_OK)
+				fLink.Attach<BRect>(used);
 			fLink.Flush();
 			break;
 		}
