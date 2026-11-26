@@ -1,6 +1,7 @@
 /*
  * Copyright 2026, The RenkuOS authors.
  * Distributed under the terms of the MIT License.
+ * SPDX-License-Identifier: MIT
  */
 #ifndef PARALLEL_ROWS_H
 #define PARALLEL_ROWS_H
