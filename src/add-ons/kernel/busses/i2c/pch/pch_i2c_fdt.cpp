@@ -144,12 +144,26 @@ enable_controller(device_node* fdtNode, uint64* _clockRate)
 
 /*!	Registers the children of the device tree node: "reg" is the slave
 	address, the first "compatible" string the hardware ID.
+
+	The children are read through their device node attributes and
+	get_node_prop(), not through their fdt_device: a child node is only
+	initialized while the device tree is registered, and its driver can be
+	uninitialized again (UninitUnusedDriver()) by the time the bus is scanned.
+	The module comes from the controller's own node, which is initialized as
+	long as the bus exists.
 */
 static status_t
 fdt_scan_bus(i2c_bus_cookie cookie)
 {
 	CALLED();
 	pch_i2c_fdt_sim_info* bus = (pch_i2c_fdt_sim_info*)cookie;
+
+	fdt_device* controller;
+	fdt_device_module_info* module = get_fdt(bus->fdtNode, &controller);
+	if (module == NULL) {
+		ERROR("no device tree access, the bus is not scanned\n");
+		return B_ERROR;
+	}
 
 	device_attr attrs[] = {
 		{ B_DEVICE_BUS, B_STRING_TYPE, { .string = "fdt" }},
@@ -158,24 +172,37 @@ fdt_scan_bus(i2c_bus_cookie cookie)
 	device_node* child = NULL;
 	while (gDeviceManager->get_next_child_node(bus->fdtNode, attrs, &child)
 			== B_OK) {
-		fdt_device* dev;
-		fdt_device_module_info* module = get_fdt(child, &dev);
-		if (module == NULL)
-			continue;
+		const char* name = NULL;
+		if (gDeviceManager->get_attr_string(child, "fdt/name", &name, false)
+				!= B_OK) {
+			name = "?";
+		}
 
 		int length;
-		const char* status = (const char*)module->get_prop(dev, "status",
-			&length);
+		const char* status = (const char*)module->get_node_prop(child,
+			"status", &length);
 		if (status != NULL && strcmp(status, "okay") != 0
 			&& strcmp(status, "ok") != 0) {
+			TRACE("%s: disabled, skipped\n", name);
 			continue;
 		}
 
-		const char* compatible = (const char*)module->get_prop(dev,
-			"compatible", &length);
-		uint32 address = get_prop_u32(module, dev, "reg", UINT32_MAX);
-		if (compatible == NULL || address > 0x3ff)
+		// the first "fdt/compatible" attribute is the first string
+		const char* compatible;
+		if (gDeviceManager->get_attr_string(child, "fdt/compatible",
+				&compatible, false) != B_OK) {
+			ERROR("%s: no compatible string, skipped\n", name);
 			continue;
+		}
+
+		const uint32* reg = (const uint32*)module->get_node_prop(child, "reg",
+			&length);
+		uint32 address = reg != NULL && length >= 4
+			? B_BENDIAN_TO_HOST_INT32(*reg) : UINT32_MAX;
+		if (address > 0x3ff) {
+			ERROR("%s: no valid I2C address, skipped\n", name);
+			continue;
+		}
 
 		char* cidList[1] = { NULL };
 		status_t result = gI2c->register_device(bus->info.sim,
