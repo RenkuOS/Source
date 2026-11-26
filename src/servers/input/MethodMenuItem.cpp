@@ -14,31 +14,46 @@
 //
 // ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~
 
+#include <stdlib.h>
 #include <string.h>
+
+#include <ControlLook.h>
+#include <IconUtils.h>
+
 #include "MethodMenuItem.h"
 
-MethodMenuItem::MethodMenuItem(int32 cookie, const char* name, const uchar* icon, BMenu* subMenu, BMessenger& messenger)
+MethodMenuItem::MethodMenuItem(int32 cookie, const char* name,
+	const uchar* icon, const uint8* vectorIcon, size_t vectorIconSize,
+	BMenu* subMenu, BMessenger& messenger)
 	: BMenuItem(subMenu),
-	fIcon(BRect(0, 0, MENUITEM_ICON_SIZE - 1, MENUITEM_ICON_SIZE - 1), B_CMAP8),
+	fVectorIcon(NULL),
+	fVectorIconSize(0),
+	fIcon(BRect(B_ORIGIN, be_control_look->ComposeIconSize(B_MINI_ICON)),
+		B_RGBA32),
 	fCookie(cookie)
 {
 	SetLabel(name);
-	fIcon.SetBits(icon, MENUITEM_ICON_SIZE * MENUITEM_ICON_SIZE, 0, B_CMAP8);
+	SetIcon(icon, vectorIcon, vectorIconSize);
 	fMessenger = messenger;
 }
 
 
-MethodMenuItem::MethodMenuItem(int32 cookie, const char* name, const uchar* icon)
+MethodMenuItem::MethodMenuItem(int32 cookie, const char* name,
+	const uchar* icon, const uint8* vectorIcon, size_t vectorIconSize)
 	: BMenuItem(name, NULL),
-	fIcon(BRect(0, 0, MENUITEM_ICON_SIZE - 1, MENUITEM_ICON_SIZE - 1), B_CMAP8),
+	fVectorIcon(NULL),
+	fVectorIconSize(0),
+	fIcon(BRect(B_ORIGIN, be_control_look->ComposeIconSize(B_MINI_ICON)),
+		B_RGBA32),
 	fCookie(cookie)
 {
-	fIcon.SetBits(icon, MENUITEM_ICON_SIZE * MENUITEM_ICON_SIZE, 0, B_CMAP8);
+	SetIcon(icon, vectorIcon, vectorIconSize);
 }
 
 
 MethodMenuItem::~MethodMenuItem()
 {
+	free(fVectorIcon);
 }
 
 
@@ -49,23 +64,52 @@ MethodMenuItem::SetName(const char *name)
 }
 
 void
-MethodMenuItem::SetIcon(const uchar *icon)
+MethodMenuItem::SetIcon(const uchar *icon, const uint8 *vectorIcon,
+	size_t vectorIconSize)
 {
-	fIcon.SetBits(icon, MENUITEM_ICON_SIZE * MENUITEM_ICON_SIZE, 0, B_CMAP8);
+	memcpy(fIconBits, icon, sizeof(fIconBits));
+
+	free(fVectorIcon);
+	fVectorIcon = NULL;
+	fVectorIconSize = 0;
+	if (vectorIcon != NULL && vectorIconSize > 0) {
+		fVectorIcon = (uint8*)malloc(vectorIconSize);
+		if (fVectorIcon != NULL) {
+			memcpy(fVectorIcon, vectorIcon, vectorIconSize);
+			fVectorIconSize = vectorIconSize;
+		}
+	}
+
+	GetIcon(&fIcon);
+}
+
+
+status_t
+MethodMenuItem::GetIcon(BBitmap *bitmap)
+{
+	if (fVectorIcon != NULL
+		&& BIconUtils::GetVectorIcon(fVectorIcon, fVectorIconSize, bitmap)
+			== B_OK) {
+		return B_OK;
+	}
+
+	return BIconUtils::ConvertFromCMAP8(fIconBits, MENUITEM_ICON_SIZE,
+		MENUITEM_ICON_SIZE, MENUITEM_ICON_SIZE, bitmap);
 }
 
 
 void
 MethodMenuItem::GetContentSize(float *width, float *height)
 {
-	*width = be_plain_font->StringWidth(Label()) + MENUITEM_ICON_SIZE + 3;
+	float iconSize = fIcon.Bounds().Width() + 1;
+	*width = be_plain_font->StringWidth(Label()) + iconSize + 3;
 
 	font_height fheight;
 	be_plain_font->GetHeight(&fheight);
 
 	*height = fheight.ascent + fheight.descent + fheight.leading - 2;
-	if (*height < MENUITEM_ICON_SIZE)
-		*height = MENUITEM_ICON_SIZE;
+	if (*height < iconSize)
+		*height = iconSize;
 }
 
 
@@ -75,11 +119,12 @@ MethodMenuItem::DrawContent()
 	BMenu *menu = Menu();
 	BPoint contLoc = ContentLocation();
 
-	menu->SetDrawingMode(B_OP_OVER);
+	menu->SetDrawingMode(B_OP_ALPHA);
+	menu->SetBlendingMode(B_PIXEL_ALPHA, B_ALPHA_OVERLAY);
 	menu->MovePenTo(contLoc);
 	menu->DrawBitmapAsync(&fIcon);
 	menu->SetDrawingMode(B_OP_COPY);
-	menu->MovePenBy(MENUITEM_ICON_SIZE + 3, 2);
+	menu->MovePenBy(fIcon.Bounds().Width() + 1 + 3, 2);
 	BMenuItem::DrawContent();
 }
 

@@ -24,8 +24,11 @@
 
 class MethodMenuItem : public BMenuItem {
 	public:
-		MethodMenuItem(int32 cookie, const char *label, const uchar *icon, BMenu *subMenu, BMessenger &messenger);
-		MethodMenuItem(int32 cookie, const char *label, const uchar *icon);
+		MethodMenuItem(int32 cookie, const char *label, const uchar *icon,
+			const uint8 *vectorIcon, size_t vectorIconSize, BMenu *subMenu,
+			BMessenger &messenger);
+		MethodMenuItem(int32 cookie, const char *label, const uchar *icon,
+			const uint8 *vectorIcon, size_t vectorIconSize);
 
 		virtual ~MethodMenuItem();
 
@@ -35,11 +38,21 @@ class MethodMenuItem : public BMenuItem {
 		void SetName(const char *name);
 		const char *Name() { return Label(); };
 
-		void SetIcon(const uchar *icon);
-		const uchar *Icon() { return(uchar *)fIcon.Bits(); };
+		void SetIcon(const uchar *icon, const uint8 *vectorIcon,
+			size_t vectorIconSize);
+		const uchar *Icon() { return fIconBits; };
+		const uint8 *VectorIcon() { return fVectorIcon; };
+		size_t VectorIconSize() { return fVectorIconSize; };
+		// draws the icon into a bitmap of any size
+		status_t GetIcon(BBitmap *bitmap);
 
 		int32 Cookie() { return fCookie; };
 	private:
+		// what the method gave: 16x16 B_CMAP8, and a vector icon if it has one
+		uchar fIconBits[MENUITEM_ICON_SIZE * MENUITEM_ICON_SIZE];
+		uint8 *fVectorIcon;
+		size_t fVectorIconSize;
+		// as drawn in the menu
 		BBitmap fIcon;
 		int32 fCookie;
 		BMessenger fMessenger;

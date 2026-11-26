@@ -17,6 +17,7 @@
 #include <Debug.h>
 #include <Dragger.h>
 #include <Bitmap.h>
+#include <IconUtils.h>
 #include <MenuItem.h>
 #include <Message.h>
 #include <Messenger.h>
@@ -50,16 +51,33 @@ set_targets_recursively(BMenu* menu, const BMessenger& messenger)
 }
 
 
-MethodReplicant::MethodReplicant(const char* signature)
+//!	The vector icon a method may have besides its 16x16 one
+static const uint8*
+find_vector_icon(BMessage* message, size_t& size)
+{
+	const void* data;
+	ssize_t numBytes;
+	if (message->FindData("vector icon", B_VECTOR_ICON_TYPE, &data, &numBytes)
+			!= B_OK || numBytes <= 0) {
+		size = 0;
+		return NULL;
+	}
+
+	size = numBytes;
+	return (const uint8*)data;
+}
+
+
+MethodReplicant::MethodReplicant(const char* signature, float size)
 	:
-	BView(BRect(0, 0, 15, 15), REPLICANT_CTL_NAME, B_FOLLOW_ALL, B_WILL_DRAW),
+	BView(BRect(0, 0, size - 1, size - 1), REPLICANT_CTL_NAME, B_FOLLOW_ALL,
+		B_WILL_DRAW),
 	fMenu("", false, false)
 {
-	// Background Bitmap
-	fSegments = new BBitmap(BRect(0, 0, kRemoteWidth - 1, kRemoteHeight - 1),
-		kRemoteColorSpace);
-	fSegments->SetBits(kRemoteBits, kRemoteWidth * kRemoteHeight, 0,
-		kRemoteColorSpace);
+	// Background Bitmap, as large as the view
+	fSegments = new BBitmap(Bounds(), B_RGBA32);
+	BIconUtils::ConvertFromCMAP8(kRemoteBits, kRemoteWidth, kRemoteHeight,
+		kRemoteWidth, fSegments);
 
 	ASSERT(signature != NULL);
 	fSignature = strdup(signature);
@@ -74,11 +92,10 @@ MethodReplicant::MethodReplicant(BMessage* message)
 	BView(message),
 	fMenu("", false, false)
 {
-	// Background Bitmap
-	fSegments = new BBitmap(BRect(0, 0, kRemoteWidth - 1, kRemoteHeight - 1),
-		kRemoteColorSpace);
-	fSegments->SetBits(kRemoteBits, kRemoteWidth * kRemoteHeight, 0,
-		kRemoteColorSpace);
+	// Background Bitmap, as large as the view
+	fSegments = new BBitmap(Bounds(), B_RGBA32);
+	BIconUtils::ConvertFromCMAP8(kRemoteBits, kRemoteWidth, kRemoteHeight,
+		kRemoteWidth, fSegments);
 
 	const char* signature = NULL;
 	message->FindString("add_on", &signature);
@@ -184,7 +201,8 @@ MethodReplicant::Draw(BRect rect)
 {
 	BView::Draw(rect);
 
-	SetDrawingMode(B_OP_OVER);
+	SetDrawingMode(B_OP_ALPHA);
+	SetBlendingMode(B_PIXEL_ALPHA, B_ALPHA_OVERLAY);
 	DrawBitmap(fSegments);
 }
 
@@ -236,8 +254,7 @@ MethodReplicant::UpdateMethod(BMessage* message)
 	}
 	item->SetMarked(true);
 
-	fSegments->SetBits(item->Icon(), kRemoteWidth * kRemoteHeight, 0,
-		kRemoteColorSpace);
+	item->GetIcon(fSegments);
 	Invalidate();
 }
 
@@ -266,13 +283,14 @@ MethodReplicant::UpdateMethodIcon(BMessage* message)
 		return;
 	}
 
-	item->SetIcon(data);
+	size_t vectorIconSize;
+	const uint8* vectorIcon = find_vector_icon(message, vectorIconSize);
+	item->SetIcon(data, vectorIcon, vectorIconSize);
 
 	// The replicant shows the icon of the active method, so a method that
 	// changes its icon (to show its input mode, for example) must be redrawn.
 	if (item->IsMarked()) {
-		fSegments->SetBits(item->Icon(), kRemoteWidth * kRemoteHeight, 0,
-			kRemoteColorSpace);
+		item->GetIcon(fSegments);
 		Invalidate();
 	}
 }
@@ -317,9 +335,11 @@ MethodReplicant::UpdateMethodMenu(BMessage* message)
 	MethodMenuItem* item2 = NULL;
 	if (menu) {
 		item2 = new MethodMenuItem(cookie, item->Label(), item->Icon(),
-			menu, messenger);
-	} else
-		item2 = new MethodMenuItem(cookie, item->Label(), item->Icon());
+			item->VectorIcon(), item->VectorIconSize(), menu, messenger);
+	} else {
+		item2 = new MethodMenuItem(cookie, item->Label(), item->Icon(),
+			item->VectorIcon(), item->VectorIconSize());
+	}
 
 	item = (MethodMenuItem*)fMenu.RemoveItem(index);
 	fMenu.AddItem(item2, index);
@@ -417,15 +437,23 @@ MethodReplicant::AddMethod(BMessage* message)
 		return;
 	}
 
+	size_t vectorIconSize;
+	const uint8* vectorIcon = find_vector_icon(message, vectorIconSize);
 	if (menu != NULL) {
-		item = new MethodMenuItem(cookie, name, icon, menu, messenger);
-	} else
-		item = new MethodMenuItem(cookie, name, icon);
+		item = new MethodMenuItem(cookie, name, icon, vectorIcon,
+			vectorIconSize, menu, messenger);
+	} else {
+		item = new MethodMenuItem(cookie, name, icon, vectorIcon,
+			vectorIconSize);
+	}
 	fMenu.AddItem(item);
 	item->SetTarget(this);
 
-	if (fMenu.CountItems() == 1)
+	if (fMenu.CountItems() == 1) {
 		item->SetMarked(true);
+		item->GetIcon(fSegments);
+		Invalidate();
+	}
 }
 
 

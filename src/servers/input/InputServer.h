@@ -97,6 +97,7 @@ class _BMethodAddOn_ {
 
 		status_t SetName(const char* name);
 		status_t SetIcon(const uchar* icon);
+		status_t SetVectorIcon(const uint8* data, size_t size);
 		status_t SetMenu(const BMenu* menu, const BMessenger& messenger);
 		status_t MethodActivated(bool activate);
 		status_t AddMethod();
@@ -106,6 +107,8 @@ class _BMethodAddOn_ {
 		BInputServerMethod* fMethod;
 		char* fName;
 		uchar fIcon[16*16*1];
+		uint8* fVectorIcon;
+		size_t fVectorIconSize;
 		const BMenu* fMenu;
 		BMessenger fMessenger;
 		int32 fCookie;
