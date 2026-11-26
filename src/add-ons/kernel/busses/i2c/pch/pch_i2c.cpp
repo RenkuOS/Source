@@ -23,6 +23,8 @@
 device_manager_info* gDeviceManager;
 i2c_for_controller_interface* gI2c;
 acpi_module_info* gACPI;
+static int32 sACPIUsers;
+	// front-ends that hold the ACPI module, see pch_i2c_acpi_std_ops()
 static pci_module_info* sPCI;
 
 
@@ -141,6 +143,20 @@ enable_device(pch_i2c_sim_info* bus, bool enable)
 }
 
 
+/*!	The IC_CLR_* registers are cleared by reading them (DesignWare databook).
+	The ACPI and PCI front-ends still write them, as they always did, until
+	the read has been tested on Intel PCH hardware.
+*/
+static inline void
+clear_interrupt(pch_i2c_sim_info* bus, uint32 reg)
+{
+	if (bus->clear_on_read)
+		read32(bus->registers + reg);
+	else
+		write32(bus->registers + reg, 0);
+}
+
+
 static int32
 pch_i2c_interrupt_handler(pch_i2c_sim_info* bus)
 {
@@ -151,40 +167,40 @@ pch_i2c_interrupt_handler(pch_i2c_sim_info* bus)
 	if (enable == 0)
 		return B_UNHANDLED_INTERRUPT;
 
-	// The IC_CLR_* registers are cleared by reading them (DesignWare
-	// databook); a write does nothing and leaves the interrupt pending.
 	uint32 status = read32(bus->registers + PCH_IC_INTR_STAT);
-	if ((status & PCH_IC_INTR_STAT_TX_ABRT) != 0) {
+	if (bus->abort_ends_transfer
+		&& (status & PCH_IC_INTR_STAT_TX_ABRT) != 0) {
 		// read the source before clearing the abort clears it too
 		bus->abort_source = read32(bus->registers + PCH_IC_TX_ABRT_SOURCE);
 		bus->error = B_IO_ERROR;
 	}
 	if ((status & PCH_IC_INTR_STAT_RX_UNDER) != 0)
-		read32(bus->registers + PCH_IC_CLR_RX_UNDER);
+		clear_interrupt(bus, PCH_IC_CLR_RX_UNDER);
 	if ((status & PCH_IC_INTR_STAT_RX_OVER) != 0)
-		read32(bus->registers + PCH_IC_CLR_RX_OVER);
+		clear_interrupt(bus, PCH_IC_CLR_RX_OVER);
 	if ((status & PCH_IC_INTR_STAT_TX_OVER) != 0)
-		read32(bus->registers + PCH_IC_CLR_TX_OVER);
+		clear_interrupt(bus, PCH_IC_CLR_TX_OVER);
 	if ((status & PCH_IC_INTR_STAT_RD_REQ) != 0)
-		read32(bus->registers + PCH_IC_CLR_RD_REQ);
+		clear_interrupt(bus, PCH_IC_CLR_RD_REQ);
 	if ((status & PCH_IC_INTR_STAT_TX_ABRT) != 0)
-		read32(bus->registers + PCH_IC_CLR_TX_ABRT);
+		clear_interrupt(bus, PCH_IC_CLR_TX_ABRT);
 	if ((status & PCH_IC_INTR_STAT_RX_DONE) != 0)
-		read32(bus->registers + PCH_IC_CLR_RX_DONE);
+		clear_interrupt(bus, PCH_IC_CLR_RX_DONE);
 	if ((status & PCH_IC_INTR_STAT_ACTIVITY) != 0)
-		read32(bus->registers + PCH_IC_CLR_ACTIVITY);
+		clear_interrupt(bus, PCH_IC_CLR_ACTIVITY);
 	if ((status & PCH_IC_INTR_STAT_STOP_DET) != 0)
-		read32(bus->registers + PCH_IC_CLR_STOP_DET);
+		clear_interrupt(bus, PCH_IC_CLR_STOP_DET);
 	if ((status & PCH_IC_INTR_STAT_START_DET) != 0)
-		read32(bus->registers + PCH_IC_CLR_START_DET);
+		clear_interrupt(bus, PCH_IC_CLR_START_DET);
 	if ((status & PCH_IC_INTR_STAT_GEN_CALL) != 0)
-		read32(bus->registers + PCH_IC_CLR_GEN_CALL);
+		clear_interrupt(bus, PCH_IC_CLR_GEN_CALL);
 
 	TRACE("pch_i2c_interrupt_handler %" B_PRIx32 "\n", status);
 
 	if ((status & ~PCH_IC_INTR_STAT_ACTIVITY) == 0)
 		return handled;
-	if ((status & PCH_IC_INTR_STAT_TX_ABRT) != 0) {
+	if (bus->abort_ends_transfer
+		&& (status & PCH_IC_INTR_STAT_TX_ABRT) != 0) {
 		// no acknowledge (no device at the address) or lost arbitration:
 		// the transfer is over. Mask everything, so that nothing can fire
 		// again before the waiter has seen the error, and wake it up.
@@ -244,8 +260,12 @@ exec_command_unlocked(pch_i2c_sim_info* bus, i2c_op op, i2c_addr slaveAddress,
 
 	TRACE("exec_command: write slave address\n");
 
+	// only the interrupt handler sets the error, and only when an abort ends
+	// the transfer: otherwise it stays B_OK, and TX_ABRT stays masked
 	bus->error = B_OK;
 	bus->abort_source = 0;
+	const uint32 abortMask
+		= bus->abort_ends_transfer ? PCH_IC_INTR_STAT_TX_ABRT : 0;
 	enable_device(bus, false);
 	write32(bus->registers + PCH_IC_CON,
 		read32(bus->registers + PCH_IC_CON) & ~PCH_IC_CON_10BIT_ADDR_MASTER);
@@ -313,7 +333,7 @@ exec_command_unlocked(pch_i2c_sim_info* bus, i2c_op op, i2c_addr slaveAddress,
 			bus->wait_read.Add(&waiter);
 
 			write32(bus->registers + PCH_IC_INTR_MASK,
-				PCH_IC_INTR_STAT_RX_FULL | PCH_IC_INTR_STAT_TX_ABRT);
+				PCH_IC_INTR_STAT_RX_FULL | abortMask);
 
 			uint32 rxBytes = read32(bus->registers + PCH_IC_RXFLR);
 			if (rxBytes == 0 && bus->error != B_OK) {
@@ -368,7 +388,7 @@ exec_command_unlocked(pch_i2c_sim_info* bus, i2c_op op, i2c_addr slaveAddress,
 		TRACE("exec_command: waiting busy condition\n");
 		while (bus->busy) {
 			write32(bus->registers + PCH_IC_INTR_MASK,
-				PCH_IC_INTR_STAT_STOP_DET | PCH_IC_INTR_STAT_TX_ABRT);
+				PCH_IC_INTR_STAT_STOP_DET | abortMask);
 
 			ConditionVariableEntry waiter;
 			bus->wait_busy.Add(&waiter);
@@ -504,28 +524,12 @@ acpi_GetInteger(acpi_handle acpiCookie,
 	the bus, so that a single broken or unrelated child would hide all devices
 	that come after it.
 */
-/*!	The ACPI module, loaded on first use: it is no dependency of the driver,
-	so that the controller can also be used where there is no ACPI (from the
-	device tree). It stays loaded for the lifetime of the driver.
-*/
-status_t
-pch_i2c_get_acpi()
-{
-	if (gACPI != NULL)
-		return B_OK;
-	return get_module(B_ACPI_MODULE_NAME, (module_info**)&gACPI);
-}
-
-
 acpi_status
 pch_i2c_scan_bus_callback(acpi_handle object, uint32 nestingLevel,
 	void *context, void** returnValue)
 {
 	pch_i2c_sim_info* bus = (pch_i2c_sim_info*)context;
 	TRACE("pch_i2c_scan_bus_callback %p\n", object);
-
-	if (pch_i2c_get_acpi() != B_OK)
-		return B_OK;
 
 	acpi_data buffer;
 	buffer.pointer = NULL;
@@ -762,6 +766,41 @@ uninit_bus(void* bus_cookie)
 		(interrupt_handler)pch_i2c_interrupt_handler, bus);
 	if (bus->registersArea >= 0)
 		delete_area(bus->registersArea);
+}
+
+
+/*!	The std_ops of the ACPI and PCI front-ends. Both find the devices on
+	their bus through ACPI, so they need the ACPI module, as when it was a
+	dependency of the whole driver; a front-end fails to load without it.
+	The device tree front-end does not use ACPI, so that the driver also
+	loads on platforms that have none.
+	The module manager calls this with its lock held, so the count needs no
+	lock of its own.
+*/
+status_t
+pch_i2c_acpi_std_ops(int32 op, ...)
+{
+	switch (op) {
+		case B_MODULE_INIT:
+		{
+			acpi_module_info* acpi;
+			status_t status = get_module(B_ACPI_MODULE_NAME,
+				(module_info**)&acpi);
+			if (status != B_OK)
+				return status;
+			if (sACPIUsers++ == 0)
+				gACPI = acpi;
+			return B_OK;
+		}
+
+		case B_MODULE_UNINIT:
+			if (--sACPIUsers == 0)
+				gACPI = NULL;
+			put_module(B_ACPI_MODULE_NAME);
+			return B_OK;
+	}
+
+	return B_BAD_VALUE;
 }
 
 

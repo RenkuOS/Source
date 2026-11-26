@@ -298,6 +298,8 @@ init_device(device_node* node, void** device_cookie)
 	bus->info.sda_hold_time = max_c(ns_to_counts(clock, holdNs), 1);
 	bus->info.driver_node = node;
 	bus->info.scan_bus = fdt_scan_bus;
+	bus->info.clear_on_read = true;
+	bus->info.abort_ends_transfer = true;
 
 	TRACE_ALWAYS("bus at %#" B_PRIx64 ", irq %" B_PRIu64 ": clock %" B_PRIu64
 		" Hz, %" B_PRIu32 " Hz bus, hcnt/lcnt %u/%u, sda hold %" B_PRIu32 "\n",

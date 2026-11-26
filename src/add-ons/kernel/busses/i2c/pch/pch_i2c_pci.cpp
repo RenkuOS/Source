@@ -566,7 +566,7 @@ driver_module_info gPchI2cPciDevice = {
 	{
 		PCH_I2C_PCI_DEVICE_MODULE_NAME,
 		0,
-		NULL
+		pch_i2c_acpi_std_ops
 	},
 
 	supports_device,

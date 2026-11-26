@@ -50,7 +50,7 @@ extern driver_module_info gPchI2cPciDevice;
 extern driver_module_info gPchI2cFdtDevice;
 
 
-status_t pch_i2c_get_acpi();
+status_t pch_i2c_acpi_std_ops(int32 op, ...);
 acpi_status pch_i2c_scan_bus_callback(acpi_handle object, uint32 nestingLevel,
 	void *context, void** returnValue);
 
@@ -125,6 +125,13 @@ typedef struct {
 	uint32	flags;
 	int32	error;
 	uint32	abort_source;	// IC_TX_ABRT_SOURCE of the last abort
+
+	// Set by the device tree front-end only. The IC_CLR_* registers are
+	// cleared by reading them, and an abort (TX_ABRT) ends the transfer at
+	// once. The ACPI and PCI front-ends keep the previous handling until it
+	// has been tested on Intel PCH hardware.
+	bool	clear_on_read;
+	bool	abort_ends_transfer;
 
 	mutex	lock;
 	status_t (*scan_bus)(i2c_bus_cookie cookie);
