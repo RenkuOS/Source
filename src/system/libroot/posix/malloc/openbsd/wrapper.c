@@ -244,9 +244,13 @@ __heap_thread_exit()
 void
 __heap_before_fork()
 {
-	u_int i;
-	u_int nmutexes = mopts_nmutexes();
-	for (i = 0; i < nmutexes; i++)
+	u_int i, nmutexes;
+
+	// Lock mutex 0 before counting: init_threaded_malloc() switches the
+	// heap to threaded mode (and so changes the count) only while holding it.
+	_MALLOC_LOCK(0);
+	nmutexes = mopts_nmutexes();
+	for (i = 1; i < nmutexes; i++)
 		_MALLOC_LOCK(i);
 
 	__pages_allocator_before_fork();
