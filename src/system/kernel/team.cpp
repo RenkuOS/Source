@@ -2207,6 +2207,9 @@ fork_team(void)
 			area_id area = vm_copy_area(team->address_space->ID(), info.name,
 				&address, B_CLONE_ADDRESS, info.area);
 			if (area < B_OK) {
+				// skip areas deleted meanwhile, e.g. stacks of exiting threads
+				if (get_area_info(info.area, &info) != B_OK)
+					continue;
 				status = area;
 				break;
 			}
