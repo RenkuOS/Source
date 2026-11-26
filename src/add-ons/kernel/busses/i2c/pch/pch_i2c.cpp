@@ -504,12 +504,28 @@ acpi_GetInteger(acpi_handle acpiCookie,
 	the bus, so that a single broken or unrelated child would hide all devices
 	that come after it.
 */
+/*!	The ACPI module, loaded on first use: it is no dependency of the driver,
+	so that the controller can also be used where there is no ACPI (from the
+	device tree). It stays loaded for the lifetime of the driver.
+*/
+status_t
+pch_i2c_get_acpi()
+{
+	if (gACPI != NULL)
+		return B_OK;
+	return get_module(B_ACPI_MODULE_NAME, (module_info**)&gACPI);
+}
+
+
 acpi_status
 pch_i2c_scan_bus_callback(acpi_handle object, uint32 nestingLevel,
 	void *context, void** returnValue)
 {
 	pch_i2c_sim_info* bus = (pch_i2c_sim_info*)context;
 	TRACE("pch_i2c_scan_bus_callback %p\n", object);
+
+	if (pch_i2c_get_acpi() != B_OK)
+		return B_OK;
 
 	acpi_data buffer;
 	buffer.pointer = NULL;
@@ -754,7 +770,6 @@ uninit_bus(void* bus_cookie)
 
 module_dependency module_dependencies[] = {
 	{ B_DEVICE_MANAGER_MODULE_NAME, (module_info**)&gDeviceManager },
-	{ B_ACPI_MODULE_NAME, (module_info**)&gACPI },
 	{ I2C_FOR_CONTROLLER_MODULE_NAME, (module_info**)&gI2c },
 	{ B_PCI_MODULE_NAME, (module_info**)&sPCI },
 	{}
@@ -789,6 +804,7 @@ static i2c_sim_interface sPchI2cDeviceModule = {
 module_info* modules[] = {
 	(module_info* )&gPchI2cAcpiDevice,
 	(module_info* )&gPchI2cPciDevice,
+	(module_info* )&gPchI2cFdtDevice,
 	(module_info* )&sPchI2cDeviceModule,
 	NULL
 };

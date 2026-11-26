@@ -31,6 +31,7 @@ extern "C" {
 
 #define PCH_I2C_ACPI_DEVICE_MODULE_NAME "busses/i2c/pch_i2c/acpi/driver_v1"
 #define PCH_I2C_PCI_DEVICE_MODULE_NAME "busses/i2c/pch_i2c/pci/driver_v1"
+#define PCH_I2C_FDT_DEVICE_MODULE_NAME "busses/i2c/pch_i2c/fdt/driver_v1"
 #define PCH_I2C_SIM_MODULE_NAME "busses/i2c/pch_i2c/device/v1"
 
 
@@ -46,8 +47,10 @@ extern i2c_for_controller_interface* gI2c;
 extern acpi_module_info* gACPI;
 extern driver_module_info gPchI2cAcpiDevice;
 extern driver_module_info gPchI2cPciDevice;
+extern driver_module_info gPchI2cFdtDevice;
 
 
+status_t pch_i2c_get_acpi();
 acpi_status pch_i2c_scan_bus_callback(acpi_handle object, uint32 nestingLevel,
 	void *context, void** returnValue);
 

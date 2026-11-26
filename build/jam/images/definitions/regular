@@ -13,7 +13,7 @@ SYSTEM_BIN += [ FFilterByBuildFeatures
 	CortexAddOnHost
 	dpms
 	FirstBootPrompt
-	<bin>i2c@x86,x86_64
+	<bin>i2c@x86,x86_64,riscv64
 	installsound
 	mail
 	mail2mbox
