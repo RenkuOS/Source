@@ -19,6 +19,7 @@
 #include "DrawingEngine.h"
 #include "DrawState.h"
 #include "GlobalFontManager.h"
+#include "RoundedDecorator.h"
 #include "ServerBitmap.h"
 #include "ServerFont.h"
 
@@ -93,6 +94,7 @@ public:
 		draw_string = &_DrawString;
 		copy_to_front = &_CopyToFront;
 		set_copy_to_front = &_SetCopyToFront;
+		stroke_corner = &_StrokeCorner;
 	}
 
 private:
@@ -154,6 +156,21 @@ private:
 	{
 		if (DrawingEngine* engine = _Self(canvas)->_Engine())
 			engine->StrokePoint(to_point(point), color);
+	}
+
+	static void _StrokeCorner(decor_canvas* canvas, decor_point leftTop,
+		int32 radius, int32 corner, rgb_color color)
+	{
+		static const WindowShape::corner_kind kKinds[] = {
+			WindowShape::LEFT_TOP, WindowShape::RIGHT_TOP,
+			WindowShape::LEFT_BOTTOM, WindowShape::RIGHT_BOTTOM
+		};
+		if (corner < 0 || corner > DECOR_CORNER_RIGHT_BOTTOM || radius <= 0)
+			return;
+		if (DrawingEngine* engine = _Self(canvas)->_Engine()) {
+			RoundedDecorator::StrokeCorner(engine, to_point(leftTop), radius,
+				kKinds[corner], color);
+		}
 	}
 
 	static void _StrokeRect(decor_canvas* canvas, decor_rect rect,

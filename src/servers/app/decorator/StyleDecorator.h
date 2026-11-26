@@ -11,6 +11,7 @@
 #include <decorator/DecorStyle.h>
 
 #include "DecorManager.h"
+#include "RoundedDecorator.h"
 #include "TabDecorator.h"
 
 
@@ -41,7 +42,7 @@ private:
 	the rest, as app_server's own decorators do. What doesn't depend on how
 	the frame is laid out comes from TabDecorator.
 */
-class StyleDecorator : public TabDecorator {
+class StyleDecorator : public TabDecorator, public RoundedDecorator {
 public:
 								StyleDecorator(DesktopSettings& settings,
 									BRect frame, Desktop* desktop,
@@ -60,6 +61,11 @@ public:
 	virtual	void				GetSizeLimits(int32* minWidth,
 									int32* minHeight, int32* maxWidth,
 									int32* maxHeight) const;
+
+	// RoundedDecorator
+	virtual	void				GetRoundedShape(
+									std::vector<Decorator::ShapeRect>& shape)
+										const;
 
 protected:
 	struct Tab : public Decorator::Tab {

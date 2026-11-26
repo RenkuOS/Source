@@ -64,10 +64,11 @@
 
 
 /*!	Versions 1 and 2 were drafts: styles were built against them, with other
-	structure layouts, before the interface settled. This is the first
-	final version, and app_server refuses anything older.
+	structure layouts, before the interface settled. Version 3 is the first
+	final one, and app_server refuses anything older. Version 4 adds rounded
+	corners on a composited desktop.
 */
-#define DECOR_STYLE_API_VERSION		3
+#define DECOR_STYLE_API_VERSION		4
 
 
 #ifdef __cplusplus
@@ -262,7 +263,31 @@ typedef struct decor_window {
 
 	// the style's own: free to use from create_window() on
 	void*					cookie;
+
+	// in, from version 4
+	bool					corners_cut;
+		// the compositor cuts off the corners that rounded_shape() gives,
+		// and the border should follow them, as with canvas->stroke_corner()
 } decor_window;
+
+
+/*!	A rectangle of a frame's outline, and the radius each of its corners is
+	cut off by on a composited desktop (0 keeps a corner square).
+*/
+typedef struct decor_shape_rect {
+	decor_rect				rect;
+	int32					left_top;
+	int32					right_top;
+	int32					left_bottom;
+	int32					right_bottom;
+} decor_shape_rect;
+
+enum {
+	DECOR_CORNER_LEFT_TOP = 0,
+	DECOR_CORNER_RIGHT_TOP,
+	DECOR_CORNER_LEFT_BOTTOM,
+	DECOR_CORNER_RIGHT_BOTTOM
+};
 
 
 /*!	A gradient fill: linear, from \c start to \c end, through up to
@@ -364,6 +389,13 @@ struct decor_canvas {
 	bool					(*copy_to_front)(decor_canvas* canvas);
 	void					(*set_copy_to_front)(decor_canvas* canvas,
 								bool enabled);
+
+	// from version 4: the line of a border along a corner the compositor
+	// cuts off; \a left_top is the corner square's, \a corner a
+	// DECOR_CORNER_*
+	void					(*stroke_corner)(decor_canvas* canvas,
+								decor_point left_top, int32 radius,
+								int32 corner, rgb_color color);
 };
 
 
@@ -451,6 +483,12 @@ typedef struct decor_style {
 	// the system colours changed; called before the frame is drawn again
 	void					(*update_colors)(decor_window* window,
 								decor_canvas* canvas);
+
+	// from version 4: rounds the corners of the frame's outline, given as
+	// the frame (first) and its tabs, by setting their radii; NULL keeps
+	// them square
+	void					(*rounded_shape)(decor_window* window,
+								decor_shape_rect* shape, int32 count);
 } decor_style;
 
 
