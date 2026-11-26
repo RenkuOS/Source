@@ -71,10 +71,11 @@ acpi_ac_update_status(acpi_ac_device_info* device)
 static void
 acpi_ac_notify_handler(acpi_handle _device, uint32 value, void *context)
 {
-	if (value != ACPI_NOTIFY_STATUS_CHANGED) {
-		dprintf("acpi_ac: unknown notification (%d)\n", value);
-		return;
-	}
+	// Some firmware does not use the standard value for a status change
+	// (Sony VAIO notifies 0x81, for instance), so re-read the status on any
+	// notification, as Linux does.
+	if (value != ACPI_NOTIFY_STATUS_CHANGED)
+		TRACE("notification 0x%" B_PRIx32 ", re-reading status\n", value);
 
 	acpi_ac_device_info* device = (acpi_ac_device_info*) context;
 	acpi_ac_update_status(device);
