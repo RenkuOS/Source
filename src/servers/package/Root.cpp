@@ -120,6 +120,28 @@ private:
 };
 
 
+// #pragma mark - LocationInfoJob
+
+
+struct Root::LocationInfoJob : public AbstractVolumeJob {
+	LocationInfoJob(Volume* volume, BMessage* message)
+		:
+		AbstractVolumeJob(volume),
+		fMessage(message)
+	{
+	}
+
+	virtual void Do()
+	{
+		// If reading the packages failed, the sender gets no reply.
+		fVolume->HandleGetLocationInfoRequest(fMessage.Get());
+	}
+
+private:
+	ObjectDeleter<BMessage>	fMessage;
+};
+
+
 // #pragma mark - VolumeJobFilter
 
 
@@ -321,8 +343,21 @@ Root::HandleRequest(BMessage* message)
 
 	switch (message->what) {
 		case B_MESSAGE_GET_INSTALLATION_LOCATION_INFO:
-			volume->HandleGetLocationInfoRequest(message);
+		{
+			if (volume->HandleGetLocationInfoRequest(message))
+				break;
+
+			// The volume is still reading its packages: answer from the job
+			// thread, after the job RegisterVolume() queued for that.
+			LocationInfoJob* job = new(std::nothrow) LocationInfoJob(volume,
+				message);
+			if (job == NULL)
+				return;
+
+			messageDeleter.Detach();
+			_QueueJob(job);
 			break;
+		}
 
 		case B_MESSAGE_COMMIT_TRANSACTION:
 		{
