@@ -13,6 +13,8 @@
 #include <KernelExport.h>
 
 #include <condition_variable.h>
+#include <kernel.h>
+#include <unistd.h>
 #include <net_buffer.h>
 #include <syscall_restart.h>
 #include <util/AutoLock.h>
@@ -565,6 +567,35 @@ bool
 is_syscall(void)
 {
 	return is_called_via_syscall();
+}
+
+/*!	Checks a buffer that a request structure points to. A request that came
+	from user space may only point into user space: user_memcpy() accepts any
+	range that does not cross into the kernel, so without this check a program
+	could make the kernel write to or read from a kernel address of its
+	choosing (airos-works/haiku#130). An empty buffer is not accessed, so it
+	passes, whatever its address: is_user_address_range() would test the byte
+	before it.
+*/
+status_t
+check_request_buffer(const void* buffer, size_t size)
+{
+	if (size == 0)
+		return B_OK;
+	if (is_syscall() && !is_user_address_range(buffer, size))
+		return B_BAD_ADDRESS;
+
+	return B_OK;
+}
+
+
+/*!	Whether the caller may change the network configuration: the kernel and
+	root may, other users may not (airos-works/haiku#130).
+*/
+bool
+may_change_configuration(void)
+{
+	return !is_syscall() || geteuid() == 0;
 }
 
 

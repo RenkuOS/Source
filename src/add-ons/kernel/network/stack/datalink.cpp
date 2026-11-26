@@ -287,6 +287,7 @@ datalink_control(net_domain* _domain, int32 option, void* value,
 		{
 			// count number of interfaces
 			struct ifconf config;
+			memset(&config, 0, sizeof(config));
 			config.ifc_value = count_interfaces();
 
 			return user_memcpy(value, &config, sizeof(struct ifconf));
@@ -299,7 +300,11 @@ datalink_control(net_domain* _domain, int32 option, void* value,
 			if (user_memcpy(&config, value, sizeof(struct ifconf)) < B_OK)
 				return B_BAD_ADDRESS;
 
+			if (config.ifc_len < 0)
+				return B_BAD_VALUE;
 			size_t size = config.ifc_len;
+			if (check_request_buffer(config.ifc_buf, size) != B_OK)
+				return B_BAD_ADDRESS;
 			status_t status
 				= list_interfaces(domain->family, config.ifc_buf, &size);
 			if (status != B_OK)
@@ -313,6 +318,7 @@ datalink_control(net_domain* _domain, int32 option, void* value,
 		{
 			// determine size of buffer to hold the routing table
 			struct ifconf config;
+			memset(&config, 0, sizeof(config));
 			config.ifc_value = route_table_size(domain);
 
 			return user_memcpy(value, &config, sizeof(struct ifconf));
@@ -322,6 +328,10 @@ datalink_control(net_domain* _domain, int32 option, void* value,
 			// retrieve all routes for this domain
 			struct ifconf config;
 			if (user_memcpy(&config, value, sizeof(struct ifconf)) < B_OK)
+				return B_BAD_ADDRESS;
+			if (config.ifc_len < 0)
+				return B_BAD_VALUE;
+			if (check_request_buffer(config.ifc_buf, config.ifc_len) != B_OK)
 				return B_BAD_ADDRESS;
 
 			return list_routes(domain, config.ifc_buf, config.ifc_len);

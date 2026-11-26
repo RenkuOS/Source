@@ -63,16 +63,23 @@ user_copy_address(const sockaddr* from, sockaddr** to)
 	}
 
 	sockaddr address;
-	if (user_memcpy(&address, from, sizeof(struct sockaddr)) < B_OK)
+	if (check_request_buffer(from, sizeof(struct sockaddr)) != B_OK
+		|| user_memcpy(&address, from, sizeof(struct sockaddr)) < B_OK)
 		return B_BAD_ADDRESS;
+	if (address.sa_len < 2)
+		return B_BAD_VALUE;
 
-	*to = (sockaddr*)malloc(address.sa_len);
+	*to = (sockaddr*)malloc(max_c(address.sa_len, sizeof(struct sockaddr)));
 	if (*to == NULL)
 		return B_NO_MEMORY;
 
 	if (address.sa_len > sizeof(struct sockaddr)) {
-		if (user_memcpy(*to, from, address.sa_len) < B_OK)
+		if (check_request_buffer(from, address.sa_len) != B_OK
+			|| user_memcpy(*to, from, address.sa_len) < B_OK) {
+			free(*to);
+			*to = NULL;
 			return B_BAD_ADDRESS;
+		}
 	} else
 		memcpy(*to, &address, address.sa_len);
 
@@ -86,13 +93,15 @@ user_copy_address(const sockaddr* from, sockaddr_storage* to)
 	if (from == NULL)
 		return B_BAD_ADDRESS;
 
-	if (user_memcpy(to, from, sizeof(sockaddr)) < B_OK)
+	if (check_request_buffer(from, sizeof(sockaddr)) != B_OK
+		|| user_memcpy(to, from, sizeof(sockaddr)) < B_OK)
 		return B_BAD_ADDRESS;
 
 	if (to->ss_len > sizeof(sockaddr)) {
 		if (to->ss_len > sizeof(sockaddr_storage))
 			return B_BAD_VALUE;
-		if (user_memcpy(to, from, to->ss_len) < B_OK)
+		if (check_request_buffer(from, to->ss_len) != B_OK
+			|| user_memcpy(to, from, to->ss_len) < B_OK)
 			return B_BAD_ADDRESS;
 	}
 
