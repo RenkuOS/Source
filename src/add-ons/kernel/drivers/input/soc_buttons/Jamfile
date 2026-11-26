@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: MIT
+
+SubDir HAIKU_TOP src add-ons kernel drivers input soc_buttons ;
+
+UsePrivateHeaders [ FDirName kernel util ] input drivers ;
+UsePrivateKernelHeaders ;
+SubDirHdrs [ FDirName $(HAIKU_TOP) src add-ons kernel bus_managers acpi acpica include ] ;
+SubDirHdrs [ FDirName $(HAIKU_TOP) src add-ons kernel bus_managers acpi acpica include platform ] ;
+
+KernelAddon soc_buttons :
+	soc_buttons.cpp
+;
