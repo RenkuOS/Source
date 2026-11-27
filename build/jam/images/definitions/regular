@@ -334,6 +334,10 @@ SYSTEM_ADD_ONS_DRIVERS_NET += [ FFilterByBuildFeatures
 		realtekwifi8187
 		zydwifi1211
 	}@ # x86,x86_64,riscv64,arm64
+	# athp needs 64-bit pointers, and has only been tested on x86_64.
+	x86_64 @{
+		atheros10kwifi
+	}@ # x86_64
 ] ;
 
 SYSTEM_ADD_ONS_DRIVERS_POWER += [ FFilterByBuildFeatures

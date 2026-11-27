@@ -40,6 +40,8 @@ if $(HAIKU_BUILD_TYPE) = test {
 }
 
 if $(HAIKU_BUILD_TYPE) = regular {
+	AddPackageFilesToHaikuImage system packages
+		: atheros10k_wifi_firmwares.hpkg : nameFromMetaInfo ;
 	AddPackageFilesToHaikuImage system packages : mediatek_wifi_firmwares.hpkg
 		: nameFromMetaInfo ;
 	AddPackageFilesToHaikuImage system packages
