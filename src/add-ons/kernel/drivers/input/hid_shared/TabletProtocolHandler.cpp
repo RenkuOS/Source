@@ -315,10 +315,12 @@ TabletProtocolHandler::_ReadReport(void *buffer, uint32 *cookie)
 	fReport.DoneProcessing();
 	TRACE("got tablet report\n");
 
+	// A pen or a touch screen presses with its tip switch, not a button: the
+	// tablet add-on sends the switches as buttons, so they click like them.
 	int32 clicks = 0;
 	bigtime_t timestamp = system_time();
-	if (buttons != 0) {
-		if (fLastButtons == 0) {
+	if (buttons != 0 || switches != 0) {
+		if (fLastButtons == 0 && fLastSwitches == 0) {
 			if (fLastClickTime + fClickSpeed > timestamp)
 				fClickCount++;
 			else
@@ -330,16 +332,6 @@ TabletProtocolHandler::_ReadReport(void *buffer, uint32 *cookie)
 	}
 
 	fLastButtons = buttons;
-
-	if (switches != 0) {
-		if (fLastSwitches == 0) {
-			if (fLastClickTime + fClickSpeed > timestamp)
-				fClickCount++;
-			else
-				fClickCount = 1;
-		}
-	}
-
 	fLastSwitches = switches;
 
 	tablet_movement *info = (tablet_movement *)buffer;
