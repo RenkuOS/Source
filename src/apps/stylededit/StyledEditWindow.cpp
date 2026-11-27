@@ -694,6 +694,9 @@ StyledEditWindow::MessageReceived(BMessage* message)
 void
 StyledEditWindow::MenusBeginning()
 {
+	// the default color is the theme's, which can change
+	fDefaultFontColorItem->SetColor(ui_color(B_DOCUMENT_TEXT_COLOR));
+
 	// update the font menu
 	// unselect the old values
 	if (fCurrentFontItem != NULL) {
