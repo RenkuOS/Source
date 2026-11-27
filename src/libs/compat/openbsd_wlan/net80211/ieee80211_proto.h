@@ -65,6 +65,10 @@ struct ieee80211_rxinfo;
 struct ieee80211_rsnparams;
 extern	void ieee80211_rtm_80211info_task(void *);
 extern	void ieee80211_set_link_state(struct ieee80211com *, int);
+#ifdef __HAIKU__
+extern	void ieee80211_set_roaming(struct ieee80211com *, int);
+extern	int ieee80211_roaming(struct ieee80211com *);
+#endif
 extern	u_int ieee80211_get_hdrlen(const struct ieee80211_frame *);
 extern	int ieee80211_classify(struct ieee80211com *, struct mbuf *);
 extern	void ieee80211_inputm(struct ifnet *, struct mbuf *,

@@ -1383,6 +1383,28 @@ ieee80211_rtm_80211info_task(void *arg)
 }
 #endif
 
+#ifdef __HAIKU__
+#define IEEE80211_ROAM_LINK_HOLD	5000000	/* usec, link up while roaming */
+
+/*
+ * Called when joining a BSS: after a background scan the station moves
+ * to another AP of its ESS, and the link counts as up meanwhile.
+ */
+void
+ieee80211_set_roaming(struct ieee80211com *ic, int roaming)
+{
+	ic->ic_roam_until = roaming ?
+	    system_time() + IEEE80211_ROAM_LINK_HOLD : 0;
+}
+
+int
+ieee80211_roaming(struct ieee80211com *ic)
+{
+	return ic->ic_roam_until != 0 && ic->ic_state > IEEE80211_S_SCAN &&
+	    system_time() < ic->ic_roam_until;
+}
+#endif
+
 void
 ieee80211_set_link_state(struct ieee80211com *ic, int nstate)
 {
@@ -1401,6 +1423,22 @@ ieee80211_set_link_state(struct ieee80211com *ic, int nstate)
 	default:
 		break;
 	}
+#ifdef __HAIKU__
+	/*
+	 * Moving to another AP of the same ESS: keep the link up, so that
+	 * the stack keeps its routes and DHCP its lease. Report the new
+	 * BSSID once the new AP lets our traffic through.
+	 */
+	if (ic->ic_roam_until != 0) {
+		if (nstate == LINK_STATE_DOWN && ieee80211_roaming(ic))
+			return;
+		ic->ic_roam_until = 0;
+		if (nstate == LINK_STATE_UP && nstate == ifp->if_link_state) {
+			task_add(systq, &ic->ic_rtm_80211info_task);
+			return;
+		}
+	}
+#endif
 	if (nstate != ifp->if_link_state) {
 #ifdef __FreeBSD_version
 		if_link_state_change(ifp, nstate);

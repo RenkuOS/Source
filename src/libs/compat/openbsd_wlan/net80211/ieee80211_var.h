@@ -283,6 +283,7 @@ struct ieee80211com {
 	bigtime_t		ic_last_raise_inact;
 	struct ieee80211_roam_state ic_roam;
 	struct timeout		ic_slowtimo;	/* drives if_watchdog */
+	bigtime_t		ic_roam_until;	/* link stays up until */
 #endif
 	u_int8_t		ic_myaddr[IEEE80211_ADDR_LEN];
 	struct ieee80211_rateset ic_sup_rates[IEEE80211_MODE_MAX];
