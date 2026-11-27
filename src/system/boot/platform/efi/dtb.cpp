@@ -542,6 +542,26 @@ dtb_get_clock_frequency(const void* fdt, int node)
 
 
 static void
+dtb_get_uart_register_layout(const void* fdt, int node, uart_info& uart)
+{
+	// Without these properties keep the layout the architecture always
+	// used, so existing device trees behave as before.
+	uart.reg_shift = DebugUART::kDefaultRegShift;
+	uart.reg_io_width = 1;
+
+	int len;
+	const uint32* prop = (const uint32*)fdt_getprop(fdt, node, "reg-shift",
+		&len);
+	if (prop != NULL && len == sizeof(uint32))
+		uart.reg_shift = fdt32_to_cpu(*prop);
+
+	prop = (const uint32*)fdt_getprop(fdt, node, "reg-io-width", &len);
+	if (prop != NULL && len == sizeof(uint32))
+		uart.reg_io_width = fdt32_to_cpu(*prop);
+}
+
+
+static void
 dtb_handle_fdt(const void* fdt, int node)
 {
 	arch_handle_fdt(fdt, node);
@@ -569,6 +589,8 @@ dtb_handle_fdt(const void* fdt, int node)
 
 				gUART = kSupportedUarts[i].uart_driver_init(uart.regs.start,
 					uart.clock);
+				dtb_get_uart_register_layout(fdt, node, uart);
+				gUART->SetRegisterLayout(uart.reg_shift, uart.reg_io_width);
 				gUARTSkipInit = fdt_getprop(fdt, node, "skip-init", NULL) != NULL;
 			}
 		}
@@ -669,6 +691,8 @@ dtb_set_kernel_args()
 		dprintf("  regs: %#" B_PRIx64 ", %#" B_PRIx64 "\n", uart.regs.start, uart.regs.size);
 		dprintf("  irq: %" B_PRIu32 "\n", uart.irq);
 		dprintf("  clock: %" B_PRId64 "\n", uart.clock);
+		dprintf("  reg-shift: %" B_PRIu8 ", reg-io-width: %" B_PRIu8 "\n",
+			uart.reg_shift, uart.reg_io_width);
 	}
 
 	arch_dtb_set_kernel_args();
