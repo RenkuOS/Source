@@ -9807,18 +9807,30 @@ _user_create_pipe(int* userFDs, int flags)
 	}
 
 	// Everything looks good so far. Open two FDs for reading respectively
-	// writing, O_NONBLOCK to avoid blocking on open with O_RDONLY
+	// writing, both O_NONBLOCK so that neither open can wait.
 	int fds[2];
 	fds[0] = open_vnode(vnode, O_RDONLY | O_NONBLOCK | flags, false);
-	fds[1] = open_vnode(vnode, O_WRONLY | flags, false);
-	// Reset O_NONBLOCK if requested
-	if ((flags & O_NONBLOCK) == 0)
-		common_fcntl(fds[0], F_SETFL, flags & O_NONBLOCK, false);
-
+	if (fds[0] < 0) {
+		put_vnode(vnode);
+		put_vnode(vnode);
+		return fds[0];
+	}
 	FDCloser closer0(fds[0], false);
+
+	fds[1] = open_vnode(vnode, O_WRONLY | O_NONBLOCK | flags, false);
+	if (fds[1] < 0) {
+		put_vnode(vnode);
+		return fds[1];
+	}
 	FDCloser closer1(fds[1], false);
 
-	status = (fds[0] >= 0 ? (fds[1] >= 0 ? B_OK : fds[1]) : fds[0]);
+	// Reset O_NONBLOCK if not requested
+	if ((flags & O_NONBLOCK) == 0) {
+		common_fcntl(fds[0], F_SETFL, 0, false);
+		common_fcntl(fds[1], F_SETFL, 0, false);
+	}
+
+	status = B_OK;
 
 	// copy FDs to userland
 	if (status == B_OK) {
