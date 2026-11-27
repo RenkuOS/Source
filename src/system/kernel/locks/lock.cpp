@@ -331,7 +331,25 @@ rw_lock_wait(rw_lock* lock, bool writer, InterruptsSpinLocker& locker)
 	status_t result = thread_block();
 
 	locker.Lock();
-	ASSERT(result != B_OK || waiter.thread == NULL);
+	while (waiter.thread != NULL) {
+		// Woken, but not by rw_lock_unblock() or rw_lock_destroy() (which
+		// dequeue us and clear waiter.thread): we are still queued and do
+		// not have the lock. Going on would make an uncounted reader (an
+		// "rw_lock_read_unlock(): lock not read-locked" panic later, hitting
+		// whoever unlocks next) and leave this stack frame in the queue
+		// (#148). Wait on instead.
+		static int32 sReported = 0;
+		if (atomic_add(&sReported, 1) < 8) {
+			dprintf("rw_lock_wait(): thread %" B_PRId32 " woken (%#" B_PRIx32
+				") without lock %p\n", waiter.thread->id, (uint32)result,
+				lock);
+		}
+		thread_prepare_to_block(waiter.thread, 0, THREAD_BLOCK_TYPE_RW_LOCK,
+			lock);
+		locker.Unlock();
+		result = thread_block();
+		locker.Lock();
+	}
 	return result;
 }
 
@@ -448,8 +466,11 @@ rw_lock_destroy(rw_lock* lock)
 		// dequeue
 		lock->waiters = waiter->next;
 
-		// unblock thread
-		thread_unblock(waiter->thread, B_ERROR);
+		// unblock thread; clearing waiter->thread tells rw_lock_wait() that
+		// it was dequeued and must not wait on
+		Thread* thread = waiter->thread;
+		waiter->thread = NULL;
+		thread_unblock(thread, B_ERROR);
 	}
 
 	lock->name = NULL;
