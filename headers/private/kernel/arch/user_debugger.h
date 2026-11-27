@@ -58,6 +58,11 @@ status_t arch_clear_kernel_watchpoint(void *address);
 
 // Defaults for macros defined by the architecture specific header:
 
+// whether a thread has hardware breakpoints of its own, besides its team's
+#ifndef arch_has_thread_breakpoints
+#	define arch_has_thread_breakpoints(thread) false
+#endif
+
 // maximum number of instruction breakpoints
 #ifndef DEBUG_MAX_BREAKPOINTS
 #	define DEBUG_MAX_BREAKPOINTS 0

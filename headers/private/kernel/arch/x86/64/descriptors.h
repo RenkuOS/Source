@@ -93,6 +93,9 @@ set_segment_descriptor(segment_descriptor* desc, uint8 type, uint8 dpl)
 
 
 unsigned x86_64_set_user_tls_segment_base(int cpu, addr_t base);
+void x86_64_set_ldt(int cpu, const uint64* ldt);
+	// Loads the local descriptor table \a ldt (NULL: none) on the current CPU,
+	// whose index is \a cpu. Interrupts must be disabled.
 
 
 #endif	/* _ASSEMBLER */

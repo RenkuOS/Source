@@ -38,6 +38,11 @@ void arch_restore_fork_frame(struct arch_fork_arg *arg);
 #define arch_syscall_64_bit_return_value()
 	// overridden by architectures that need special handling
 
+#define arch_team_delete_team_struct(team)
+	// overridden by architectures that keep data of their own for a team
+#define arch_team_reset_for_exec(team)
+	// likewise; called by the team's only remaining thread
+
 #ifdef __cplusplus
 }
 #endif

@@ -279,10 +279,21 @@ STATIC_FUNCTION(intr_bottom_user):
 	CODEPATCH_END(ALTCODEPATCH_TAG_XSAVE)
 	movq	%rdi, IFRAME_fpu(%rbp)
 
-	// Set the RF (resume flag) in RFLAGS. This prevents an instruction
-	// breakpoint on the instruction we're returning to to trigger a debug
-	// exception.
+	// Set the RF (resume flag) in RFLAGS for a fault. This prevents an
+	// instruction breakpoint on the instruction we're returning to to trigger
+	// a debug exception. Not where the thread returns to the next instruction,
+	// which RF would make skip a breakpoint: after a hardware interrupt
+	// (vectors 32 and up) or an NMI (2), which come between two instructions,
+	// and after the traps #BP (3, int3) and #OF (4, into). A debug exception
+	// (1) sets RF itself, if an instruction breakpoint raised it.
+	movq	IFRAME_vector(%rbp), %rax
+	cmpq	$32, %rax
+	jae		2f
+	subq	$1, %rax
+	cmpq	$3, %rax
+	jbe		2f
 	orq		$X86_EFLAGS_RESUME, IFRAME_flags(%rbp)
+2:
 
 	STOP_USER_DEBUGGING()
 	UPDATE_THREAD_USER_TIME()

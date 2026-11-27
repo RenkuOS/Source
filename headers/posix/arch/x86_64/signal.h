@@ -51,8 +51,9 @@ struct fpu_state {
 	unsigned char		trap_number;
 	unsigned char		_reserved_485;
 	unsigned short		fs;
+	unsigned long		dr6;	/* for SIGTRAP: breakpoints hit, single step */
 
-	unsigned char		_available_488_511[24];
+	unsigned char		_available_496_511[16];
 };
 
 

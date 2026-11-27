@@ -58,6 +58,17 @@ struct arch_thread {
 	uint16			user_fs_selector;
 	uint16			user_ds_selector;
 	uint16			user_es_selector;
+
+	// The hardware breakpoints the thread set for itself
+	// (THREAD_SET_DEBUG_REGISTERS). They are loaded on the way to userland
+	// while no user debugger is installed, which owns the registers otherwise.
+	uint64			user_breakpoints[4];
+	uint64			user_dr7;
+		// 0 if none is enabled
+	uint64			user_dr6;
+		// the breakpoints that raised the pending SIGTRAP
+	bool			user_breakpoints_loaded;
+		// set at kernel exit: whether these, not the team's, were loaded
 #else
 	struct farcall	current_stack;
 	struct farcall	interrupt_stack;
@@ -79,10 +90,20 @@ struct arch_thread {
 
 
 struct arch_team {
+#ifdef __x86_64__
+	// The team's local descriptor table, made by the first
+	// THREAD_SET_LDT_ENTRY. It is never resized, and an entry once set always
+	// holds a segment that can be loaded, so the kernel can reload any
+	// selector of it a thread had loaded. NULL while the team has none.
+	uint64*			ldt;
+	int32			ldt_loaded;
+		// set once every CPU running a thread of the team has loaded ldt
+#else
 	// gcc treats empty structures as zero-length in C, but as if they contain
 	// a char in C++. So we have to put a dummy in to be able to use the struct
 	// from both in a consistent way.
 	char			dummy;
+#endif
 };
 
 

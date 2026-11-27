@@ -6,14 +6,17 @@
 
 #include <arch/user_debugger.h>
 
+#include <signal.h>
 #include <string.h>
 
 #include <debugger.h>
 #include <driver_settings.h>
 #include <interrupts.h>
+#include <ksignal.h>
 #include <team.h>
 #include <thread.h>
 #include <util/AutoLock.h>
+#include <util/ThreadAutoLock.h>
 
 
 //#define TRACE_ARCH_USER_DEBUGGER
@@ -700,6 +703,254 @@ debugger_single_step(int argc, char** argv)
 #endif	// KERNEL_BREAKPOINTS
 
 
+#ifdef __x86_64__
+
+// DR6 as the CPU resets it. Debug exceptions set its status bits, which the
+// CPU does not clear otherwise (Intel SDM Vol. 3B, "Debug Status Register
+// (DR6)"): it is reset wherever it is read for a debug exception from
+// userland, and whenever a thread's own breakpoints are loaded, so that the
+// bits it holds are always those of the current exception.
+static const size_t kDR6ResetValue = 0xffff0ff0;
+
+
+static inline bool
+user_debugger_installed(Thread* thread)
+{
+	return (atomic_get(&thread->team->debug_info.flags)
+		& B_TEAM_DEBUG_DEBUGGER_INSTALLED) != 0;
+}
+
+
+/*!	Loads the thread's own breakpoints. Interrupts must be disabled.
+*/
+static inline void
+install_thread_breakpoints(const arch_thread& info)
+{
+	asm("mov %0, %%dr0" : : "r"(info.user_breakpoints[0]));
+	asm("mov %0, %%dr1" : : "r"(info.user_breakpoints[1]));
+	asm("mov %0, %%dr2" : : "r"(info.user_breakpoints[2]));
+	asm("mov %0, %%dr3" : : "r"(info.user_breakpoints[3]));
+	asm("mov %0, %%dr6" : : "r"(kDR6ResetValue));
+	asm("mov %0, %%dr7" : : "r"(info.user_dr7));
+}
+
+
+/*!	Sets the current thread's own breakpoints and updates its
+	THREAD_FLAGS_BREAKPOINTS_DEFINED bit. The team lock makes this safe against
+	a debugger updating the bit for all threads of the team.
+*/
+static void
+set_thread_breakpoints(const uint64 breakpoints[X86_BREAKPOINT_COUNT],
+	uint64 dr7)
+{
+	Thread* thread = thread_get_current_thread();
+	TeamLocker teamLocker(thread->team);
+
+	// Only the thread itself reads them, on its way to userland.
+	memcpy(thread->arch_info.user_breakpoints, breakpoints,
+		sizeof(thread->arch_info.user_breakpoints));
+	thread->arch_info.user_dr7 = dr7;
+
+	if (dr7 != 0 || arch_has_breakpoints(&thread->team->debug_info.arch_info))
+		atomic_or(&thread->flags, THREAD_FLAGS_BREAKPOINTS_DEFINED);
+	else
+		atomic_and(&thread->flags, ~THREAD_FLAGS_BREAKPOINTS_DEFINED);
+}
+
+
+/*!	Sets the current thread's own hardware breakpoints, which it gets SIGTRAP
+	for. They are loaded when the thread returns to userland, unless a user
+	debugger is installed for the team: it owns the registers then, and the
+	thread's own breakpoints wait until it is gone.
+	\param address DR0-DR3. Only those of enabled breakpoints are checked and
+		used.
+	\param dr7 The enable bits, and the R/W and LEN fields, as in DR7. Local
+		and global enable mean the same. LE, GE and bit 10, which a Windows
+		debug context may contain, are ignored; any other bit is refused.
+*/
+status_t
+x86_set_thread_breakpoints(const uint64 address[4], uint64 dr7)
+{
+	const uint64 kAllowed = 0xffff00ff | (1 << X86_DR7_LE)
+		| (1 << X86_DR7_GE) | (1 << 10);
+	if ((dr7 & ~kAllowed) != 0)
+		return B_BAD_VALUE;
+
+	uint64 breakpoints[X86_BREAKPOINT_COUNT] = {};
+	uint64 newDR7 = 0;
+	for (int32 i = 0; i < X86_BREAKPOINT_COUNT; i++) {
+		if ((dr7 & ((1 << sDR7L[i]) | (1 << sDR7G[i]))) == 0)
+			continue;
+
+		const uint64 type = (dr7 >> sDR7RW[i]) & 0x3;
+		const uint64 length = (dr7 >> sDR7Len[i]) & 0x3;
+		// LEN 2 is 8 bytes, where the CPU supports it (Intel SDM Vol. 3B,
+		// "Debug Control Register (DR7)"); elsewhere the breakpoint may not
+		// work, which only concerns the thread itself.
+		const uint64 size = length == X86_BREAKPOINT_LENGTH_1 ? 1
+			: length == X86_BREAKPOINT_LENGTH_2 ? 2
+			: length == X86_BREAKPOINT_LENGTH_4 ? 4 : 8;
+		if (type == X86_IO_READ_WRITE_BREAKPOINT
+			|| (type == X86_INSTRUCTION_BREAKPOINT && size != 1)
+			|| address[i] % size != 0
+			|| !IS_USER_ADDRESS(address[i])
+			|| !IS_USER_ADDRESS(address[i] + size - 1)) {
+			return B_BAD_VALUE;
+		}
+
+		breakpoints[i] = address[i];
+		newDR7 |= (1 << sDR7L[i]) | (type << sDR7RW[i])
+			| (length << sDR7Len[i]);
+	}
+	if (newDR7 != 0)
+		newDR7 |= X86_BREAKPOINTS_DISABLED_DR7;
+
+	set_thread_breakpoints(breakpoints, newDR7);
+	return B_OK;
+}
+
+
+/*!	Removes the current thread's own hardware breakpoints, for exec().
+*/
+void
+x86_reset_thread_breakpoints()
+{
+	const uint64 breakpoints[X86_BREAKPOINT_COUNT] = {};
+	set_thread_breakpoints(breakpoints, 0);
+	thread_get_current_thread()->arch_info.user_dr6 = 0;
+}
+
+
+/*!	Whether a debug or breakpoint exception from userland goes to the current
+	thread as SIGTRAP: no user debugger is installed for the team, and the
+	thread has a handler for the signal. Otherwise it is a debugger event as
+	before, for which the debug_server is installed if there is no debugger.
+	Interrupts must be enabled.
+*/
+static bool
+thread_catches_traps(Thread* thread)
+{
+	if (user_debugger_installed(thread))
+		return false;
+
+	struct sigaction action;
+	return sigaction(SIGTRAP, NULL, &action) == 0
+		&& action.sa_handler != SIG_DFL && action.sa_handler != SIG_IGN;
+}
+
+
+/*!	Sends the current thread SIGTRAP for a debug or breakpoint exception from
+	userland. Like the signal of a page fault, it is not blocked or ignored:
+	the team is killed then. Interrupts must be enabled.
+	\param code \c TRAP_BRKPT or \c TRAP_TRACE.
+	\param dr6 The status bits of DR6 for the signal frame.
+*/
+static void
+send_trap_signal(Thread* thread, iframe* frame, int32 code, uint64 dr6)
+{
+	thread->arch_info.user_dr6 = dr6;
+
+	Signal signal(SIGTRAP, code, B_OK, thread->team->id);
+	signal.SetAddress((void*)frame->ip);
+	send_signal_to_thread_forced(thread, signal);
+}
+
+
+/*!	Handles a debug exception from userland that one of the thread's own
+	breakpoints raised, with SIGTRAP. Interrupts must be disabled; if this
+	returns \c true, they have been enabled.
+	\param dr6 DR6 when the thread entered the kernel.
+	\return Whether the exception was one of the thread's own breakpoints.
+*/
+static bool
+handle_thread_breakpoint(Thread* thread, iframe* frame, size_t dr6)
+{
+	// The thread's own breakpoints cannot raise it if they were not loaded,
+	// and they are not changed while the thread runs in userland.
+	if (!thread->arch_info.user_breakpoints_loaded)
+		return false;
+
+	const uint64 dr7 = thread->arch_info.user_dr7;
+	uint64 hit = 0;
+	bool instruction = false;
+	for (int32 i = 0; i < X86_BREAKPOINT_COUNT; i++) {
+		if ((dr6 & (1 << sDR6B[i])) == 0 || (dr7 & (1 << sDR7L[i])) == 0)
+			continue;
+
+		hit |= 1 << sDR6B[i];
+		if (((dr7 >> sDR7RW[i]) & 0x3) == X86_INSTRUCTION_BREAKPOINT)
+			instruction = true;
+	}
+	if (hit == 0)
+		return false;
+
+	// An instruction breakpoint is a fault: the instruction runs when the
+	// thread returns to it with RF set, which the signal context keeps.
+	if (instruction)
+		frame->flags |= X86_EFLAGS_RESUME;
+
+	enable_interrupts();
+
+	// BS is passed on too: a single step may have been pending as well.
+	send_trap_signal(thread, frame, TRAP_BRKPT,
+		hit | (dr6 & (1 << X86_DR6_BS)));
+	return true;
+}
+
+
+/*!	Returns whether \a dr6 reports a breakpoint that \a dr7 enables. DR6 may
+	report one that is not enabled as well.
+*/
+static bool
+enabled_breakpoint_hit(size_t dr6, size_t dr7)
+{
+	for (int32 i = 0; i < X86_BREAKPOINT_COUNT; i++) {
+		if ((dr6 & (1 << sDR6B[i])) != 0
+			&& (dr7 & ((1 << sDR7L[i]) | (1 << sDR7G[i]))) != 0) {
+			return true;
+		}
+	}
+	return false;
+}
+
+
+/*!	Handles any other debug exception from userland with SIGTRAP, if the
+	thread catches it (thread_catches_traps()): a single step, when the
+	thread set the trap flag itself, or ICEBP. Interrupts must be disabled;
+	they are enabled if this gets past the breakpoint and debugger checks.
+	\param dr6 The status bits of DR6 for this exception.
+	\param dr7 DR7 when the thread entered the kernel, which is saved only
+		while breakpoints are installed.
+	\return Whether SIGTRAP was sent.
+*/
+static bool
+handle_thread_debug_trap(Thread* thread, iframe* frame, size_t dr6,
+	size_t dr7)
+{
+	// A break- or watchpoint of the team's, which can be set without a
+	// debugger (_user_set_debugger_breakpoint()), is left to the debugger
+	// path, which sets RF for an instruction breakpoint: as SIGTRAP without
+	// it, the instruction would raise the exception again at once, forever.
+	// The thread's own ones were handled already. Breakpoints are installed
+	// whenever the flag is set.
+	if (((thread->flags & THREAD_FLAGS_BREAKPOINTS_DEFINED) != 0
+			&& enabled_breakpoint_hit(dr6, dr7))
+		|| user_debugger_installed(thread)) {
+		return false;
+	}
+
+	enable_interrupts();
+
+	if (!thread_catches_traps(thread))
+		return false;
+
+	send_trap_signal(thread, frame, TRAP_TRACE, dr6 & (1 << X86_DR6_BS));
+	return true;
+}
+
+#endif	// __x86_64__
+
+
 // #pragma mark - in-kernel public interface
 
 
@@ -942,7 +1193,16 @@ x86_init_user_debug_at_kernel_exit(iframe* frame)
 
 	arch_team_debug_info &teamInfo = thread->team->debug_info.arch_info;
 
-	install_breakpoints(teamInfo);
+#ifdef __x86_64__
+	// The thread's own breakpoints, unless a user debugger owns the registers.
+	thread->arch_info.user_breakpoints_loaded
+		= arch_has_thread_breakpoints(thread)
+			&& !user_debugger_installed(thread);
+	if (thread->arch_info.user_breakpoints_loaded)
+		install_thread_breakpoints(thread->arch_info);
+	else
+#endif
+		install_breakpoints(teamInfo);
 
 	atomic_or(&thread->flags, THREAD_FLAGS_BREAKPOINTS_INSTALLED);
 
@@ -964,6 +1224,10 @@ x86_exit_user_debug_at_kernel_entry()
 	// hitting a hardware break/watchpoint or when single-stepping.
 	asm("mov %%dr6, %0" : "=r"(thread->cpu->arch.dr6));
 	asm("mov %%dr7, %0" : "=r"(thread->cpu->arch.dr7));
+#ifdef __x86_64__
+	// The bits are kept until x86_handle_debug_exception() takes them.
+	asm("mov %0, %%dr6" : : "r"(kDR6ResetValue));
+#endif
 
 	// The remainder needs only be done, when user breakpoints are installed.
 	if (!(thread->flags & THREAD_FLAGS_BREAKPOINTS_INSTALLED))
@@ -1003,12 +1267,35 @@ x86_handle_debug_exception(iframe* frame)
 	if (IFRAME_IS_USER(frame)) {
 		dr6 = thread->cpu->arch.dr6;
 		dr7 = thread->cpu->arch.dr7;
+#ifdef __x86_64__
+		// x86_exit_user_debug_at_kernel_entry() runs only while breakpoints
+		// are installed or a debugger single-steps the thread; otherwise the
+		// register holds the bits. Each was reset when its bits were last
+		// taken, so together they hold only this exception's. Both are reset
+		// now: stale bits would make the next single step on this CPU look
+		// like a breakpoint, and a thread killed after a hit of its own
+		// breakpoints never reloads them.
+		size_t hardwareDR6;
+		asm("mov %%dr6, %0" : "=r"(hardwareDR6));
+		asm("mov %0, %%dr6" : : "r"(kDR6ResetValue));
+		dr6 |= hardwareDR6;
+		thread->cpu->arch.dr6 = kDR6ResetValue;
+#endif
 	} else {
 		asm("mov %%dr6, %0" : "=r"(dr6));
 		asm("mov %%dr7, %0" : "=r"(dr7));
 	}
 
 	TRACE(("x86_handle_debug_exception(): DR6: %lx, DR7: %lx\n", dr6, dr7));
+
+#ifdef __x86_64__
+	if (IFRAME_IS_USER(frame)) {
+		if (handle_thread_breakpoint(thread, frame, dr6)
+			|| handle_thread_debug_trap(thread, frame, dr6, dr7)) {
+			return;
+		}
+	}
+#endif
 
 	// check, which exception condition applies
 	if (dr6 & X86_DR6_BREAKPOINT_MASK) {
@@ -1023,6 +1310,12 @@ x86_handle_debug_exception(iframe* frame)
 					watchpoint = false;
 			}
 		}
+#ifdef __x86_64__
+		// The kernel entry leaves RF to this handler: let the instruction run
+		// when the thread continues.
+		if (!watchpoint && IFRAME_IS_USER(frame))
+			frame->flags |= X86_EFLAGS_RESUME;
+#endif
 
 		if (IFRAME_IS_USER(frame)) {
 			// enable interrupts and notify the debugger
@@ -1131,6 +1424,19 @@ void
 x86_handle_breakpoint_exception(iframe* frame)
 {
 	TRACE(("x86_handle_breakpoint_exception()\n"));
+
+#ifdef __x86_64__
+	// The signal reports the address after the int3 instruction, where the
+	// thread continues, as on other systems.
+	if (IFRAME_IS_USER(frame)) {
+		Thread* thread = thread_get_current_thread();
+		enable_interrupts();
+		if (thread_catches_traps(thread)) {
+			send_trap_signal(thread, frame, TRAP_BRKPT, 0);
+			return;
+		}
+	}
+#endif
 
 	// reset eip to the int3 instruction
 	frame->ip--;

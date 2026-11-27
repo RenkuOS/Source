@@ -15,6 +15,7 @@
 
 #include <arch/int.h>
 #include <arch/user_debugger.h>
+#include <arch_thread_defs.h>
 
 
 template<typename T, T (*Function)(unsigned), unsigned N, unsigned ...Index>
@@ -36,6 +37,9 @@ enum class DescriptorType : unsigned {
 	DataWritable		= 0x2,
 	CodeExecuteOnly		= 0x8,
 	TSS					= 0x9,
+
+	// system segment, as TSS
+	LDT					= 0x2,
 };
 
 class Descriptor {
@@ -80,6 +84,18 @@ private:
 };
 
 
+class LDTDescriptor : public Descriptor {
+public:
+	inline						LDTDescriptor(uintptr_t base, size_t limit);
+
+			const Descriptor&	GetLower() const	{ return *this; }
+			const Descriptor&	GetUpper() const	{ return fSecond; }
+
+private:
+			Descriptor			fSecond;
+};
+
+
 class UserTLSDescriptor : public Descriptor {
 public:
 	inline						UserTLSDescriptor(uintptr_t base, size_t limit);
@@ -98,10 +114,16 @@ public:
 										const TSSDescriptor& tss);
 			unsigned				SetUserTLS(unsigned cpu,
 										addr_t base, size_t limit);
+			unsigned				SetLDT(unsigned cpu,
+										const LDTDescriptor& ldt);
 private:
+	// Each CPU has a TSS descriptor (two slots), a user TLS descriptor and an
+	// LDT descriptor (two slots), from kFirstTSS on.
 	static constexpr	unsigned	kFirstTSS = 6;
+	static constexpr	unsigned	kPerCPUDescriptors = 5;
 	static constexpr	unsigned	kDescriptorCount
-										= kFirstTSS + SMP_MAX_CPUS * 3;
+										= kFirstTSS
+											+ SMP_MAX_CPUS * kPerCPUDescriptors;
 
 	alignas(uint64_t)	Descriptor	fTable[kDescriptorCount];
 };
@@ -155,6 +177,9 @@ extern const InterruptServiceRoutine
 static GlobalDescriptorTable	sGDT;
 static InterruptDescriptorTable	sIDT;
 static uint32 sGDTIDTConstructed = 0;
+
+// The LDT each CPU has loaded (NULL: none), see x86_64_set_ldt().
+static const uint64* sLoadedLDT[SMP_MAX_CPUS];
 
 typedef void interrupt_handler_function(iframe* frame);
 interrupt_handler_function*
@@ -224,6 +249,19 @@ TSSDescriptor::LoadTSS(unsigned index)
 }
 
 
+LDTDescriptor::LDTDescriptor(uintptr_t base, size_t limit)
+	:
+	fSecond(base >> 32, 0)
+{
+	fLimit0 = static_cast<uint16_t>(limit);
+	fBase0 = base & 0xffffff;
+	fType = static_cast<unsigned>(DescriptorType::LDT);
+	fPresent = 1;
+	fLimit1 = (limit >> 16) & 0xf;
+	fBase1 = static_cast<uint8_t>(base >> 24);
+}
+
+
 UserTLSDescriptor::UserTLSDescriptor(uintptr_t base, size_t limit)
 	: Descriptor(DescriptorType::DataWritable, false)
 {
@@ -269,7 +307,7 @@ GlobalDescriptorTable::Load() const
 unsigned
 GlobalDescriptorTable::SetTSS(unsigned cpu, const TSSDescriptor& tss)
 {
-	auto index = kFirstTSS + cpu * 3;
+	auto index = kFirstTSS + cpu * kPerCPUDescriptors;
 	ASSERT(index + 1 < kDescriptorCount);
 	fTable[index] = tss.GetLower();
 	fTable[index + 1] = tss.GetUpper();
@@ -280,10 +318,21 @@ GlobalDescriptorTable::SetTSS(unsigned cpu, const TSSDescriptor& tss)
 unsigned
 GlobalDescriptorTable::SetUserTLS(unsigned cpu, uintptr_t base, size_t limit)
 {
-	auto index = kFirstTSS + cpu * 3 + 2;
+	auto index = kFirstTSS + cpu * kPerCPUDescriptors + 2;
 	ASSERT(index < kDescriptorCount);
 	UserTLSDescriptor desc(base, limit);
 	fTable[index] = desc.GetDescriptor();
+	return index;
+}
+
+
+unsigned
+GlobalDescriptorTable::SetLDT(unsigned cpu, const LDTDescriptor& ldt)
+{
+	auto index = kFirstTSS + cpu * kPerCPUDescriptors + 3;
+	ASSERT(index + 1 < kDescriptorCount);
+	fTable[index] = ldt.GetLower();
+	fTable[index + 1] = ldt.GetUpper();
 	return index;
 }
 
@@ -460,4 +509,28 @@ unsigned
 x86_64_set_user_tls_segment_base(int cpu, addr_t base)
 {
 	return sGDT.SetUserTLS(cpu, base, TLS_COMPAT_SIZE);
+}
+
+
+/*!	A CPU may keep the LDT of a deleted team loaded while it runs kernel
+	threads: the CPU reads the table only when a selector of it is loaded, and
+	before it switches to a userland thread, which may load one, it is given
+	that thread's team's LDT. Should another team's LDT get the same address
+	later, the descriptor would be the same, too.
+*/
+void
+x86_64_set_ldt(int cpu, const uint64* ldt)
+{
+	if (sLoadedLDT[cpu] == ldt)
+		return;
+	sLoadedLDT[cpu] = ldt;
+
+	if (ldt == NULL) {
+		asm volatile("lldt %w0" : : "r" (0));
+		return;
+	}
+
+	unsigned index = sGDT.SetLDT(cpu, LDTDescriptor((uintptr_t)ldt,
+		THREAD_LDT_ENTRY_COUNT * sizeof(uint64) - 1));
+	asm volatile("lldt %w0" : : "r" (index << 3));
 }

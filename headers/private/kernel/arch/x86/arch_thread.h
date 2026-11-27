@@ -34,6 +34,12 @@ void x86_set_tls_context(Thread* thread);
 bool x86_64_is_user_ip(uint64 cs, uint64 ip);
 void x86_save_tls_context(Thread* thread);
 void x86_64_reset_user_segments(Thread* thread);
+
+// override empty macros
+#undef arch_team_delete_team_struct
+#undef arch_team_reset_for_exec
+void arch_team_delete_team_struct(Team* team);
+void arch_team_reset_for_exec(Team* team);
 #endif
 
 
