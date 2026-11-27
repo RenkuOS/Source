@@ -151,6 +151,9 @@ public:
 			bool				IsInput() { return fIsInput; }
 
 			AudioChannelCluster* ChannelCluster();
+			// Channels per frame in the active alternate's format, 0 if
+			// unknown. This is what the stream actually carries.
+			uint8				ChannelCount();
 
 			void				GetFormatsAndRates(
 									multi_description* Description);

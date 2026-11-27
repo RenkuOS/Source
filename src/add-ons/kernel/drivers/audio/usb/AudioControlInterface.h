@@ -9,6 +9,7 @@
 
 
 #include <USB3.h>
+#include <KernelExport.h>
 #include <hmulti_audio.h>
 #include <usb/USB_audio.h>
 #include <util/VectorMap.h>
@@ -328,7 +329,7 @@ public:
 								Vector<multi_channel_info>& Channels,
 								multi_description* Description,
 								Vector<_AudioControl*>& USBTerminals,
-								bool isForInput);
+								bool isForInput, uint32 streamChannels = 0);
 			uint32			GetBusChannelsDescription(
 								Vector<multi_channel_info>& Channels,
 								multi_description* Description);
@@ -344,7 +345,8 @@ protected:
 			uint32			GetTerminalChannels(
 								Vector<multi_channel_info>& Channels,
 								AudioChannelCluster* cluster,
-								channel_kind kind, uint32 connectors = 0);
+								channel_kind kind, uint32 connectors = 0,
+								uint32 channelCount = 0);
 
 			void			_HarvestRecordFeatureUnits(_AudioControl* rootControl,
 								AudioControlsMap& Map);
@@ -398,6 +400,25 @@ protected:
 			AudioControlsMap	fOutputTerminals;
 			// map to store output terminal and lookup them by control ID
 			AudioControlsMap	fInputTerminals;
+
+			// Values the media node set through SetMix(), replayed by
+			// InitHardwareGains() so a replug or reopen keeps the user's gain
+			// instead of the power-up default. Fixed size: SetMix() must not
+			// allocate, and a device has only a handful of controls.
+			struct SavedMixValue {
+				int32		id;
+				int16		data;
+				uint16		length;
+			};
+	static	const int32		kMaxSavedMixValues = 32;
+
+			void			_SaveMixValue(int32 id, int16 data,
+								uint16 length);
+			void			_RestoreMixValues();
+
+			spinlock		fSavedMixLock;
+			SavedMixValue	fSavedMix[kMaxSavedMixValues];
+			int32			fSavedMixCount;
 };
 
 

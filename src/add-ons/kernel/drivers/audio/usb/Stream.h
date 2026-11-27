@@ -189,6 +189,10 @@ protected:
 			size_t			fPlaybackCarryLength;
 			usb_iso_packet_descriptor* fDescriptors;
 			size_t			fDescriptorsCount;
+			// fBuffers: the address handed to the client (fArea carries user
+			// protection). fKernelBuffers: kernel-only clone of the same pages,
+			// the only view kernel code may touch -- with SMAP, a kernel access
+			// through fBuffers is a fatal fault.
 			uint8*			fBuffers;
 			uint8*			fKernelBuffers;
 			size_t			fCurrentBuffer;
@@ -206,9 +210,8 @@ protected:
 			uint16			fStreamChannels;
 			// Separate B_CONTIGUOUS kernel-only buffer holding the wire-format
 			// data handed to queue_isochronous. The wire chunk is (re)built at
-			// queue time in the completion thread from the ORIGINAL mixer area
-			// VA (fBuffers): cross-team clone writes are not reliably visible
-			// across contexts on x86_64 hrev59811 (see _SetupBuffers).
+			// queue time in the completion thread from the mixer area, through
+			// fKernelBuffers (see _SetupBuffers and _CheckKernelMapping).
 			area_id			fWireArea;
 			uint8*			fWireBuffers;
 			// client-team address of its clone of fArea (informational; the
@@ -389,6 +392,7 @@ private:
 			status_t		_ResolveEndpoints(usb_interface_info* interface);
 			status_t		_ArmClockAndActivate();
 			status_t		_SetupBuffers();
+			status_t		_CheckKernelMapping() const;
 			// staleSlot: the media server has not refilled this buffer, so
 			// its contents are the previous rotation's audio. Silence goes on
 			// the wire instead of replaying it -- see _StageWireChunk.

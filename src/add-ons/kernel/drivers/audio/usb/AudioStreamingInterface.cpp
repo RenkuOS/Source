@@ -602,6 +602,18 @@ AudioStreamingInterface::ChannelCluster()
 }
 
 
+uint8
+AudioStreamingInterface::ChannelCount()
+{
+	if (fActiveAlternate >= (size_t)fAlternates.Count())
+		return 0;
+	_ASFormatDescriptor* format = fAlternates[fActiveAlternate]->Format();
+	if (format == NULL || format->fFormatType != USB_AUDIO_FORMAT_TYPE_I)
+		return 0;
+	return static_cast<TypeIFormatDescriptor*>(format)->fNumChannels;
+}
+
+
 void
 AudioStreamingInterface::GetFormatsAndRates(multi_description* Description)
 {
