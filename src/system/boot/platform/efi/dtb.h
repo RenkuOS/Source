@@ -13,6 +13,7 @@
 
 
 extern void dtb_init();
+extern const void* dtb_get_fdt();
 extern void dtb_set_kernel_args();
 
 bool dtb_get_reg(const void* fdt, int node, size_t idx, addr_range& range);

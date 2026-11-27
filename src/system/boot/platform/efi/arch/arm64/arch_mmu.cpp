@@ -376,6 +376,29 @@ arch_mmu_generate_post_efi_page_tables(size_t memory_map_size,
 			| currentMair.MaskOf(MAIR_NORMAL_WB));
 	}
 
+	if (gKernelArgs.frame_buffer.enabled) {
+		// The kernel reaches the frame buffer through the physical map from
+		// its first instructions on (early on-screen debug output). Firmware
+		// often keeps it in reserved memory, outside of the RAM ranges mapped
+		// above, as the Qualcomm UEFI of the Radxa Dragon Q8B does.
+		addr_range frameBuffer = gKernelArgs.frame_buffer.physical_buffer;
+		bool mapped = false;
+		for (uint32 i = 0; i < gKernelArgs.num_physical_memory_ranges; i++) {
+			addr_range range = gKernelArgs.physical_memory_range[i];
+			if (frameBuffer.start >= range.start
+				&& frameBuffer.start + frameBuffer.size <= range.start + range.size) {
+				mapped = true;
+			}
+		}
+		if (!mapped && frameBuffer.size != 0) {
+			uint64 start = ROUNDDOWN(frameBuffer.start, B_PAGE_SIZE);
+			uint64 end = ROUNDUP(frameBuffer.start + frameBuffer.size, B_PAGE_SIZE);
+			map_range(KERNEL_PMAP_BASE + start, start, end - start,
+				ARMv8TranslationTableDescriptor::DefaultCodeAttribute
+				| currentMair.MaskOf(MAIR_NORMAL_NC));
+		}
+	}
+
 	if (gKernelArgs.arch_args.uart.kind[0] != 0) {
 		// Map uart because we want to use it during early boot.
 		uint64 regs_start = gKernelArgs.arch_args.uart.regs.start;
