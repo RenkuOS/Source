@@ -16,10 +16,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include <kernel.h>
 
 #include "device/power_managment.h"
+#include "thinkpad_charge.h"
 
 
 struct battery_driver_cookie {
@@ -466,6 +468,20 @@ acpi_battery_write(void* cookie, off_t position, const void* buffer,
 
 
 static status_t
+battery_acpi_path(battery_driver_cookie* cookie, char* path, size_t size)
+{
+	device_node* parent = sDeviceManager->get_parent_node(cookie->node);
+	const char* acpiPath;
+	status_t status = sDeviceManager->get_attr_string(parent,
+		ACPI_DEVICE_PATH_ITEM, &acpiPath, false);
+	if (status == B_OK)
+		strlcpy(path, acpiPath, size);
+	sDeviceManager->put_node(parent);
+	return status;
+}
+
+
+static status_t
 acpi_battery_control(void* _cookie, uint32 op, void* arg, size_t len)
 {
 	battery_device_cookie* device = (battery_device_cookie*)_cookie;
@@ -528,6 +544,45 @@ acpi_battery_control(void* _cookie, uint32 op, void* arg, size_t len)
 			atomic_set(&(device->stop_watching), 1);
 			sBatteryCondition.NotifyAll();
 			return B_OK;
+
+		case GET_BATTERY_CHARGE_THRESHOLDS: {
+			if (len < sizeof(acpi_battery_charge_thresholds))
+				return B_BAD_VALUE;
+
+			char path[255];
+			err = battery_acpi_path(device->driver_cookie, path, sizeof(path));
+			if (err != B_OK)
+				return B_NOT_SUPPORTED;
+
+			acpi_battery_charge_thresholds thresholds;
+			err = thinkpad_get_charge_thresholds(path, &thresholds);
+			if (err != B_OK)
+				return err;
+			if (!IS_USER_ADDRESS(arg)
+				|| user_memcpy(arg, &thresholds, sizeof(thresholds)) < B_OK) {
+				return B_BAD_ADDRESS;
+			}
+			return B_OK;
+		}
+
+		case SET_BATTERY_CHARGE_THRESHOLDS: {
+			if (geteuid() != 0)
+				return B_NOT_ALLOWED;
+			if (len < sizeof(acpi_battery_charge_thresholds))
+				return B_BAD_VALUE;
+
+			acpi_battery_charge_thresholds thresholds;
+			if (!IS_USER_ADDRESS(arg)
+				|| user_memcpy(&thresholds, arg, sizeof(thresholds)) < B_OK) {
+				return B_BAD_ADDRESS;
+			}
+
+			char path[255];
+			err = battery_acpi_path(device->driver_cookie, path, sizeof(path));
+			if (err != B_OK)
+				return B_NOT_SUPPORTED;
+			return thinkpad_set_charge_thresholds(path, &thresholds);
+		}
 	}
 
 	return B_DEV_INVALID_IOCTL;

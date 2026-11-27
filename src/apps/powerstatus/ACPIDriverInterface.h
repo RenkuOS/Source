@@ -43,6 +43,10 @@ public:
 	status_t 					GetBatteryInfoCached(battery_info* info);
 	status_t 					GetExtendedBatteryInfo(
 									acpi_extended_battery_info* info);
+	status_t					GetChargeThresholds(
+									acpi_battery_charge_thresholds* thresholds);
+	status_t					SetChargeThresholds(
+									const acpi_battery_charge_thresholds& thresholds);
 
 private:
 	void						_Init();
@@ -69,6 +73,11 @@ public:
 									acpi_extended_battery_info* info);
 
 	virtual int32				GetBatteryCount();
+
+	virtual	status_t			GetChargeThresholds(int32 index,
+									acpi_battery_charge_thresholds* thresholds);
+	virtual	status_t			SetChargeThresholds(int32 index,
+									const acpi_battery_charge_thresholds& thresholds);
 
 protected:
 	// Read the battery info from the hardware.

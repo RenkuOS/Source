@@ -17,7 +17,9 @@ enum {
 	GET_BATTERY_INFO,
 	GET_EXTENDED_BATTERY_INFO,
 	WATCH_BATTERY,
-	STOP_WATCHING_BATTERY
+	STOP_WATCHING_BATTERY,
+	GET_BATTERY_CHARGE_THRESHOLDS,
+	SET_BATTERY_CHARGE_THRESHOLDS
 };
 
 
@@ -76,6 +78,14 @@ typedef struct {
 #define ACPI_BATTERY_SWAPPING_COLD	1
 #define ACPI_BATTERY_SWAPPING_HOT	2
 } acpi_extended_battery_info;
+
+
+// Charge thresholds in percent: charging starts below start and stops at
+// stop. A start of 0 leaves it to the firmware, a stop of 100 charges fully.
+typedef struct {
+	uint32	start;
+	uint32	stop;
+} acpi_battery_charge_thresholds;
 
 
 #endif

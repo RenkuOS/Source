@@ -8,4 +8,5 @@ SubInclude HAIKU_TOP src tests apps installer ;
 SubInclude HAIKU_TOP src tests apps mediaplayer ;
 SubInclude HAIKU_TOP src tests apps miniterminal ;
 SubInclude HAIKU_TOP src tests apps partitioner ;
+SubInclude HAIKU_TOP src tests apps powerstatus ;
 SubInclude HAIKU_TOP src tests apps terminal_replicant ;

@@ -1,0 +1,5 @@
+SubDir HAIKU_TOP src tests apps powerstatus ;
+
+SEARCH_SOURCE += [ FDirName $(HAIKU_TOP) src apps powerstatus ] ;
+
+SimpleTest ChargeLimitTest : ChargeLimitTest.cpp ChargeLimit.cpp ;

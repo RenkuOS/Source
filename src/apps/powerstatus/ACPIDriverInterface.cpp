@@ -141,6 +141,29 @@ Battery::GetExtendedBatteryInfo(acpi_extended_battery_info* info)
 }
 
 
+status_t
+Battery::GetChargeThresholds(acpi_battery_charge_thresholds* thresholds)
+{
+	if (ioctl(fDriverHandler, GET_BATTERY_CHARGE_THRESHOLDS, thresholds,
+			sizeof(acpi_battery_charge_thresholds)) != 0)
+		return errno;
+
+	return B_OK;
+}
+
+
+status_t
+Battery::SetChargeThresholds(const acpi_battery_charge_thresholds& thresholds)
+{
+	acpi_battery_charge_thresholds request = thresholds;
+	if (ioctl(fDriverHandler, SET_BATTERY_CHARGE_THRESHOLDS, &request,
+			sizeof(acpi_battery_charge_thresholds)) != 0)
+		return errno;
+
+	return B_OK;
+}
+
+
 void
 Battery::_Init()
 {
@@ -209,6 +232,30 @@ int32
 ACPIDriverInterface::GetBatteryCount()
 {
 	return fDriverList.CountItems();
+}
+
+
+status_t
+ACPIDriverInterface::GetChargeThresholds(int32 index,
+	acpi_battery_charge_thresholds* thresholds)
+{
+	BAutolock autolock(fInterfaceLocker);
+	if (index < 0 || index >= fDriverList.CountItems())
+		return B_BAD_INDEX;
+
+	return fDriverList.ItemAt(index)->GetChargeThresholds(thresholds);
+}
+
+
+status_t
+ACPIDriverInterface::SetChargeThresholds(int32 index,
+	const acpi_battery_charge_thresholds& thresholds)
+{
+	BAutolock autolock(fInterfaceLocker);
+	if (index < 0 || index >= fDriverList.CountItems())
+		return B_BAD_INDEX;
+
+	return fDriverList.ItemAt(index)->SetChargeThresholds(thresholds);
 }
 
 
