@@ -21,6 +21,7 @@ class LocalDeviceHandler {
 public:
 
 	hci_id GetID();
+	const char* Path() const { return fHCIDelegate->Path(); }
 	
 	bool Available();	
 	void Acquire(void);

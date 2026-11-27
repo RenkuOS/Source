@@ -39,6 +39,11 @@ SDPClient::Start()
 
 	fClientSocket = socket(PF_BLUETOOTH, SOCK_SEQPACKET, BLUETOOTH_PROTO_L2CAP);
 
+	// a device that does not answer must not block the server forever
+	timeval connectTimeout = { 10, 0 };
+	setsockopt(fClientSocket, SOL_SOCKET, SO_SNDTIMEO, &connectTimeout,
+		sizeof(connectTimeout));
+
 	status = connect(fClientSocket, (sockaddr*)&fSockAddrL2cap, sizeof(sockaddr_l2cap));
 	if (status < 0) {
 		TRACE_BT("SDP: Could not connect client socket (%s)...\n", strerror(status));

@@ -6,6 +6,7 @@
 #define _LOCALDEVICE_IMPL_H_
 
 #include <String.h>
+#include <string.h>
 
 #include <bluetooth/bluetooth.h>
 #include <bluetooth/L2CAP/btL2CAP.h>
@@ -22,6 +23,22 @@
 
 struct ServerRemoteDevice
 {
+						ServerRemoteDevice()
+							:
+							clock_offset(0),
+							pscan_rep_mode(0),
+							link_type(0),
+							encryption_enabled(0),
+							handle(0),
+							conn_state(RemoteDevice::DISCONNECTED),
+							outgoing(false),
+							services_running(0)
+						{
+							memset(&bdaddr, 0, sizeof(bdaddr));
+							memset(classOfDevice, 0, sizeof(classOfDevice));
+							memset(&link_key, 0, sizeof(link_key));
+						}
+
 	bdaddr_t			bdaddr;
 	BString     		friendly_name;
 	uint16				clock_offset;
@@ -34,7 +51,14 @@ struct ServerRemoteDevice
 	uint16				handle;
 	RemoteDevice::ConnectionState			conn_state;
 	BMessage			services;
+	bool				outgoing;
+		// we opened the connection, rather than the device
+	int32				services_running;
+		// a services thread reads the records of the device now
 };
+
+// no link uses it: the handles go up to 0x0eff
+static const uint16 kInvalidHandle = 0xffff;
 
 typedef BObjectList<ServerRemoteDevice> RemoteDevicesList;
 
@@ -60,6 +84,12 @@ public:
 	void CreateConnection(BMessage* message);
 	void CancelConnection(BMessage* message);
 	void Disconnect(BMessage* message);
+	void DisconnectAll();
+	bool HasLinks();
+	void		SetConnectable(bool discoverable = false);
+	bool		IsDiscoverable() const { return fDiscoverable; }
+	void		RequestRemoteName(ServerRemoteDevice* rd);
+	void		AllowRoleSwitch();
 	void SetConnEncryption(uint16 handle, bool encryption_enabled);
 
 	ServerRemoteDevice*	RemoteDeviceByAddr(bdaddr_t bdaddr);
@@ -71,9 +101,13 @@ public:
 private:
 
 	RemoteDevicesList	fRemoteDevicesList;
+	bool				fDiscoverable;
 
 	void SaveRemoteDevices();
 	void LoadRemoteDevices();
+
+	void _LinkUp(ServerRemoteDevice* rd, uint16 handle);
+	void _LinkDown(ServerRemoteDevice* rd);
 
 	void HandleUnexpectedEvent(struct hci_event_header* event);
 	void HandleExpectedRequest(struct hci_event_header* event,
@@ -88,9 +122,12 @@ private:
 	void NumberOfCompletedPackets(struct hci_ev_num_comp_pkts* event);
 
 	// Inquiry
-	void InquiryResult(uint8* numberOfResponses, BMessage* request);
-	void InquiryResultWithRSSI(uint8* numberOfResponses, BMessage* request);
-	void ExtendedInquiryResult(uint8* numberOfResponses, BMessage* request);
+	void InquiryResult(uint8* numberOfResponses, size_t length,
+		BMessage* request);
+	void InquiryResultWithRSSI(uint8* numberOfResponses, size_t length,
+		BMessage* request);
+	void ExtendedInquiryResult(uint8* numberOfResponses, size_t length,
+		BMessage* request);
 	void ParseEIR(const uint8* eir, BMessage& reply);
 	void InquiryComplete(uint8* status, BMessage* request);
 	void RemoteNameRequestComplete(struct hci_ev_remote_name_request_complete_reply*

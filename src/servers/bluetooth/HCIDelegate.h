@@ -20,6 +20,8 @@ class HCIDelegate {
 
 	public:
 		HCIDelegate(BPath* path)
+			:
+			fPath(*path)
 		{
 			//TODO create such queue
 			fIdentifier = -1;
@@ -29,6 +31,12 @@ class HCIDelegate {
 		hci_id Id(void) const
 		{
 			return fIdentifier;
+		}
+
+
+		const char* Path() const
+		{
+			return fPath.Path();
 		}
 
 
@@ -58,6 +66,7 @@ class HCIDelegate {
 	protected:
 
 		hci_id fIdentifier;
+		BPath fPath;
 
 	private:
 

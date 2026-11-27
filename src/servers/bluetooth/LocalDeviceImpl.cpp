@@ -10,6 +10,7 @@
 #include "CommandManager.h"
 #include "Debug.h"
 #include "LocalDeviceImpl.h"
+#include "Notifications.h"
 #include "bluetooth/HCI/btHCI_command.h"
 
 #include <bluetooth/bdaddrUtils.h>
@@ -17,17 +18,22 @@
 #include <bluetooth/LinkKeyUtils.h>
 #include <bluetooth/HCI/btHCI_event.h>
 
-#include <ConnectionIncoming.h>
 #include <PincodeWindow.h>
 
+#include <Entry.h>
 #include <FindDirectory.h>
 #include <stdio.h>
+#include <syslog.h>
 #include <new>
 
 
 #if 0
 #pragma mark - Class methods -
 #endif
+
+
+// the size of one response in an inquiry result event, with or without RSSI
+static const size_t kInquiryResponseSize = 14;
 
 
 // Factory methods
@@ -65,7 +71,10 @@ LocalDeviceImpl::CreateTransportAccessor(BPath* path)
 }
 
 
-LocalDeviceImpl::LocalDeviceImpl(HCIDelegate* hd) : LocalDeviceHandler(hd)
+LocalDeviceImpl::LocalDeviceImpl(HCIDelegate* hd)
+	:
+	LocalDeviceHandler(hd),
+	fDiscoverable(false)
 {
 	LoadRemoteDevices();
 }
@@ -73,6 +82,13 @@ LocalDeviceImpl::LocalDeviceImpl(HCIDelegate* hd) : LocalDeviceHandler(hd)
 
 LocalDeviceImpl::~LocalDeviceImpl()
 {
+	// the links of a controller that goes away are gone with it
+	for (int32 i = 0; i < fRemoteDevicesList.CountItems(); i++) {
+		ServerRemoteDevice* rd = fRemoteDevicesList.ItemAt(i);
+		if (rd->conn_state != RemoteDevice::DISCONNECTED)
+			_LinkDown(rd);
+	}
+
 	SaveRemoteDevices();
 }
 
@@ -113,12 +129,20 @@ LocalDeviceImpl::SaveRemoteDevices()
 		devices.AddMessage("remote", &device);
 	}
 
+	// written aside and then put in place: the keys survive a crash in the
+	// middle
 	BPath path;
 	if (find_directory(B_USER_SETTINGS_DIRECTORY, &path) == B_OK) {
 		path.Append("Bluetooth_paired_devices");
-		BFile file(path.Path(), B_WRITE_ONLY | B_CREATE_FILE | B_ERASE_FILE);
-		if (file.InitCheck()==B_OK)
-			devices.Flatten(&file);
+		BString temporary(path.Path());
+		temporary << ".new";
+		BFile file(temporary.String(),
+			B_WRITE_ONLY | B_CREATE_FILE | B_ERASE_FILE);
+		if (file.InitCheck() == B_OK && devices.Flatten(&file) == B_OK
+			&& file.Sync() == B_OK) {
+			BEntry entry(temporary.String());
+			entry.Rename(path.Leaf(), true);
+		}
 	}
 }
 
@@ -137,18 +161,29 @@ LocalDeviceImpl::LoadRemoteDevices()
 
 	BMessage device;
 	for (int32 i = 0; devices.FindMessage("remote", i, &device) == B_OK; i++) {
-		ServerRemoteDevice* rd = new ServerRemoteDevice();
 		ssize_t size;
 		bdaddr_t* bdaddr;
-		device.FindData("bdaddr", B_ANY_TYPE, (const void**)&bdaddr, &size);
+		if (device.FindData("bdaddr", B_ANY_TYPE, (const void**)&bdaddr, &size)
+				!= B_OK || RemoteDeviceByAddr(*bdaddr) != NULL) {
+			// older files can list a device more than once
+			continue;
+		}
+		ServerRemoteDevice* rd = new ServerRemoteDevice();
 		rd->bdaddr = *bdaddr;
 		device.FindString("name", &rd->friendly_name);
 		device.FindUInt16("clock_offset", &rd->clock_offset);
 		device.FindUInt8("pscan_rep_mode", &rd->pscan_rep_mode);
-		device.FindUInt8("class_of_device", 0, &rd->classOfDevice[0]);
-		device.FindUInt8("class_of_device", 1, &rd->classOfDevice[1]);
-		device.FindUInt8("class_of_device", 2, &rd->classOfDevice[2]);
-		device.FindData("link key", B_ANY_TYPE, (const void**)&rd->link_key, &size);
+		const void* data;
+		if (device.FindData("class_of_device", B_RAW_TYPE, &data, &size) == B_OK
+			&& size == sizeof(rd->classOfDevice)) {
+			memcpy(rd->classOfDevice, data, sizeof(rd->classOfDevice));
+		}
+		// FindData() gives a pointer to the key, not the key
+		rd->link_key = LinkKeyUtils::NullKey();
+		if (device.FindData("link key", B_ANY_TYPE, &data, &size) == B_OK
+			&& size == sizeof(linkkey_t)) {
+			memcpy(&rd->link_key, data, sizeof(linkkey_t));
+		}
 		device.FindUInt8("link type", &rd->link_type);
 		rd->conn_state = RemoteDevice::DISCONNECTED;
 
@@ -174,7 +209,8 @@ LocalDeviceImpl::RemoteDeviceByHandle(uint16 handle)
 {
 	for (int32 i = 0; i < fRemoteDevicesList.CountItems(); i++) {
 		ServerRemoteDevice* rd = fRemoteDevicesList.ItemAt(i);
-		if (rd->handle == handle)
+		// the controller hands the handle of a closed link to the next one
+		if (rd->conn_state == RemoteDevice::CONNECTED && rd->handle == handle)
 			return rd;
 	}
 	return NULL;
@@ -184,14 +220,18 @@ LocalDeviceImpl::RemoteDeviceByHandle(uint16 handle)
 void
 LocalDeviceImpl::AddRemoteDevice(ServerRemoteDevice* rd)
 {
-	fRemoteDevicesList.AddItem(rd);
+	// a device that connects again is in the list already
+	if (!fRemoteDevicesList.HasItem(rd))
+		fRemoteDevicesList.AddItem(rd);
 }
 
 
 void
 LocalDeviceImpl::RemoveRemoteDevice(ServerRemoteDevice* rd)
 {
-	fRemoteDevicesList.RemoveItem(rd);
+	while (fRemoteDevicesList.RemoveItem(rd))
+		;
+	SaveRemoteDevices();
 }
 
 
@@ -199,6 +239,76 @@ RemoteDevicesList*
 LocalDeviceImpl::GetRemoteDevicesList()
 {
 	return &fRemoteDevicesList;
+}
+
+
+/*!	A link to \a rd is up, with \a handle for its packets.
+	The connection state of a remote device changes only here and in
+	_LinkDown(): DISCONNECTED -> CONNECTING (we or the device asked) ->
+	CONNECTED -> DISCONNECTED. Its handle is valid only while it is CONNECTED.
+*/
+void
+LocalDeviceImpl::_LinkUp(ServerRemoteDevice* rd, uint16 handle)
+{
+	rd->handle = handle;
+	rd->conn_state = RemoteDevice::CONNECTED;
+	Notifications::Connected(rd);
+}
+
+
+/*!	The link to \a rd is gone, or it never came up. The watchers and the user
+	hear about it only when it had been up.
+*/
+void
+LocalDeviceImpl::_LinkDown(ServerRemoteDevice* rd)
+{
+	bool wasConnected = rd->conn_state == RemoteDevice::CONNECTED;
+
+	rd->conn_state = RemoteDevice::DISCONNECTED;
+	rd->handle = kInvalidHandle;
+	rd->encryption_enabled = 0;
+	rd->outgoing = false;
+
+	if (!wasConnected)
+		return;
+
+	Notifications::Disconnected(rd);
+
+	BMessage notice(BT_MSG_DISCONN_COMPLETED);
+	notice.AddUInt8("status", BT_OK);
+	notice.AddData("bdaddr", B_ANY_TYPE, &rd->bdaddr, sizeof(bdaddr_t));
+	((BluetoothServer*)be_app)->NotifyWatchers(&notice);
+}
+
+
+/*!	Closes every link, so that the devices know at once that we are going
+	away instead of finding out after their supervision timeout.
+*/
+void
+LocalDeviceImpl::DisconnectAll()
+{
+	for (int32 i = 0; i < fRemoteDevicesList.CountItems(); i++) {
+		ServerRemoteDevice* rd = fRemoteDevicesList.ItemAt(i);
+		if (rd->conn_state != RemoteDevice::CONNECTED)
+			continue;
+
+		BluetoothCommand<typed_command(hci_disconnect)> command(
+			OGF_LINK_CONTROL, OCF_DISCONNECT);
+		command->handle = rd->handle;
+		command->reason = BT_REMOTE_POWER_OFF;
+		fHCIDelegate->IssueCommand(command.Data(), command.Size());
+	}
+}
+
+
+bool
+LocalDeviceImpl::HasLinks()
+{
+	for (int32 i = 0; i < fRemoteDevicesList.CountItems(); i++) {
+		if (fRemoteDevicesList.ItemAt(i)->conn_state == RemoteDevice::CONNECTED)
+			return true;
+	}
+	return false;
 }
 
 
@@ -266,7 +376,7 @@ LocalDeviceImpl::HandleExpectedRequest(struct hci_event_header* event,
 			break;
 
 		case HCI_EVENT_INQUIRY_RESULT:
-			InquiryResult(JumpEventHeader<uint8>(event), request);
+			InquiryResult(JumpEventHeader<uint8>(event), event->elen, request);
 			break;
 
 		case HCI_EVENT_AUTH_COMPLETE:
@@ -351,10 +461,12 @@ LocalDeviceImpl::HandleExpectedRequest(struct hci_event_header* event,
 			break;
 
 		case HCI_EVENT_INQUIRY_RESULT_WITH_RSSI:
-			InquiryResultWithRSSI(JumpEventHeader<uint8>(event), request);
+			InquiryResultWithRSSI(JumpEventHeader<uint8>(event), event->elen,
+				request);
 			break;
 		case HCI_EVENT_EXTENDED_INQUIRY_RESULT:
-			ExtendedInquiryResult(JumpEventHeader<uint8>(event), request);
+			ExtendedInquiryResult(JumpEventHeader<uint8>(event), event->elen,
+				request);
 			break;
 
 		case HCI_EVENT_REMOTE_EXTENDED_FEATURES:
@@ -405,6 +517,11 @@ LocalDeviceImpl::HandleEvent(struct hci_event_header* event)
 */
 	BMessage* request = NULL;
 	int32 eventIndexLocation;
+
+	// Some links report a change of the slots used in every few packets:
+	// nothing to do about it, but do not flood the log
+	if (event->ecode == HCI_EVENT_MAX_SLOT_CHANGE)
+		return;
 
 	// Check if it is a requested one
 	switch (event->ecode) {
@@ -863,6 +980,8 @@ LocalDeviceImpl::CommandComplete(struct hci_ev_cmd_complete* event,
 		case PACK_OPCODE(OGF_LINK_CONTROL, OCF_SET_CONN_ENCRYPT):
 		case PACK_OPCODE(OGF_LINK_CONTROL, OCF_CREATE_CONN_CANCEL):
 		case PACK_OPCODE(OGF_CONTROL_BASEBAND, OCF_RESET):
+		case PACK_OPCODE(OGF_CONTROL_BASEBAND, OCF_SET_EVENT_MASK):
+		case PACK_OPCODE(OGF_CONTROL_BASEBAND, OCF_WRITE_SIMPLE_PAIRING_MODE):
 		case PACK_OPCODE(OGF_CONTROL_BASEBAND, OCF_WRITE_SCAN_ENABLE):
 		case PACK_OPCODE(OGF_CONTROL_BASEBAND, OCF_WRITE_CLASS_OF_DEV):
 		case PACK_OPCODE(OGF_CONTROL_BASEBAND, OCF_WRITE_PG_TIMEOUT):
@@ -958,12 +1077,25 @@ LocalDeviceImpl::CommandStatus(struct hci_ev_cmd_status* event,
 					break;
 
 				default:
+				{
+					// the controller refused to try: no connection complete
+					// event will come
+					const bdaddr_t* bdaddr;
+					ssize_t size;
+					if (request->FindData("bdaddr", B_ANY_TYPE,
+							(const void**)&bdaddr, &size) == B_OK) {
+						ServerRemoteDevice* rd = RemoteDeviceByAddr(*bdaddr);
+						if (rd != NULL && rd->conn_state == RemoteDevice::CONNECTING)
+							_LinkDown(rd);
+					}
+
 					reply.what = BT_MSG_CONN_FAILED;
 					reply.AddUInt8("status", event->status);
 					request->SendReply(&reply);
 
 					ClearWantedEvent(request);
 					break;
+				}
 			}
 		}
 		break;
@@ -1014,12 +1146,20 @@ LocalDeviceImpl::CommandStatus(struct hci_ev_cmd_status* event,
 
 
 void
-LocalDeviceImpl::InquiryResult(uint8* numberOfResponses, BMessage* request)
+LocalDeviceImpl::InquiryResult(uint8* numberOfResponses, size_t length,
+	BMessage* request)
 {
 	uint8 count = *numberOfResponses;
 	TRACE_BT("LocalDeviceImpl: %s #responses=%d\n", __FUNCTION__, count);
 	if (count == 0 || request == NULL)
 		return;
+
+	// the count comes from the air: the responses must fit in the event
+	if (length < 1 || count > (length - 1) / kInquiryResponseSize) {
+		syslog(LOG_WARNING, "bluetooth_server: inquiry result with %d "
+			"responses in %d bytes\n", count, (int)length);
+		return;
+	}
 
 	uint8* base_ptr = numberOfResponses + 1;
 
@@ -1055,12 +1195,19 @@ LocalDeviceImpl::InquiryResult(uint8* numberOfResponses, BMessage* request)
 
 
 void
-LocalDeviceImpl::InquiryResultWithRSSI(uint8* numberOfResponses, BMessage* request)
+LocalDeviceImpl::InquiryResultWithRSSI(uint8* numberOfResponses,
+	size_t length, BMessage* request)
 {
 	uint8 count = *numberOfResponses;
 	TRACE_BT("LocalDeviceImpl: %s #responses=%d\n", __FUNCTION__, count);
 	if (count == 0 || request == NULL)
 		return;
+
+	if (length < 1 || count > (length - 1) / kInquiryResponseSize) {
+		syslog(LOG_WARNING, "bluetooth_server: inquiry result with %d "
+			"responses in %d bytes\n", count, (int)length);
+		return;
+	}
 
 	uint8* base_ptr = numberOfResponses + 1;
 
@@ -1096,13 +1243,15 @@ LocalDeviceImpl::InquiryResultWithRSSI(uint8* numberOfResponses, BMessage* reque
 
 
 void
-LocalDeviceImpl::ExtendedInquiryResult(uint8* numberOfResponses, BMessage* request)
+LocalDeviceImpl::ExtendedInquiryResult(uint8* numberOfResponses,
+	size_t length, BMessage* request)
 {
 	uint8 count = *numberOfResponses;
 	TRACE_BT("LocalDeviceImpl: %s #responses=%d\n", __FUNCTION__, count);
 
 	// the spec says count always equals 1
-	if (count != 1 || request == NULL)
+	if (count != 1 || request == NULL
+		|| length < 1 + sizeof(hci_ev_extended_inquiry_info))
 		return;
 
 	hci_ev_extended_inquiry_info* info = (hci_ev_extended_inquiry_info*)(numberOfResponses + 1);
@@ -1260,6 +1409,17 @@ LocalDeviceImpl::RemoteNameRequestComplete(
 
 	if (remotename->status == BT_OK) {
 		reply.AddString("friendlyname", (const char*)remotename->remote_name );
+
+		// keep it, for the list of the paired devices
+		ServerRemoteDevice* rd = RemoteDeviceByAddr(remotename->bdaddr);
+		if (rd != NULL) {
+			BString name((const char*)remotename->remote_name,
+				sizeof(remotename->remote_name));
+			if (name != rd->friendly_name) {
+				rd->friendly_name = name;
+				SaveRemoteDevices();
+			}
+		}
 	}
 
 	reply.AddUInt8("status", remotename->status);
@@ -1301,8 +1461,19 @@ LocalDeviceImpl::ConnectionRequest(struct hci_ev_conn_request* event,
 			serverRd->link_key = LinkKeyUtils::NullKey();
 		}
 
-		serverRd->link_type = event->link_type;
-		serverRd->conn_state = RemoteDevice::CONNECTING;
+		// A SCO or eSCO link rides on the ACL link of the device, which
+		// stays as it is.
+		if (event->link_type == HCI_ACL_CONN) {
+			// the controller does not ask for an ACL link to a device it
+			// still has one with: that link went away without our hearing
+			// of it
+			if (serverRd->conn_state == RemoteDevice::CONNECTED)
+				_LinkDown(serverRd);
+
+			serverRd->link_type = event->link_type;
+			serverRd->conn_state = RemoteDevice::CONNECTING;
+			serverRd->outgoing = false;
+		}
 		memcpy(serverRd->classOfDevice, event->dev_class, 3 * sizeof(uint8));
 
 		BMessage notice(BT_MSG_NEW_REMOTE_DEVICE);
@@ -1362,6 +1533,7 @@ LocalDeviceImpl::CreateConnection(BMessage* message)
 		rdConn->link_key = LinkKeyUtils::NullKey();
 	}
 
+	rdConn->outgoing = true;
 	message->FindString("name", &rdConn->friendly_name);
 	message->FindUInt8("pscan_rep_mode", &rdConn->pscan_rep_mode);
 	message->FindUInt16("clock_offset", &rdConn->clock_offset);
@@ -1372,8 +1544,13 @@ LocalDeviceImpl::CreateConnection(BMessage* message)
 	rdConn->classOfDevice[1] = (record & 0x0000FF00) >> 8;
 	rdConn->classOfDevice[2] = (record & 0x00FF0000) >> 16;
 
-	rdConn->conn_state = RemoteDevice::CONNECTING;
-	rdConn->link_type = HCI_ACL_CONN;
+	// Asked to connect a device that is connected already (it connected by
+	// itself): the controller answers that the link exists, and the link
+	// must stay up with its handle.
+	if (rdConn->conn_state != RemoteDevice::CONNECTED) {
+		rdConn->conn_state = RemoteDevice::CONNECTING;
+		rdConn->link_type = HCI_ACL_CONN;
+	}
 
 	AddRemoteDevice(rdConn);
 
@@ -1401,6 +1578,7 @@ LocalDeviceImpl::CreateConnection(BMessage* message)
 
 	newRequest->AddInt32("hci_id", fHCIDelegate->Id());
 
+	newRequest->AddData("bdaddr", B_ANY_TYPE, bdaddr, sizeof(bdaddr_t));
 	newRequest->AddInt16("eventExpected",  HCI_EVENT_CMD_STATUS);
 	newRequest->AddInt16("opcodeExpected", PACK_OPCODE(OGF_LINK_CONTROL, OCF_CREATE_CONN));
 
@@ -1455,7 +1633,14 @@ LocalDeviceImpl::Disconnect(BMessage* message)
 	ssize_t addr_size;
 	message->FindData("bdaddr", B_ANY_TYPE, (const void**)&bdaddr, &addr_size);
 
-	ServerRemoteDevice* rd = RemoteDeviceByAddr(*bdaddr);
+	ServerRemoteDevice* rd = NULL;
+	if (bdaddr != NULL)
+		rd = RemoteDeviceByAddr(*bdaddr);
+	if (rd == NULL || rd->conn_state == RemoteDevice::DISCONNECTED) {
+		// a connection that failed or ended already: nothing to disconnect
+		TRACE_BT("LocalDeviceImpl: %s: not connected\n", __FUNCTION__);
+		return;
+	}
 	command->handle = rd->handle;
 	message->FindUInt8("reason", &command->reason);
 
@@ -1473,6 +1658,61 @@ LocalDeviceImpl::Disconnect(BMessage* message)
 	newRequest->AddInt16("opcodeExpected", PACK_OPCODE(OGF_LINK_CONTROL, OCF_DISCONNECT));
 
 	AddWantedEvent(newRequest);
+}
+
+
+void
+LocalDeviceImpl::RequestRemoteName(ServerRemoteDevice* rd)
+{
+	size_t size;
+	void* command = buildRemoteNameRequest(rd->bdaddr, rd->pscan_rep_mode,
+		0, &size);
+	if (command == NULL)
+		return;
+
+	// the answer only updates the device (and nobody waits for the reply)
+	BMessage* request = new BMessage;
+	request->AddInt16("eventExpected", HCI_EVENT_CMD_STATUS);
+	request->AddInt16("opcodeExpected",
+		PACK_OPCODE(OGF_LINK_CONTROL, OCF_REMOTE_NAME_REQUEST));
+	request->AddInt16("eventExpected", HCI_EVENT_REMOTE_NAME_REQUEST_COMPLETE);
+	AddWantedEvent(request);
+
+	if (fHCIDelegate->IssueCommand(command, size) == B_ERROR) {
+		TRACE_BT("LocalDeviceImpl: Command issued error for %s\n", __FUNCTION__);
+		ClearWantedEvent(request);
+	}
+	free(command);
+}
+
+
+void
+LocalDeviceImpl::SetConnectable(bool discoverable)
+{
+	// page scan: the devices paired before can connect to us; inquiry scan:
+	// the others can find us
+	fDiscoverable = discoverable;
+	size_t size;
+	void* command = buildWriteScan(discoverable
+		? HCI_SCAN_INQUIRY_PAGE : HCI_SCAN_PAGE, &size);
+	if (command == NULL)
+		return;
+
+	if (fHCIDelegate->IssueCommand(command, size) == B_ERROR)
+		TRACE_BT("LocalDeviceImpl: Command issued error for %s\n", __FUNCTION__);
+	free(command);
+}
+
+
+void
+LocalDeviceImpl::AllowRoleSwitch()
+{
+	// Allow role switches on the links: the controller starts with none
+	BluetoothCommand<typed_command(hci_cp_write_default_link_policy)>
+		policy(OGF_LINK_POLICY, OCF_WRITE_DEFAULT_LINK_POLICY);
+	policy->policy = B_HOST_TO_LENDIAN_INT16(HCI_LINK_POLICY_ROLE_SWITCH);
+	if (fHCIDelegate->IssueCommand(policy.Data(), policy.Size()) == B_ERROR)
+		TRACE_BT("LocalDeviceImpl: Command issued error for link policy\n");
 }
 
 
@@ -1539,6 +1779,15 @@ LocalDeviceImpl::ConnectionComplete(struct hci_ev_conn_complete* event)
 {
 	BMessage reply;
 
+	// SCO and eSCO links ride on the ACL link of the device: its state and
+	// handle are those of the ACL link.
+	if (event->link_type != HCI_ACL_CONN) {
+		TRACE_BT("LocalDeviceImpl: %s: link type %d to %s, status %#x\n",
+			__FUNCTION__, event->link_type,
+			bdaddrUtils::ToString(event->bdaddr).String(), event->status);
+		return;
+	}
+
 	ServerRemoteDevice* rd = RemoteDeviceByAddr(event->bdaddr);
 	if (rd != NULL)
 		reply.AddData("bdaddr", B_ANY_TYPE, &event->bdaddr, sizeof(bdaddr_t));
@@ -1546,16 +1795,10 @@ LocalDeviceImpl::ConnectionComplete(struct hci_ev_conn_complete* event)
 	reply.AddUInt8("status", event->status);
 	if (event->status == BT_OK) {
 		if (rd != NULL) {
-			rd->handle = event->handle;
 			rd->link_type = event->link_type;
-			rd->conn_state = RemoteDevice::CONNECTED;
 			rd->encryption_enabled = event->encrypt_mode;
+			_LinkUp(rd, event->handle);
 		}
-
-		// TODO: Review, this rDevice is leaked
-		ConnectionIncoming* iConnection = new ConnectionIncoming(
-			new RemoteDevice(event->bdaddr, rd->classOfDevice));
-		iConnection->Show();
 
 		TRACE_BT("LocalDeviceImpl: %s: Address %s handle=%#x type=%d encrypt=%d\n", __FUNCTION__,
 				bdaddrUtils::ToString(event->bdaddr).String(), event->handle,
@@ -1569,15 +1812,43 @@ LocalDeviceImpl::ConnectionComplete(struct hci_ev_conn_complete* event)
 		newrequest->AddInt16("eventExpected", HCI_EVENT_LINK_KEY_NOTIFY);
 		AddWantedEvent(newrequest);
 
-		Authenticate(event->handle);
+		// Input devices can be polled badly when we are the master of the
+		// link: with a CSR BC4 controller an Xbox controller sends about 5
+		// reports per second instead of 130. Leave the role to them, as when
+		// they connect to us.
+		if (rd != NULL && rd->outgoing
+			&& (rd->classOfDevice[1] & 0x1f) == 0x05) {
+			BluetoothCommand<typed_command(hci_cp_switch_role)>
+				switchRole(OGF_LINK_POLICY, OCF_SWITCH_ROLE);
+			bdaddrUtils::Copy(switchRole->bdaddr, event->bdaddr);
+			switchRole->role = 0x01;
+			if (fHCIDelegate->IssueCommand(switchRole.Data(), switchRole.Size())
+					== B_ERROR) {
+				TRACE_BT("LocalDeviceImpl: Command issued error for role switch\n");
+			} else
+				TRACE_BT("LocalDeviceImpl: asked to become slave of %s\n",
+					bdaddrUtils::ToString(event->bdaddr).String());
+		}
+
+		// a device that connects to us asks for the security it needs
+		if (rd == NULL || rd->outgoing)
+			Authenticate(event->handle);
+
+		// a device that connected by itself has not told its name yet
+		if (rd != NULL && rd->friendly_name.IsEmpty())
+			RequestRemoteName(rd);
 
 		reply.what = BT_MSG_CONN_COMPLETED;
 	} else {
 		linkkey_t nullLinkKey = LinkKeyUtils::NullKey();
-		if (LinkKeyUtils::Compare(&rd->link_key, &nullLinkKey))
+		if (rd == NULL)
+			;
+		else if (event->status == BT_ACL_CONNECTION_EXISTS) {
+			// the link we asked for is there already, and stays
+		} else if (LinkKeyUtils::Compare(&rd->link_key, &nullLinkKey))
 			RemoveRemoteDevice(rd);
 		else
-			rd->conn_state = RemoteDevice::DISCONNECTED;
+			_LinkDown(rd);
 
 		TRACE_BT("LocalDeviceImpl: %s: failed with error %s\n", __FUNCTION__,
 			BluetoothError(event->status));
@@ -1595,19 +1866,19 @@ LocalDeviceImpl::DisconnectionComplete(hci_ev_disconnection_complete_reply* even
 	TRACE_BT("LocalDeviceImpl: %s: Handle=%#x, reason=%s status=%x\n", __FUNCTION__, event->handle,
 		BluetoothError(event->reason), event->status);
 
-	ServerRemoteDevice* rd;
-	rd = RemoteDeviceByHandle(event->handle);
-	BMessage reply(BT_MSG_DISCONN_COMPLETED);
-	reply.AddUInt8("status", event->status);
+	ServerRemoteDevice* rd = RemoteDeviceByHandle(event->handle);
+	bool linkGone = event->status == BT_OK || event->status == BT_NO_CONNECTION;
+	if (rd != NULL && linkGone) {
+		_LinkDown(rd);
+		return;
+	}
 
+	// the link is still up, or was not ours: the watchers hear the outcome
+	BMessage notice(BT_MSG_DISCONN_COMPLETED);
+	notice.AddUInt8("status", event->status);
 	if (rd != NULL)
-		reply.AddData("bdaddr", B_ANY_TYPE, &rd->bdaddr, sizeof(bdaddr_t));
-
-	if (event->status == BT_OK || event->status == BT_NO_CONNECTION)
-		rd->conn_state = RemoteDevice::DISCONNECTED;
-
-
-	((BluetoothServer*)be_app)->NotifyWatchers(&reply);
+		notice.AddData("bdaddr", B_ANY_TYPE, &rd->bdaddr, sizeof(bdaddr_t));
+	((BluetoothServer*)be_app)->NotifyWatchers(&notice);
 }
 
 
@@ -1657,6 +1928,9 @@ LocalDeviceImpl::LinkKeyNotify(hci_ev_link_key_notify* event,
 
 	rd->link_key = event->link_key;
 	rd->link_type = event->key_type;
+
+	// keep the key at once: the device needs it to connect again
+	SaveRemoteDevices();
 }
 
 
@@ -1852,6 +2126,8 @@ LocalDeviceImpl::SimplePairingComplete(struct hci_ev_simple_pairing_complete* ev
 		TRACE_BT("LocalDeviceImpl: %s failed for %s with error %s\n", __FUNCTION__,
 			bdaddrUtils::ToString(event->bdaddr).String(), BluetoothError(event->status));
 	}
+	Notifications::Paired(RemoteDeviceByAddr(event->bdaddr),
+		event->status == BT_OK);
 	if (request != NULL)
 		ClearWantedEvent(request);
 }
@@ -1865,16 +2141,15 @@ LocalDeviceImpl::AuthComplete(struct hci_ev_auth_complete* eventData, BMessage* 
 
 	if (status == BT_OK) {
 		TRACE_BT("LocalDeviceImpl: Authentication Successful for handle %d\n", handle);
-		ServerRemoteDevice* rd = RemoteDeviceByHandle(eventData->handle);
-
-		SetConnEncryption(rd->handle, true);
-		((BluetoothServer*)be_app)->DiscoverServices(rd);
+		// the services are read once the link is encrypted: data sent while
+		// the controller starts the encryption can get refused
+		SetConnEncryption(handle, true);
 	} else {
 		TRACE_BT("LocalDeviceImpl: Authentication Failed for handle %d with status 0x%02x\n",
 			handle, status);
 
 		ServerRemoteDevice* rd = RemoteDeviceByHandle(eventData->handle);
-		if (rd != NULL) {
+		if (rd != NULL && rd->outgoing) {
 			rd->link_key = LinkKeyUtils::NullKey();
 			BMessage disconnReq;
 			bdaddr_t bdaddr = rd->bdaddr;
@@ -1909,8 +2184,15 @@ LocalDeviceImpl::EncryptChange(struct hci_ev_encrypt_change* event)
 		return;
 
 	rd->encryption_enabled = event->encrypt;
-	if (rd->encryption_enabled != 0)
-		((BluetoothServer*)be_app)->NotifyServices(rd);
+	if (event->status == BT_OK && rd->encryption_enabled != 0) {
+		if (rd->outgoing)
+			((BluetoothServer*)be_app)->StartServices(rd);
+		else {
+			// a device that connects to us opens its channels itself
+			TRACE_BT("LocalDeviceImpl: %s connected to us\n",
+				bdaddrUtils::ToString(rd->bdaddr).String());
+		}
+	}
 }
 
 
