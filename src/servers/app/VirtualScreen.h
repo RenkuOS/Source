@@ -57,6 +57,9 @@ public:
 			int32				CountScreens() const;
 
 private:
+			status_t			_ApplyMode(Screen* screen,
+									const ScreenConfigurations& configurations,
+									ScreenConfigurations& currentConfigurations);
 			status_t			_GetMode(Screen* screen,
 									const ScreenConfigurations& configurations,
 									display_mode& mode) const;
