@@ -221,11 +221,13 @@ Window::SetClipping(BRegion* stillAvailableOnScreen)
 		fCompositeRegion = fVisibleRegion;
 
 		// A window with direct access draws to its buffer itself, in screen
-		// coordinates, so its buffer is laid out like the screen.
+		// coordinates, so its buffer is laid out like the screen. That is the
+		// drawing buffer, which is turned when the screen is rotated.
 		int32 screenWidth = 0;
 		int32 screenHeight = 0;
 		if (ServerWindow()->HasDirectFrameBufferAccess()) {
-			RenderingBuffer* screen = fDesktop->HWInterface()->FrontBuffer();
+			RenderingBuffer* screen
+				= fDesktop->HWInterface()->DrawingBuffer();
 			screenWidth = screen->Width();
 			screenHeight = screen->Height();
 		}

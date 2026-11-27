@@ -3131,6 +3131,10 @@ ServerApp::_DispatchMessage(int32 code, BPrivate::LinkReceiver& link)
 			display_mode mode;
 			status_t status = fDesktop->GetScreenMode(workspace, id, mode);
 
+			// Applications get the modes of a rotated screen turned with it,
+			// as they take the size of the screen from them.
+			::HWInterface::RotateMode(mode, fDesktop->HWInterface()->Rotation());
+
 			fLink.StartMessage(status);
 			if (status == B_OK)
 				fLink.Attach<display_mode>(mode);
@@ -3155,6 +3159,7 @@ ServerApp::_DispatchMessage(int32 code, BPrivate::LinkReceiver& link)
 
 			display_mode mode;
 			link.Read<display_mode>(&mode);
+			::HWInterface::RotateMode(mode, fDesktop->HWInterface()->Rotation());
 
 			bool makeDefault = false;
 			status_t status = link.Read<bool>(&makeDefault);
@@ -3193,8 +3198,14 @@ ServerApp::_DispatchMessage(int32 code, BPrivate::LinkReceiver& link)
 			link.Read<display_mode>(&target);
 			link.Read<display_mode>(&low);
 			link.Read<display_mode>(&high);
+
+			int32 rotation = fDesktop->HWInterface()->Rotation();
+			::HWInterface::RotateMode(target, rotation);
+			::HWInterface::RotateMode(low, rotation);
+			::HWInterface::RotateMode(high, rotation);
 			status_t status = fDesktop->HWInterface()->ProposeMode(&target,
 				&low, &high);
+			::HWInterface::RotateMode(target, rotation);
 
 			// ProposeMode() returns B_BAD_VALUE to hint that the candidate is
 			// not within the given limits (but is supported)
@@ -3220,6 +3231,10 @@ ServerApp::_DispatchMessage(int32 code, BPrivate::LinkReceiver& link)
 			status_t status = fDesktop->HWInterface()->GetModeList(&modeList,
 				&count);
 			if (status == B_OK) {
+				int32 rotation = fDesktop->HWInterface()->Rotation();
+				for (uint32 i = 0; i < count; i++)
+					::HWInterface::RotateMode(modeList[i], rotation);
+
 				fLink.StartMessage(B_OK);
 				fLink.Attach<uint32>(count);
 				fLink.Attach(modeList, sizeof(display_mode) * count);
@@ -3392,6 +3407,7 @@ ServerApp::_DispatchMessage(int32 code, BPrivate::LinkReceiver& link)
 			link.Read<int32>(&id);
 			display_mode mode;
 			link.Read<display_mode>(&mode);
+			::HWInterface::RotateMode(mode, fDesktop->HWInterface()->Rotation());
 
 			uint32 low, high;
 			status_t status = fDesktop->HWInterface()->GetPixelClockLimits(&mode,
@@ -3477,6 +3493,35 @@ ServerApp::_DispatchMessage(int32 code, BPrivate::LinkReceiver& link)
 			fLink.StartMessage(result);
 			if (result == B_OK)
 				fLink.Attach<float>(brightness);
+			fLink.Flush();
+			break;
+		}
+
+		case AS_SCREEN_SET_ROTATION:
+		{
+			STRACE(("ServerApp %s: AS_SCREEN_SET_ROTATION\n", Signature()));
+			int32 id;
+			link.Read<int32>(&id);
+
+			int32 degrees;
+			link.Read<int32>(&degrees);
+
+			status_t status = fDesktop->SetScreenRotation(id, degrees);
+			fLink.StartMessage(status);
+
+			fLink.Flush();
+			break;
+		}
+
+		case AS_SCREEN_GET_ROTATION:
+		{
+			STRACE(("ServerApp %s: AS_SCREEN_GET_ROTATION\n", Signature()));
+			int32 id;
+			link.Read<int32>(&id);
+
+			// TODO: support other screens
+			fLink.StartMessage(B_OK);
+			fLink.Attach<int32>(fDesktop->HWInterface()->Rotation());
 			fLink.Flush();
 			break;
 		}

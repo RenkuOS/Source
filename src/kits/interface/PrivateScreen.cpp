@@ -693,6 +693,43 @@ BPrivateScreen::SetBrightness(float brightness)
 }
 
 
+/*!	The rotation of the screen, in degrees clockwise: 0, 90, 180 or 270. */
+status_t
+BPrivateScreen::GetRotation(int32* degrees)
+{
+	if (degrees == NULL)
+		return B_BAD_VALUE;
+
+	BPrivate::AppServerLink link;
+	link.StartMessage(AS_SCREEN_GET_ROTATION);
+	link.Attach<int32>(ID());
+
+	status_t status = B_ERROR;
+	if (link.FlushWithReply(status) == B_OK && status == B_OK)
+		link.Read<int32>(degrees);
+
+	return status;
+}
+
+
+/*!	Turns what the screen shows by \a degrees clockwise, and keeps it that
+	way. The display mode stays the same, the screen's frame turns with it.
+*/
+status_t
+BPrivateScreen::SetRotation(int32 degrees)
+{
+	BPrivate::AppServerLink link;
+	link.StartMessage(AS_SCREEN_SET_ROTATION);
+	link.Attach<int32>(ID());
+	link.Attach<int32>(degrees);
+
+	status_t status = B_ERROR;
+	link.FlushWithReply(status);
+
+	return status;
+}
+
+
 // #pragma mark - private methods
 
 

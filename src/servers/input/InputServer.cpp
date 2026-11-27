@@ -17,6 +17,7 @@
 #include <AppServerLink.h>
 #include <MessagePrivate.h>
 #include <ObjectListPrivate.h>
+#include <PrivateScreen.h>
 #include <RosterPrivate.h>
 
 #include <Autolock.h>
@@ -150,6 +151,7 @@ InputServer::InputServer()
 	fMouseSettings(),
 	fChars(NULL),
 	fScreen(B_MAIN_SCREEN_ID),
+	fRotation(0),
 	fEventQueueLock("input server event queue"),
 	fReplicantMessenger(NULL),
 	fInputMethodWindow(NULL),
@@ -221,6 +223,13 @@ InputServer::_InitKeyboardMouseStates()
 	fFrame = fScreen.Frame();
 	if (fFrame == BRect(0, 0, 0, 0))
 		fFrame = BRect(0, 0, 799, 599);
+
+	BPrivate::BPrivateScreen* screen
+		= BPrivate::BPrivateScreen::Get(B_MAIN_SCREEN_ID.id);
+	if (screen != NULL) {
+		screen->GetRotation(&fRotation);
+		BPrivate::BPrivateScreen::Put(screen);
+	}
 	fMousePos = BPoint((int32)((fFrame.right + 1) / 2),
 		(int32)((fFrame.bottom + 1) / 2));
 
@@ -551,9 +560,14 @@ InputServer::MessageReceived(BMessage* message)
 			BRect frame;
 			if (message->FindRect("screen_bounds", &frame) != B_OK)
 				frame = fScreen.Frame();
+			int32 rotation;
+			if (message->FindInt32("rotation", &rotation) != B_OK)
+				rotation = 0;
 
-			if (frame == fFrame)
+			if (frame == fFrame && rotation == fRotation)
 				break;
+
+			fRotation = rotation;
 
 			BPoint pos(fMousePos.x * frame.Width() / fFrame.Width(),
 				fMousePos.y * frame.Height() / fFrame.Height());
@@ -1726,6 +1740,24 @@ InputServer::_SanitizeEvents(EventList& events)
 					// convert them to absolute screen position
 					// (the message is supposed to contain the original
 					// absolute coordinates as "be:tablet_x/y").
+					// They are on the screen as it is, which the rotation
+					// turns.
+					float deviceX = absX;
+					float deviceY = absY;
+					switch (fRotation) {
+						case 90:
+							absX = deviceY;
+							absY = 1 - deviceX;
+							break;
+						case 180:
+							absX = 1 - deviceX;
+							absY = 1 - deviceY;
+							break;
+						case 270:
+							absX = 1 - deviceY;
+							absY = deviceX;
+							break;
+					}
 					where.x = absX * fFrame.Width();
 					where.y = absY * fFrame.Height();
 
