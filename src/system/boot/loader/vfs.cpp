@@ -84,6 +84,10 @@ RootFileSystem *gRoot;
 static Descriptor *sDescriptors[MAX_VFS_DESCRIPTORS];
 static Node *sBootDevice;
 
+// A file with this name in the root directory of a volume makes the boot
+// loader start that volume by default.
+static const char* const kDefaultBootVolumeMarker = "default-boot-volume";
+
 
 Node::Node()
 	:
@@ -692,8 +696,27 @@ register_boot_file_system(BootVolume& bootVolume)
 }
 
 
+/*! Returns whether the root directory of a volume contains the file that
+	marks it as the volume to boot by default.
+*/
+static bool
+is_default_boot_volume(Directory* rootDirectory)
+{
+	Node* marker = rootDirectory->Lookup(kDefaultBootVolumeMarker, false);
+	if (marker == NULL)
+		return false;
+
+	marker->Release();
+	return true;
+}
+
+
 /*! Gets the boot device, scans all of its partitions, gets the
 	boot partition, and mounts its file system.
+
+	Among the boot partitions of a device, one with the file
+	\c kDefaultBootVolumeMarker in its root directory is preferred.
+	Otherwise the first one with a valid boot volume is used.
 
 	\param args The stage 2 arguments.
 	\param _bootVolume On success set to the boot volume.
@@ -719,6 +742,16 @@ get_boot_file_system(stage2_args* args, BootVolume& _bootVolume)
 		if (error != B_OK)
 			continue;
 
+		// The volumes without the marker, in order; they are only tried
+		// when no marked volume is valid. Setting a BootVolume mounts its
+		// system package, so it is not done for every volume up front.
+		Directory** unmarked
+			= new(std::nothrow) Directory*[bootPartitions.Count()];
+		if (unmarked == NULL)
+			return B_NO_MEMORY;
+		ArrayDeleter<Directory*> unmarkedDeleter(unmarked);
+		int32 unmarkedCount = 0;
+
 		NodeIterator partitionIterator = bootPartitions.GetIterator();
 		while (partitionIterator.HasNext()) {
 			Partition *partition = (Partition*)partitionIterator.Next();
@@ -733,9 +766,23 @@ get_boot_file_system(stage2_args* args, BootVolume& _bootVolume)
 				continue;
 			}
 
+			if (!is_default_boot_volume(fileSystem)) {
+				unmarked[unmarkedCount++] = fileSystem;
+				continue;
+			}
+
 			// init the BootVolume
-			error = _bootVolume.SetTo(fileSystem);
-			if (error != B_OK)
+			if (_bootVolume.SetTo(fileSystem) != B_OK)
+				continue;
+
+			dprintf("get_boot_file_system(): booting the volume marked with "
+				"\"%s\"\n", kDefaultBootVolumeMarker);
+			sBootDevice = device;
+			return B_OK;
+		}
+
+		for (int32 i = 0; i < unmarkedCount; i++) {
+			if (_bootVolume.SetTo(unmarked[i]) != B_OK)
 				continue;
 
 			sBootDevice = device;
