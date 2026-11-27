@@ -367,6 +367,7 @@ AddBootModuleSymlinksToPackage
 	ahci
 	ata
 	ata_adapter
+	baytrail_gpio@x86,x86_64
 	bfs
 	dpc
 	efi_gpt
@@ -374,6 +375,7 @@ AddBootModuleSymlinksToPackage
 	highpoint_ide_pci
 	hyperv@x86,x86_64,arm64
 	hyperv_scsi@x86,x86_64,arm64
+	i2c@x86,x86_64
 	ide_isa@x86
 	isa@x86,x86_64
 	intel
@@ -385,6 +387,7 @@ AddBootModuleSymlinksToPackage
 	nvme_disk
 	openpic@ppc
 	packagefs
+	pch_i2c@x86,x86_64
 	pci
 	<pci>designware@riscv64
 	<pci>plda@riscv64
