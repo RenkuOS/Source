@@ -75,6 +75,20 @@ is_loopback(const sockaddr* address)
 }
 
 
+/*!	Whether an IP address is as long as its family says, so that it is safe
+	to read and to compare by its sa_len.
+*/
+static bool
+is_complete_address(const sockaddr* address)
+{
+	if (address->sa_family == AF_INET)
+		return address->sa_len >= sizeof(sockaddr_in);
+	if (address->sa_family == AF_INET6)
+		return address->sa_len >= sizeof(sockaddr_in6);
+	return true;
+}
+
+
 static bool
 is_filtered_socket(net_socket* socket, const sockaddr* remote)
 {
@@ -88,8 +102,8 @@ is_filtered_socket(net_socket* socket, const sockaddr* remote)
 }
 
 
-/*!	Forgets the server. The caller holds sFilterLock. Every held request sees
-	that its port is gone and is allowed.
+/*!	Forgets the server. The caller holds sFilterLock. Every held request is
+	allowed.
 */
 static void
 unregister_locked(port_id port)
@@ -103,8 +117,11 @@ unregister_locked(port_id port)
 	atomic_add(&sGeneration, 1);
 
 	RequestList::Iterator iterator = sPending.GetIterator();
-	while (pending_request* request = iterator.Next())
+	while (pending_request* request = iterator.Next()) {
+		if (request->verdict == 0)
+			request->verdict = NET_FILTER_ALLOW;
 		request->condition.NotifyAll();
+	}
 }
 
 
@@ -247,7 +264,11 @@ status_t
 net_filter_check(net_socket* socket, uint8 direction, const sockaddr* remote,
 	const sockaddr* local)
 {
-	if (atomic_get(&sFilterPort) < 0 || !is_filtered_socket(socket, remote))
+	if (atomic_get(&sFilterPort) < 0)
+		return B_OK;
+	if (remote != NULL && !is_complete_address(remote))
+		return B_BAD_VALUE;
+	if (!is_filtered_socket(socket, remote))
 		return B_OK;
 
 	const team_id team = team_get_current_team_id();

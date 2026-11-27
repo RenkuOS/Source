@@ -14,7 +14,9 @@
 	connection of another team, the stack writes a net_filter_request with
 	the code NET_FILTER_REQUEST_CODE to that port and holds the calling thread
 	until the server answers with NET_FILTER_VERDICT, or until
-	NET_FILTER_TIMEOUT passes (then the connection is denied).
+	NET_FILTER_TIMEOUT passes (then the connection is denied). Non-blocking
+	sockets are held too: connect(), sendto() and accept() may wait up to
+	that long for a connection the server doesn't know yet.
 
 	Loopback and non-IP sockets, raw sockets, the kernel and the server's own
 	team are never asked. When the port is deleted (the server quit or

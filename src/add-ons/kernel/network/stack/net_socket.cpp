@@ -72,6 +72,7 @@ struct net_socket_private : net_socket,
 	bool						is_connected;
 	bool						is_in_socket_list;
 	bool						is_closed;
+	bool						is_filter_aborted;
 
 	// the connection filter's last verdict for an unconnected datagram
 	// socket, valid while filter_generation is the filter's generation
@@ -104,6 +105,7 @@ net_socket_private::net_socket_private()
 	is_connected(false),
 	is_in_socket_list(false),
 	is_closed(false),
+	is_filter_aborted(false),
 	filter_generation(0),
 	filter_status(B_OK)
 {
@@ -513,7 +515,10 @@ status_t
 socket_close(net_socket* _socket)
 {
 	net_socket_private* socket = (net_socket_private*)_socket;
-	socket->is_closed = true;
+	{
+		MutexLocker _(sSocketLock);
+		socket->is_closed = true;
+	}
 	return socket->first_info->close(socket->first_protocol);
 }
 
@@ -535,7 +540,8 @@ static int32
 socket_filter_abort(team_id team, const sockaddr* remote)
 {
 	// The protocols' shutdown takes their own locks, which may call back
-	// into here for sSocketLock, so collect references first.
+	// into here for sSocketLock, so collect references first, in batches;
+	// a socket cut once is marked and skipped by the next batch.
 	const int32 kMaxSockets = 256;
 	net_socket_private** sockets = new(std::nothrow)
 		net_socket_private*[kMaxSockets];
@@ -543,33 +549,42 @@ socket_filter_abort(team_id team, const sockaddr* remote)
 		return B_NO_MEMORY;
 	ArrayDeleter<net_socket_private*> socketsDeleter(sockets);
 
-	int32 count = 0;
-	{
-		MutexLocker locker(sSocketLock);
-		SocketList::Iterator iterator = sSocketList.GetIterator();
-		while (net_socket_private* socket = iterator.Next()) {
-			if (count == kMaxSockets)
-				break;
-			if (socket->family != AF_INET && socket->family != AF_INET6)
-				continue;
-			if ((team >= 0 && socket->owner != team)
-				|| socket->is_closed || socket->peer.ss_len == 0
-				|| (socket->options & SO_ACCEPTCONN) != 0
-				|| !net_filter_address_matches(remote,
-					(const sockaddr*)&socket->peer)) {
-				continue;
+	int32 total = 0;
+	int32 count;
+	do {
+		count = 0;
+		{
+			MutexLocker locker(sSocketLock);
+			SocketList::Iterator iterator = sSocketList.GetIterator();
+			while (net_socket_private* socket = iterator.Next()) {
+				if (count == kMaxSockets)
+					break;
+				if (socket->family != AF_INET && socket->family != AF_INET6)
+					continue;
+				if ((team >= 0 && socket->owner != team)
+					|| socket->is_closed || socket->is_filter_aborted
+					|| socket->peer.ss_len == 0
+					|| (socket->options & SO_ACCEPTCONN) != 0
+					|| !net_filter_address_matches(remote,
+						(const sockaddr*)&socket->peer)) {
+					continue;
+				}
+				if (socket_acquire(socket)) {
+					socket->is_filter_aborted = true;
+					sockets[count++] = socket;
+				}
 			}
-			if (socket_acquire(socket))
-				sockets[count++] = socket;
 		}
-	}
 
-	for (int32 i = 0; i < count; i++) {
-		sockets[i]->first_info->shutdown(sockets[i]->first_protocol,
-			SHUT_RDWR);
-		sockets[i]->ReleaseReference();
-	}
-	return count;
+		for (int32 i = 0; i < count; i++) {
+			sockets[i]->first_info->shutdown(sockets[i]->first_protocol,
+				SHUT_RDWR);
+			sockets[i]->ReleaseReference();
+		}
+		total += count;
+	} while (count == kMaxSockets);
+
+	return total;
 }
 
 
@@ -1146,17 +1161,18 @@ socket_connect(net_socket* socket, const struct sockaddr* address,
 	if (address == NULL || addressLength == 0)
 		return ENETUNREACH;
 
-	if (socket->address.ss_len == 0) {
-		// try to bind first
-		status_t status = socket_bind(socket, NULL, 0);
-		if (status != B_OK)
-			return status;
-	}
-
+	// asked before the implicit bind, so a denied connect() binds no port
 	status_t status = net_filter_check(socket, NET_FILTER_OUTGOING, address,
 		(const sockaddr*)&socket->address);
 	if (status != B_OK)
 		return status;
+
+	if (socket->address.ss_len == 0) {
+		// try to bind first
+		status = socket_bind(socket, NULL, 0);
+		if (status != B_OK)
+			return status;
+	}
 
 	return socket->first_info->connect(socket->first_protocol, address);
 }
@@ -1476,6 +1492,11 @@ socket_send(net_socket* socket, msghdr* header, const void* data, size_t length,
 	if (header != NULL) {
 		address = (const sockaddr*)header->msg_name;
 		addressLength = header->msg_namelen;
+		// sendmsg() doesn't set sa_len, unlike sendto() and connect(); the
+		// filter compares and copies addresses by it
+		if (address != NULL && addressLength > 0
+			&& addressLength <= (socklen_t)sizeof(sockaddr_storage))
+			((sockaddr*)header->msg_name)->sa_len = addressLength;
 
 		// get the ancillary data
 		if (header->msg_control != NULL) {
@@ -1514,35 +1535,44 @@ socket_send(net_socket* socket, msghdr* header, const void* data, size_t length,
 	if (atomic && bytesLeft > socket->send.buffer_size)
 		return EMSGSIZE;
 
-	if (socket->address.ss_len == 0) {
-		// try to bind first
-		status_t status = socket_bind(socket, NULL, 0);
-		if (status != B_OK)
-			return status;
-	}
-
 	if (socket->peer.ss_len == 0) {
 		// An unconnected datagram socket: ask the connection filter about
 		// each new destination (a connected one was asked in connect()).
+		// The cache is locked against other threads sending on this socket,
+		// but not while the filter is asked.
 		net_socket_private* privateSocket = (net_socket_private*)socket;
 		const uint32 generation = net_filter_generation();
-		if (privateSocket->filter_generation != generation
-			|| privateSocket->filter_peer.ss_len != address->sa_len
-			|| memcmp(&privateSocket->filter_peer, address,
-				address->sa_len) != 0) {
-			status_t status = net_filter_check(socket, NET_FILTER_OUTGOING,
-				address, (const sockaddr*)&socket->address);
+		bool cached;
+		status_t status;
+		{
+			MutexLocker _(privateSocket->lock);
+			cached = privateSocket->filter_generation == generation
+				&& privateSocket->filter_peer.ss_len == address->sa_len
+				&& memcmp(&privateSocket->filter_peer, address,
+					address->sa_len) == 0;
+			status = privateSocket->filter_status;
+		}
+		if (!cached) {
+			status = net_filter_check(socket, NET_FILTER_OUTGOING, address,
+				(const sockaddr*)&socket->address);
 			if (status == B_INTERRUPTED)
 				return status;
 			if (address->sa_len <= sizeof(sockaddr_storage)) {
+				MutexLocker _(privateSocket->lock);
 				memcpy(&privateSocket->filter_peer, address, address->sa_len);
 				privateSocket->filter_status = status;
 				privateSocket->filter_generation = generation;
 			}
-			if (status != B_OK)
-				return status;
-		} else if (privateSocket->filter_status != B_OK)
-			return privateSocket->filter_status;
+		}
+		if (status != B_OK)
+			return status;
+	}
+
+	if (socket->address.ss_len == 0) {
+		// try to bind first (after the filter: a denied send binds no port)
+		status_t status = socket_bind(socket, NULL, 0);
+		if (status != B_OK)
+			return status;
 	}
 
 	if (net_filter_is_dns(socket, address)) {
