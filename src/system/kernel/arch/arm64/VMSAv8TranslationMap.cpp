@@ -29,8 +29,8 @@ uint64_t VMSAv8TranslationMap::fMair;
 static constexpr size_t kAsidBits = 8;
 static constexpr size_t kNumAsids = (1 << kAsidBits);
 static spinlock sAsidLock = B_SPINLOCK_INITIALIZER;
-// A bitmap to track which ASIDs are in use.
-static uint64 sAsidBitMap[kNumAsids / 64] = {};
+// ASID zero belongs to the empty TTBR0 table and must never identify a user map.
+static uint64 sAsidBitMap[kNumAsids / 64] = {1};
 // A mapping from ASID to translation map.
 static VMSAv8TranslationMap* sAsidMapping[kNumAsids] = {};
 
@@ -38,6 +38,9 @@ static VMSAv8TranslationMap* sAsidMapping[kNumAsids] = {};
 static void
 free_asid(size_t asid)
 {
+	if (asid == 0)
+		panic("Cannot free the reserved empty-table ASID!");
+
 	for (size_t i = 0; i < B_COUNT_OF(sAsidBitMap); ++i) {
 		if (asid < 64) {
 			sAsidBitMap[i] &= ~(uint64_t{1} << asid);
@@ -199,7 +202,8 @@ VMSAv8TranslationMap::SwitchUserMap(VMSAv8TranslationMap *from, VMSAv8Translatio
 		return;
 	}
 
-	for (size_t i = 0; i < kNumAsids; ++i) {
+	// The reserved entry has no user translation map.
+	for (size_t i = 1; i < kNumAsids; ++i) {
 		if (sAsidMapping[i]->fRefcount == 0) {
 			sAsidMapping[i]->fASID = -1;
 			to->fASID = i;

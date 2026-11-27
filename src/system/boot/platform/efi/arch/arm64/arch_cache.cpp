@@ -12,6 +12,10 @@ void
 arch_cache_disable()
 {
 	if (arch_mmu_cache_enabled()) {
+		// Make dirty code and data visible before switching to uncached
+		// physical accesses, including the cache-clean routine itself.
+		_arch_cache_clean_poc();
+
 		uint64 sctlr = _arch_mmu_get_sctlr();
 		sctlr &= ~(SCTLR_M | SCTLR_C | SCTLR_I);
 		_arch_mmu_set_sctlr(sctlr);

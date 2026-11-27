@@ -77,6 +77,12 @@ arch_vm_translation_map_init(kernel_args* args, VMPhysicalPageMapper** _physical
 
 	// Create an empty page table for use when we don't want a userspace page table.
 	sEmptyTable = vm_allocate_early_physical_page(args) << PAGE_SHIFT;
+	if (sEmptyTable == 0)
+		panic("Failed to allocate ARM64 empty user page table");
+	// The early allocator reserves physical memory without clearing its old
+	// contents. Every descriptor must be invalid before installing this table.
+	memset((void*)(KERNEL_PMAP_BASE + sEmptyTable), 0, B_PAGE_SIZE);
+	arm64_dsb(ishst);
 
 	return B_OK;
 }
