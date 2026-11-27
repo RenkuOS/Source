@@ -22,6 +22,8 @@
 #include <stdlib.h>
 #include <strings.h>
 
+#include <algorithm>
+
 #include <Alert.h>
 #include <Application.h>
 #include <Box.h>
@@ -477,6 +479,25 @@ ScreenWindow::ScreenWindow(ScreenSettings* settings)
 	if (_IsVesa())
 		fRefreshField->Hide();
 
+	// For a screen that is mounted turned, like a portrait panel in a
+	// landscape laptop. The order is that of the rotation in steps of 90.
+	fRotationMenu = new BPopUpMenu("rotation", true, true);
+	const char* rotationNames[] = {
+		B_TRANSLATE("None"),
+		B_TRANSLATE("90° clockwise"),
+		B_TRANSLATE("180°"),
+		B_TRANSLATE("90° counterclockwise")
+	};
+	for (int32 i = 0; i < 4; i++) {
+		BMessage* message = new BMessage(POP_ROTATION_MSG);
+		message->AddInt32("rotation", i * 90);
+		fRotationMenu->AddItem(new BMenuItem(rotationNames[i], message));
+	}
+
+	fRotationField = new BMenuField("RotationMenu", B_TRANSLATE("Rotation:"),
+		fRotationMenu);
+	fRotationField->SetAlignment(B_ALIGN_RIGHT);
+
 	// enlarged area for multi-monitor settings
 	{
 		bool dummy;
@@ -583,14 +604,16 @@ ScreenWindow::ScreenWindow(ScreenSettings* settings)
 			.Add(fColorsField->CreateMenuBarLayoutItem(), 1, 1)
 			.Add(fRefreshField->CreateLabelLayoutItem(), 0, 2)
 			.Add(fRefreshField->CreateMenuBarLayoutItem(), 1, 2)
-			.Add(fCombineField->CreateLabelLayoutItem(), 0, 3)
-			.Add(fCombineField->CreateMenuBarLayoutItem(), 1, 3)
-			.Add(fSwapDisplaysField->CreateLabelLayoutItem(), 0, 4)
-			.Add(fSwapDisplaysField->CreateMenuBarLayoutItem(), 1, 4)
-			.Add(fUseLaptopPanelField->CreateLabelLayoutItem(), 0, 5)
-			.Add(fUseLaptopPanelField->CreateMenuBarLayoutItem(), 1, 5)
-			.Add(fTVStandardField->CreateLabelLayoutItem(), 0, 6)
-			.Add(fTVStandardField->CreateMenuBarLayoutItem(), 1, 6)
+			.Add(fRotationField->CreateLabelLayoutItem(), 0, 3)
+			.Add(fRotationField->CreateMenuBarLayoutItem(), 1, 3)
+			.Add(fCombineField->CreateLabelLayoutItem(), 0, 4)
+			.Add(fCombineField->CreateMenuBarLayoutItem(), 1, 4)
+			.Add(fSwapDisplaysField->CreateLabelLayoutItem(), 0, 5)
+			.Add(fSwapDisplaysField->CreateMenuBarLayoutItem(), 1, 5)
+			.Add(fUseLaptopPanelField->CreateLabelLayoutItem(), 0, 6)
+			.Add(fUseLaptopPanelField->CreateMenuBarLayoutItem(), 1, 6)
+			.Add(fTVStandardField->CreateLabelLayoutItem(), 0, 7)
+			.Add(fTVStandardField->CreateMenuBarLayoutItem(), 1, 7)
 		.End();
 
 	// TODO: we don't support getting the screen's preferred settings
@@ -930,6 +953,53 @@ ScreenWindow::_UpdateRefreshControl()
 }
 
 
+/*!	The resolutions on offer are those of the screen as it is shown with
+	\a degrees of rotation: turning it sideways swaps their width and height.
+*/
+void
+ScreenWindow::_SetModeRotation(int32 degrees)
+{
+	int32 previous = fScreenMode.ModeRotation();
+	fScreenMode.SetModeRotation(degrees);
+	if ((previous / 90) % 2 == (degrees / 90) % 2)
+		return;
+
+	for (int32 i = 0; i < fResolutionMenu->CountItems(); i++) {
+		BMenuItem* item = fResolutionMenu->ItemAt(i);
+		BMessage* message = item->Message();
+		int32 width;
+		int32 height;
+		if (message == NULL || message->FindInt32("width", &width) != B_OK
+			|| message->FindInt32("height", &height) != B_OK) {
+			continue;
+		}
+
+		message->ReplaceInt32("width", height);
+		message->ReplaceInt32("height", width);
+
+		BString name;
+		name.SetToFormat(B_TRANSLATE_COMMENT("%" B_PRId32" × %" B_PRId32,
+			"The '×' is the Unicode multiplication sign U+00D7"),
+			height, width);
+		item->SetLabel(name.String());
+	}
+
+	// The marked one keeps its mark, and the field its old label.
+	BMenuItem* marked = fResolutionMenu->FindMarked();
+	if (marked != NULL)
+		fResolutionMenu->Superitem()->SetLabel(marked->Label());
+
+	uint16 maxWidth = 0;
+	uint16 maxHeight = 0;
+	for (int32 i = 0; i < fScreenMode.CountModes(); i++) {
+		screen_mode mode = fScreenMode.ModeAt(i);
+		maxWidth = std::max(maxWidth, (uint16)mode.width);
+		maxHeight = std::max(maxHeight, (uint16)mode.height);
+	}
+	fMonitorView->SetMaxResolution(maxWidth, maxHeight);
+}
+
+
 void
 ScreenWindow::_UpdateMonitorView()
 {
@@ -951,6 +1021,10 @@ ScreenWindow::_UpdateControls()
 		item->SetMarked(true);
 
 	item = fUseLaptopPanelMenu->ItemAt((int32)fSelected.use_laptop_panel);
+	if (item != NULL && !item->IsMarked())
+		item->SetMarked(true);
+
+	item = fRotationMenu->ItemAt(fSelected.rotation / 90);
 	if (item != NULL && !item->IsMarked())
 		item->SetMarked(true);
 
@@ -1050,6 +1124,7 @@ ScreenWindow::_UpdateActiveMode(int32 workspace)
 	// what kind of mode we actually got
 	if (fScreenMode.Get(fActive, workspace) == B_OK) {
 		fSelected = fActive;
+		_SetModeRotation(fSelected.rotation);
 
 		_UpdateMonitor();
 		_BuildSupportedColorSpaces();
@@ -1265,6 +1340,22 @@ ScreenWindow::MessageReceived(BMessage* message)
 			_CheckApplyEnabled();
 			break;
 
+		case POP_ROTATION_MSG:
+		{
+			int32 rotation;
+			if (message->FindInt32("rotation", &rotation) != B_OK)
+				break;
+
+			// The resolution is that of the screen as it will be shown
+			if ((rotation / 90) % 2 != (fSelected.rotation / 90) % 2)
+				std::swap(fSelected.width, fSelected.height);
+			fSelected.rotation = rotation;
+
+			_SetModeRotation(rotation);
+			_UpdateControls();
+			break;
+		}
+
 		case BUTTON_LAUNCH_BACKGROUNDS_MSG:
 			if (be_roster->Launch(kBackgroundsSignature) == B_ALREADY_RUNNING) {
 				app_info info;
@@ -1284,6 +1375,8 @@ ScreenWindow::MessageReceived(BMessage* message)
 			fSelected.swap_displays = false;
 			fSelected.use_laptop_panel = false;
 			fSelected.tv_standard = 0;
+			fSelected.rotation = 0;
+			_SetModeRotation(0);
 
 			// TODO: workspace defaults
 
