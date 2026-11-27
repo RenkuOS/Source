@@ -101,6 +101,7 @@ Compositor::Compositor(Desktop* desktop)
 	fDesktop(desktop),
 	fLock("compositor"),
 	fDamageLock("compositor damage"),
+	fFrame(0),
 	fWakePending(false),
 	fWakeSem(create_sem(0, "compositor wake")),
 	fThread(-1),
@@ -190,6 +191,14 @@ Compositor::Composite(const BRegion& damage)
 }
 
 
+uint32
+Compositor::NextFrame()
+{
+	BAutolock _(fDamageLock);
+	return fFrame + 1;
+}
+
+
 void
 Compositor::Flush()
 {
@@ -218,7 +227,12 @@ Compositor::ScreenReleased()
 {
 	fDesktop->HWInterface()->SetPageFlipping(true);
 
+	// The application drew over the windows.
 	BRegion all((BRect)fDesktop->HWInterface()->DrawingBuffer()->Bounds());
+	{
+		BAutolock _(fDamageLock);
+		fMoved.Include(&all);
+	}
 	Composite(all);
 }
 
@@ -306,11 +320,16 @@ void
 Compositor::_CompositeDamage(BRegion* present)
 {
 	BRegion damage;
+	BRegion moved;
+	uint32 frame;
 	{
 		BAutolock _(fDamageLock);
 		damage = fDamage;
 		fDamage.MakeEmpty();
+		moved = fMoved;
+		fMoved.MakeEmpty();
 		fWakePending = false;
+		frame = ++fFrame;
 	}
 
 	// A window with direct access draws to its buffer on its own, and doesn't
@@ -329,7 +348,13 @@ Compositor::_CompositeDamage(BRegion* present)
 	}
 	damage.Include(&direct);
 
-	_Composite(damage, present);
+	_Composite(damage, moved, present);
+
+	WindowList& all = fDesktop->AllWindows();
+	for (Window* window = all.FirstWindow(); window != NULL;
+			window = window->NextWindow(kAllWindowList)) {
+		window->FramePresented(frame);
+	}
 
 	// and again in the next one
 	Composite(direct);
@@ -365,7 +390,8 @@ Compositor::_Present(const BRegion& region)
 	otherwise it is copied at once.
 */
 void
-Compositor::_Composite(const BRegion& damage, BRegion* present)
+Compositor::_Composite(const BRegion& damage, const BRegion& moved,
+	BRegion* present)
 {
 	if (damage.CountRects() == 0)
 		return;
@@ -389,6 +415,10 @@ Compositor::_Composite(const BRegion& damage, BRegion* present)
 	BRegion screenDamage(remaining);
 
 	BAutolock wobbleLocker(fWobbleLock);
+
+	// What windows are drawing again right now is left as it is on the screen
+	BRegion held;
+	BRegion updating;
 
 	// Going from the front to the back, find out which part of which window
 	// can be seen.
@@ -416,6 +446,30 @@ Compositor::_Composite(const BRegion& damage, BRegion* present)
 			bounds = bounds | wobble->bounds;
 		if (!remaining.Intersects(bounds))
 			continue;
+
+		// Where this window can be seen, and nothing in front of it is mixed
+		// with it, the screen keeps what it showed until the window has
+		// finished drawing. That includes the shadows of the windows in
+		// front. Where something has just moved, appeared or gone away, the
+		// screen didn't show this window, and nothing is kept. A wobbling
+		// window isn't where its shape is, so what the screen shows there
+		// isn't kept either.
+		if (wobble == NULL && window->CompositeAlpha() == 255
+			&& !window->IsTransparent()) {
+			window->GetUpdatingRegion(&updating);
+			if (updating.CountRects() > 0) {
+				updating.Exclude(&moved);
+				updating.IntersectWith(&remaining);
+				updating.IntersectWith(&window->CompositeRegion());
+				for (size_t i = 0; i < layerCount; i++)
+					updating.Exclude(&fLayers[i]->region);
+				for (size_t i = 0; i < layerCount; i++)
+					fLayers[i]->shadow.Exclude(&updating);
+				remaining.Exclude(&updating);
+				screenDamage.Exclude(&updating);
+				held.Include(&updating);
+			}
+		}
 
 		if (layerCount == fLayers.size()) {
 			Layer* layer = new(std::nothrow) Layer;
@@ -513,6 +567,10 @@ Compositor::_Composite(const BRegion& damage, BRegion* present)
 		interface->UnlockFloatingOverlays();
 
 	interface->UnlockParallelAccess();
+
+	// It is looked at again in the next frame. The window's own damage brings
+	// it back when it is done, and so does running out of time.
+	Composite(held);
 }
 
 
@@ -660,11 +718,14 @@ Compositor::SceneChanged()
 		if (window->IsHidden())
 			continue;
 
-		SceneEntry entry = { window, window->Shape().Bounds() };
+		SceneEntry entry = { window, window->Shape().Bounds(),
+			window->Frame().LeftTop() };
 		scene.push_back(entry);
 	}
 
 	BRegion damage;
+	// What the screen showed there is not what is there now
+	BRegion moved;
 
 	// The screen mode has changed, nothing can be kept.
 	RenderingBuffer* target = fDesktop->HWInterface()->DrawingBuffer();
@@ -674,6 +735,7 @@ Compositor::SceneChanged()
 		fSceneWidth = target->Width();
 		fSceneHeight = target->Height();
 		damage.Include((BRect)target->Bounds());
+		moved.Include((BRect)target->Bounds());
 	}
 
 	// Find the windows that have appeared, have moved or changed size, or
@@ -693,15 +755,26 @@ Compositor::SceneChanged()
 
 		if (previousIndex[i] < 0) {
 			damage.Include(scene[i].frame);
+			moved.Include(scene[i].frame);
 		} else if (fScene[previousIndex[i]].frame != scene[i].frame) {
-			damage.Include(fScene[previousIndex[i]].frame);
-			damage.Include(scene[i].frame);
+			BRegion changed(fScene[previousIndex[i]].frame);
+			changed.Include(scene[i].frame);
+			damage.Include(&changed);
+
+			// A window that only changed size still shows the same content
+			// where it was before. What it covers that is new to it is
+			// exposed, and isn't kept anyway.
+			if (fScene[previousIndex[i]].origin == scene[i].origin)
+				changed.Exclude(&scene[i].window->CompositeRegion());
+			moved.Include(&changed);
 		}
 	}
 
 	for (size_t k = 0; k < fScene.size(); k++) {
-		if (!stillThere[k])
+		if (!stillThere[k]) {
 			damage.Include(fScene[k].frame);
+			moved.Include(fScene[k].frame);
+		}
 	}
 
 	// Two windows have changed places: only what they have in common can look
@@ -714,12 +787,17 @@ Compositor::SceneChanged()
 			if (previousIndex[k] >= 0 && previousIndex[i] > previousIndex[k]
 				&& scene[i].frame.Intersects(scene[k].frame)) {
 				damage.Include(scene[i].frame & scene[k].frame);
+				moved.Include(scene[i].frame & scene[k].frame);
 			}
 		}
 	}
 
 	fScene.swap(scene);
 
+	{
+		BAutolock _(fDamageLock);
+		fMoved.Include(&moved);
+	}
 	Composite(damage);
 }
 
@@ -1186,6 +1264,10 @@ Compositor::_StepWobbles()
 		i++;
 	}
 
+	{
+		BAutolock _(fDamageLock);
+		fMoved.Include(&damage);
+	}
 	Composite(damage);
 	return !fWobbles.empty();
 }

@@ -379,12 +379,14 @@ ServerWindow::_Hide()
 void
 ServerWindow::RequestRedraw()
 {
+	// The flag first: the message may be received right away, and the window
+	// thread only redraws when it finds the flag set.
+	atomic_add(&fRedrawRequested, 1);
+
 	PostMessage(AS_REDRAW, 0);
 		// we don't care if this fails - it's only a notification, and if
 		// it fails, there are obviously enough messages in the queue
 		// already
-
-	atomic_add(&fRedrawRequested, 1);
 }
 
 
