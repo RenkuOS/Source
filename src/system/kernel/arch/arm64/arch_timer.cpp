@@ -32,7 +32,12 @@ arch_timer_set_hardware_timer(bigtime_t timeout)
 	if (timeout > sTimerMaxInterval)
 		timeout = sTimerMaxInterval;
 
-	WRITE_SPECIALREG(CNTV_TVAL_EL0, timeout * sTimerTicksUS);
+	// Program the compare value from a filtered counter read rather than
+	// TVAL, which the hardware adds to the raw counter (A64 erratum UNKNOWN1,
+	// see arm64_read_counter()).
+	asm volatile("isb" ::: "memory");
+	WRITE_SPECIALREG(CNTV_CVAL_EL0,
+		arm64_read_counter() + timeout * sTimerTicksUS);
 	WRITE_SPECIALREG(CNTV_CTL_EL0, TIMER_ENABLE);
 }
 

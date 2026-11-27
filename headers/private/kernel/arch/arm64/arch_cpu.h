@@ -116,9 +116,27 @@
 #define	CPU_MATCH_RAW(mask, devid)			\
     (((mask) & PCPU_GET(midr)) == ((mask) & (devid)))
 
+/*
+ * Allwinner A64 erratum UNKNOWN1: the low bits of the generic timer counter
+ * are indeterminate while bit 10 or above rolls over, so a read can jump
+ * backward (7ff -> 000 -> 800) or forward (7ff -> fff -> 800). Like Linux,
+ * reject values whose low nine bits are all ones or all zeros, bounded by
+ * about three 24 MHz counter periods. On a sound counter this only costs a
+ * second read 2 times in 512.
+ */
+static inline uint64 arm64_read_counter(void)
+{
+	uint64 value;
+	int retries = 150;
+	do {
+		value = READ_SPECIALREG(cntvct_el0);
+	} while (((value + 1) & 0x1ff) <= 1 && --retries > 0);
+	return value;
+}
+
 static inline uint64 arm64_get_cyclecount(void)
 {
-	return READ_SPECIALREG(cntvct_el0);
+	return arm64_read_counter();
 }
 
 #define	ADDRESS_TRANSLATE_FUNC(stage)					\
