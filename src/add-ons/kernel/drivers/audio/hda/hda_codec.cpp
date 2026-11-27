@@ -977,6 +977,16 @@ hda_widget_find_output_path(hda_audio_group* audioGroup, hda_widget* widget,
 }
 
 
+//!	Returns whether \a widget is a microphone built into the machine.
+static bool
+hda_widget_is_fixed_mic(const hda_widget* widget)
+{
+	return widget != NULL && widget->type == WT_PIN_COMPLEX
+		&& CONF_DEFAULT_CONNECTIVITY(widget->d.pin.config) == PIN_CONN_FIXED
+		&& CONF_DEFAULT_DEVICE(widget->d.pin.config) == PIN_DEV_MIC_IN;
+}
+
+
 /*! Find input path for widget */
 static bool
 hda_widget_find_input_path(hda_audio_group* audioGroup, hda_widget* widget,
@@ -1022,8 +1032,15 @@ hda_widget_find_input_path(hda_audio_group* audioGroup, hda_widget* widget,
 
 				if (hda_widget_find_input_path(audioGroup, inputWidget,
 						depth + 1)) {
-					if (widget->active_input == -1)
+					// Default to the built-in microphone: a jack is likely
+					// empty, and then the machine would record silence.
+					if (widget->active_input == -1
+						|| (hda_widget_is_fixed_mic(inputWidget)
+							&& !hda_widget_is_fixed_mic(
+								hda_audio_group_get_widget(audioGroup,
+									widget->inputs[widget->active_input])))) {
 						widget->active_input = i;
+					}
 
 					widget->flags |= WIDGET_FLAG_INPUT_PATH;
 					TRACE("      %*sinput: added mixer/selector widget %"
@@ -1096,6 +1113,26 @@ hda_audio_group_build_output_tree(hda_audio_group* audioGroup, bool useMixer)
 }
 
 
+/*!	Returns whether \a widget is an ADC that must stay out of the input tree.
+
+	On the ALC298 of the X270 and the T470s, ADC 8 receives the external
+	microphone and ADC 9 the fixed internal one. In the tree, both converters
+	would be assigned channel 0 of the same two-channel capture stream, which
+	records silence, and ADC 8 would get mixer controls that act on nothing.
+	ADC 9 alone suffices: its selector reaches the external microphone too.
+*/
+static bool
+hda_widget_is_redundant_adc(hda_audio_group* audioGroup,
+	const hda_widget& widget)
+{
+	const hda_codec* codec = audioGroup->codec;
+	return widget.type == WT_AUDIO_INPUT && widget.node_id == 8
+		&& codec->vendor_id == 0x10ec && codec->product_id == 0x0298
+		&& (codec->subsystem_id == 0x17aa5062
+			|| codec->subsystem_id == 0x17aa224b);
+}
+
+
 static bool
 hda_audio_group_build_input_tree(hda_audio_group* audioGroup)
 {
@@ -1105,7 +1142,8 @@ hda_audio_group_build_input_tree(hda_audio_group* audioGroup)
 	for (uint32 i = 0; i < audioGroup->widget_count; i++) {
 		hda_widget& widget = audioGroup->widgets[i];
 
-		if (widget.type != WT_AUDIO_INPUT)
+		if (widget.type != WT_AUDIO_INPUT
+			|| hda_widget_is_redundant_adc(audioGroup, widget))
 			continue;
 
 		TRACE("  look at input widget %" B_PRIu32 " (%" B_PRIu32 " inputs)\n",
@@ -1448,17 +1486,6 @@ hda_audio_group_get_widgets(hda_audio_group* audioGroup, hda_stream* stream)
 			|| (widget.capabilities.audio
 				& (AUDIO_CAP_STEREO | AUDIO_CAP_DIGITAL)) != AUDIO_CAP_STEREO
 			|| widget.d.io.formats == 0)
-			continue;
-
-		// On the X270's ALC298, ADC 8 receives the external microphone and
-		// ADC 9 receives the fixed internal microphone. Both converters would
-		// otherwise be assigned channel 0 of the same two-channel stream.
-		// Select the internal microphone converter for this capture path.
-		if (stream->type == STREAM_RECORD
-			&& audioGroup->codec->vendor_id == 0x10ec
-			&& audioGroup->codec->product_id == 0x0298
-			&& audioGroup->codec->subsystem_id == 0x17aa5062
-			&& widget.node_id == 8)
 			continue;
 
 		if (count == 0) {
