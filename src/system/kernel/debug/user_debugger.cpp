@@ -1497,13 +1497,21 @@ profiling_flush(void*)
 	Called with interrupts disabled.
 */
 static int32
-profiling_event(timer* /*unused*/)
+profiling_event(timer* event)
 {
 	Thread* thread = thread_get_current_thread();
 	thread_debug_info& debugInfo = thread->debug_info;
 
 	SpinLocker threadDebugInfoLocker(debugInfo.lock);
-	debugInfo.profile.installed_timer->hook = NULL;
+	event->hook = NULL;
+
+	// The CPU's profiling timer belongs to the thread that armed it. Should it
+	// ever fire for another thread (one that has no profiling timer of its
+	// own, such as the idle thread), there is nothing to sample.
+	if (debugInfo.profile.installed_timer != event)
+		return B_HANDLED_INTERRUPT;
+
+	debugInfo.profile.installed_timer = NULL;
 	debugInfo.profile.installed_timer = NULL;
 
 	if (profiling_do_sample()) {
@@ -1619,6 +1627,57 @@ broadcast_debugged_thread_message(Thread *nubThread, int32 code,
 }
 
 
+/*!	Stops the profiling of every thread of the nub thread's team, for a
+	debugger that has gone away. Without it each profiled thread kept its
+	sample buffer, sampled on until it next left its CPU, and could never be
+	profiled again (B_DEBUG_START_PROFILER failed with B_BAD_VALUE).
+	A profiling timer still armed is left to fire or to be cancelled when its
+	thread leaves the CPU; with no sample buffer it does not rearm.
+*/
+static void
+stop_team_profilers(Thread* nubThread)
+{
+	thread_info threadInfo;
+	int32 cookie = 0;
+	while (get_next_thread_info(nubThread->team->id, &cookie, &threadInfo)
+			== B_OK) {
+		Thread* thread = Thread::GetAndLock(threadInfo.thread);
+		if (thread == NULL)
+			continue;
+
+		BReference<Thread> threadReference(thread, true);
+		ThreadLocker threadLocker(thread, true);
+
+		if (thread->team != nubThread->team)
+			continue;
+
+		InterruptsSpinLocker threadDebugInfoLocker(thread->debug_info.lock);
+
+		thread_debug_info& threadDebugInfo = thread->debug_info;
+		if (threadDebugInfo.profile.samples == NULL)
+			continue;
+
+		area_id sampleArea = threadDebugInfo.profile.sample_area;
+		threadDebugInfo.profile.sample_area = -1;
+		threadDebugInfo.profile.samples = NULL;
+		threadDebugInfo.profile.flush_needed = false;
+		threadDebugInfo.profile.dropped_ticks = 0;
+		threadDebugInfo.profile.interval_left = -1;
+
+		threadDebugInfoLocker.Unlock();
+		threadLocker.Unlock();
+
+		if (sampleArea >= 0) {
+			area_info areaInfo;
+			if (get_area_info(sampleArea, &areaInfo) == B_OK) {
+				unlock_memory(areaInfo.address, areaInfo.size, B_READ_DEVICE);
+				delete_area(sampleArea);
+			}
+		}
+	}
+}
+
+
 static void
 nub_thread_cleanup(Thread *nubThread)
 {
@@ -1654,8 +1713,10 @@ nub_thread_cleanup(Thread *nubThread)
 
 	teamLocker.Unlock();
 
-	if (destroyDebugInfo)
+	if (destroyDebugInfo) {
 		teamDebugInfo.breakpoint_manager->RemoveAllBreakpoints();
+		stop_team_profilers(nubThread);
+	}
 
 	finish_debugger_change(nubThread->team);
 
@@ -2433,7 +2494,11 @@ debug_nub_thread(void *)
 							threadDebugInfo.profile.profile_kernel = profileKernel;
 							threadDebugInfo.profile.flush_needed = false;
 							threadDebugInfo.profile.interval_left = interval;
-							threadDebugInfo.profile.installed_timer = NULL;
+								// installed_timer stays: a timer still armed
+								// after an earlier B_DEBUG_STOP_PROFILER
+								// samples into the new buffer, and the
+								// thread's CPU cancels it when the thread
+								// leaves it.
 							threadDebugInfo.profile.image_event = imageEvent;
 							threadDebugInfo.profile.last_image_event
 								= imageEvent;
