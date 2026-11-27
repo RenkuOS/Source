@@ -60,6 +60,7 @@ public:
 									const BSolverPackageSpecifier** _unmatched
 										= NULL);
 	virtual	status_t			FullSync();
+	virtual	status_t			FullSync(const BStringList& keepInstalled);
 	virtual	status_t			VerifyInstallation(uint32 flags = 0);
 
 	virtual	int32				CountProblems() const;

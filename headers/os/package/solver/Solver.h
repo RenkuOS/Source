@@ -10,6 +10,9 @@
 #include <SupportDefs.h>
 
 
+class BStringList;
+
+
 namespace BPackageKit {
 
 
@@ -89,6 +92,9 @@ public:
 	virtual	status_t			SolveAgain() = 0;
 
 	virtual	status_t			GetResult(BSolverResult& _result) = 0;
+
+	virtual	status_t			FullSync(const BStringList& keepInstalled)
+									= 0;
 
 protected:
 								BSolver();

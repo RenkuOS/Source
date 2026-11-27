@@ -66,10 +66,14 @@ namespace BPrivate {
 static const char* const kAutoInstalledPackagesFileName
 	= "auto_installed_packages";
 
+// Names of the packages held at the version installed, in the same way. What
+// the repositories have of them is left out, so that nothing replaces them.
+static const char* const kHeldPackagesFileName = "held_packages";
+
 
 static status_t
-get_auto_installed_packages_path(BPackageInstallationLocation location,
-	BPath& _path)
+get_administrative_file_path(BPackageInstallationLocation location,
+	const char* fileName, BPath& _path)
 {
 	directory_which packagesWhich;
 	switch (location) {
@@ -87,7 +91,7 @@ get_auto_installed_packages_path(BPackageInstallationLocation location,
 	if (error == B_OK)
 		error = _path.Append(PACKAGES_DIRECTORY_ADMIN_DIRECTORY);
 	if (error == B_OK)
-		error = _path.Append(kAutoInstalledPackagesFileName);
+		error = _path.Append(fileName);
 	return error;
 }
 
@@ -259,6 +263,16 @@ BPackageManager::Init(uint32 flags)
 
 	// add other repositories
 	if ((flags & B_ADD_REMOTE_REPOSITORIES) != 0) {
+		// A package held in either location is held for both: a home package
+		// mustn't replace a held system package either.
+		_ReadPackageNames(B_PACKAGE_INSTALLATION_LOCATION_SYSTEM,
+			kHeldPackagesFileName, fHeldPackages);
+		BStringList homeHeld;
+		_ReadPackageNames(B_PACKAGE_INSTALLATION_LOCATION_HOME,
+			kHeldPackagesFileName, homeHeld);
+		if (!fHeldPackages.Add(homeHeld))
+			throw std::bad_alloc();
+
 		BPackageRoster roster;
 		BStringList repositoryNames;
 		error = roster.GetRepositoryNames(repositoryNames);
@@ -501,7 +515,8 @@ BPackageManager::_UninstallPackages(PackageList& foundPackages)
 			InstalledRepository* repository = fInstalledRepositories.ItemAt(i);
 			i++) {
 		BStringList autoInstalled;
-		_ReadAutoInstalledPackages(repository->Location(), autoInstalled);
+		_ReadPackageNames(repository->Location(),
+			kAutoInstalledPackagesFileName, autoInstalled);
 
 		bool changed = false;
 		PackageList& packagesToDeactivate = repository->PackagesToDeactivate();
@@ -511,7 +526,8 @@ BPackageManager::_UninstallPackages(PackageList& foundPackages)
 		}
 
 		if (changed
-			&& _WriteAutoInstalledPackages(repository->Location(),
+			&& _WritePackageNames(repository->Location(),
+				kAutoInstalledPackagesFileName,
 				autoInstalled) != B_OK) {
 			fUserInteractionHandler->Warn(B_OK, B_TRANSLATE("Failed to write "
 				"the list of auto-installed packages"));
@@ -595,8 +611,20 @@ BPackageManager::FullSync(bool reinstall)
 	BStringList installedPackages;
 	get_package_names(InstallationRepository(), installedPackages);
 
+	// What the repositories have of the held packages has been left out, so
+	// they are orphans to the solver, which may uninstall them when they are
+	// in the way. Locking them makes that a problem instead.
+	BStringList heldInstalled;
+	for (int32 i = 0; i < fHeldPackages.CountStrings(); i++) {
+		const BString& name = fHeldPackages.StringAt(i);
+		if (installed_package_named(InstallationRepository(), name) != NULL
+			&& !heldInstalled.Add(name)) {
+			throw std::bad_alloc();
+		}
+	}
+
 	// solve
-	status_t error = fSolver->FullSync();
+	status_t error = fSolver->FullSync(heldInstalled);
 	if (error != B_OK)
 		DIE(error, "Failed to compute packages to synchronize");
 
@@ -723,7 +751,8 @@ BPackageManager::SetAutoInstalled(const char* const* packages,
 
 	BPackageInstallationLocation location = InstallationRepository().Location();
 	BStringList autoInstalledPackages;
-	_ReadAutoInstalledPackages(location, autoInstalledPackages);
+	_ReadPackageNames(location, kAutoInstalledPackagesFileName,
+		autoInstalledPackages);
 
 	bool changed = false;
 	for (int32 i = 0; BSolverPackage* package = foundPackages.ItemAt(i); i++) {
@@ -739,9 +768,62 @@ BPackageManager::SetAutoInstalled(const char* const* packages,
 	if (!changed)
 		throw BNothingToDoException();
 
-	error = _WriteAutoInstalledPackages(location, autoInstalledPackages);
+	error = _WritePackageNames(location, kAutoInstalledPackagesFileName,
+		autoInstalledPackages);
 	if (error != B_OK)
 		DIE(error, "Failed to write the list of auto-installed packages");
+}
+
+
+/*!	Holds installed packages at their version, or releases them. Held
+	packages aren't updated, replaced or reinstalled from a repository; a
+	package file can still be installed over them on purpose.
+*/
+void
+BPackageManager::SetHeld(const char* const* packages, int packageCount,
+	bool held)
+{
+	Init(B_ADD_INSTALLED_REPOSITORIES);
+
+	InstalledRepository& installationRepository = InstallationRepository();
+	BPackageInstallationLocation location = installationRepository.Location();
+	BStringList heldPackages;
+	_ReadPackageNames(location, kHeldPackagesFileName, heldPackages);
+
+	bool changed = false;
+	for (int i = 0; i < packageCount; i++) {
+		BString name(packages[i]);
+		if (!held) {
+			// also when it has been uninstalled since
+			changed |= heldPackages.Remove(name);
+			continue;
+		}
+
+		if (installed_package_named(installationRepository, name) == NULL)
+			DIE(B_ENTRY_NOT_FOUND, "%s isn't installed", name.String());
+		if (!heldPackages.HasString(name)) {
+			if (!heldPackages.Add(name))
+				throw std::bad_alloc();
+			changed = true;
+		}
+	}
+
+	if (!changed)
+		throw BNothingToDoException();
+
+	status_t error = _WritePackageNames(location, kHeldPackagesFileName,
+		heldPackages);
+	if (error != B_OK)
+		DIE(error, "Failed to write the list of held packages");
+}
+
+
+void
+BPackageManager::GetHeldPackages(BStringList& _packages)
+{
+	Init(B_ADD_INSTALLED_REPOSITORIES);
+	_ReadPackageNames(InstallationRepository().Location(),
+		kHeldPackagesFileName, _packages);
 }
 
 
@@ -1256,8 +1338,8 @@ BPackageManager::_AddOrphanedPackages(PackageList& packages)
 {
 	InstalledRepository& installationRepository = InstallationRepository();
 	BStringList autoInstalled;
-	_ReadAutoInstalledPackages(installationRepository.Location(),
-		autoInstalled);
+	_ReadPackageNames(installationRepository.Location(),
+		kAutoInstalledPackagesFileName, autoInstalled);
 	if (autoInstalled.IsEmpty())
 		return;
 
@@ -1360,8 +1442,8 @@ BPackageManager::_UpdateAutoInstalledPackages(
 {
 	InstalledRepository& installationRepository = InstallationRepository();
 	BStringList autoInstalled;
-	_ReadAutoInstalledPackages(installationRepository.Location(),
-		autoInstalled);
+	_ReadPackageNames(installationRepository.Location(),
+		kAutoInstalledPackagesFileName, autoInstalled);
 
 	// newly installed packages nobody asked for are dependencies
 	bool changed = false;
@@ -1384,8 +1466,8 @@ BPackageManager::_UpdateAutoInstalledPackages(
 		changed |= autoInstalled.Remove(requestedPackages.StringAt(i));
 
 	if (changed
-		&& _WriteAutoInstalledPackages(installationRepository.Location(),
-			autoInstalled) != B_OK) {
+		&& _WritePackageNames(installationRepository.Location(),
+			kAutoInstalledPackagesFileName, autoInstalled) != B_OK) {
 		fUserInteractionHandler->Warn(B_OK, B_TRANSLATE("Failed to write the "
 			"list of auto-installed packages"));
 	}
@@ -1393,14 +1475,14 @@ BPackageManager::_UpdateAutoInstalledPackages(
 
 
 void
-BPackageManager::_ReadAutoInstalledPackages(
-	BPackageInstallationLocation location, BStringList& _packages)
+BPackageManager::_ReadPackageNames(BPackageInstallationLocation location,
+	const char* fileName, BStringList& _packages)
 {
 	BPath path;
-	if (get_auto_installed_packages_path(location, path) != B_OK)
+	if (get_administrative_file_path(location, fileName, path) != B_OK)
 		return;
 
-	// no file means that nothing has been auto-installed
+	// no file means no packages
 	BFile file(path.Path(), B_READ_ONLY);
 	off_t size;
 	if (file.InitCheck() != B_OK || file.GetSize(&size) != B_OK || size == 0)
@@ -1419,11 +1501,11 @@ BPackageManager::_ReadAutoInstalledPackages(
 
 
 status_t
-BPackageManager::_WriteAutoInstalledPackages(
-	BPackageInstallationLocation location, const BStringList& packages)
+BPackageManager::_WritePackageNames(BPackageInstallationLocation location,
+	const char* fileName, const BStringList& packages)
 {
 	BPath path;
-	status_t error = get_auto_installed_packages_path(location, path);
+	status_t error = get_administrative_file_path(location, fileName, path);
 	if (error != B_OK)
 		return error;
 
@@ -1496,8 +1578,17 @@ BPackageManager::_AddRemoteRepository(BPackageRoster& roster, const char* name,
 		throw std::bad_alloc();
 	}
 
-	BRepositoryBuilder(*repository, cache, config.Name())
-		.AddToSolver(fSolver, false);
+	BRepositoryBuilder builder(*repository, cache, config.Name());
+
+	// Held packages stay at the version installed: nothing this repository
+	// has of them is considered.
+	for (int32 i = repository->CountPackages() - 1; i >= 0; i--) {
+		BSolverPackage* package = repository->PackageAt(i);
+		if (fHeldPackages.HasString(package->Name()))
+			repository->DeletePackage(package);
+	}
+
+	builder.AddToSolver(fSolver, false);
 }
 
 
