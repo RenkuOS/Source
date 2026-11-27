@@ -21,6 +21,7 @@
 
 #include <Debug.h>
 
+#include <Autolock.h>
 #include <DirectWindow.h>
 #include <PortLink.h>
 #include <View.h>
@@ -129,7 +130,8 @@ Window::Window(const BRect& frame, const char *name,
 	fBufferLost(false),
 	fHasRoundedCorners(false),
 	fCompositeAlpha(255),
-	fDecoratorGeneration(0)
+	fDecoratorGeneration(0),
+	fUpdatingLock("window updating")
 {
 	_InitWindowStack();
 
@@ -2113,6 +2115,14 @@ Window::_SendUpdateMessage()
 
 
 void
+Window::GetUpdatingRegion(BRegion* region) const
+{
+	BAutolock updatingLocker(fUpdatingLock);
+	*region = fUpdatingRegion;
+}
+
+
+void
 Window::BeginUpdate(BPrivate::PortLink& link)
 {
 	// NOTE: since we might "shift" parts of the
@@ -2159,6 +2169,11 @@ Window::BeginUpdate(BPrivate::PortLink& link)
 	}
 
 	dirty->IntersectWith(&VisibleContentRegion());
+	{
+		// from here on the buffer holds a half drawn window: the compositor leaves it alone until EndUpdate()
+		BAutolock updatingLocker(fUpdatingLock);
+		fUpdatingRegion = *dirty;
+	}
 
 //if (!fCurrentUpdateSession->IsExpose()) {
 ////sCurrentColor.red = rand() % 255;
@@ -2203,6 +2218,10 @@ Window::EndUpdate()
 	// NOTE: see comment in _BeginUpdate()
 
 	if (fInUpdate) {
+		{
+			BAutolock updatingLocker(fUpdatingLock);
+			fUpdatingRegion.MakeEmpty();
+		}
 		// re-enable copy to front
 		fDrawingEngine->SetCopyToFrontEnabled(true);
 

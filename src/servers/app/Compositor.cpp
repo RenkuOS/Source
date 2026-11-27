@@ -329,10 +329,28 @@ Compositor::_CompositeDamage(BRegion* present)
 	}
 	damage.Include(&direct);
 
+	// What a window is drawing at this moment is left for the next frame: it draws into the buffer that is read here, and what is
+	// there in the middle of an update is only part of the picture (a white background that the views have not drawn over yet).
+	// The update's own damage comes when it ends (Window::EndUpdate()).
+	BRegion updating;
+	for (Window* window = windows.FirstWindow(); window != NULL;
+			window = window->NextWindow(workspace)) {
+		if (window->IsHidden() || !window->InUpdate())
+			continue;
+		BRegion region;
+		window->GetUpdatingRegion(&region);
+		updating.Include(&region);
+	}
+	BRegion deferred(damage);
+	deferred.IntersectWith(&updating);
+	damage.Exclude(&updating);
+
 	_Composite(damage, present);
 
 	// and again in the next one
 	Composite(direct);
+	if (deferred.CountRects() > 0)
+		Composite(deferred);
 }
 
 
