@@ -251,6 +251,9 @@ public:
 				frame->x[0] = thread_get_current_thread()->arch_info.old_x0;
 				frame->elr -= 4;
 			}
+
+			// interrupts stay disabled until the eret
+			arm64_sync_user_single_step(fThread);
 		}
 		arm64_pop_iframe(&fThread->arch_info.iframes);
 	}
@@ -388,6 +391,31 @@ do_sync_handler(iframe * frame)
 			signalCode = FPE_FLTINV;
 			signalAddress = frame->elr;
 			break;
+
+		case EXCP_BRK:
+			if (isUser && (atomic_get(&thread_get_current_thread()->team
+					->debug_info.flags) & B_TEAM_DEBUG_DEBUGGER_INSTALLED) != 0) {
+				// ELR still points at the BRK, as debuggers expect
+				enable_interrupts();
+				user_debug_breakpoint_hit(true);
+				return;
+			}
+			exceptionType = B_GENERAL_PROTECTION_FAULT;
+			signalNumber = SIGTRAP;
+			signalCode = TRAP_BRKPT;
+			signalAddress = frame->elr;
+			break;
+
+		case EXCP_SOFTSTP_EL0:
+			// Every return to EL0 syncs MDSCR_EL1.SS with the thread's flag,
+			// so this should not happen without the flag. If it does, it is
+			// a stale step: ignore it; MDSCR_EL1 is reset on the way out.
+			if ((atomic_get(&thread_get_current_thread()->debug_info.flags)
+					& B_THREAD_DEBUG_SINGLE_STEP) != 0) {
+				enable_interrupts();
+				user_debug_single_stepped();
+			}
+			return;
 
 		case EXCP_SVC64:
 		{

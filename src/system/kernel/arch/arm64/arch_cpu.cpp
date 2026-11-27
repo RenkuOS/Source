@@ -44,6 +44,14 @@ arch_cpu_init_percpu(kernel_args *args, int curr_cpu)
 
 	gCPU[curr_cpu].arch.mpidr = READ_SPECIALREG(MPIDR_EL1);
 
+	// The OS lock is set on cold reset and blocks the software step
+	// exceptions used to single-step userland threads. Of MDSCR_EL1, only
+	// SS is ours; leave what the firmware set.
+	WRITE_SPECIALREG(OSLAR_EL1, 0);
+	WRITE_SPECIALREG(MDSCR_EL1, READ_SPECIALREG(MDSCR_EL1) & ~DBG_MDSCR_SS);
+	arm64_isb();
+	gCPU[curr_cpu].arch.user_single_step = false;
+
 	return 0;
 }
 

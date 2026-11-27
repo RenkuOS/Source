@@ -150,6 +150,8 @@ namespace BKernel {
 typedef struct arch_cpu_info {
 	uint64						mpidr;
 	BKernel::Thread*			last_vfp_user;
+	bool						user_single_step;
+		// shadow of MDSCR_EL1.SS, to avoid (possibly trapping) rewrites
 } arch_cpu_info;
 #endif
 

@@ -16,6 +16,7 @@ extern "C" {
 
 void arm64_push_iframe(struct iframe_stack *stack, struct iframe *frame);
 void arm64_pop_iframe(struct iframe_stack *stack);
+void arm64_sync_user_single_step(Thread *thread);
 
 static inline Thread * arch_thread_get_current_thread(void)
 {
