@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: MIT
+
+SubDir HAIKU_TOP src tests servers app offscreen_event_target ;
+
+SimpleTest OffscreenEventTarget :
+	OffscreenEventTarget.cpp
+	: be game [ TargetLibsupc++ ]
+;

@@ -209,8 +209,13 @@ ServerWindow::~ServerWindow()
 	if (!fWindow->IsOffscreenWindow()) {
 		fWindowAddedToDesktop = false;
 		fDesktop->RemoveWindow(fWindow.Get());
-		fDesktop = NULL;
+	} else {
+		// Offscreen windows are not in the Desktop, but their views can still
+		// register event listeners (BScrollBar does); do not leave a dangling
+		// EventTarget in the EventDispatcher.
+		fDesktop->EventDispatcher().RemoveTarget(EventTarget());
 	}
+	fDesktop = NULL;
 
 	if (App() != NULL) {
 		App()->RemoveWindow(this);
