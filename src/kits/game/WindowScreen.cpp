@@ -22,9 +22,11 @@
 #include <String.h>
 
 #include <AppServerLink.h>
+#include <EmulatedScreen.h>
 #include <input_globals.h>
 #include <InputServerTypes.h>
 #include <InterfacePrivate.h>
+#include <PrivateScreen.h>
 #include <ServerProtocol.h>
 #include <WindowPrivate.h>
 
@@ -169,6 +171,159 @@ draw_rect_32(int32 sx, int32 sy, int32 sw, int32 sh, uint32 color)
 	sAcquireEngineHook(B_2D_ACCELERATION, 0xff, NULL, &sEngineToken);
 	sFillRectHook(sEngineToken, color, &param, 1);
 	sReleaseEngineHook(sEngineToken, NULL);
+	return 0;
+}
+
+
+// The same hooks for a frame buffer that app_server emulates: the accelerant
+// would draw to the real one, so they are done here, on ours. They take the
+// accelerant's conventions: rectangles to fill include their right and bottom
+// edges, and the width and height of a blit are one less than its size.
+
+static uint8* sEmulatedBits;
+static uint32 sEmulatedBytesPerRow;
+static uint32 sEmulatedBytesPerPixel;
+static int32 sEmulatedWidth;
+static int32 sEmulatedHeight;
+
+
+static bool
+clip_to_emulated(int32& left, int32& top, int32& right, int32& bottom)
+{
+	left = max_c(left, 0);
+	top = max_c(top, 0);
+	right = min_c(right, sEmulatedWidth - 1);
+	bottom = min_c(bottom, sEmulatedHeight - 1);
+	return sEmulatedBits != NULL && left <= right && top <= bottom;
+}
+
+
+static void
+emulated_fill(int32 left, int32 top, int32 right, int32 bottom, uint32 color)
+{
+	if (!clip_to_emulated(left, top, right, bottom))
+		return;
+
+	for (int32 y = top; y <= bottom; y++) {
+		uint8* row = sEmulatedBits + y * sEmulatedBytesPerRow;
+		switch (sEmulatedBytesPerPixel) {
+			case 1:
+				memset(row + left, (uint8)color, right - left + 1);
+				break;
+			case 2:
+				for (int32 x = left; x <= right; x++)
+					((uint16*)row)[x] = (uint16)color;
+				break;
+			default:
+				for (int32 x = left; x <= right; x++)
+					((uint32*)row)[x] = color;
+				break;
+		}
+	}
+}
+
+
+static int32
+emulated_draw_rect_8(int32 left, int32 top, int32 right, int32 bottom,
+	uint8 color)
+{
+	emulated_fill(left, top, right, bottom, color);
+	return 0;
+}
+
+
+static int32
+emulated_draw_rect_16(int32 left, int32 top, int32 right, int32 bottom,
+	uint16 color)
+{
+	emulated_fill(left, top, right, bottom, color);
+	return 0;
+}
+
+
+static int32
+emulated_draw_rect_32(int32 left, int32 top, int32 right, int32 bottom,
+	uint32 color)
+{
+	emulated_fill(left, top, right, bottom, color);
+	return 0;
+}
+
+
+static int32
+emulated_blit(int32 sx, int32 sy, int32 dx, int32 dy, int32 width,
+	int32 height)
+{
+	// Only what lies inside the frame buffer at both ends is copied.
+	int32 left = max_c(0, max_c(-sx, -dx));
+	int32 top = max_c(0, max_c(-sy, -dy));
+	int32 right = min_c(width, min_c(sEmulatedWidth - 1 - sx,
+		sEmulatedWidth - 1 - dx));
+	int32 bottom = min_c(height, min_c(sEmulatedHeight - 1 - sy,
+		sEmulatedHeight - 1 - dy));
+	if (sEmulatedBits == NULL || left > right || top > bottom)
+		return 0;
+
+	size_t bytes = (right - left + 1) * sEmulatedBytesPerPixel;
+	// Overlapping rows are copied in the order that reads each one before
+	// it is written.
+	bool upwards = dy > sy;
+	for (int32 i = top; i <= bottom; i++) {
+		int32 row = upwards ? bottom - (i - top) : i;
+		uint8* source = sEmulatedBits + (sy + row) * sEmulatedBytesPerRow
+			+ (sx + left) * sEmulatedBytesPerPixel;
+		uint8* target = sEmulatedBits + (dy + row) * sEmulatedBytesPerRow
+			+ (dx + left) * sEmulatedBytesPerPixel;
+		memmove(target, source, bytes);
+	}
+	return 0;
+}
+
+
+static int32
+emulated_scaled_filtered_blit(int32 sx, int32 sy, int32 sw, int32 sh,
+	int32 dx, int32 dy, int32 dw, int32 dh)
+{
+	int32 sourceRight = sx + sw;
+	int32 sourceBottom = sy + sh;
+	if (!clip_to_emulated(sx, sy, sourceRight, sourceBottom))
+		return 0;
+	sw = sourceRight - sx;
+	sh = sourceBottom - sy;
+
+	// The source is copied first, as the two may overlap.
+	size_t bytesPerRow = (sw + 1) * sEmulatedBytesPerPixel;
+	uint8* source = (uint8*)malloc(bytesPerRow * (sh + 1));
+	if (source == NULL)
+		return 0;
+	for (int32 y = 0; y <= sh; y++) {
+		memcpy(source + y * bytesPerRow, sEmulatedBits
+			+ (sy + y) * sEmulatedBytesPerRow + sx * sEmulatedBytesPerPixel,
+			bytesPerRow);
+	}
+
+	for (int32 y = max_c(0, -dy); y <= dh && dy + y < sEmulatedHeight; y++) {
+		const uint8* sourceRow = source + (y * (sh + 1) / (dh + 1))
+			* bytesPerRow;
+		uint8* target = sEmulatedBits + (dy + y) * sEmulatedBytesPerRow;
+		for (int32 x = max_c(0, -dx); x <= dw && dx + x < sEmulatedWidth;
+				x++) {
+			int32 column = x * (sw + 1) / (dw + 1);
+			memcpy(target + (dx + x) * sEmulatedBytesPerPixel,
+				sourceRow + column * sEmulatedBytesPerPixel,
+				sEmulatedBytesPerPixel);
+		}
+	}
+
+	free(source);
+	return 0;
+}
+
+
+static int32
+emulated_card_sync()
+{
+	// It is all done by the time the hooks return.
 	return 0;
 }
 
@@ -345,7 +500,13 @@ BWindowScreen::SetColorList(rgb_color *list, int32 firstIndex, int32 lastIndex)
 			colors[j++] = fPalette[x].blue;
 		}
 
-		if (fAddonImage >= 0) {
+		if (fEmulating) {
+			emulated_screen* screen = _EmulatedScreen();
+			if (screen != NULL) {
+				for (int32 i = 0; i < 256; i++)
+					screen->palette[i] = fPalette[i];
+			}
+		} else if (fAddonImage >= 0) {
 			set_indexed_colors setIndexedColors
 				= (set_indexed_colors)fGetAccelerantHook(B_SET_INDEXED_COLORS,
 					NULL);
@@ -390,6 +551,13 @@ status_t
 BWindowScreen::SetFrameBuffer(int32 width, int32 height)
 {
 	CALLED();
+	if (fEmulating || _IsScreenRotated()) {
+		display_mode mode = *fDisplayMode;
+		mode.virtual_width = (uint16)width;
+		mode.virtual_height = (uint16)height;
+		return _EmulateDisplayMode(&mode);
+	}
+
 	display_mode highMode = *fDisplayMode;
 	highMode.flags |= B_SCROLL;
 
@@ -412,6 +580,23 @@ status_t
 BWindowScreen::MoveDisplayArea(int32 x, int32 y)
 {
 	CALLED();
+	if (fEmulating) {
+		emulated_screen* screen = _EmulatedScreen();
+		if (screen == NULL || x < 0 || y < 0
+			|| x + screen->display_width > screen->width
+			|| y + screen->display_height > screen->height) {
+			return B_ERROR;
+		}
+
+		screen->display_x = x;
+		screen->display_y = y;
+		fFrameBufferInfo.display_x = x;
+		fFrameBufferInfo.display_y = y;
+		fDisplayMode->h_display_start = x;
+		fDisplayMode->v_display_start = y;
+		return B_OK;
+	}
+
 	move_display_area moveDisplayArea
 		= (move_display_area)fGetAccelerantHook(B_MOVE_DISPLAY, NULL);
 	if (moveDisplayArea && moveDisplayArea((int16)x, (int16)y) == B_OK) {
@@ -455,6 +640,25 @@ graphics_card_hook
 BWindowScreen::CardHookAt(int32 index)
 {
 	CALLED();
+	if (fEmulating) {
+		switch (index) {
+			case 5: // 8 bit fill rect
+				return (graphics_card_hook)emulated_draw_rect_8;
+			case 6: // 32 bit fill rect
+				return (graphics_card_hook)emulated_draw_rect_32;
+			case 7: // screen to screen blit
+				return (graphics_card_hook)emulated_blit;
+			case 8: // screen to screen scaled filtered blit
+				return (graphics_card_hook)emulated_scaled_filtered_blit;
+			case 10: // sync aka wait for graphics card idle
+				return (graphics_card_hook)emulated_card_sync;
+			case 13: // 16 bit fill rect
+				return (graphics_card_hook)emulated_draw_rect_16;
+			default:
+				return NULL;
+		}
+	}
+
 	if (fAddonImage < 0)
 		return NULL;
 
@@ -593,6 +797,8 @@ BWindowScreen::_InitData(uint32 space, uint32 attributes)
 	fDebugSem = -1;
 	fActivateState = false;
 	fWorkState = false;
+	fEmulating = false;
+	fEmulationArea = -1;
 
 	status_t status = B_ERROR;
 	try {
@@ -651,6 +857,13 @@ BWindowScreen::_DisposeData()
 
 	if (fDebugState)
 		activate_workspace(fDebugWorkspace);
+
+	_StopEmulation();
+	if (fEmulationArea >= 0) {
+		delete_area(fEmulationArea);
+		fEmulationArea = -1;
+		sEmulatedBits = NULL;
+	}
 
 	delete fDisplayMode;
 	fDisplayMode = NULL;
@@ -738,7 +951,10 @@ BWindowScreen::_Deactivate()
 		SetColorList((rgb_color *)screen.ColorMap()->color_list);
 	}
 
-	_AssertDisplayMode(fOriginalDisplayMode);
+	// The screen's mode is only set back when it was changed: an emulated
+	// mode doesn't, and on a rotated screen it can't be set at all.
+	_StopEmulation();
+	_SetDisplayMode(fOriginalDisplayMode);
 	_ResetAccelerantHooks();
 
 	be_app->ShowCursor();
@@ -934,7 +1150,17 @@ BWindowScreen::_GetModeFromSpace(uint32 space, display_mode *dmode)
 		}
 	}
 
-	return B_ERROR;
+	// A mode the screen doesn't have is emulated by app_server.
+	memcpy(dmode, fOriginalDisplayMode, sizeof(display_mode));
+	dmode->space = colorSpace;
+	dmode->virtual_width = width;
+	dmode->virtual_height = height;
+	dmode->timing.h_display = width;
+	dmode->timing.v_display = height;
+	dmode->h_display_start = 0;
+	dmode->v_display_start = 0;
+	dmode->flags = 0;
+	return B_OK;
 }
 
 
@@ -1004,11 +1230,27 @@ BWindowScreen::_InitClone()
 }
 
 
+/*!	Sets \a displayMode, or has app_server emulate it: on a rotated screen,
+	which can't be drawn to as it is, or when the screen doesn't have it.
+*/
 status_t
 BWindowScreen::_AssertDisplayMode(display_mode* displayMode)
 {
 	CALLED();
 
+	if (!_IsScreenRotated() && _HasDisplayMode(displayMode)
+		&& _SetDisplayMode(displayMode) == B_OK) {
+		_StopEmulation();
+		return B_OK;
+	}
+
+	return _EmulateDisplayMode(displayMode);
+}
+
+
+status_t
+BWindowScreen::_SetDisplayMode(display_mode* displayMode)
+{
 	BScreen screen(this);
 
 	display_mode currentMode;
@@ -1044,4 +1286,172 @@ BWindowScreen::_AssertDisplayMode(display_mode* displayMode)
 	fFrameBufferInfo.display_y = 0;
 
 	return B_OK;
+}
+
+
+/*!	Whether the screen has \a mode: one from its mode list or the one it had,
+	maybe with another virtual size, as SetFrameBuffer() asks for. Those
+	_GetModeFromSpace() makes up for an emulated screen have other timings.
+*/
+bool
+BWindowScreen::_HasDisplayMode(const display_mode* mode)
+{
+	if (mode->space == fOriginalDisplayMode->space
+		&& memcmp(&mode->timing, &fOriginalDisplayMode->timing,
+			sizeof(display_timing)) == 0) {
+		return true;
+	}
+
+	for (uint32 i = 0; i < fModeCount; i++) {
+		if (mode->space == fModeList[i].space
+			&& memcmp(&mode->timing, &fModeList[i].timing,
+				sizeof(display_timing)) == 0) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+
+bool
+BWindowScreen::_IsScreenRotated()
+{
+	int32 degrees = 0;
+	BPrivate::BPrivateScreen* screen = BPrivate::BPrivateScreen::Get(this);
+	if (screen != NULL) {
+		if (screen->GetRotation(&degrees) != B_OK)
+			degrees = 0;
+		BPrivate::BPrivateScreen::Put(screen);
+	}
+	return degrees != 0;
+}
+
+
+/*!	Has app_server give us a frame buffer of our own in \a displayMode, and
+	show it on the screen while we have it.
+*/
+status_t
+BWindowScreen::_EmulateDisplayMode(display_mode* displayMode)
+{
+	uint32 width = displayMode->virtual_width;
+	uint32 height = displayMode->virtual_height;
+	uint32 displayWidth = displayMode->timing.h_display;
+	uint32 displayHeight = displayMode->timing.v_display;
+	if (displayWidth == 0 || displayWidth > width)
+		displayWidth = width;
+	if (displayHeight == 0 || displayHeight > height)
+		displayHeight = height;
+
+	uint32 bitsPerPixel;
+	switch (displayMode->space) {
+		case B_CMAP8:
+			bitsPerPixel = 8;
+			break;
+		case B_RGB15:
+			bitsPerPixel = 15;
+			break;
+		case B_RGB16:
+			bitsPerPixel = 16;
+			break;
+		case B_RGB32:
+			bitsPerPixel = 32;
+			break;
+		default:
+			return B_BAD_VALUE;
+	}
+
+	AppServerLink link;
+	link.StartMessage(AS_EMULATE_SCREEN);
+	link.Attach<uint32>(width);
+	link.Attach<uint32>(height);
+	link.Attach<uint32>(displayWidth);
+	link.Attach<uint32>(displayHeight);
+	link.Attach<color_space>((color_space)displayMode->space);
+
+	status_t status;
+	if (link.FlushWithReply(status) != B_OK)
+		return B_ERROR;
+	if (status != B_OK)
+		return status;
+
+	area_id serverArea;
+	link.Read<area_id>(&serverArea);
+
+	emulated_screen* screen;
+	area_id area = clone_area("window screen", (void**)&screen, B_ANY_ADDRESS,
+		B_READ_AREA | B_WRITE_AREA, serverArea);
+	if (area < 0)
+		return area;
+
+	// Our own clone of the previous frame buffer was kept, in case anything
+	// was still drawing to it.
+	if (fEmulationArea >= 0)
+		delete_area(fEmulationArea);
+	fEmulationArea = area;
+	fEmulating = true;
+
+	if (displayMode != fDisplayMode)
+		memcpy(fDisplayMode, displayMode, sizeof(display_mode));
+	fDisplayMode->h_display_start = 0;
+	fDisplayMode->v_display_start = 0;
+
+	for (int32 i = 0; i < 256; i++)
+		screen->palette[i] = fPalette[i];
+
+	BScreen realScreen(this);
+	fCardInfo.version = 2;
+	fCardInfo.id = realScreen.ID().id;
+	fCardInfo.bits_per_pixel = bitsPerPixel;
+	fCardInfo.width = width;
+	fCardInfo.height = height;
+	memcpy(fCardInfo.rgba_order, "bgra", 4);
+	fCardInfo.flags = B_FRAME_BUFFER_CONTROL | B_PARALLEL_BUFFER_ACCESS;
+	fCardInfo.frame_buffer = (uint8*)screen + screen->offset;
+	fCardInfo.bytes_per_row = screen->bytes_per_row;
+
+	sEmulatedBits = (uint8*)fCardInfo.frame_buffer;
+	sEmulatedBytesPerRow = screen->bytes_per_row;
+	sEmulatedBytesPerPixel = (bitsPerPixel + 7) / 8;
+	sEmulatedWidth = width;
+	sEmulatedHeight = height;
+
+	fFrameBufferInfo.bits_per_pixel = bitsPerPixel;
+	fFrameBufferInfo.bytes_per_row = screen->bytes_per_row;
+	fFrameBufferInfo.width = width;
+	fFrameBufferInfo.height = height;
+	fFrameBufferInfo.display_width = displayWidth;
+	fFrameBufferInfo.display_height = displayHeight;
+	fFrameBufferInfo.display_x = 0;
+	fFrameBufferInfo.display_y = 0;
+
+	return B_OK;
+}
+
+
+/*!	app_server stops showing our frame buffer. We keep our clone of it until
+	we get another one, or go away.
+*/
+void
+BWindowScreen::_StopEmulation()
+{
+	if (!fEmulating)
+		return;
+
+	AppServerLink link;
+	link.StartMessage(AS_STOP_SCREEN_EMULATION);
+	status_t status;
+	link.FlushWithReply(status);
+
+	fEmulating = false;
+}
+
+
+emulated_screen*
+BWindowScreen::_EmulatedScreen()
+{
+	area_info info;
+	if (fEmulationArea < 0 || get_area_info(fEmulationArea, &info) != B_OK)
+		return NULL;
+	return (emulated_screen*)info.address;
 }

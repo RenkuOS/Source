@@ -671,7 +671,17 @@ EventDispatcher::_SendMessage(BMessenger& messenger, BMessage* message,
 	// TODO: add failed messages to a queue, and start dropping them by importance
 	//	(and use the same mechanism in ServerWindow::SendMessageToClient())
 
-	status_t status = messenger.SendMessage(message, (BHandler*)NULL, 0);
+	// A team whose screen app_server emulates gets the mouse where it is on
+	// its frame buffer.
+	status_t status;
+	BPoint where;
+	if (fDesktop != NULL && message->FindPoint("screen_where", &where) == B_OK
+		&& fDesktop->MapEmulatedScreenPoint(messenger.Team(), where)) {
+		BMessage mapped(*message);
+		mapped.ReplacePoint("screen_where", where);
+		status = messenger.SendMessage(&mapped, (BHandler*)NULL, 0);
+	} else
+		status = messenger.SendMessage(message, (BHandler*)NULL, 0);
 	if (status != B_OK) {
 		printf("EventDispatcher: failed to send message '%.4s' to target: %s\n",
 			(char*)&message->what, strerror(status));
