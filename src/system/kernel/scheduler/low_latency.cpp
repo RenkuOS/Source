@@ -130,7 +130,9 @@ rebalance(const ThreadData* threadData)
 	int32 difference = coreLoad - otherLoad - kLoadDifference;
 	ASSERT(difference > 0);
 
-	int32 threadLoad = threadData->GetLoad() / core->CPUCount();
+	int32 threadLoad = threadData->GetLoad()
+		/ std::max(core->CPUCount(), (int32)1);
+		// (0 while its last CPU is being disabled)
 	return difference >= threadLoad ? other : core;
 }
 
