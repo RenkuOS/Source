@@ -271,6 +271,54 @@ limit_modes_for_ports(display_mode* mode)
 	return limit == 0 || mode->timing.pixel_clock <= limit;
 }
 
+
+// Extra scaled modes for high-DPI panels. The panel fitter handles these.
+// Timings are approximate; the hardware runs the panel at native mode.
+// Flags match the base mode list so scrolling and overlays still work.
+static const uint32 kExtraModeFlags = B_8_BIT_DAC | B_HARDWARE_CURSOR
+	| B_PARALLEL_ACCESS | B_DPMS | B_SUPPORTS_OVERLAYS | B_SCROLL;
+
+static const display_mode kExtraHighDpiModes[] = {
+	{{241500, 2560, 2608, 2640, 2720, 1440, 1443, 1448, 1481,
+		B_POSITIVE_HSYNC | B_POSITIVE_VSYNC}, B_RGB32, 2560, 1440, 0, 0,
+		kExtraModeFlags},
+	{{268500, 2560, 2608, 2640, 2720, 1600, 1603, 1609, 1646,
+		B_POSITIVE_HSYNC | B_POSITIVE_VSYNC}, B_RGB32, 2560, 1600, 0, 0,
+		kExtraModeFlags},
+	{{162000, 2048, 2074, 2154, 2250, 1152, 1155, 1160, 1200,
+		B_POSITIVE_HSYNC | B_POSITIVE_VSYNC}, B_RGB32, 2048, 1152, 0, 0,
+		kExtraModeFlags},
+	{{198000, 2304, 2336, 2368, 2440, 1296, 1299, 1304, 1350,
+		B_POSITIVE_HSYNC | B_POSITIVE_VSYNC}, B_RGB32, 2304, 1296, 0, 0,
+		kExtraModeFlags},
+};
+
+
+static bool
+panel_is_high_dpi(void)
+{
+	// Prefer the VBT panel timing if we have it.
+	if (gInfo->shared_info->got_vbt
+		&& gInfo->shared_info->panel_timing.h_display >= 3000) {
+		return true;
+	}
+
+	// Otherwise look at the detailed timings in the EDID.
+	if (gInfo->has_edid) {
+		for (uint32 i = 0; i < EDID1_NUM_DETAILED_MONITOR_DESC; i++) {
+			edid1_detailed_monitor* mon = &gInfo->edid_info.detailed_monitor[i];
+			if (mon->monitor_desc_type != EDID1_IS_DETAILED_TIMING)
+				continue;
+
+			if (mon->data.detailed_timing.h_active >= 3000)
+				return true;
+		}
+	}
+
+	return false;
+}
+
+
 /*!	Creates the initial mode list of the primary accelerant.
 	It's called from intel_init_accelerant().
 */
@@ -338,9 +386,17 @@ create_mode_list(void)
 		gInfo->mode_list_area = create_display_modes("intel extreme modes", NULL, &mode, 1,
 			supportedSpaces, colorSpaceCount, limitModes, &list, &count);
 	} else {
-		// Otherwise return the 'real' list of modes
+		// Otherwise return the real list of modes.
+		// On high-DPI panels also offer a few intermediate scaled modes.
+		const display_mode* extra = NULL;
+		uint32 extraCount = 0;
+		if (panel_is_high_dpi()) {
+			extra = kExtraHighDpiModes;
+			extraCount = B_COUNT_OF(kExtraHighDpiModes);
+		}
+
 		gInfo->mode_list_area = create_display_modes("intel extreme modes",
-			gInfo->has_edid ? &gInfo->edid_info : NULL, NULL, 0,
+			gInfo->has_edid ? &gInfo->edid_info : NULL, extra, extraCount,
 			supportedSpaces, colorSpaceCount,
 			max_port_pixel_clock() != 0 ? limit_modes_for_ports : NULL, &list, &count);
 	}
