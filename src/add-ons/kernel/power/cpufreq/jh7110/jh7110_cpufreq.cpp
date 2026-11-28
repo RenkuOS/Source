@@ -7,11 +7,13 @@
  * CPU frequency scaling for the StarFive JH7110 (Milk-V Mars, VisionFive 2).
  *
  * The operating points come from the device tree ("operating-points-v2" of
- * the CPU nodes: 375, 500, 750 MHz at 0.8 V and 1.5 GHz at 1.04 V upstream).
- * The CPU clock is PLL0; the points used are those with a PLL0 preset of
- * fbdiv 125 in integer mode (as Linux's clk-starfive-jh7110-pll.c). While
- * PLL0 changes, the CPU runs from the 24 MHz oscillator, as the PLL0 notifier
- * of clk-starfive-jh7110-sys.c does.
+ * the CPU nodes: 375, 500, 750 MHz at 0.8 V and 1.5 GHz at 1.04 V upstream);
+ * the table gives the voltages and the highest rate. As Linux does
+ * (clk-starfive-jh7110-sys.c: "cpu_core" is a divider of PLL0 without
+ * CLK_SET_RATE_PARENT), PLL0 stays at one rate and the points are dividers of
+ * it: PLL0 also feeds the VPU (wave511_vce), the USB 2.0 PHY (usb_125m), the
+ * GMAC transmit clocks and the QSPI reference, which would otherwise follow
+ * every change of the CPU clock and run from a relocking PLL meanwhile.
  *
  * The CPU supply ("cpu-supply", DCDC2 of the AXP15060 PMIC on I2C) is set
  * once to the highest voltage of the table and never lowered, so every
@@ -19,15 +21,18 @@
  * (the I2C bus comes up after this module), the frequency is left as the
  * firmware set it.
  *
- * The points above MAX_MHZ (1.5 GHz upstream) are not used: the Mars hangs
- * at 75 C under load at 1.5 GHz. In their place come 1000, 1250 and 1375 MHz,
- * with the PLL0 presets of Linux (fbdiv/prediv 125/3, 625/12 and 1375/24,
- * integer mode), at the voltage of the replaced point. 1400 MHz as 175/3
- * hung the Mars; the presets were tried one by one and under load.
+ * Rates above MAX_MHZ (1.5 GHz upstream) are not used: the Mars hangs at
+ * 75 C under load at 1.5 GHz. In their place PLL0 runs at 1375 MHz, with the
+ * PLL0 preset of Linux (fbdiv/prediv 1375/24, integer mode), at the voltage
+ * of the replaced point; 1400 MHz as 175/3 hung the Mars. Without such a
+ * point PLL0 runs at the highest point of the table with a preset of
+ * fbdiv 125. The points are PLL0 / 1 to PLL0 / POINT_DIVIDERS.
  *
- * A change runs the CPU from the oscillator, writes prediv before fbdiv (so
- * that PLL0 is never programmed far above the new rate in between), and
- * waits PLL_LOCK_WAIT with interrupts enabled before going back to PLL0.
+ * PLL0 is set once, when the supply is ready: the CPU runs from the 24 MHz
+ * oscillator meanwhile (as the PLL0 notifier of clk-starfive-jh7110-sys.c),
+ * prediv is written before fbdiv, and the dividers of the other PLL0 clocks
+ * are set for the new rate (kPll0Children), raised before PLL0 goes up so
+ * that none of them runs faster than wanted in between.
  *
  * Low latency mode runs at the highest point; power saving mode moves
  * between the points with the load the scheduler reports. Both are limited
@@ -74,6 +79,7 @@ extern void* gFDT;
 #define CLK_MUX_SHIFT			24
 #define CLK_MUX_MASK			(0x3fu << CLK_MUX_SHIFT)
 #define CLK_DIV_MASK			0x00ffffffu
+#define CLK_CPU_CORE_MAX		7
 #define PLL0_PD					0x18
 #define PLL0_FBDIV				0x1c
 #define PLL0_FRAC				0x20
@@ -99,6 +105,7 @@ extern void* gFDT;
 #define AXP15060_DCDC2_MASK		0x7f
 
 #define MAX_POINTS				8
+#define POINT_DIVIDERS			4		// points: PLL0 / 1 .. PLL0 / 4
 #define SWITCH_INTERVAL			100000		// at most one change per 100 ms
 // temperature sensor ("starfive,jh7110-temp"), see jh7110_thermal
 #define SFCTEMP_RSTN			(1u << 0)
@@ -120,11 +127,11 @@ extern void* gFDT;
 struct operating_point {
 	uint32	mhz;
 	uint32	microvolts;
-	uint32	fbdiv;
-	uint32	prediv;
+	uint32	divider;		// of cpu_core
 };
 
-// the extra points: PLL0 presets of Linux's clk-starfive-jh7110-pll.c
+// PLL0 presets of Linux's clk-starfive-jh7110-pll.c used in place of the
+// points above MAX_MHZ, the highest that is not above MAX_MHZ wins
 static const struct {
 	uint32	fbdiv;
 	uint32	prediv;
@@ -134,10 +141,29 @@ static const struct {
 	{ 1375, 24 },	// 1375 MHz
 };
 
+// The other clocks of PLL0 (SYS CRG dividers): set for the new PLL0 rate to
+// targetMHz or below, or, without a target, to their rate before or below.
+static const struct {
+	uint32		index;
+	uint32		maxDivider;
+	uint32		targetMHz;
+	const char*	name;
+} kPll0Children[] = {
+	{ 72, 7, 750, "wave511_vce" },		// VPU: 750 MHz as in Linux (1.5 GHz / 2)
+	{ 89, 16, 0, "qspi_ref_src" },
+	{ 95, 15, 125, "usb_125m" },
+	{ 99, 7, 0, "gmac_src" },
+	{ 100, 15, 125, "gmac1_gtxclk" },
+	{ 108, 15, 125, "gmac0_gtxclk" },
+};
+
 
 static device_manager_info* sDeviceManager;
 
 static operating_point sPoints[MAX_POINTS];
+static uint32 sPll0Fbdiv;
+static uint32 sPll0Prediv;
+static bool sPll0Set;
 static int32 sPointCount;
 static uint32 sMaxMicrovolts;
 static uint32 sPmicAddress;
@@ -169,8 +195,10 @@ fdt_u32(const void* prop, int index)
 
 
 /*!	Reads the operating points of the first CPU and where its supply is.
-	Keeps the points that have a PLL0 preset with fbdiv 125, up to MAX_MHZ;
-	the points above are replaced by MAX_MHZ at the lowest of their voltages.
+	Picks the PLL0 rate: the highest point up to MAX_MHZ with a preset of
+	fbdiv 125, or, when the table has points above MAX_MHZ, the highest of
+	kExtraPresets up to MAX_MHZ, at the lowest voltage of those points. The
+	points are dividers of that rate.
 */
 static status_t
 read_device_tree()
@@ -193,6 +221,7 @@ read_device_tree()
 		return B_DEVICE_NOT_FOUND;
 
 	uint32 maxMicrovoltsAbove = 0;
+	uint32 pll0Mhz = 0;
 	int point;
 	fdt_for_each_subnode(point, gFDT, table) {
 		const void* hz = fdt_getprop(gFDT, point, "opp-hz", &length);
@@ -205,51 +234,44 @@ read_device_tree()
 
 		uint32 mhz = rate / 1000000;
 		uint32 microvolts = fdt_u32(volts, 0);
-		uint32 fbdiv = PLL0_FBDIV_PRESET;
 		if (mhz > MAX_MHZ) {
-			// replaced by MAX_MHZ at this point's voltage
+			// replaced by a preset at this point's voltage
 			if (maxMicrovoltsAbove == 0 || microvolts < maxMicrovoltsAbove)
 				maxMicrovoltsAbove = microvolts;
 			continue;
 		}
-		uint32 osc = OSC_MHZ * fbdiv;
+		sMaxMicrovolts = max_c(sMaxMicrovolts, microvolts);
+		uint32 osc = OSC_MHZ * PLL0_FBDIV_PRESET;
 		if (mhz == 0 || osc % mhz != 0 || osc / mhz > PLL_PREDIV_MASK
-			|| sPointCount == MAX_POINTS - B_COUNT_OF(kExtraPresets)) {
-			INFO("%" B_PRIu32 " MHz has no PLL0 preset, not used\n", mhz);
+			|| mhz <= pll0Mhz) {
 			continue;
 		}
-
-		// sorted by frequency
-		int32 index = sPointCount++;
-		while (index > 0 && sPoints[index - 1].mhz > mhz) {
-			sPoints[index] = sPoints[index - 1];
-			index--;
-		}
-		sPoints[index].mhz = mhz;
-		sPoints[index].microvolts = microvolts;
-		sPoints[index].fbdiv = fbdiv;
-		sPoints[index].prediv = osc / mhz;
-		sMaxMicrovolts = max_c(sMaxMicrovolts, microvolts);
+		pll0Mhz = mhz;
+		sPll0Fbdiv = PLL0_FBDIV_PRESET;
+		sPll0Prediv = osc / mhz;
 	}
 	if (maxMicrovoltsAbove != 0) {
-		// the extra points, above those of the table
 		for (size_t i = 0; i < B_COUNT_OF(kExtraPresets); i++) {
 			uint32 mhz = OSC_MHZ * kExtraPresets[i].fbdiv
 				/ kExtraPresets[i].prediv;
-			if (sPointCount == MAX_POINTS || mhz > MAX_MHZ
-				|| (sPointCount > 0 && sPoints[sPointCount - 1].mhz >= mhz)) {
+			if (mhz > MAX_MHZ || mhz <= pll0Mhz)
 				continue;
-			}
-			operating_point& extra = sPoints[sPointCount++];
-			extra.mhz = mhz;
-			extra.microvolts = maxMicrovoltsAbove;
-			extra.fbdiv = kExtraPresets[i].fbdiv;
-			extra.prediv = kExtraPresets[i].prediv;
+			pll0Mhz = mhz;
+			sPll0Fbdiv = kExtraPresets[i].fbdiv;
+			sPll0Prediv = kExtraPresets[i].prediv;
 		}
 		sMaxMicrovolts = max_c(sMaxMicrovolts, maxMicrovoltsAbove);
 	}
-	if (sPointCount == 0)
+	if (pll0Mhz == 0)
 		return B_DEVICE_NOT_FOUND;
+
+	// sorted by frequency; every point runs at the highest voltage anyway
+	for (uint32 divider = POINT_DIVIDERS; divider >= 1; divider--) {
+		operating_point& entry = sPoints[sPointCount++];
+		entry.mhz = pll0Mhz / divider;
+		entry.microvolts = sMaxMicrovolts;
+		entry.divider = divider;
+	}
 
 	// cpu-supply -> regulator node -> regulators -> PMIC -> I2C controller
 	prop = fdt_getprop(gFDT, cpu, "cpu-supply", &length);
@@ -482,8 +504,9 @@ static bool
 known_clock_state()
 {
 	uint32 prediv = syscon(PLL0_PREDIV) & PLL_PREDIV_MASK;
+	uint32 divider = crg(CLK_CPU_CORE) & CLK_DIV_MASK;
 	return ((crg(CLK_CPU_ROOT) & CLK_MUX_MASK) >> CLK_MUX_SHIFT) == 1
-		&& (crg(CLK_CPU_CORE) & CLK_DIV_MASK) == 1
+		&& divider >= 1 && divider <= CLK_CPU_CORE_MAX
 		&& (syscon(PLL0_PD) & (PLL0_DACPD | PLL0_DSMPD))
 			== (PLL0_DACPD | PLL0_DSMPD)
 		&& known_fbdiv(syscon(PLL0_FBDIV) & PLL_FBDIV_MASK)
@@ -492,11 +515,52 @@ known_clock_state()
 }
 
 
-static status_t
-set_point(int32 index)
+static uint32
+pll0_mhz()
 {
-	uint32 fbdiv = sPoints[index].fbdiv;
-	uint32 prediv = sPoints[index].prediv;
+	uint32 prediv = syscon(PLL0_PREDIV) & PLL_PREDIV_MASK;
+	return OSC_MHZ * (syscon(PLL0_FBDIV) & PLL_FBDIV_MASK) / prediv;
+}
+
+
+/*!	The divider of a PLL0 child for the new PLL0 rate. */
+static uint32
+child_divider(size_t child, uint32 oldMhz, uint32 newMhz)
+{
+	uint32 old = crg(kPll0Children[child].index * 4) & CLK_DIV_MASK;
+	if (old == 0)
+		return 0;
+	uint32 divider;
+	if (kPll0Children[child].targetMHz != 0) {
+		uint32 target = kPll0Children[child].targetMHz;
+		divider = (newMhz + target - 1) / target;
+	} else
+		divider = (old * newMhz + oldMhz - 1) / oldMhz;
+	return min_c(max_c(divider, 1u), kPll0Children[child].maxDivider);
+}
+
+
+static void
+set_children(const uint32* dividers)
+{
+	for (size_t i = 0; i < B_COUNT_OF(kPll0Children); i++) {
+		if (dividers[i] == 0)
+			continue;
+		uint32 offset = kPll0Children[i].index * 4;
+		sCrg[offset / 4] = (crg(offset) & ~CLK_DIV_MASK) | dividers[i];
+	}
+}
+
+
+/*!	Sets PLL0 to its fixed rate, once, with the CPU at the divider of
+	\a index.
+*/
+static status_t
+set_pll0(int32 index)
+{
+	uint32 oldMhz = 0, newMhz = OSC_MHZ * sPll0Fbdiv / sPll0Prediv;
+	uint32 oldDividers[B_COUNT_OF(kPll0Children)];
+	uint32 newDividers[B_COUNT_OF(kPll0Children)];
 
 	cpu_status state = disable_interrupts();
 	acquire_spinlock(&sSwitchLock);
@@ -507,13 +571,25 @@ set_point(int32 index)
 		return B_NOT_ALLOWED;
 	}
 
+	oldMhz = pll0_mhz();
+	for (size_t i = 0; i < B_COUNT_OF(kPll0Children); i++) {
+		oldDividers[i] = crg(kPll0Children[i].index * 4) & CLK_DIV_MASK;
+		newDividers[i] = child_divider(i, oldMhz, newMhz);
+	}
+
 	// CPU on the oscillator while PLL0 changes; prediv first, so that PLL0
-	// is not programmed far above the new rate in between
+	// is not programmed far above the new rate in between. The other PLL0
+	// clocks get their new dividers before PLL0 goes up, after it goes down.
 	sCrg[CLK_CPU_ROOT / 4] = (crg(CLK_CPU_ROOT) & ~CLK_MUX_MASK);
 	spin(10);
+	sCrg[CLK_CPU_CORE / 4] = (crg(CLK_CPU_CORE) & ~CLK_DIV_MASK)
+		| sPoints[index].divider;
+	if (newMhz >= oldMhz)
+		set_children(newDividers);
 	sSyscon[PLL0_PREDIV / 4] = (syscon(PLL0_PREDIV) & ~PLL_PREDIV_MASK)
-		| prediv;
-	sSyscon[PLL0_FBDIV / 4] = (syscon(PLL0_FBDIV) & ~PLL_FBDIV_MASK) | fbdiv;
+		| sPll0Prediv;
+	sSyscon[PLL0_FBDIV / 4] = (syscon(PLL0_FBDIV) & ~PLL_FBDIV_MASK)
+		| sPll0Fbdiv;
 
 	release_spinlock(&sSwitchLock);
 	restore_interrupts(state);
@@ -523,9 +599,45 @@ set_point(int32 index)
 
 	state = disable_interrupts();
 	acquire_spinlock(&sSwitchLock);
+	if (newMhz < oldMhz)
+		set_children(newDividers);
 	sCrg[CLK_CPU_ROOT / 4] = (crg(CLK_CPU_ROOT) & ~CLK_MUX_MASK)
 		| (1u << CLK_MUX_SHIFT);
 	spin(10);
+	release_spinlock(&sSwitchLock);
+	restore_interrupts(state);
+
+	INFO("PLL0 %" B_PRIu32 " -> %" B_PRIu32 " MHz\n", oldMhz, newMhz);
+	for (size_t i = 0; i < B_COUNT_OF(kPll0Children); i++) {
+		if (newDividers[i] == 0 || newDividers[i] == oldDividers[i])
+			continue;
+		INFO("  %s: divider %" B_PRIu32 " -> %" B_PRIu32 " (%" B_PRIu32
+			" MHz)\n", kPll0Children[i].name, oldDividers[i], newDividers[i],
+			newMhz / newDividers[i]);
+	}
+
+	sPll0Set = true;
+	sCurrentPoint = index;
+	return B_OK;
+}
+
+
+static status_t
+set_point(int32 index)
+{
+	if (!sPll0Set)
+		return set_pll0(index);
+
+	cpu_status state = disable_interrupts();
+	acquire_spinlock(&sSwitchLock);
+	if (!known_clock_state()) {
+		release_spinlock(&sSwitchLock);
+		restore_interrupts(state);
+		return B_NOT_ALLOWED;
+	}
+	// a divider change of cpu_core, as Linux's clock framework does it
+	sCrg[CLK_CPU_CORE / 4] = (crg(CLK_CPU_CORE) & ~CLK_DIV_MASK)
+		| sPoints[index].divider;
 	release_spinlock(&sSwitchLock);
 	restore_interrupts(state);
 
