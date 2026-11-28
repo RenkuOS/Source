@@ -93,6 +93,18 @@ arch_thread_context_switch(Thread *from, Thread *to)
 	SetSatp(toMap->Satp());
 	FlushTlbAllAsid(0);
 
+	// The ASID flush above does not drop global (kernel) entries, and the
+	// SiFive U74 may keep a stale "not mapped" TLB entry for a page that was
+	// mapped later (Haiku does not flush when an invalid PTE becomes valid).
+	// If that page is the incoming thread's kernel stack, SVec/SVecU fault
+	// while saving the trap frame, before any handler can fix it up: the
+	// nested trap overwrites sepc/sstatus. Drop such entries for the stack
+	// this CPU is about to use.
+	for (addr_t page = ROUNDDOWN(to->kernel_stack_base, B_PAGE_SIZE);
+			page < to->kernel_stack_top; page += B_PAGE_SIZE) {
+		FlushTlbPage(page);
+	}
+
 	arch_context_switch(&from->arch_info.context, &to->arch_info.context);
 }
 

@@ -375,6 +375,32 @@ arch_mmu_generate_post_efi_page_tables(size_t memoryMapSize, efi_memory_descript
 	build_physical_memory_list(memoryMapSize, memoryMap, descriptorSize, descriptorVersion,
 		PHYSICAL_MEMORY_LOW, PHYSICAL_MEMORY_HIGH);
 
+	// The StarFive U-Boot on JH7110 boards leaves its frame buffer inside
+	// ordinary RAM in the EFI memory map, so the kernel could hand those pages
+	// out while the screen still shows them. Keep them out of RAM. On the
+	// JH7110 physical_buffer.start is the uncached DDR alias (RAM address +
+	// gFrameBufferAliasOffset): remove the RAM pages underneath it.
+	if (gKernelArgs.frame_buffer.enabled) {
+		uint64 fbRam = gKernelArgs.frame_buffer.physical_buffer.start;
+		if (gFrameBufferAliasOffset != 0 && fbRam >= gFrameBufferAliasOffset)
+			fbRam -= gFrameBufferAliasOffset;
+		uint64 fbStart = ROUNDDOWN(fbRam, B_PAGE_SIZE);
+		uint64 fbEnd = ROUNDUP(fbRam
+			+ gKernelArgs.frame_buffer.physical_buffer.size, B_PAGE_SIZE);
+		remove_physical_memory_range(fbStart, fbEnd - fbStart);
+		remove_physical_allocated_range(fbStart, fbEnd - fbStart);
+		dprintf("frame buffer %#" B_PRIx64 "-%#" B_PRIx64 " removed from RAM\n",
+			fbStart, fbEnd);
+	}
+
+	// Removing a range can split one and append its tail, but the kernel takes
+	// physical_memory_range[0] as the lowest RAM address (physMemBase,
+	// gVirtFromPhysOffset): keep both lists sorted.
+	sort_address_ranges(gKernelArgs.physical_memory_range,
+		gKernelArgs.num_physical_memory_ranges);
+	sort_address_ranges(gKernelArgs.physical_allocated_range,
+		gKernelArgs.num_physical_allocated_ranges);
+
 	addr_range physMemRange;
 	GetPhysMemRange(physMemRange);
 	TRACE("physMemRange: %#" B_PRIxADDR ", %#" B_PRIxSIZE "\n",
