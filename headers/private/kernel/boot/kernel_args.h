@@ -113,11 +113,19 @@ typedef struct kernel_args {
 	FixedWidthPointer<void> ucode_data;
 	uint32	ucode_data_size;
 
+	// Seconds since 1970 of the firmware clock when the loader read it, 0 if
+	// unknown (set by the arm64 EFI loader only)
+	uint64	rtc_boot_seconds;
+
 } _PACKED kernel_args;
 
 
-const size_t kernel_args_size_v1 = sizeof(kernel_args)
+// Sizes of the kernel_args of older boot loaders. Fields they lack are zero.
+const size_t kernel_args_size_v2 = sizeof(kernel_args) - sizeof(uint64);
+	// without rtc_boot_seconds
+const size_t kernel_args_size_v1 = kernel_args_size_v2
 	- sizeof(FixedWidthPointer<void>) - sizeof(uint32);
+	// without ucode_data and ucode_data_size either
 
 
 #endif	/* KERNEL_BOOT_KERNEL_ARGS_H */
