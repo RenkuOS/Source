@@ -60,6 +60,8 @@ static PowerVRDevice* sDevice;
 static pvr_device_desc sDeviceDesc;
 static uint32 sNextFreeListID;
 static uint32 sNextJobID;
+static uint32 sFreeListGrows;
+static uint32 sFreeListReconstructions;
 
 
 struct Buffer : DoublyLinkedListLinkImpl<Buffer> {
@@ -464,11 +466,18 @@ release_context(Client* client, Context* context)
 	const pvr_ctx_env& env = sDevice->ContextEnvironment();
 	const bool render = context->type == POWERVR_CONTEXT_RENDER;
 	if (!context->released && sDevice->IsRunning()) {
-		status_t status = render
-			? pvr_render_context_cleanup(env, sDevice->Firmware(),
-				&context->render, CLEANUP_TIMEOUT)
-			: pvr_gpu_context_cleanup(env, sDevice->Firmware(),
-				&context->gpu, CLEANUP_TIMEOUT);
+		// a job may wait for a free list grow: serve the firmware's
+		// requests between the attempts
+		status_t status = B_ERROR;
+		for (int attempt = 0; attempt < 4 && status != B_OK; attempt++) {
+			if (attempt > 0)
+				sDevice->ProcessFirmwareEvents();
+			status = render
+				? pvr_render_context_cleanup(env, sDevice->Firmware(),
+					&context->render, CLEANUP_TIMEOUT / 4)
+				: pvr_gpu_context_cleanup(env, sDevice->Firmware(),
+					&context->gpu, CLEANUP_TIMEOUT / 4);
+		}
 		if (status != B_OK) {
 			POWERVR_TRACE("context %" B_PRIu32 " not released by the "
 				"firmware: %s\n", context->id, strerror(status));
@@ -891,6 +900,7 @@ firmware_event(void* cookie, uint32 type, const uint32* words)
 					B_PRIu32 "\n", request->freelist_id);
 				return;
 			}
+			sFreeListGrows++;
 			status_t status = pvr_free_list_process_grow_req(env, firmware,
 				freeList);
 			// the kernel CCB was full: the firmware drains it on its own
@@ -909,6 +919,7 @@ firmware_event(void* cookie, uint32 type, const uint32* words)
 
 		case ROGUE_FWIF_FWCCB_CMD_FREELISTS_RECONSTRUCTION & 0xffff:
 		{
+			sFreeListReconstructions++;
 			rogue_fwif_kccb_cmd reply;
 			status_t status = pvr_free_list_process_reconstruct_req(env,
 				firmware,
@@ -925,6 +936,10 @@ firmware_event(void* cookie, uint32 type, const uint32* words)
 			}
 			break;
 		}
+
+		case 107:
+			// ROGUE_FWIF_FWCCB_CMD_UPDATE_STATS: Linux ignores it too
+			break;
 
 		default:
 			POWERVR_TRACE("firmware event %" B_PRIu32 "\n", type);
@@ -1026,8 +1041,13 @@ release_dataset(Client* client, Dataset* dataset)
 {
 	const pvr_ctx_env& env = sDevice->ContextEnvironment();
 	if (!dataset->released && sDevice->IsRunning()) {
-		status_t status = pvr_hwrt_dataset_cleanup(env, sDevice->Firmware(),
-			&dataset->set, CLEANUP_TIMEOUT);
+		status_t status = B_ERROR;
+		for (int attempt = 0; attempt < 4 && status != B_OK; attempt++) {
+			if (attempt > 0)
+				sDevice->ProcessFirmwareEvents();
+			status = pvr_hwrt_dataset_cleanup(env, sDevice->Firmware(),
+				&dataset->set, CLEANUP_TIMEOUT / 4);
+		}
 		if (status != B_OK) {
 			POWERVR_TRACE("HWRT data set not released by the firmware: "
 				"%s\n", strerror(status));
@@ -1724,6 +1744,8 @@ powervr_control(void* cookie, uint32 op, void* buffer, size_t length)
 			statistics.mmu_page_faults = sDevice->mmuPageFaults;
 			statistics.hardware_recoveries = sDevice->hardwareRecoveries;
 			statistics.firmware_restarts = sDevice->firmwareStarts;
+			statistics.free_list_grows = sFreeListGrows;
+			statistics.free_list_reconstructions = sFreeListReconstructions;
 			locker.Unlock();
 			return copy_out(buffer, statistics);
 		}

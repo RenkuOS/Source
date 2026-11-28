@@ -16,6 +16,7 @@
  * stream through the client's page tables and completes.
  *
  *   powervr_test [jobs]
+ *   powervr_test stats		only prints the device's counters
  */
 
 
@@ -134,10 +135,12 @@ print_statistics(int fd, const char* label)
 	}
 	printf("%s: %" B_PRIu32 " jobs submitted, %" B_PRIu32 " completed, %"
 		B_PRIu32 " interrupts, %" B_PRIu32 " MMU faults, %" B_PRIu32
-		" recoveries, firmware started %" B_PRIu32 " times\n", label,
+		" recoveries, firmware started %" B_PRIu32 " times, %" B_PRIu32
+		" free list grows, %" B_PRIu32 " rebuilds\n", label,
 		statistics.jobs_submitted, statistics.jobs_completed,
 		statistics.interrupts, statistics.mmu_page_faults,
-		statistics.hardware_recoveries, statistics.firmware_restarts);
+		statistics.hardware_recoveries, statistics.firmware_restarts,
+		statistics.free_list_grows, statistics.free_list_reconstructions);
 }
 
 
@@ -346,6 +349,15 @@ test_render_objects(int cycles)
 int
 main(int argc, char** argv)
 {
+	if (argc > 1 && strcmp(argv[1], "stats") == 0) {
+		int fd = open(POWERVR_JH7110_DEVICE, O_RDWR);
+		if (fd < 0)
+			return 1;
+		print_statistics(fd, "device");
+		close(fd);
+		return 0;
+	}
+
 	int jobs = argc > 1 ? atoi(argv[1]) : 1000;
 	if (jobs < 1)
 		jobs = 1;

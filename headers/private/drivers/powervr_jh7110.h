@@ -251,7 +251,9 @@ struct powervr_statistics {
 	uint32		mmu_page_faults;
 	uint32		hardware_recoveries;
 	uint32		firmware_restarts;
-	uint32		reserved[10];
+	uint32		free_list_grows;		// version 2: parameter buffer grows
+	uint32		free_list_reconstructions;	// ... and rebuilds after a reset
+	uint32		reserved[8];
 };
 
 
