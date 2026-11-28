@@ -14,8 +14,9 @@
 //
 // intel_extreme cannot set up HDMI on Valleyview yet (no DPLL and PHY
 // programming), so the driver uses the output the firmware set up: it looks
-// for an enabled HDMI port in HDMI (not DVI) mode, reads its pixel clock
-// from the DPLL, and only turns the audio parts on. Like amd_acp it maps the
+// for an enabled HDMI port, reads its pixel clock from the DPLL, switches
+// the port from DVI to HDMI mode with an AVI infoframe if needed, and turns
+// the audio parts on. Like amd_acp it maps the
 // registers of the graphics device itself and polls the buffer descriptors,
 // as the audio interrupt arrives through the display interrupt, which
 // intel_extreme does not forward.
@@ -74,8 +75,18 @@
 #define HDMI_PORT_ENABLE			(1u << 31)
 #define HDMI_PORT_PIPE_SHIFT		30
 #define HDMI_MODE_SELECT_HDMI		(1 << 9)
+#define HDMI_COLOR_RANGE_16_235		(1 << 8)
 #define HDMI_AUDIO_ENABLE			(1 << 6)
 #define VIDEO_DIP_CTL(pipe)			((pipe) == 0 ? 0x60200 : 0x61170)
+#define VIDEO_DIP_DATA(pipe)		((pipe) == 0 ? 0x60208 : 0x61174)
+#define VIDEO_DIP_ENABLE			(1u << 31)
+#define VIDEO_DIP_PORT(index)		((uint32)(index) << 29)
+#define VIDEO_DIP_PORT_MASK			(3u << 29)
+#define VIDEO_DIP_ENABLE_AVI		(1 << 21)
+#define VIDEO_DIP_SELECT_MASK		(3 << 19)
+#define VIDEO_DIP_FREQ_VSYNC		(1 << 16)
+#define VIDEO_DIP_FREQ_MASK			(3 << 16)
+#define VIDEO_DIP_DATA_WORDS		8
 
 #define AUD_CHICKEN_BIT				0x62f38
 #define AUD_CHICKEN_BIT_DBG_ENABLE	(1 << 0)
@@ -272,7 +283,6 @@ pipe_clock(hdmi_lpe_driver* driver, uint32 pipe)
 
 
 /*!	Finds the HDMI port the firmware enabled, its pipe and TMDS clock.
-	Audio needs the port in HDMI mode: a DVI signal has no room for it.
 */
 static status_t
 find_output(hdmi_lpe_driver* driver, bool log)
@@ -290,11 +300,6 @@ find_output(hdmi_lpe_driver* driver, bool log)
 		}
 		if ((port & HDMI_PORT_ENABLE) == 0)
 			continue;
-		if ((port & HDMI_MODE_SELECT_HDMI) == 0) {
-			TRACE_ALWAYS("HDMI port %c runs in DVI mode, no audio\n",
-				'B' + (char)i);
-			continue;
-		}
 
 		uint32 clock = pipe_clock(driver, pipe);
 		if (clock < 25000 || clock > 300000) {
@@ -316,10 +321,61 @@ find_output(hdmi_lpe_driver* driver, bool log)
 }
 
 
+/*!	A DVI signal has no room for audio. The firmware may have chosen DVI
+	mode for an HDMI sink; switch the port to HDMI mode, which needs an AVI
+	infoframe. Both change only while the port is off, as in Linux's
+	intel_hdmi.c. The monitor loses the picture for a moment.
+*/
+static void
+set_hdmi_mode(hdmi_lpe_driver* driver, uint32 port)
+{
+	uint32 portIndex = driver->portRegister == HDMI_PORT_B ? 1 : 2;
+
+	// AVI infoframe, laid out as the DIP buffer wants it: type, version,
+	// length, a hole, the checksum, then the payload. RGB, no aspect ratio
+	// or video code; the quantization range as the port sends it.
+	uint8 frame[VIDEO_DIP_DATA_WORDS * 4];
+	memset(frame, 0, sizeof(frame));
+	frame[0] = 0x82;
+	frame[1] = 0x02;
+	frame[2] = 13;
+	frame[7] = (port & HDMI_COLOR_RANGE_16_235) != 0 ? 1 << 2 : 2 << 2;
+	uint8 sum = 0;
+	for (size_t i = 0; i < 5 + 13; i++)
+		sum += frame[i];
+	frame[4] = (uint8)-sum;
+
+	display_write(driver, driver->portRegister, port & ~HDMI_PORT_ENABLE);
+	snooze(20000);
+
+	uint32 control = display_read(driver, VIDEO_DIP_CTL(driver->pipe));
+	control &= ~(VIDEO_DIP_PORT_MASK | VIDEO_DIP_ENABLE_AVI
+		| VIDEO_DIP_SELECT_MASK | VIDEO_DIP_FREQ_MASK | 0xf);
+	control |= VIDEO_DIP_ENABLE | VIDEO_DIP_PORT(portIndex);
+	display_write(driver, VIDEO_DIP_CTL(driver->pipe), control);
+	for (int32 i = 0; i < VIDEO_DIP_DATA_WORDS; i++) {
+		display_write(driver, VIDEO_DIP_DATA(driver->pipe), frame[i * 4]
+			| frame[i * 4 + 1] << 8 | frame[i * 4 + 2] << 16
+			| (uint32)frame[i * 4 + 3] << 24);
+	}
+	display_write(driver, VIDEO_DIP_CTL(driver->pipe),
+		control | VIDEO_DIP_ENABLE_AVI | VIDEO_DIP_FREQ_VSYNC);
+
+	display_write(driver, driver->portRegister, port | HDMI_MODE_SELECT_HDMI);
+	TRACE_ALWAYS("port switched to HDMI mode: %#" B_PRIx32 ", DIP %#" B_PRIx32
+		"\n", display_read(driver, driver->portRegister),
+		display_read(driver, VIDEO_DIP_CTL(driver->pipe)));
+}
+
+
 static void
 enable_output_audio(hdmi_lpe_driver* driver)
 {
 	uint32 port = display_read(driver, driver->portRegister);
+	if ((port & HDMI_MODE_SELECT_HDMI) == 0) {
+		set_hdmi_mode(driver, port);
+		port = display_read(driver, driver->portRegister);
+	}
 	if ((port & HDMI_AUDIO_ENABLE) == 0)
 		display_write(driver, driver->portRegister, port | HDMI_AUDIO_ENABLE);
 
@@ -454,7 +510,7 @@ playback_start(hdmi_lpe_driver* driver)
 	// the monitor or its mode may have changed since the last start
 	status_t status = find_output(driver, false);
 	if (status != B_OK) {
-		TRACE_ALWAYS("playback: no HDMI output in HDMI mode is active\n");
+		TRACE_ALWAYS("playback: no HDMI output is active\n");
 		return status;
 	}
 
@@ -856,7 +912,7 @@ setup_driver(hdmi_lpe_driver* driver)
 
 	status_t status = find_output(driver, true);
 	if (status != B_OK) {
-		TRACE_ALWAYS("no HDMI output in HDMI mode is active\n");
+		TRACE_ALWAYS("no HDMI output is active\n");
 		return status;
 	}
 
