@@ -644,6 +644,9 @@ void __cxa_throw_bad_array_new_length() {}
 void __des_setkey() {}
 void __do_des() {}
 void __drand48_iterate() {}
+void __env_after_fork_child() {}
+void __env_after_fork_parent() {}
+void __env_before_fork() {}
 void __erand48_r() {}
 void __fbufsize() {}
 void __fcloseall() {}
@@ -717,7 +720,6 @@ void __heap_terminate_after() {}
 void __heap_thread_exit() {}
 void __heap_thread_init() {}
 void __init_env() {}
-void __init_env_post_heap() {}
 void __init_heap() {}
 void __init_once() {}
 void __init_pages_allocator() {}

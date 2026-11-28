@@ -37,7 +37,9 @@ thread_id __load_image_at_path(const char* path, int32 argCount,
 			const char **args, const char **environ);
 void _call_atexit_hooks_for_range(addr_t start, addr_t size);
 void __init_env(const struct user_space_program_args *args);
-void __init_env_post_heap(void);
+void __env_before_fork(void);
+void __env_after_fork_child(void);
+void __env_after_fork_parent(void);
 status_t __init_heap(void);
 void __heap_terminate_after(void);
 void __heap_before_fork(void);

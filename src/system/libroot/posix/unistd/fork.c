@@ -149,6 +149,8 @@ fork(void)
 
 	// call preparation hooks
 	call_fork_hooks(sPrepareHooks);
+	// the child must not see environ halfway through a setenv()
+	__env_before_fork();
 	__heap_before_fork();
 
 	thread = _kern_fork();
@@ -160,12 +162,14 @@ fork(void)
 		mutex_init(&sForkLock, FORK_LOCK_NAME);
 		__gRuntimeLoader->reinit_after_fork();
 		__heap_after_fork_child();
+		__env_after_fork_child();
 		__reinit_pwd_backend_after_fork();
 
 		call_fork_hooks(sChildHooks);
 	} else {
 		// we are the parent
 		__heap_after_fork_parent();
+		__env_after_fork_parent();
 		call_fork_hooks(sParentHooks);
 		mutex_unlock(&sForkLock);
 	}
@@ -185,7 +189,26 @@ fork(void)
 pid_t
 vfork(void)
 {
-	thread_id thread = _kern_fork();
+	thread_id thread;
+
+	// exec*() in the child takes the env and heap locks: none may be held now
+	defer_signals();
+	__env_before_fork();
+	__heap_before_fork();
+
+	thread = _kern_fork();
+	if (thread == 0) {
+		// we are the child
+		__heap_after_fork_child();
+		__env_after_fork_child();
+	} else {
+		// we are the parent
+		__heap_after_fork_parent();
+		__env_after_fork_parent();
+	}
+
+	undefer_signals();
+
 	if (thread < 0) {
 		// something went wrong
 		__set_errno(thread);

@@ -493,6 +493,9 @@ void __eh_alloc() {}
 void __eh_free() {}
 void __eh_rtime_match() {}
 void __empty() {}
+void __env_after_fork_child() {}
+void __env_after_fork_parent() {}
+void __env_before_fork() {}
 void __eprintf() {}
 void __eq__C9type_infoRC9type_info() {}
 void __erand48_r() {}
@@ -587,7 +590,6 @@ void __heap_terminate_after() {}
 void __heap_thread_exit() {}
 void __heap_thread_init() {}
 void __init_env() {}
-void __init_env_post_heap() {}
 void __init_heap() {}
 void __init_once() {}
 void __init_pages_allocator() {}
