@@ -1527,6 +1527,7 @@ XHCI::CancelQueuedTransfers(Pipe *pipe, bool force)
 	// It is possible that while waiting for the stop-endpoint command to
 	// complete, one of the queued transfers posts a completion event, so in
 	// order to avoid a deadlock, we must unlock the endpoint.
+	endpoint->cancelCount++;
 	endpointLocker.Unlock();
 	status_t status = StopEndpoint(false, endpoint);
 	if (status != B_OK && status != B_DEV_STALLED) {
@@ -1542,6 +1543,7 @@ XHCI::CancelQueuedTransfers(Pipe *pipe, bool force)
 		status = ResetEndpoint(false, endpoint);
 	}
 	endpointLocker.Lock();
+	endpoint->cancelCount--;
 
 	// Remove all TDs from the endpoint.
 	DoublyLinkedList<xhci_td> tdList;
@@ -2339,6 +2341,7 @@ XHCI::_InsertEndpointForPipe(Pipe *pipe)
 		ASSERT(endpoint->td_list.IsEmpty());
 		endpoint->used = 0;
 		endpoint->next = 0;
+		endpoint->cancelCount = 0;
 
 		endpoint->quarantined = false;
 		endpoint->tearingDown = false;
@@ -2464,6 +2467,11 @@ XHCI::_LinkDescriptorForPipe(xhci_td *descriptor, xhci_endpoint *endpoint)
 	if (endpoint->quarantined)
 		return B_DEV_STALLED;
 
+	// A TD linked now would restart the endpoint while it is being stopped, and
+	// CancelQueuedTransfers() would free it without finishing its transfer.
+	if (endpoint->cancelCount > 0)
+		return B_CANCELED;
+
 	// "used" refers to the number of currently linked TDs, not the number of
 	// used TRBs on the ring (we use 2 TRBs on the ring per transfer.)
 	// Furthermore, we have to leave an empty item between the head and tail.
@@ -2561,14 +2569,16 @@ XHCI::_LinkDescriptorForPipe(xhci_td *descriptor, xhci_endpoint *endpoint)
 		B_LENDIAN_TO_HOST_INT32(endpoint->trbs[link].flags));
 
 	endpoint->next = next;
-	endpointLocker.Unlock();
 
 	TRACE("Endpoint status 0x%08" B_PRIx32 " 0x%08" B_PRIx32 " 0x%016" B_PRIx64 "\n",
 		_ReadContext(&endpoint->device->device_ctx->endpoints[endpoint->id].dwendpoint0),
 		_ReadContext(&endpoint->device->device_ctx->endpoints[endpoint->id].dwendpoint1),
 		_ReadContext(&endpoint->device->device_ctx->endpoints[endpoint->id].qwendpoint2));
 
+	// Ring with the lock held, so that a cancel cannot come in between and have
+	// its stopped endpoint restarted.
 	Ring(endpoint->device->slot, endpoint->id + 1);
+	endpointLocker.Unlock();
 
 	TRACE("Endpoint status 0x%08" B_PRIx32 " 0x%08" B_PRIx32 " 0x%016" B_PRIx64 "\n",
 		_ReadContext(&endpoint->device->device_ctx->endpoints[endpoint->id].dwendpoint0),

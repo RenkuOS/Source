@@ -1180,6 +1180,9 @@ UHCI::CancelQueuedIsochronousTransfers(Pipe *pipe, bool force)
 	// Normal path (controller running): mark the descriptors inactive and let
 	// the finisher thread complete the transfers as the controller advances
 	// past their frames.
+	if (!LockIsochronous())
+		return B_ERROR;
+
 	isochronous_transfer_data *current = fFirstIsochronousTransfer;
 	bool found = false;
 
@@ -1199,6 +1202,7 @@ UHCI::CancelQueuedIsochronousTransfers(Pipe *pipe, bool force)
 
 		current = current->link;
 	}
+	UnlockIsochronous();
 
 	// Wake the finisher so it walks the frame list and frees the canceled
 	// transfers: their descriptors are inactive now and raise no completion
@@ -1207,8 +1211,6 @@ UHCI::CancelQueuedIsochronousTransfers(Pipe *pipe, bool force)
 	if (found)
 		release_sem_etc(fFinishIsochronousTransfersSem, 1, B_DO_NOT_RESCHEDULE);
 
-	if (!found)
-		TRACE_ERROR("no isochronous transfer found!\n");
 	return found ? B_OK : B_ERROR;
 }
 

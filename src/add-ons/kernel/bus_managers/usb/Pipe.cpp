@@ -10,9 +10,15 @@
 #include "usb_private.h"
 
 
+// As long as Object::WaitForIdle() waits. UHCI needs up to half a second to free
+// cancelled isochronous transfers.
+static const bigtime_t kSuspendTimeout = 2000000;
+
+
 Pipe::Pipe(Object *parent)
 	:	Object(parent),
 		fDataToggle(false),
+		fSuspended(false),
 		fControllerCookie(NULL)
 {
 	// all other init is to be done in InitCommon()
@@ -71,9 +77,63 @@ Pipe::SubmitTransfer(Transfer *transfer)
 {
 	if (USBID() == UINT32_MAX)
 		return B_NO_INIT;
+	if (fSuspended)
+		return B_DEV_NOT_READY;
 
 	// ToDo: keep track of all submited transfers to be able to cancel them
 	return GetBusManager()->SubmitTransfer(transfer);
+}
+
+
+/*!	Rejects new transfers and cancels the queued ones without force. The pipe
+	keeps its ID. The caller must hold a reference, and Device's configuration
+	lock. On success, only the caller and the owner of the pipe still hold a
+	reference. On failure, the pipe is resumed.
+*/
+status_t
+Pipe::Suspend()
+{
+	_SetSuspended(true);
+
+	// Every submission and every queued transfer holds a reference, as does
+	// a request for the endpoint, which may take long enough to fail here. A
+	// submission that got its reference before the pipe was suspended, or the
+	// next fragment of a transfer, may still be queued after a cancel, so
+	// repeat that until all of them are gone.
+	const bigtime_t timeout = system_time() + kSuspendTimeout;
+	CancelQueuedTransfers(false);
+	while (CountReferences() > 2) {
+		if (system_time() >= timeout) {
+			TRACE_ERROR("pipe did not become idle\n");
+			Resume();
+			return B_TIMED_OUT;
+		}
+
+		snooze(10000);
+		CancelQueuedTransfers(false);
+	}
+
+	return B_OK;
+}
+
+
+void
+Pipe::Resume()
+{
+	_SetSuspended(false);
+}
+
+
+void
+Pipe::_SetSuspended(bool suspended)
+{
+	// References are acquired under the stack lock. With the flag changed
+	// under it as well, who gets a reference later also sees the change.
+	if (!GetStack()->Lock())
+		return;
+
+	fSuspended = suspended;
+	GetStack()->Unlock();
 }
 
 
@@ -164,7 +224,7 @@ InterruptPipe::QueueInterrupt(void *data, size_t dataLength,
 	transfer->SetData((uint8 *)data, dataLength);
 	transfer->SetCallback(callback, callbackCookie);
 
-	status_t result = GetBusManager()->SubmitTransfer(transfer);
+	status_t result = SubmitTransfer(transfer);
 	if (result < B_OK)
 		delete transfer;
 	return result;
@@ -220,7 +280,7 @@ BulkPipe::QueueBulk(void *data, size_t dataLength, usb_callback_func callback,
 	transfer->SetData((uint8 *)data, dataLength);
 	transfer->SetCallback(callback, callbackCookie);
 
-	status_t result = GetBusManager()->SubmitTransfer(transfer);
+	status_t result = SubmitTransfer(transfer);
 	if (result < B_OK)
 		delete transfer;
 	return result;
@@ -241,7 +301,7 @@ BulkPipe::QueueBulkV(iovec *vector, size_t vectorCount,
 	transfer->SetVector(vector, vectorCount);
 	transfer->SetCallback(callback, callbackCookie);
 
-	status_t result = GetBusManager()->SubmitTransfer(transfer);
+	status_t result = SubmitTransfer(transfer);
 	if (result < B_OK)
 		delete transfer;
 	return result;
@@ -262,7 +322,7 @@ BulkPipe::QueueBulkV(physical_entry *vector, size_t vectorCount,
 	transfer->SetVector(vector, vectorCount);
 	transfer->SetCallback(callback, callbackCookie);
 
-	status_t result = GetBusManager()->SubmitTransfer(transfer);
+	status_t result = SubmitTransfer(transfer);
 	if (result < B_OK)
 		delete transfer;
 	return result;
@@ -319,7 +379,7 @@ IsochronousPipe::QueueIsochronous(void *data, size_t dataLength,
 	transfer->SetCallback(callback, callbackCookie);
 	transfer->SetIsochronousData(isochronousData);
 
-	status_t result = GetBusManager()->SubmitTransfer(transfer);
+	status_t result = SubmitTransfer(transfer);
 	if (result < B_OK)
 		delete transfer;
 	return result;
@@ -508,7 +568,7 @@ ControlPipe::QueueRequest(uint8 requestType, uint8 request, uint16 value,
 	transfer->SetData((uint8 *)data, dataLength);
 	transfer->SetCallback(callback, callbackCookie);
 
-	status_t result = GetBusManager()->SubmitTransfer(transfer);
+	status_t result = SubmitTransfer(transfer);
 	if (result < B_OK)
 		delete transfer;
 	return result;
