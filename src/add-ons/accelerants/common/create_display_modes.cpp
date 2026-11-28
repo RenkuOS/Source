@@ -110,7 +110,7 @@ private:
 			void				_RemoveModeAt(uint32 index);
 			void				_AddBaseMode(uint16 width, uint16 height,
 									uint32 refresh);
-			display_mode*		_FindMode(uint16 width, uint16 height) const;
+			display_mode*		_FindMode(const display_mode& mode) const;
 
 private:
 			display_mode*		fModes;
@@ -293,9 +293,10 @@ ModeList::AddModes(edid1_info* info)
 	for (uint32 i = 0; i < kNumBaseModes; i++) {
 		const display_mode& mode = kBaseModeList[i];
 
-		// Check if a mode with this resolution already exists
+		// Check if a mode with this resolution and refresh rate already
+		// exists
 
-		if (_FindMode(mode.timing.h_display, mode.timing.v_display) != NULL)
+		if (_FindMode(mode) != NULL)
 			continue;
 
 		// Check monitor limits
@@ -423,12 +424,15 @@ ModeList::_AddBaseMode(uint16 width, uint16 height, uint32 refresh)
 
 
 display_mode*
-ModeList::_FindMode(uint16 width, uint16 height) const
+ModeList::_FindMode(const display_mode& other) const
 {
+	const double refresh = get_refresh_rate(other);
 	for (uint32 i = 0; i < fCount; i++) {
 		const display_mode& mode = fModes[i];
 
-		if (mode.timing.h_display == width && mode.timing.v_display == height)
+		if (mode.timing.h_display == other.timing.h_display
+			&& mode.timing.v_display == other.timing.v_display
+			&& fabs(get_refresh_rate(mode) - refresh) < refresh * 0.012)
 			return &fModes[i];
 	}
 
