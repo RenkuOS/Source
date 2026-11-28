@@ -1742,6 +1742,9 @@ device_node::_GetNextDriverPath(void*& cookie, KPath& _path)
 					_AddPath(*stack, "busses/i2c");
 					_AddPath(*stack, "busses/random");
 					_AddPath(*stack, "busses/virtio");
+					// USB host controllers described by the device tree,
+					// such as the one of the StarFive JH7110
+					_AddPath(*stack, "busses/usb");
 					_AddPath(*stack, "bus_managers/pci");
 					_AddPath(*stack, "busses/pci");
 					_AddPath(*stack, "busses/mmc");

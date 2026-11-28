@@ -3,9 +3,15 @@ SubDir HAIKU_TOP src add-ons kernel busses usb ;
 SubDirC++Flags -fno-rtti ;
 
 UsePrivateKernelHeaders ;
+UsePrivateHeaders drivers ;
 SubDirHdrs $(HAIKU_TOP) src add-ons kernel bus_managers acpi acpica include ;
 SubDirHdrs $(HAIKU_TOP) src add-ons kernel bus_managers acpi acpica include platform ;
 UseHeaders [ FDirName $(HAIKU_TOP) src add-ons kernel bus_managers usb ] ;
+
+local xhciArchSources ;
+if $(TARGET_ARCH) = riscv64 {
+	xhciArchSources = xhci_jh7110.cpp ;
+}
 
 KernelAddon <usb>uhci :
 	uhci.cpp
@@ -31,6 +37,7 @@ KernelAddon <usb>ehci :
 KernelAddon <usb>xhci :
 	xhci.cpp
 	xhci_rh.cpp
+	$(xhciArchSources)
 	: libusb.a
 	: xhci.rdef
 	;
