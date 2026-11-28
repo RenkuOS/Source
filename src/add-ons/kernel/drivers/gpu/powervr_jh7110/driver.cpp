@@ -62,6 +62,8 @@ static uint32 sNextFreeListID;
 static uint32 sNextJobID;
 static uint32 sFreeListGrows;
 static uint32 sFreeListReconstructions;
+static uint64 sCacheSyncBytes;
+static bigtime_t sCacheSyncTime;
 
 
 struct Buffer : DoublyLinkedListLinkImpl<Buffer> {
@@ -74,6 +76,8 @@ struct Buffer : DoublyLinkedListLinkImpl<Buffer> {
 	physical_entry*	runs;
 	uint32			runCount;
 	uint32			mappingCount;
+	uint32			flags;			// POWERVR_BUFFER_*
+	int32			cpuAccessCount;	// with POWERVR_BUFFER_SYNC_WHEN_MAPPED
 };
 
 struct Mapping : DoublyLinkedListLinkImpl<Mapping> {
@@ -188,15 +192,31 @@ sync_buffer(Buffer* buffer)
 }
 
 
-//!	Writes back (and invalidates) every buffer the GPU can reach.
+/*!	Whether the CPU may have the buffer in its caches: the GPU reaches it
+	and the client did not tell it keeps the CPU away.
+*/
+static inline bool
+needs_sync(Buffer* buffer)
+{
+	return buffer->mappingCount > 0
+		&& ((buffer->flags & POWERVR_BUFFER_SYNC_WHEN_MAPPED) == 0
+			|| buffer->cpuAccessCount > 0);
+}
+
+
+//!	Writes back (and invalidates) every buffer the CPU and GPU share now.
 static void
 sync_mapped_buffers(Client* client)
 {
+	bigtime_t start = system_time();
 	for (BufferList::Iterator iterator = client->buffers.GetIterator();
 			Buffer* buffer = iterator.Next();) {
-		if (buffer->mappingCount > 0)
+		if (needs_sync(buffer)) {
 			sync_buffer(buffer);
+			sCacheSyncBytes += buffer->size;
+		}
 	}
+	sCacheSyncTime += system_time() - start;
 }
 
 
@@ -222,10 +242,13 @@ sync_buffer_range(Buffer* buffer, uint64 offset, uint64 size)
 
 
 static status_t
-create_buffer(Client* client, uint64 size, Buffer** _buffer, void** _address)
+create_buffer(Client* client, uint64 size, uint32 flags, Buffer** _buffer,
+	void** _address)
 {
-	if (size == 0 || size > 512 * 1024 * 1024)
+	if (size == 0 || size > 512 * 1024 * 1024
+		|| (flags & ~POWERVR_BUFFER_SYNC_WHEN_MAPPED) != 0) {
 		return B_BAD_VALUE;
+	}
 	size = ROUNDUP(size, B_PAGE_SIZE);
 
 	Buffer* buffer = new(std::nothrow) Buffer;
@@ -255,6 +278,8 @@ create_buffer(Client* client, uint64 size, Buffer** _buffer, void** _address)
 	buffer->runCount = runCount;
 	buffer->size = size;
 	buffer->kernelAddress = (uint8*)address;
+	buffer->flags = flags;
+	buffer->cpuAccessCount = 0;
 	buffer->mappingCount = 0;
 
 	// zeroed and out of the cache: a dirty line evicted later would land
@@ -1464,8 +1489,8 @@ powervr_control(void* cookie, uint32 op, void* buffer, size_t length)
 				return status;
 			MutexLocker locker(sDevice->LockObject());
 			Buffer* created;
-			status = create_buffer(client, request.size, &created,
-				&request.address);
+			status = create_buffer(client, request.size, request.flags,
+				&created, &request.address);
 			if (status != B_OK)
 				return status;
 			request.size = created->size;
@@ -1487,6 +1512,30 @@ powervr_control(void* cookie, uint32 op, void* buffer, size_t length)
 			if (found->mappingCount > 0)
 				return B_BUSY;
 			delete_buffer(client, found);
+			return B_OK;
+		}
+
+		case POWERVR_SET_BUFFER_CPU_ACCESS:
+		{
+			powervr_buffer_cpu_access request;
+			status_t status = copy_in(request, buffer, length);
+			if (status != B_OK)
+				return status;
+			MutexLocker locker(sDevice->LockObject());
+			Buffer* found = find_buffer(client, request.handle);
+			if (found == NULL
+				|| (found->flags & POWERVR_BUFFER_SYNC_WHEN_MAPPED) == 0
+				|| (request.access == 0 && found->cpuAccessCount == 0)) {
+				return B_BAD_VALUE;
+			}
+			// The first and the last access sync the buffer: stale lines go
+			// before the CPU reads what the GPU wrote, and what the CPU
+			// wrote reaches memory before the GPU reads it.
+			if (request.access != 0) {
+				if (found->cpuAccessCount++ == 0)
+					sync_buffer(found);
+			} else if (--found->cpuAccessCount == 0)
+				sync_buffer(found);
 			return B_OK;
 		}
 
@@ -1746,6 +1795,8 @@ powervr_control(void* cookie, uint32 op, void* buffer, size_t length)
 			statistics.firmware_restarts = sDevice->firmwareStarts;
 			statistics.free_list_grows = sFreeListGrows;
 			statistics.free_list_reconstructions = sFreeListReconstructions;
+			statistics.cache_sync_megabytes = sCacheSyncBytes >> 20;
+			statistics.cache_sync_milliseconds = sCacheSyncTime / 1000;
 			locker.Unlock();
 			return copy_out(buffer, statistics);
 		}

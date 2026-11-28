@@ -46,6 +46,7 @@ enum {
 	POWERVR_CREATE_HWRT_DATASET,
 	POWERVR_DELETE_HWRT_DATASET,
 	POWERVR_SUBMIT_JOBS,
+	POWERVR_SET_BUFFER_CPU_ACCESS,
 };
 
 
@@ -62,9 +63,14 @@ struct powervr_info {
 	uint32		reserved[7];
 };
 
+#define POWERVR_BUFFER_SYNC_WHEN_MAPPED	0x01
+	// the caches are only kept in step with the GPU while the client says
+	// it accesses the buffer with the CPU (POWERVR_SET_BUFFER_CPU_ACCESS);
+	// without it, every mapped buffer is synced around every job
+
 struct powervr_create_buffer {
 	uint64		size;				// rounded up to pages
-	uint32		flags;				// none yet
+	uint32		flags;				// POWERVR_BUFFER_*
 	int32		handle;				// out
 	area_id		area;				// out: cloned into the caller's team
 	uint32		reserved;
@@ -84,6 +90,13 @@ struct powervr_map_buffer {
 };
 
 #define POWERVR_MAP_READ_ONLY		0x01
+
+// The client starts (access != 0) or stops using a buffer created with
+// POWERVR_BUFFER_SYNC_WHEN_MAPPED with the CPU; the calls nest.
+struct powervr_buffer_cpu_access {
+	int32		handle;
+	uint32		access;
+};
 
 struct powervr_unmap_buffer {
 	uint64		device_address;
@@ -253,7 +266,9 @@ struct powervr_statistics {
 	uint32		firmware_restarts;
 	uint32		free_list_grows;		// version 2: parameter buffer grows
 	uint32		free_list_reconstructions;	// ... and rebuilds after a reset
-	uint32		reserved[8];
+	uint32		cache_sync_megabytes;	// written back around the jobs
+	uint32		cache_sync_milliseconds;
+	uint32		reserved[6];
 };
 
 
