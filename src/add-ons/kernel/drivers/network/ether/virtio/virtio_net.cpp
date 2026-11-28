@@ -839,6 +839,7 @@ virtio_net_ioctl(void* cookie, uint32 op, void* buffer, size_t length)
 		case ETHER_ADDMULTI:
 		{
 			uint32 i, multiCount = info->multiCount;
+			ether_address_t address;
 			TRACE("ioctl: add multicast\n");
 
 			if ((info->features & VIRTIO_NET_F_CTRL_RX) == 0)
@@ -847,15 +848,18 @@ virtio_net_ioctl(void* cookie, uint32 op, void* buffer, size_t length)
 			if (multiCount == MAX_MULTI)
 				return B_ERROR;
 
+			if (user_memcpy(&address, buffer, sizeof(address)) != B_OK)
+				return B_BAD_ADDRESS;
+
 			for (i = 0; i < multiCount; i++) {
-				if (memcmp(&info->multi[i], buffer,
+				if (memcmp(&info->multi[i], &address,
 					sizeof(info->multi[0])) == 0) {
 					break;
 				}
 			}
 
 			if (i == multiCount) {
-				memcpy(&info->multi[i], buffer, sizeof(info->multi[i]));
+				info->multi[i] = address;
 				info->multiCount++;
 			}
 			if (info->multiCount == 1) {
@@ -868,13 +872,17 @@ virtio_net_ioctl(void* cookie, uint32 op, void* buffer, size_t length)
 		case ETHER_REMMULTI:
 		{
 			uint32 i, multiCount = info->multiCount;
+			ether_address_t address;
 			TRACE("ioctl: remove multicast\n");
 
 			if ((info->features & VIRTIO_NET_F_CTRL_RX) == 0)
 				return B_NOT_SUPPORTED;
 
+			if (user_memcpy(&address, buffer, sizeof(address)) != B_OK)
+				return B_BAD_ADDRESS;
+
 			for (i = 0; i < multiCount; i++) {
-				if (memcmp(&info->multi[i], buffer,
+				if (memcmp(&info->multi[i], &address,
 					sizeof(info->multi[0])) == 0) {
 					break;
 				}
@@ -1085,3 +1093,4 @@ module_info* modules[] = {
 	(module_info*)&sVirtioNetDevice,
 	NULL
 };
+
