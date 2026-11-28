@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: MIT
+#
+# Sound Open Firmware (SOF) for the audio DSP of Intel Bay Trail, which the
+# intel_lpe driver loads. SOF supports Bay Trail up to its stable-v2.4
+# branch. The image is built from source (BSD 3-Clause) by a GitHub workflow
+# and published as a release; the file is checked against its SHA-256. The
+# release notes name the SOF commit and the toolchain revisions.
+local sofFirmwarePackage = intel_sof_baytrail_firmware.hpkg ;
+HaikuPackage $(sofFirmwarePackage) ;
+
+local release
+	= https://github.com/12akakor/Source/releases/download/sof-byt-190a0ab7b874 ;
+
+# SOF 2.4.0, commit 190a0ab7b874 of branch stable-v2.4.
+local sofFirmware = [ DownloadFile sof-byt.ri
+	: $(release)/sof-byt.ri
+	:
+	: f0e12b6d4e9b5fca6e204b8e454f65fa3fd114c68305176a751c773309da6586 ] ;
+local licenseFile = [ DownloadFile LICENCE.sof
+	: $(release)/LICENCE.sof
+	:
+	: cb6a9aa5baac3ea573feebcdc298526f701e2b7cd005a22208799778e26f0068 ] ;
+
+AddFilesToPackage data firmware intel sof : $(sofFirmware) ;
+AddFilesToPackage data licenses : $(licenseFile) : "Sound Open Firmware" ;
+
+BuildHaikuPackage $(sofFirmwarePackage) : intel_sof_baytrail_firmware ;

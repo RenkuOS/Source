@@ -1,0 +1,15 @@
+name			intel_sof_baytrail_firmware
+version			2.4.0-1
+architecture	any
+summary			"Sound Open Firmware for the audio DSP of Intel Bay Trail"
+description		"Sound Open Firmware (SOF) 2.4.0 for the low power audio engine (LPE) of Intel Bay Trail, built from the SOF sources. The intel_lpe audio driver loads it."
+
+packager		"The Haiku build system"
+vendor			"Haiku Project"
+
+copyrights		"Intel Corporation and the Sound Open Firmware contributors"
+licenses		"Sound Open Firmware"
+
+provides {
+	intel_sof_baytrail_firmware = 2.4.0
+}

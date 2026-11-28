@@ -26,6 +26,7 @@ if $(HAIKU_BUILD_TYPE) = regular {
 	packages += Atheros10kWifiFirmwares ;
 	packages += MediatekWifiFirmwares ;
 	packages += RealtekRtw88WifiFirmwares ;
+	packages += IntelSofBaytrailFirmware ;
 }
 
 local archDependentPackages =
