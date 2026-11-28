@@ -64,6 +64,7 @@ static uint32 sFreeListGrows;
 static uint32 sFreeListReconstructions;
 static uint64 sCacheSyncBytes;
 static bigtime_t sCacheSyncTime;
+static bigtime_t sWaitTime;
 
 
 struct Buffer : DoublyLinkedListLinkImpl<Buffer> {
@@ -644,6 +645,10 @@ wait_for(pvr_gpu_context* queue, uint32 value, uint32 sequence,
 	bigtime_t end = timeout == B_INFINITE_TIMEOUT
 		? B_INFINITE_TIMEOUT : system_time() + timeout;
 	while (true) {
+		// waiting first, then looking: an interrupt in between still
+		// wakes us (it used to cost the 10 ms safety timeout)
+		ConditionVariableEntry entry;
+		sDevice->AddEventWaiter(&entry);
 		if (queue == NULL || sequence_reached(queue_value(queue), value)) {
 			*_completed = sequence;
 			return B_OK;
@@ -654,8 +659,8 @@ wait_for(pvr_gpu_context* queue, uint32 value, uint32 sequence,
 		bigtime_t now = system_time();
 		if (end != B_INFINITE_TIMEOUT && now >= end)
 			return B_TIMED_OUT;
-		// the interrupt wakes us; the timeout covers a missed one
-		status_t status = sDevice->WaitForEvent(
+		// the timeout only covers a lost interrupt
+		status_t status = entry.Wait(B_RELATIVE_TIMEOUT | B_KILL_CAN_INTERRUPT,
 			end == B_INFINITE_TIMEOUT ? 10000 : min_c(end - now, 10000));
 		if (status == B_INTERRUPTED)
 			return status;
@@ -1679,8 +1684,10 @@ powervr_control(void* cookie, uint32 op, void* buffer, size_t length)
 			context->waiters++;
 			locker.Unlock();
 
+			bigtime_t waitStart = system_time();
 			status = wait_for(queue, value, request.sequence,
 				request.timeout, &request.completed);
+			atomic_add64(&sWaitTime, system_time() - waitStart);
 
 			locker.Lock();
 			context->waiters--;
@@ -1797,6 +1804,7 @@ powervr_control(void* cookie, uint32 op, void* buffer, size_t length)
 			statistics.free_list_reconstructions = sFreeListReconstructions;
 			statistics.cache_sync_megabytes = sCacheSyncBytes >> 20;
 			statistics.cache_sync_milliseconds = sCacheSyncTime / 1000;
+			statistics.wait_milliseconds = atomic_get64(&sWaitTime) / 1000;
 			locker.Unlock();
 			return copy_out(buffer, statistics);
 		}

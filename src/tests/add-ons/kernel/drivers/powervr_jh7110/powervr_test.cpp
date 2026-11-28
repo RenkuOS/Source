@@ -137,12 +137,13 @@ print_statistics(int fd, const char* label)
 		B_PRIu32 " interrupts, %" B_PRIu32 " MMU faults, %" B_PRIu32
 		" recoveries, firmware started %" B_PRIu32 " times, %" B_PRIu32
 		" free list grows, %" B_PRIu32 " rebuilds, %" B_PRIu32 " MB in %"
-		B_PRIu32 " ms of cache sync\n", label,
+		B_PRIu32 " ms of cache sync, %" B_PRIu32 " ms waiting\n", label,
 		statistics.jobs_submitted, statistics.jobs_completed,
 		statistics.interrupts, statistics.mmu_page_faults,
 		statistics.hardware_recoveries, statistics.firmware_restarts,
 		statistics.free_list_grows, statistics.free_list_reconstructions,
-		statistics.cache_sync_megabytes, statistics.cache_sync_milliseconds);
+		statistics.cache_sync_megabytes, statistics.cache_sync_milliseconds,
+		statistics.wait_milliseconds);
 }
 
 

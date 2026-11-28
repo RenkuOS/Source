@@ -268,7 +268,8 @@ struct powervr_statistics {
 	uint32		free_list_reconstructions;	// ... and rebuilds after a reset
 	uint32		cache_sync_megabytes;	// written back around the jobs
 	uint32		cache_sync_milliseconds;
-	uint32		reserved[6];
+	uint32		wait_milliseconds;		// clients blocked in POWERVR_WAIT
+	uint32		reserved[5];
 };
 
 

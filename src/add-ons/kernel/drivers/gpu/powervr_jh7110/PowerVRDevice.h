@@ -119,6 +119,10 @@ public:
 
 			// waits until the next firmware interrupt or the timeout
 			status_t			WaitForEvent(bigtime_t timeout);
+			// for a waiter that checks its condition after adding itself,
+			// so that an interrupt in between is not lost
+			void				AddEventWaiter(ConditionVariableEntry* entry)
+									{ fEvent.Add(entry); }
 			void				ProcessFirmwareEvents();
 
 			uint32				NextContextID() { return ++fLastContextID; }
