@@ -122,7 +122,9 @@ VMSAv8TranslationMap::VMSAv8TranslationMap(
 	fVaBits(vaBits),
 	fMinBlockLevel(minBlockLevel),
 	fASID(kernel ? 0 : -1),
-	fRefcount(0)
+	fRefcount(0),
+	fInvalidPagesCount(0),
+	fInvalidGlobal(false)
 {
 	TRACE("+VMSAv8TranslationMap(%p, %d, 0x%" B_PRIxADDR ", %d, %d, %d)\n", this,
 		kernel, pageTable, pageBits, vaBits, minBlockLevel);
@@ -254,6 +256,10 @@ void
 VMSAv8TranslationMap::Unlock()
 {
 	TRACE("VMSAv8TranslationMap::Unlock()\n");
+	if (recursive_lock_get_recursion(&fLock) == 1) {
+		// we're about to release it for the last time
+		Flush();
+	}
 	recursive_lock_unlock(&fLock);
 }
 
@@ -420,6 +426,23 @@ VMSAv8TranslationMap::FlushVAIfAccessed(uint64_t pte, addr_t va)
 {
 	InterruptsSpinLocker locker(sAsidLock);
 	return flush_va_if_accessed(pte, va, fASID);
+}
+
+
+// Queue a TLB invalidation for a PTE that was just changed; Flush() issues it.
+// The caller holds fLock and keeps it until Flush() has run.
+void
+VMSAv8TranslationMap::QueueInvalidation(uint64_t pte, addr_t va)
+{
+	if (!is_pte_accessed(pte))
+		return;
+
+	// VAs are page aligned, bit 0 marks a global (non-ASID) entry.
+	bool global = (pte & kAttrNG) == 0;
+	if (fInvalidPagesCount < kMaxInvalidPages)
+		fInvalidPages[fInvalidPagesCount] = va | (global ? 1 : 0);
+	fInvalidPagesCount++;
+	fInvalidGlobal |= global;
 }
 
 
@@ -595,6 +618,11 @@ VMSAv8TranslationMap::Map(addr_t va, phys_addr_t pa, uint32 attributes, uint32 m
 	ASSERT(ValidateVa(va));
 	uint64_t attr = GetMemoryAttr(attributes, memoryType, fIsKernel);
 
+	// A queued invalidation may be for this VA: break-before-make requires it
+	// to complete before a new valid PTE is written.
+	if (fInvalidPagesCount != 0)
+		Flush();
+
 	// During first mapping we need to allocate root table
 	if (fPageTable == 0) {
 		vm_page* page = vm_page_allocate_page(reservation, PAGE_STATE_WIRED | VM_PAGE_ALLOC_CLEAR);
@@ -638,7 +666,6 @@ VMSAv8TranslationMap::Unmap(addr_t start, addr_t end)
 {
 	TRACE("VMSAv8TranslationMap::Unmap(0x%" B_PRIxADDR ", 0x%" B_PRIxADDR
 		")\n", start, end);
-	ThreadCPUPinner pinner(thread_get_current_thread());
 
 	size_t size = end - start + 1;
 	ASSERT(ValidateVa(start));
@@ -646,13 +673,19 @@ VMSAv8TranslationMap::Unmap(addr_t start, addr_t end)
 	if (fPageTable == 0)
 		return B_OK;
 
+	// Flushes on the last Unlock(), also for callers not holding the lock.
+	Lock();
+	ThreadCPUPinner pinner(thread_get_current_thread());
+
 	ProcessRange(fPageTable, fInitialLevel, start, size, nullptr,
 		[=](uint64_t* ptePtr, uint64_t effectiveVa) {
 			ASSERT(effectiveVa <= end);
 			uint64_t oldPte = atomic_get_and_set64((int64_t*)ptePtr, 0);
-			FlushVAIfAccessed(oldPte, effectiveVa);
+			QueueInvalidation(oldPte, effectiveVa);
 		});
 
+	pinner.Unlock();
+	Unlock();
 	return B_OK;
 }
 
@@ -677,8 +710,13 @@ VMSAv8TranslationMap::UnmapPage(VMArea* area, addr_t address,
 		[=, &oldPte](uint64_t* ptePtr, uint64_t effectiveVa) {
 			oldPte = atomic_get_and_set64((int64_t*)ptePtr, 0);
 			if (!deletingAddressSpace)
-				FlushVAIfAccessed(oldPte, effectiveVa);
+				QueueInvalidation(oldPte, effectiveVa);
 		});
+
+	// With _flags the caller (UnmapArea()) holds the lock and Unlock() flushes
+	// before the pages are freed; otherwise PageUnmapped() may free the page.
+	if (_flags == NULL || recursive_lock_get_recursion(&fLock) == 1)
+		Flush();
 
 	if ((oldPte & kPteValidMask) == 0)
 		return B_ENTRY_NOT_FOUND;
@@ -718,7 +756,7 @@ VMSAv8TranslationMap::UnmapPages(VMArea* area, addr_t address, size_t size,
 	ProcessRange(fPageTable, fInitialLevel, address, size, nullptr,
 		[=, &queue](uint64_t* ptePtr, uint64_t effectiveVa) {
 			uint64_t oldPte = atomic_get_and_set64((int64_t*)ptePtr, 0);
-			FlushVAIfAccessed(oldPte, effectiveVa);
+			QueueInvalidation(oldPte, effectiveVa);
 			if ((oldPte & kPteValidMask) == 0)
 				return;
 
@@ -736,6 +774,8 @@ VMSAv8TranslationMap::UnmapPages(VMArea* area, addr_t address, size_t size,
 	// area range is unmapped for good (resized/cut) and the pages will likely
 	// be freed.
 
+	Flush();
+		// flush explicitly, since we directly use the lock
 	locker.Unlock();
 
 	// free removed mappings
@@ -826,6 +866,8 @@ VMSAv8TranslationMap::Protect(addr_t start, addr_t end, uint32 attributes, uint3
 	size_t size = end - start + 1;
 	ASSERT(ValidateVa(start));
 
+	// Flushes on the last Unlock(), also for callers not holding the lock.
+	Lock();
 	ThreadCPUPinner pinner(thread_get_current_thread());
 
 	ProcessRange(fPageTable, fInitialLevel, start, size, nullptr,
@@ -865,7 +907,9 @@ VMSAv8TranslationMap::Protect(addr_t start, addr_t end, uint32 attributes, uint3
 					break;
 				} else {
 					if ((uint64_t)atomic_test_and_set64((int64_t*)ptePtr, newPte, oldPte) == oldPte) {
-						FlushVAIfAccessed(oldPte, effectiveVa);
+						// Same output address and memory type: no break-before-make
+						// needed, the invalidation can wait for Flush().
+						QueueInvalidation(oldPte, effectiveVa);
 						break;
 					}
 				}
@@ -875,6 +919,8 @@ VMSAv8TranslationMap::Protect(addr_t start, addr_t end, uint32 attributes, uint3
 				arch_cpu_sync_icache((void*)(KERNEL_PMAP_BASE + pa), B_PAGE_SIZE);
 		});
 
+	pinner.Unlock();
+	Unlock();
 	return B_OK;
 }
 
@@ -890,6 +936,8 @@ VMSAv8TranslationMap::ClearFlags(addr_t va, uint32 flags)
 	if (!clearAF && !setRO)
 		return B_OK;
 
+	// Flushes on the last Unlock(), also for callers not holding the lock.
+	Lock();
 	ThreadCPUPinner pinner(thread_get_current_thread());
 
 	ProcessRange(fPageTable, fInitialLevel, va, B_PAGE_SIZE, nullptr,
@@ -903,7 +951,7 @@ VMSAv8TranslationMap::ClearFlags(addr_t va, uint32 flags)
 					newPte = set_pte_clean(newPte);
 
                     if ((uint64_t)atomic_test_and_set64((int64_t*)ptePtr, newPte, oldPte) == oldPte) {
-						FlushVAIfAccessed(oldPte, va);
+						QueueInvalidation(oldPte, va);
 						break;
 					}
 				}
@@ -916,13 +964,15 @@ VMSAv8TranslationMap::ClearFlags(addr_t va, uint32 flags)
 						return;
 					uint64_t newPte = set_pte_clean(oldPte);
                     if ((uint64_t)atomic_test_and_set64((int64_t*)ptePtr, newPte, oldPte) == oldPte) {
-						FlushVAIfAccessed(oldPte, va);
+						QueueInvalidation(oldPte, va);
 						break;
 					}
 				}
 			}
 		});
 
+	pinner.Unlock();
+	Unlock();
 	return B_OK;
 }
 
@@ -976,9 +1026,39 @@ VMSAv8TranslationMap::ClearAccessedAndModified(
 }
 
 
+/*!	Issues the TLB invalidations queued by QueueInvalidation(), with one
+	barrier for all of them. The caller holds fLock.
+*/
 void
 VMSAv8TranslationMap::Flush()
 {
-	// Necessary invalidation is performed during mapping,
-	// no need to do anything more here.
+	if (fInvalidPagesCount == 0)
+		return;
+
+	// sAsidLock keeps fASID stable; an ASID taken from this map is flushed
+	// as a whole by SwitchUserMap() before its new owner uses it.
+	InterruptsSpinLocker locker(sAsidLock);
+
+	arm64_dsb(ishst); // Ensure PTE writes completed
+	if (fInvalidPagesCount > kMaxInvalidPages) {
+		if (fInvalidGlobal)
+			asm("tlbi vmalle1is");
+		else if (fASID != -1)
+			asm("tlbi aside1is, %0" ::"r"(uint64_t(fASID) << 48));
+	} else {
+		for (int i = 0; i < fInvalidPagesCount; i++) {
+			addr_t va = fInvalidPages[i];
+			if ((va & 1) != 0)
+				asm("tlbi vaae1is, %0" ::"r"(((va >> 12) & kTLBIMask)));
+			else if (fASID != -1) {
+				asm("tlbi vae1is, %0"
+					::"r"(((va >> 12) & kTLBIMask) | (uint64_t(fASID) << 48)));
+			}
+		}
+	}
+	arm64_dsb(ish); // Wait for TLB invalidation to complete
+	arm64_isb();
+
+	fInvalidPagesCount = 0;
+	fInvalidGlobal = false;
 }

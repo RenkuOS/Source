@@ -19,3 +19,5 @@ SimpleTest transfer_area_test : transfer_area_test.cpp ;
 SimpleTest fork-mprotect-cow : fork-mprotect-cow.c hugetlbfs-testutils.c ;
 
 SimpleTest set_area_protection_test1 : set_area_protection_test1.cpp ;
+
+SimpleTest tlb_shootdown_test : tlb_shootdown_test.cpp ;
