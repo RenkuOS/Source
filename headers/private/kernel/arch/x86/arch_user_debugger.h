@@ -125,8 +125,22 @@ extern void x86_handle_breakpoint_exception(struct iframe *frame);
 
 extern void x86_init_user_debug();
 
+#ifdef __x86_64__
+// The current thread's own hardware breakpoints (THREAD_SET_DEBUG_REGISTERS).
+extern status_t x86_set_thread_breakpoints(const uint64 address[4],
+	uint64 dr7);
+extern void x86_reset_thread_breakpoints();
+#endif
+
 #ifdef __cplusplus
 }
+#endif
+
+#ifdef __x86_64__
+// Whether the thread has breakpoints of its own to be loaded at kernel exit,
+// as THREAD_FLAGS_BREAKPOINTS_DEFINED says for the team's.
+#define arch_has_thread_breakpoints(thread) \
+	((thread)->arch_info.user_dr7 != 0)
 #endif
 
 // Feature macros we're supposed to define.

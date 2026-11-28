@@ -58,6 +58,17 @@ struct arch_thread {
 	uint16			user_fs_selector;
 	uint16			user_ds_selector;
 	uint16			user_es_selector;
+
+	// The hardware breakpoints the thread set for itself
+	// (THREAD_SET_DEBUG_REGISTERS). They are loaded on the way to userland
+	// while no user debugger is installed, which owns the registers otherwise.
+	uint64			user_breakpoints[4];
+	uint64			user_dr7;
+		// 0 if none is enabled
+	uint64			user_dr6;
+		// the breakpoints that raised the pending SIGTRAP
+	bool			user_breakpoints_loaded;
+		// set at kernel exit: whether these, not the team's, were loaded
 #else
 	struct farcall	current_stack;
 	struct farcall	interrupt_stack;
