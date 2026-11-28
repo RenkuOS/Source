@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: MIT
+
+SubDir HAIKU_TOP src tests add-ons kernel drivers powervr_jh7110 ;
+
+UsePrivateHeaders drivers ;
+
+SimpleTest powervr_test :
+	powervr_test.cpp
+	: be
+;
