@@ -12,8 +12,9 @@
 
 /*!	Access to single pins of the Intel Bay Trail GPIO controllers, for drivers
 	that have to drive a pin that the firmware does not describe (or describes
-	wrongly). A community is named "SCORE", "NCORE" or "SUS", a pin is its
-	GPIO number within the community, as in ACPI.
+	wrongly). A community is named "SCORE", "NCORE" or "SUS", or by the _UID
+	of its ACPI device ("1" to "3"); a pin is its GPIO number within the
+	community, as in ACPI.
 */
 #define BAYTRAIL_GPIO_PINS_MODULE_NAME	"drivers/gpio/baytrail_gpio/pins/v1"
 
@@ -22,6 +23,7 @@ typedef struct baytrail_gpio_pins_module_info {
 
 	status_t	(*set_output)(const char* community, uint32 pin, bool high);
 	status_t	(*set_input)(const char* community, uint32 pin);
+	status_t	(*get_level)(const char* community, uint32 pin, bool* _high);
 } baytrail_gpio_pins_module_info;
 
 
