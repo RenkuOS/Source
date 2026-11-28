@@ -50,6 +50,7 @@ SimpleTest pthread_clock_test : pthread_clock_test.cpp ;
 SimpleTest posix_spawn_test : posix_spawn_test.cpp ;
 SimpleTest posix_spawn_redir_test : posix_spawn_redir_test.c ;
 SimpleTest posix_spawn_redir_err : posix_spawn_redir_err.c ;
+SimpleTest posix_spawn_eintr_test : posix_spawn_eintr_test.c ;
 SimpleTest posix_spawn_pipe_test : posix_spawn_pipe_test.c ;
 SimpleTest posix_spawn_pipe_err : posix_spawn_pipe_err.c ;
 SimpleTest pthread_attr_stack_test : pthread_attr_stack_test.cpp ;

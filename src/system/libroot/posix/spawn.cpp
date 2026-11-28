@@ -521,7 +521,9 @@ spawn_using_fork(pid_t *_pid, const char *path,
 		if (_pid != NULL)
 			*_pid = pid;
 		close(fds[1]);
-		read(fds[0], &err, sizeof(err));
+		// a signal must not hide the child's exec error
+		while (read(fds[0], &err, sizeof(err)) < 0 && errno == EINTR)
+			;
 		if (err != 0)
 			waitpid(pid, NULL, WNOHANG);
 		close(fds[0]);
