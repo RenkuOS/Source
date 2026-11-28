@@ -3580,22 +3580,31 @@ EHCI::_FillSplitIsochronous(Transfer *transfer, ehci_sitd **descriptors,
 		| EHCI_SITD_ENDPOINT(pipe->EndpointAddress())
 		| EHCI_SITD_ADDRESS(pipe->DeviceAddress());
 
-	// An IN packet is started in micro-frame 0 and completed from micro-frame
-	// 2 on, over as many micro-frames as the full speed transaction can take
-	// plus two; all of them have to fit in this frame, as the back pointer
-	// to the previous frame is not used.
+	// An IN packet is completed two micro-frames after its start-split, over
+	// as many micro-frames as the full speed transaction can take plus two,
+	// all in this frame, as the back pointer to the previous frame is not
+	// used. OUT start-splits go from micro-frame 0 on (below), so the IN
+	// packet is started in micro-frame 2, or earlier when it is too large
+	// to complete in the frame otherwise: its complete-splits then come
+	// after the OUT start-splits of a headset that plays and records at the
+	// same time. Started in micro-frame 0 too, the IN packets of such a
+	// headset came back with a few bytes instead of 192, and the OUT
+	// packets reached it distorted.
+	uint32 inSMask = 0;
 	uint32 inCMask = 0;
 	if (directionIn) {
 		uint32 transactions = (pipe->MaxPacketSize()
 			+ EHCI_SITD_SPLIT_BYTES - 1) / EHCI_SITD_SPLIT_BYTES;
 		if (transactions == 0)
 			transactions = 1;
-		inCMask = ((1u << (transactions + 2)) - 1) << 2;
-		if (inCMask > 0xff) {
+		if (transactions > 4) {
 			TRACE_ERROR("split isochronous IN packets of %" B_PRIuSIZE
 				" bytes do not fit in a frame\n", pipe->MaxPacketSize());
 			return B_BAD_VALUE;
 		}
+		uint32 start = min_c(2, 4 - transactions);
+		inSMask = 1u << start;
+		inCMask = ((1u << (transactions + 2)) - 1) << (start + 2);
 	}
 
 	// A full speed isochronous endpoint's interval counts frames.
@@ -3622,7 +3631,8 @@ EHCI::_FillSplitIsochronous(Transfer *transfer, ehci_sitd **descriptors,
 		sitd->endpoint = endpoint;
 		uint32 page1 = (uint32)((currentPhy + length) & ~(phys_addr_t)0xfff);
 		if (directionIn) {
-			sitd->schedule = EHCI_SITD_SMASK(0x01) | EHCI_SITD_CMASK(inCMask);
+			sitd->schedule = EHCI_SITD_SMASK(inSMask)
+				| EHCI_SITD_CMASK(inCMask);
 		} else {
 			// One start-split per 188 bytes, in consecutive micro-frames
 			// from micro-frame 0; an OUT packet has no complete-split.
