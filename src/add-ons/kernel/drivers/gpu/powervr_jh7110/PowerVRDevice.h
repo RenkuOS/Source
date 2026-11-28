@@ -178,6 +178,8 @@ private:
 	static	status_t			_EventWorker(void* data);
 
 			status_t			_MeasureCoreClock();
+			uint64				_PLL2Rate();
+			void				_SetCoreClock();
 
 			mutex				fLock;
 			bool				fRunning;

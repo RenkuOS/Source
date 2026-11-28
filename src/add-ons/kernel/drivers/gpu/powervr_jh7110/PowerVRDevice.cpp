@@ -19,6 +19,7 @@
 #include <sys/stat.h>
 
 #include <KernelExport.h>
+#include <driver_settings.h>
 #include <kernel.h>
 #include <syscalls.h>
 #include <vm/vm.h>
@@ -47,6 +48,11 @@
 #define SYSCRG_GPU_CORE					45			// divider of gpu_root
 #define OSCILLATOR_HZ					24000000
 #define GPU_CORE_CLOCK					396000000	// PLL2 1188 MHz / 3
+#define GPU_CORE_CLOCK_MAX				600000000
+	// JH7110 datasheet: up to 600 MHz (400 MHz by default); 594 MHz is
+	// PLL2 / 2. A driver settings file "powervr_jh7110" with
+	// "core_clock_mhz 396" chooses a lower clock.
+#define GPU_CORE_DIVIDER_MASK			0xffffff
 
 // SYS clocks gpu_core_clk, gpu_sys_clk, gpu_apb, gpu_rtc_toggle,
 // noc_bus_gpu_axi (gpu_core, 45, is a divider without a gate)
@@ -506,6 +512,9 @@ PowerVRDevice::_PowerUp()
 		}
 	}
 
+	// with the clocks still gated
+	_SetCoreClock();
+
 	for (size_t i = 0; i < B_COUNT_OF(kClockGates); i++) {
 		cpu_status state = disable_interrupts();
 		fClocks[kClockGates[i]] |= SYSCRG_GATE_ENABLE;
@@ -558,30 +567,75 @@ PowerVRDevice::_PowerDown()
 	firmware the Mars boots with): the firmware and its timers need the real
 	rate.
 */
-status_t
-PowerVRDevice::_MeasureCoreClock()
+//!	The rate of PLL2, which gpu_root selects; 0 if it cannot be read.
+uint64
+PowerVRDevice::_PLL2Rate()
 {
 	void* address;
 	area_id area = map_physical_memory("powervr sys syscon", SYSSYSCON_BASE,
 		B_PAGE_SIZE, B_ANY_KERNEL_ADDRESS, B_KERNEL_READ_AREA, &address);
 	if (area < 0)
-		return area;
+		return 0;
 	volatile uint32* syscon = (volatile uint32*)address;
 	uint64 fbdiv = (syscon[PLL2_FBDIV / 4] >> 17) & 0xfff;
 	uint64 prediv = syscon[PLL2_PREDIV / 4] & 0x3f;
 	uint64 postdiv1 = (syscon[PLL2_FRAC / 4] >> 28) & 0x3;
 	delete_area(area);
+	if (prediv == 0 || fbdiv == 0)
+		return 0;
+	return OSCILLATOR_HZ * fbdiv / prediv >> postdiv1;
+}
+
+
+/*!	Sets gpu_core to the fastest rate of PLL2 / divider within the limit,
+	GPU_CORE_CLOCK_MAX or the driver settings' core_clock_mhz. Leaves an
+	unexpected clock setup alone.
+*/
+void
+PowerVRDevice::_SetCoreClock()
+{
+	uint64 limit = GPU_CORE_CLOCK_MAX;
+	void* settings = load_driver_settings("powervr_jh7110");
+	if (settings != NULL) {
+		const char* value = get_driver_parameter(settings, "core_clock_mhz",
+			NULL, NULL);
+		if (value != NULL) {
+			uint64 mhz = strtoul(value, NULL, 10);
+			if (mhz >= 100 && mhz * 1000000 <= GPU_CORE_CLOCK_MAX)
+				limit = mhz * 1000000;
+		}
+		unload_driver_settings(settings);
+	}
 
 	uint32 root = (fClocks[SYSCRG_GPU_ROOT] >> 24) & 0x3f;
-	uint32 divider = fClocks[SYSCRG_GPU_CORE] & 0xffffff;
-	if (root != 0 || prediv == 0 || divider == 0 || fbdiv == 0) {
+	uint64 pll2 = _PLL2Rate();
+	if (root != 0 || pll2 == 0)
+		return;
+	uint32 divider = (pll2 + limit - 1) / limit;
+	if (divider < 2)
+		divider = 2;
+	if (divider > 7)
+		divider = 7;
+	cpu_status state = disable_interrupts();
+	fClocks[SYSCRG_GPU_CORE] = (fClocks[SYSCRG_GPU_CORE]
+		& ~(uint32)GPU_CORE_DIVIDER_MASK) | divider;
+	restore_interrupts(state);
+}
+
+
+status_t
+PowerVRDevice::_MeasureCoreClock()
+{
+	uint64 pll2 = _PLL2Rate();
+	uint32 root = (fClocks[SYSCRG_GPU_ROOT] >> 24) & 0x3f;
+	uint32 divider = fClocks[SYSCRG_GPU_CORE] & GPU_CORE_DIVIDER_MASK;
+	if (root != 0 || pll2 == 0 || divider == 0) {
 		POWERVR_TRACE("unexpected GPU clock setup (root %" B_PRIu32
 			", divider %" B_PRIu32 "), assuming %d Hz\n", root, divider,
 			GPU_CORE_CLOCK);
 		fCoreClock = GPU_CORE_CLOCK;
 		return B_OK;
 	}
-	uint64 pll2 = OSCILLATOR_HZ * fbdiv / prediv >> postdiv1;
 	fCoreClock = pll2 / divider;
 	return B_OK;
 }
