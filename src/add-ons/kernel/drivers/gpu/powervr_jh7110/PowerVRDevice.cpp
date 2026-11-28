@@ -1138,9 +1138,13 @@ PowerVRDevice::ProcessFirmwareEvents()
 				hardwareRecoveries++;
 				if ((flags & 1) != 0)	// CONTEXT_RESET_FLAG_PF
 					mmuPageFaults++;
+				// dm: 0 GP, 1 TDM (transfer), 2 geometry, 3 fragment,
+				// 4 compute
 				POWERVR_TRACE("context %" B_PRIu32 " reset (reason %"
-					B_PRIu32 ", flags %#" B_PRIx32 ", fault at %#" B_PRIx64
-					")\n", contextID, reason, flags, faultAddress);
+					B_PRIu32 ", data master %" B_PRIu32 ", job %" B_PRIu32
+					", flags %#" B_PRIx32 ", fault at %#" B_PRIx64 ")\n",
+					contextID, reason, words[2], words[3], flags,
+					faultAddress);
 				if (fResetHook != NULL) {
 					fResetHook(fResetCookie, contextID, reason, flags,
 						faultAddress);
