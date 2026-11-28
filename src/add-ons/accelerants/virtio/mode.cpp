@@ -5,6 +5,7 @@
  */
 
 
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -35,11 +36,44 @@ operator==(const display_mode &lhs, const display_mode &rhs)
 }
 
 
-/*!	Checks if the specified \a mode can be set using VESA. */
+/*!	Checks that \a mode fits in the driver's framebuffer. */
 static bool
 is_mode_supported(display_mode* mode)
 {
-	return (mode != NULL) && (*mode == gInfo->shared_info->current_mode);
+	return mode->virtual_width <= gInfo->shared_info->max_width
+		&& mode->virtual_height <= gInfo->shared_info->max_height;
+}
+
+
+static float
+get_refresh_rate(const display_mode& mode)
+{
+	return float(mode.timing.pixel_clock * 1000)
+		/ float(mode.timing.h_total * mode.timing.v_total);
+}
+
+
+/*!	Leaves one mode of each size and color space in the sorted list \a modes,
+	the one closest to 60 Hz: refresh rates mean nothing to a virtual display,
+	and the standard modes list up to six per size. Returns the new count.
+*/
+static uint32
+remove_refresh_variants(display_mode* modes, uint32 count)
+{
+	uint32 kept = 0;
+	for (uint32 i = 0; i < count; i++) {
+		if (kept > 0 && modes[i].virtual_width == modes[kept - 1].virtual_width
+			&& modes[i].virtual_height == modes[kept - 1].virtual_height
+			&& modes[i].space == modes[kept - 1].space) {
+			if (fabs(get_refresh_rate(modes[i]) - 60)
+					< fabs(get_refresh_rate(modes[kept - 1]) - 60)) {
+				modes[kept - 1] = modes[i];
+			}
+			continue;
+		}
+		modes[kept++] = modes[i];
+	}
+	return kept;
 }
 
 
@@ -58,25 +92,36 @@ create_mode_list(void)
 
 	const color_space colorspace[] = {(color_space)currentMode.space};
 
-	if (!gInfo->shared_info->has_edid) {
-		display_mode mode = gInfo->shared_info->current_mode;
-
-		compute_display_timing(mode.virtual_width, mode.virtual_height, 60, false,
-			&mode.timing);
-		fill_display_mode(mode.virtual_width, mode.virtual_height, &mode);
-
-		gInfo->mode_list_area = create_display_modes("virtio_gpu modes",
-			NULL, &mode, 1, colorspace, 1, is_mode_supported, &gInfo->mode_list,
-			&gInfo->shared_info->mode_count);
-	} else {
-		edid1_info edidInfo;
-		edid_decode(&edidInfo, &gInfo->shared_info->edid_raw);
-		gInfo->mode_list_area = create_display_modes("virtio_gpu modes",
-			&edidInfo, NULL, 0, colorspace, 1, NULL, &gInfo->mode_list,
-			&gInfo->shared_info->mode_count);
+	// A virtual display can show any size that fits in the driver's
+	// framebuffer, whatever its EDID says (Parallels Desktop only lists
+	// 1024x768 there), so always offer the host's current size and a set of
+	// common sizes besides the EDID modes.
+	static const struct { uint16 width, height; } kSizes[] = {
+		{1280, 720}, {1280, 800}, {1280, 1024}, {1366, 768}, {1440, 900},
+		{1600, 900}, {1600, 1200}, {1680, 1050}, {1920, 1080}, {1920, 1200},
+		{2560, 1440}, {2560, 1600}, {3840, 2160}
+	};
+	const uint32 kSizeCount = sizeof(kSizes) / sizeof(kSizes[0]);
+	display_mode modes[kSizeCount + 1];
+	modes[0] = currentMode;
+	fill_display_mode(currentMode.virtual_width, currentMode.virtual_height, &modes[0]);
+	for (uint32 i = 0; i < kSizeCount; i++) {
+		compute_display_timing(kSizes[i].width, kSizes[i].height, 60, false,
+			&modes[i + 1].timing);
+		fill_display_mode(kSizes[i].width, kSizes[i].height, &modes[i + 1]);
 	}
+
+	edid1_info edidInfo;
+	if (gInfo->shared_info->has_edid)
+		edid_decode(&edidInfo, &gInfo->shared_info->edid_raw);
+	gInfo->mode_list_area = create_display_modes("virtio_gpu modes",
+		gInfo->shared_info->has_edid ? &edidInfo : NULL, modes, kSizeCount + 1,
+		colorspace, 1, is_mode_supported, &gInfo->mode_list,
+		&gInfo->shared_info->mode_count);
 	if (gInfo->mode_list_area < 0)
 		return gInfo->mode_list_area;
+	gInfo->shared_info->mode_count = remove_refresh_variants(gInfo->mode_list,
+		gInfo->shared_info->mode_count);
 
 	gInfo->shared_info->mode_list_area = gInfo->mode_list_area;
 	return B_OK;
