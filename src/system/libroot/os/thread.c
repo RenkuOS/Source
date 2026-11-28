@@ -28,6 +28,7 @@ typedef struct callback_node {
 } callback_node;
 
 
+void _thread_call_exit_callbacks(void);
 void _thread_do_exit_work(void);
 void _thread_do_exit_notification(void);
 
@@ -57,8 +58,9 @@ _thread_do_exit_notification(void)
 }
 
 
+/*!	Calls the on_exit_thread() callbacks of the current thread. */
 void
-_thread_do_exit_work(void)
+_thread_call_exit_callbacks(void)
 {
 	callback_node *node = tls_get(TLS_ON_EXIT_THREAD_SLOT);
 	callback_node *next;
@@ -73,6 +75,13 @@ _thread_do_exit_work(void)
 	}
 
 	tls_set(TLS_ON_EXIT_THREAD_SLOT, NULL);
+}
+
+
+void
+_thread_do_exit_work(void)
+{
+	_thread_call_exit_callbacks();
 
 	__pthread_destroy_thread();
 

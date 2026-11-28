@@ -28,7 +28,7 @@
 
 
 extern "C" void _IO_cleanup(void);
-extern "C" void _thread_do_exit_work(void);
+extern "C" void _thread_call_exit_callbacks(void);
 
 
 struct AtExitInfoBlock;
@@ -313,8 +313,9 @@ exit(int status)
 	// unwind the exit stack, calling the registered functions
 	__cxa_finalize(NULL);
 
-	// BeOS on exit notification for the main thread
-	_thread_do_exit_work();
+	// BeOS on exit notification for the main thread. Unlike thread exit, this
+	// must not run the pthread cleanup handlers or key destructors (POSIX).
+	_thread_call_exit_callbacks();
 
 	// close all open files
 	_IO_cleanup();
