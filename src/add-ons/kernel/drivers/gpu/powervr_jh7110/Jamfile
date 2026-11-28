@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: MIT
+
+SubDir HAIKU_TOP src add-ons kernel drivers gpu powervr_jh7110 ;
+
+SubDirC++Flags -fno-rtti ;
+
+UsePrivateHeaders drivers ;
+UsePrivateKernelHeaders ;
+UseLibraryHeaders [ FDirName libfdt ] ;
+SubDirHdrs [ FDirName $(SUBDIR) rogue ] ;
+
+local libFDTSources =
+	fdt.c
+	fdt_ro.c
+	fdt_strerror.c
+;
+
+KernelAddon powervr_jh7110 :
+	driver.cpp
+	PowerVRDevice.cpp
+
+	# Rogue firmware interface, GPU MMU and contexts, ported from Linux'
+	# drm/imagination (GPL-2.0-only OR MIT, used under MIT)
+	pvr_context.cpp
+	pvr_fwif_init.cpp
+	pvr_mmu.cpp
+	pvr_render.cpp
+	pvr_stream.cpp
+
+	$(libFDTSources)
+;
+
+SEARCH on [ FGristFiles pvr_context.cpp pvr_fwif_init.cpp pvr_mmu.cpp
+		pvr_render.cpp pvr_stream.cpp ]
+	= [ FDirName $(SUBDIR) rogue ] ;
+SEARCH on [ FGristFiles $(libFDTSources) ]
+	= [ FDirName $(HAIKU_TOP) src libs libfdt ] ;

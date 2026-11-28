@@ -219,6 +219,9 @@ AddDriversToPackage dvb :
 	;
 AddDriversToPackage graphics
 	: $(SYSTEM_ADD_ONS_DRIVERS_GRAPHICS) ;
+AddDriversToPackage gpu :
+	powervr_jh7110@riscv64
+	;
 AddDriversToPackage input :
 	bluetooth_hid
 	ps2_hid
