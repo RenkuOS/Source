@@ -7,11 +7,13 @@
  * the Linux drm/imagination driver:
  *  - firmware memory context (pvr_vm.c: pvr_vm_create_context(),
  *    fw_mem_context_init()),
- *  - transfer or compute context with its queue (pvr_context.c:
- *    pvr_context_create(), pvr_queue.c: pvr_queue_create(),
- *    init_fw_context(); pvr_cccb.c: pvr_cccb_init()),
- *  - client CCB commands and the KCCB kick (pvr_cccb.c:
- *    pvr_cccb_write_command_with_header(), pvr_cccb_send_kccb_kick();
+ *  - transfer, compute or render context with its queue(s) (pvr_context.c:
+ *    pvr_context_create(), init_render_fw_objs(), init_compute_fw_objs();
+ *    pvr_queue.c: pvr_queue_create(), init_fw_context(), reg_state_init();
+ *    pvr_cccb.c: pvr_cccb_init()),
+ *  - client CCB commands, the CCCB space check and the KCCB kicks (pvr_cccb.c:
+ *    pvr_cccb_write_command_with_header(), pvr_cccb_cmdseq_fits(),
+ *    pvr_cccb_send_kccb_kick(), pvr_cccb_send_kccb_combined_kick();
  *    pvr_queue.c: pvr_queue_submit_job_to_cccb()),
  *  - KCCB send/wait, MMU cache flush and FW object cleanup (pvr_ccb.c:
  *    pvr_kccb_send_cmd_reserved_powered(), pvr_kccb_wait_for_completion();
@@ -67,7 +69,12 @@ enum pvr_ctx_type {
 	PVR_CTX_TYPE_TRANSFER_FRAG,
 		// DRM_PVR_CTX_TYPE_TRANSFER_FRAG: no static state, DM FRAG
 	PVR_CTX_TYPE_COMPUTE,
-		// DRM_PVR_CTX_TYPE_COMPUTE: zeroed static CDM state, DM CDM
+		// DRM_PVR_CTX_TYPE_COMPUTE: static CDM state, DM CDM
+	PVR_CTX_TYPE_GEOMETRY,
+		// geometry queue of a pvr_render_context, DM GEOM (not accepted by
+		// pvr_gpu_context_create())
+	PVR_CTX_TYPE_FRAGMENT,
+		// fragment queue of a pvr_render_context, DM FRAG (idem)
 };
 
 
@@ -126,6 +133,11 @@ struct pvr_ctx_params {
 		// transfer state size (pvr_queue.c: get_xfer_ctx_state_size()):
 		// 1 with feature xe_memory_hierarchy (this core), else
 		// num_isp_ipp_pipes; 0 selects 1
+	const struct rogue_fwif_static_computecontext_state* compute_static_state;
+		// compute: the static CDM context switch state (Linux copies it
+		// from the stream of init_compute_fw_objs(); pvr_render.h:
+		// pvr_compute_context_create() parses that stream). NULL keeps the
+		// earlier behaviour of this module: a zeroed state.
 };
 
 
@@ -163,6 +175,47 @@ struct pvr_gpu_context {
 	struct rogue_fwif_fwcommoncontext*	fw_common;
 	uint32							fw_common_addr;
 		// pvr_context_get_fw_addr() + ctx_offset: the KICK target
+
+	const pvr_fw_obj*				shared_fw_obj;
+		// queue of a render context: the FW context object it shares with
+		// the other queue (objs[PVR_CTX_OBJ_FW_CONTEXT] is then unused);
+		// NULL when the context owns objs[PVR_CTX_OBJ_FW_CONTEXT]
+};
+
+
+/* pvr_context with DRM_PVR_CTX_TYPE_RENDER: two queues, one FW object */
+struct pvr_render_context {
+	pvr_fw_mem_context*					mem;
+	pvr_gpu_context						geom;
+		// type PVR_CTX_TYPE_GEOMETRY, objs 0..3 only
+	pvr_gpu_context						frag;
+		// type PVR_CTX_TYPE_FRAGMENT, objs 0..3 only
+	pvr_fw_obj							fw_obj;
+		// struct rogue_fwif_fwrendercontext
+	struct rogue_fwif_fwrendercontext*	fw;
+};
+
+
+struct pvr_render_ctx_params {
+	uint32			priority;
+		// PVR_CTX_PRIORITY_*
+	uint32			cccb_size_log2;
+		// of both queues; 0 selects Linux' 15
+	uint32			ctx_id;
+		// server_common_context_id of both common contexts
+	uint32			pid;
+	uint64			callstack_addr;
+		// drm_pvr_ioctl_create_context_args::callstack_addr: written to
+		// geom_core[0].geom_reg_vdm_call_stack_pointer_init of the geometry
+		// context state (reg_state_init())
+	uint32			num_frag_isp_store_registers;
+		// fragment state size (pvr_queue.c: get_frag_ctx_state_size()):
+		// with xe_memory_hierarchy num_raster_pipes * (1 + xpu_max_slaves
+		// if gpu_multicore_support), else num_isp_ipp_pipes; 4 on this
+		// core. pvr_render.h: pvr_frag_ctx_isp_store_registers().
+	const struct rogue_fwif_geom_registers_caswitch* static_state;
+		// required: copied to static_render_context_state.ctxswitch_regs[0]
+		// (init_render_fw_objs())
 };
 
 
@@ -201,6 +254,41 @@ bool pvr_kccb_slot_executed(const pvr_ctx_env& env, pvr_fwif_state* fwif,
 /*!	pvr_kccb_wait_for_completion(), polling every 100 us. */
 status_t pvr_kccb_wait_for_completion(const pvr_ctx_env& env,
 	pvr_fwif_state* fwif, uint32 slot, bigtime_t timeout, uint32* _rtn);
+
+
+/*!	pvr_ccb_slot_available_locked() on the KCCB: whether one more command
+	fits (syncs the read offset first). The caller serializes all KCCB
+	senders, so a true result stays valid until it sends.
+*/
+bool pvr_kccb_slot_available(const pvr_ctx_env& env, pvr_fwif_state* fwif);
+
+
+//	#pragma mark - FW objects (pvr_gem.c, pvr_fw.c)
+
+
+/*!	pvr_fw_object_create(): a zeroed, page granular object anywhere in the
+	main FW heap, through env.fw_alloc. Not synced: the caller fills it and
+	calls pvr_fw_object_sync(). Afterwards the MIPS page table changed: the
+	caller requests an MMU flush (PVR_MMU_SYNC_LEVEL_2_FLAGS) before the
+	firmware uses the object (see pvr_gpu_context_create()).
+*/
+status_t pvr_fw_object_create(const pvr_ctx_env& env, const char* name,
+	size_t size, pvr_fw_obj* obj);
+/*!	Frees the object (env.fw_free) and clears obj; obj may be empty. */
+void pvr_fw_object_destroy(const pvr_ctx_env& env, pvr_fw_obj* obj);
+/*!	Writes back and invalidates the whole object (env.sync). */
+void pvr_fw_object_sync(const pvr_ctx_env& env, const pvr_fw_obj& obj);
+
+/*!	pvr_fw_structure_cleanup(): sends ROGUE_FWIF_KCCB_CMD_CLEANUP for the
+	object at fwAddr (type: ROGUE_FWIF_CLEANUP_*), waits up to 1 s for the
+	answer and repeats while the firmware answers CLEANUP_BUSY, until
+	timeout (0: a single attempt, as Linux). B_OK once the firmware released
+	the object, B_BUSY if it still uses it, B_TIMED_OUT if it did not answer.
+	Linux does not retry; the loop is the behaviour of
+	pvr_gpu_context_cleanup() of this module.
+*/
+status_t pvr_fw_structure_cleanup(const pvr_ctx_env& env,
+	pvr_fwif_state* fwif, uint32 type, uint32 fwAddr, bigtime_t timeout);
 
 
 //	#pragma mark - MMU cache (pvr_mmu.c)
@@ -257,12 +345,44 @@ status_t pvr_cccb_write_command(const pvr_ctx_env& env,
 	pvr_gpu_context* context, uint32 cmdType, const void* data, uint32 size,
 	uint32 extJobRef, uint32 intJobRef);
 
+/*!	pvr_cccb_get_size_of_cmd_with_hdr(): CCCB bytes of a command of size
+	payload bytes, header included.
+*/
+uint32 pvr_cccb_cmd_size(uint32 size);
+/*!	pvr_cccb_cmdseq_fits(): whether a command sequence of size bytes (sum of
+	pvr_cccb_cmd_size()) fits now, against the firmware read offset (synced
+	first), keeping room for the padding command at the end.
+*/
+bool pvr_cccb_cmdseq_fits(const pvr_ctx_env& env, pvr_gpu_context* context,
+	uint32 size);
+/*!	pvr_cccb_cmdseq_can_fit(): whether it fits in an empty CCCB at all. */
+bool pvr_cccb_cmdseq_can_fit(const pvr_gpu_context* context, uint32 size);
+
 /*!	pvr_cccb_send_kccb_kick(): syncs the CCCB and sends
 	ROGUE_FWIF_KCCB_CMD_KICK with the context's FW address and the CCCB
 	write offset (MTS kick with DM GP, pvr_ccb.c:294).
 */
 status_t pvr_gpu_context_kick(const pvr_ctx_env& env, pvr_fwif_state* fwif,
 	pvr_gpu_context* context, uint32* _kccbSlot);
+/*!	As pvr_gpu_context_kick(), with the cleanup control of a HWRT data
+	(fill_cmd_kick_data(): hwrt FW address + offsetof(rogue_fwif_hwrtdata,
+	cleanup_state)) attached when cleanupCtlFwAddr is not 0. The firmware
+	counts the commands referencing the HWRT data in that control, so that
+	ROGUE_FWIF_CLEANUP_HWRTDATA reports busy while jobs use it.
+*/
+status_t pvr_gpu_context_kick_hwrt(const pvr_ctx_env& env,
+	pvr_fwif_state* fwif, pvr_gpu_context* context, uint32 cleanupCtlFwAddr,
+	uint32* _kccbSlot);
+/*!	pvr_cccb_send_kccb_combined_kick(): one
+	ROGUE_FWIF_KCCB_CMD_COMBINED_GEOM_FRAG_KICK for the geometry and the
+	fragment queue of a render context (both CCCBs synced first). The
+	cleanup controls are attached when not 0 (Linux passes none for the
+	fragment queue when its command is a partial render, FRAG_PR).
+*/
+status_t pvr_gpu_context_kick_combined(const pvr_ctx_env& env,
+	pvr_fwif_state* fwif, pvr_gpu_context* geom, pvr_gpu_context* frag,
+	uint32 geomCleanupCtlFwAddr, uint32 fragCleanupCtlFwAddr,
+	uint32* _kccbSlot);
 
 /*!	Firmware-only job: [NULL,] UPDATE(timeline UFO := value) and kick. As
 	the tail of every Linux job (pvr_queue_submit_job_to_cccb()), but
@@ -275,6 +395,10 @@ status_t pvr_gpu_context_submit_update(const pvr_ctx_env& env,
 /*!	Compute job: CDM command (ROGUE_FWIF_CCB_CMD_TYPE_CDM, cmd as built by
 	the caller, frame_num and flags as pvr_compute_job_fw_cmd_init()), then
 	UPDATE(timeline UFO := value), then kick. Compute contexts only.
+	B_WOULD_BLOCK (nothing written) if both commands do not fit in the CCCB
+	now; B_BUSY if they were written but the KCCB was full for the kick:
+	call pvr_gpu_context_kick() again. For the stream based submission of
+	the UAPI see pvr_render.h: pvr_job_init()/pvr_job_submit().
 */
 status_t pvr_gpu_context_submit_compute(const pvr_ctx_env& env,
 	pvr_fwif_state* fwif, pvr_gpu_context* context,
@@ -302,6 +426,34 @@ status_t pvr_gpu_context_cleanup(const pvr_ctx_env& env,
 */
 void pvr_gpu_context_destroy(const pvr_ctx_env& env,
 	pvr_gpu_context* context);
+
+
+/*!	pvr_context_create() of a render context: geometry queue (CCCB control
+	and buffer, geometry context state with the VDM call stack address,
+	timeline UFO), fragment queue (idem, fragment context state), then the
+	FW render context with both common contexts and the static state.
+	Everything is synced. As for pvr_gpu_context_create(), the caller then
+	requests an MMU flush (PVR_MMU_SYNC_LEVEL_2_FLAGS) before the first
+	kick. On failure everything created is freed.
+	The queues are used with the pvr_gpu_context functions (write, kick,
+	status); their UFOs are the geometry and fragment timelines.
+*/
+status_t pvr_render_context_create(const pvr_ctx_env& env,
+	pvr_fw_mem_context* memContext, const pvr_render_ctx_params& params,
+	pvr_render_context* context);
+/*!	pvr_context_destroy_queues(): ROGUE_FWIF_CLEANUP_FWCOMMONCONTEXT of the
+	fragment, then of the geometry common context (each retried until
+	timeout). B_OK once the firmware released both; otherwise nothing may
+	be freed.
+*/
+status_t pvr_render_context_cleanup(const pvr_ctx_env& env,
+	pvr_fwif_state* fwif, pvr_render_context* context, bigtime_t timeout);
+/*!	Frees the fragment queue, the geometry queue, then the FW render
+	context (pvr_context_release()). Only after pvr_render_context_cleanup()
+	returned B_OK, or on a context whose creation failed.
+*/
+void pvr_render_context_destroy(const pvr_ctx_env& env,
+	pvr_render_context* context);
 
 
 //	#pragma mark - diagnostics

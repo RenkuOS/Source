@@ -64,6 +64,10 @@ private:
 // called by ProcessFirmwareEvents() for a context reset notification
 typedef void (*powervr_reset_hook)(void* cookie, uint32 contextID,
 	uint32 reason, uint32 flags, uint64 faultAddress);
+// a firmware CCB command the device does not handle itself (free list
+// grow and reconstruction requests); called with the device lock held
+typedef void (*powervr_event_hook)(void* cookie, uint32 type,
+	const uint32* words);
 
 
 /*!	The GPU, its firmware and the kernel side of the firmware interface. One
@@ -89,6 +93,10 @@ public:
 									void* cookie)
 									{ fResetHook = hook;
 										fResetCookie = cookie; }
+			void				SetEventHook(powervr_event_hook hook,
+									void* cookie)
+									{ fEventHook = hook;
+										fEventCookie = cookie; }
 
 			void				Lock() { mutex_lock(&fLock); }
 			void				Unlock() { mutex_unlock(&fLock); }
@@ -167,6 +175,7 @@ private:
 			status_t			_HealthCheck();
 
 	static	int32				_HandleInterrupt(void* data);
+	static	status_t			_EventWorker(void* data);
 
 			status_t			_MeasureCoreClock();
 
@@ -175,6 +184,10 @@ private:
 			bool				fLost;
 			powervr_reset_hook	fResetHook;
 			void*				fResetCookie;
+			powervr_event_hook	fEventHook;
+			void*				fEventCookie;
+			thread_id			fEventWorker;
+			bool				fEventWorkerQuit;
 
 			area_id				fRegisterAreas[4];
 			volatile uint8*		fRegisters;

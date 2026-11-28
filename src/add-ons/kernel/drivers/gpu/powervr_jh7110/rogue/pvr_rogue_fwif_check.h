@@ -403,4 +403,286 @@ SIZE_CHECK(struct rogue_fwif_workest_kick_data, 24);
 OFFSET_CHECK(struct rogue_fwif_mmucachedata, mmu_cache_sync_update_value, 8);
 SIZE_CHECK(struct rogue_fwif_mmucachedata, 12);
 
+/*
+ * Render contexts, free lists, HWRT data, geometry/fragment/transfer commands
+ * (pvr_rogue_fwif_check.h, pvr_rogue_fwif_shared_check.h,
+ * pvr_rogue_fwif_client_check.h; extracted unchanged)
+ */
+OFFSET_CHECK(struct rogue_fwif_cleanup_ctl, submitted_commands, 0);
+OFFSET_CHECK(struct rogue_fwif_cleanup_ctl, executed_commands, 4);
+SIZE_CHECK(struct rogue_fwif_cleanup_ctl, 8);
+
+OFFSET_CHECK(struct rogue_fwif_cmd_geom_frag_shared, cmn, 0);
+OFFSET_CHECK(struct rogue_fwif_cmd_geom_frag_shared, hwrt_data_fw_addr, 4);
+OFFSET_CHECK(struct rogue_fwif_cmd_geom_frag_shared, pr_buffer_fw_addr, 8);
+SIZE_CHECK(struct rogue_fwif_cmd_geom_frag_shared, 16);
+
+OFFSET_CHECK(struct rogue_fwif_geom_registers_caswitch,
+	geom_reg_vdm_context_state_base_addr, 0);
+OFFSET_CHECK(struct rogue_fwif_geom_registers_caswitch,
+	geom_reg_vdm_context_state_resume_addr, 8);
+OFFSET_CHECK(struct rogue_fwif_geom_registers_caswitch,
+	geom_reg_ta_context_state_base_addr, 16);
+OFFSET_CHECK(struct rogue_fwif_geom_registers_caswitch,
+	geom_state[0].geom_reg_vdm_context_store_task0, 24);
+OFFSET_CHECK(struct rogue_fwif_geom_registers_caswitch,
+	geom_state[0].geom_reg_vdm_context_store_task1, 32);
+OFFSET_CHECK(struct rogue_fwif_geom_registers_caswitch,
+	geom_state[0].geom_reg_vdm_context_store_task2, 40);
+OFFSET_CHECK(struct rogue_fwif_geom_registers_caswitch,
+	geom_state[0].geom_reg_vdm_context_resume_task0, 48);
+OFFSET_CHECK(struct rogue_fwif_geom_registers_caswitch,
+	geom_state[0].geom_reg_vdm_context_resume_task1, 56);
+OFFSET_CHECK(struct rogue_fwif_geom_registers_caswitch,
+	geom_state[0].geom_reg_vdm_context_resume_task2, 64);
+OFFSET_CHECK(struct rogue_fwif_geom_registers_caswitch,
+	geom_state[0].geom_reg_vdm_context_store_task3, 72);
+OFFSET_CHECK(struct rogue_fwif_geom_registers_caswitch,
+	geom_state[0].geom_reg_vdm_context_store_task4, 80);
+OFFSET_CHECK(struct rogue_fwif_geom_registers_caswitch,
+	geom_state[0].geom_reg_vdm_context_resume_task3, 88);
+OFFSET_CHECK(struct rogue_fwif_geom_registers_caswitch,
+	geom_state[0].geom_reg_vdm_context_resume_task4, 96);
+OFFSET_CHECK(struct rogue_fwif_geom_registers_caswitch,
+	geom_state[1].geom_reg_vdm_context_store_task0, 104);
+OFFSET_CHECK(struct rogue_fwif_geom_registers_caswitch,
+	geom_state[1].geom_reg_vdm_context_store_task1, 112);
+OFFSET_CHECK(struct rogue_fwif_geom_registers_caswitch,
+	geom_state[1].geom_reg_vdm_context_store_task2, 120);
+OFFSET_CHECK(struct rogue_fwif_geom_registers_caswitch,
+	geom_state[1].geom_reg_vdm_context_resume_task0, 128);
+OFFSET_CHECK(struct rogue_fwif_geom_registers_caswitch,
+	geom_state[1].geom_reg_vdm_context_resume_task1, 136);
+OFFSET_CHECK(struct rogue_fwif_geom_registers_caswitch,
+	geom_state[1].geom_reg_vdm_context_resume_task2, 144);
+OFFSET_CHECK(struct rogue_fwif_geom_registers_caswitch,
+	geom_state[1].geom_reg_vdm_context_store_task3, 152);
+OFFSET_CHECK(struct rogue_fwif_geom_registers_caswitch,
+	geom_state[1].geom_reg_vdm_context_store_task4, 160);
+OFFSET_CHECK(struct rogue_fwif_geom_registers_caswitch,
+	geom_state[1].geom_reg_vdm_context_resume_task3, 168);
+OFFSET_CHECK(struct rogue_fwif_geom_registers_caswitch,
+	geom_state[1].geom_reg_vdm_context_resume_task4, 176);
+SIZE_CHECK(struct rogue_fwif_geom_registers_caswitch, 184);
+
+OFFSET_CHECK(struct rogue_fwif_static_rendercontext_state, ctxswitch_regs, 0);
+SIZE_CHECK(struct rogue_fwif_static_rendercontext_state, 368);
+
+OFFSET_CHECK(struct rogue_fwif_geom_ctx_state_per_geom,
+	geom_reg_vdm_call_stack_pointer, 0);
+OFFSET_CHECK(struct rogue_fwif_geom_ctx_state_per_geom,
+	geom_reg_vdm_call_stack_pointer_init, 8);
+OFFSET_CHECK(struct rogue_fwif_geom_ctx_state_per_geom, geom_reg_vbs_so_prim,
+	16);
+OFFSET_CHECK(struct rogue_fwif_geom_ctx_state_per_geom, geom_current_idx, 32);
+SIZE_CHECK(struct rogue_fwif_geom_ctx_state_per_geom, 40);
+
+OFFSET_CHECK(struct rogue_fwif_geom_ctx_state, geom_core, 0);
+SIZE_CHECK(struct rogue_fwif_geom_ctx_state, 160);
+
+OFFSET_CHECK(struct rogue_fwif_kccb_cmd_combined_geom_frag_kick_data,
+	geom_cmd_kick_data, 0);
+OFFSET_CHECK(struct rogue_fwif_kccb_cmd_combined_geom_frag_kick_data,
+	frag_cmd_kick_data, 32);
+SIZE_CHECK(struct rogue_fwif_kccb_cmd_combined_geom_frag_kick_data, 64);
+
+OFFSET_CHECK(struct rogue_fwif_freelist_gs_data, freelist_fw_addr, 0);
+OFFSET_CHECK(struct rogue_fwif_freelist_gs_data, delta_pages, 4);
+OFFSET_CHECK(struct rogue_fwif_freelist_gs_data, new_pages, 8);
+OFFSET_CHECK(struct rogue_fwif_freelist_gs_data, ready_pages, 12);
+SIZE_CHECK(struct rogue_fwif_freelist_gs_data, 16);
+
+OFFSET_CHECK(struct rogue_fwif_freelists_reconstruction_data, freelist_count,
+	0);
+OFFSET_CHECK(struct rogue_fwif_freelists_reconstruction_data, freelist_ids, 4);
+SIZE_CHECK(struct rogue_fwif_freelists_reconstruction_data, 76);
+
+OFFSET_CHECK(struct rogue_fwif_rta_ctl, render_target_index, 0);
+OFFSET_CHECK(struct rogue_fwif_rta_ctl, current_render_target, 4);
+OFFSET_CHECK(struct rogue_fwif_rta_ctl, active_render_targets, 8);
+OFFSET_CHECK(struct rogue_fwif_rta_ctl, cumul_active_render_targets, 12);
+OFFSET_CHECK(struct rogue_fwif_rta_ctl, valid_render_targets_fw_addr, 16);
+OFFSET_CHECK(struct rogue_fwif_rta_ctl, rta_num_partial_renders_fw_addr, 20);
+OFFSET_CHECK(struct rogue_fwif_rta_ctl, max_rts, 24);
+OFFSET_CHECK(struct rogue_fwif_rta_ctl, rta_ctl_flags, 28);
+SIZE_CHECK(struct rogue_fwif_rta_ctl, 32);
+
+OFFSET_CHECK(struct rogue_fwif_freelist, freelist_dev_addr, 0);
+OFFSET_CHECK(struct rogue_fwif_freelist, current_dev_addr, 8);
+OFFSET_CHECK(struct rogue_fwif_freelist, current_stack_top, 16);
+OFFSET_CHECK(struct rogue_fwif_freelist, max_pages, 20);
+OFFSET_CHECK(struct rogue_fwif_freelist, grow_pages, 24);
+OFFSET_CHECK(struct rogue_fwif_freelist, current_pages, 28);
+OFFSET_CHECK(struct rogue_fwif_freelist, allocated_page_count, 32);
+OFFSET_CHECK(struct rogue_fwif_freelist, allocated_mmu_page_count, 36);
+OFFSET_CHECK(struct rogue_fwif_freelist, freelist_id, 40);
+OFFSET_CHECK(struct rogue_fwif_freelist, grow_pending, 44);
+OFFSET_CHECK(struct rogue_fwif_freelist, ready_pages, 48);
+OFFSET_CHECK(struct rogue_fwif_freelist, freelist_flags, 52);
+OFFSET_CHECK(struct rogue_fwif_freelist, pm_global_pb, 56);
+SIZE_CHECK(struct rogue_fwif_freelist, 64);
+
+OFFSET_CHECK(struct rogue_fwif_hwrtdata_common, geom_caches_need_zeroing, 0);
+OFFSET_CHECK(struct rogue_fwif_hwrtdata_common, screen_pixel_max, 4);
+OFFSET_CHECK(struct rogue_fwif_hwrtdata_common, multi_sample_ctl, 8);
+OFFSET_CHECK(struct rogue_fwif_hwrtdata_common, flipped_multi_sample_ctl, 16);
+OFFSET_CHECK(struct rogue_fwif_hwrtdata_common, tpc_stride, 24);
+OFFSET_CHECK(struct rogue_fwif_hwrtdata_common, tpc_size, 28);
+OFFSET_CHECK(struct rogue_fwif_hwrtdata_common, te_screen, 32);
+OFFSET_CHECK(struct rogue_fwif_hwrtdata_common, mtile_stride, 36);
+OFFSET_CHECK(struct rogue_fwif_hwrtdata_common, teaa, 40);
+OFFSET_CHECK(struct rogue_fwif_hwrtdata_common, te_mtile1, 44);
+OFFSET_CHECK(struct rogue_fwif_hwrtdata_common, te_mtile2, 48);
+OFFSET_CHECK(struct rogue_fwif_hwrtdata_common, isp_merge_lower_x, 52);
+OFFSET_CHECK(struct rogue_fwif_hwrtdata_common, isp_merge_lower_y, 56);
+OFFSET_CHECK(struct rogue_fwif_hwrtdata_common, isp_merge_upper_x, 60);
+OFFSET_CHECK(struct rogue_fwif_hwrtdata_common, isp_merge_upper_y, 64);
+OFFSET_CHECK(struct rogue_fwif_hwrtdata_common, isp_merge_scale_x, 68);
+OFFSET_CHECK(struct rogue_fwif_hwrtdata_common, isp_merge_scale_y, 72);
+OFFSET_CHECK(struct rogue_fwif_hwrtdata_common, rgn_header_size, 76);
+OFFSET_CHECK(struct rogue_fwif_hwrtdata_common, isp_mtile_size, 80);
+SIZE_CHECK(struct rogue_fwif_hwrtdata_common, 88);
+
+OFFSET_CHECK(struct rogue_fwif_hwrtdata, pm_mlist_dev_addr, 0);
+OFFSET_CHECK(struct rogue_fwif_hwrtdata, vce_cat_base, 8);
+OFFSET_CHECK(struct rogue_fwif_hwrtdata, vce_last_cat_base, 40);
+OFFSET_CHECK(struct rogue_fwif_hwrtdata, te_cat_base, 72);
+OFFSET_CHECK(struct rogue_fwif_hwrtdata, te_last_cat_base, 104);
+OFFSET_CHECK(struct rogue_fwif_hwrtdata, alist_cat_base, 136);
+OFFSET_CHECK(struct rogue_fwif_hwrtdata, alist_last_cat_base, 144);
+OFFSET_CHECK(struct rogue_fwif_hwrtdata, pm_alist_stack_pointer, 152);
+OFFSET_CHECK(struct rogue_fwif_hwrtdata, pm_mlist_stack_pointer, 160);
+OFFSET_CHECK(struct rogue_fwif_hwrtdata, hwrt_data_common_fw_addr, 164);
+OFFSET_CHECK(struct rogue_fwif_hwrtdata, hwrt_data_flags, 168);
+OFFSET_CHECK(struct rogue_fwif_hwrtdata, state, 172);
+OFFSET_CHECK(struct rogue_fwif_hwrtdata, freelists_fw_addr, 176);
+OFFSET_CHECK(struct rogue_fwif_hwrtdata, freelist_hwr_snapshot, 188);
+OFFSET_CHECK(struct rogue_fwif_hwrtdata, vheap_table_dev_addr, 200);
+OFFSET_CHECK(struct rogue_fwif_hwrtdata, rta_ctl, 208);
+OFFSET_CHECK(struct rogue_fwif_hwrtdata, tail_ptrs_dev_addr, 240);
+OFFSET_CHECK(struct rogue_fwif_hwrtdata, macrotile_array_dev_addr, 248);
+OFFSET_CHECK(struct rogue_fwif_hwrtdata, rgn_header_dev_addr, 256);
+OFFSET_CHECK(struct rogue_fwif_hwrtdata, rtc_dev_addr, 264);
+OFFSET_CHECK(struct rogue_fwif_hwrtdata, owner_geom_not_used_by_host, 272);
+OFFSET_CHECK(struct rogue_fwif_hwrtdata, geom_caches_need_zeroing, 276);
+OFFSET_CHECK(struct rogue_fwif_hwrtdata, cleanup_state, 320);
+SIZE_CHECK(struct rogue_fwif_hwrtdata, 384);
+
+OFFSET_CHECK(struct rogue_fwif_geom_regs, vdm_ctrl_stream_base, 0);
+OFFSET_CHECK(struct rogue_fwif_geom_regs, tpu_border_colour_table, 8);
+OFFSET_CHECK(struct rogue_fwif_geom_regs, vdm_draw_indirect0, 16);
+OFFSET_CHECK(struct rogue_fwif_geom_regs, vdm_draw_indirect1, 24);
+OFFSET_CHECK(struct rogue_fwif_geom_regs, ppp_ctrl, 28);
+OFFSET_CHECK(struct rogue_fwif_geom_regs, te_psg, 32);
+OFFSET_CHECK(struct rogue_fwif_geom_regs, tpu, 36);
+OFFSET_CHECK(struct rogue_fwif_geom_regs, vdm_context_resume_task0_size, 40);
+OFFSET_CHECK(struct rogue_fwif_geom_regs, vdm_context_resume_task3_size, 44);
+OFFSET_CHECK(struct rogue_fwif_geom_regs, pds_ctrl, 48);
+OFFSET_CHECK(struct rogue_fwif_geom_regs, view_idx, 52);
+OFFSET_CHECK(struct rogue_fwif_geom_regs, pds_coeff_free_prog, 56);
+SIZE_CHECK(struct rogue_fwif_geom_regs, 64);
+
+OFFSET_CHECK(struct rogue_fwif_dummy_rgnhdr_init_geom_regs, te_psgregion_addr,
+	0);
+SIZE_CHECK(struct rogue_fwif_dummy_rgnhdr_init_geom_regs, 8);
+
+OFFSET_CHECK(struct rogue_fwif_cmd_geom, cmd_shared, 0);
+OFFSET_CHECK(struct rogue_fwif_cmd_geom, regs, 16);
+OFFSET_CHECK(struct rogue_fwif_cmd_geom, flags, 80);
+OFFSET_CHECK(struct rogue_fwif_cmd_geom, partial_render_geom_frag_fence, 84);
+OFFSET_CHECK(struct rogue_fwif_cmd_geom, dummy_rgnhdr_init_geom_regs, 96);
+OFFSET_CHECK(struct rogue_fwif_cmd_geom, brn61484_66333_live_rt, 104);
+SIZE_CHECK(struct rogue_fwif_cmd_geom, 112);
+
+OFFSET_CHECK(struct rogue_fwif_frag_regs, usc_pixel_output_ctrl, 0);
+OFFSET_CHECK(struct rogue_fwif_frag_regs, usc_clear_register, 4);
+OFFSET_CHECK(struct rogue_fwif_frag_regs, isp_bgobjdepth, 36);
+OFFSET_CHECK(struct rogue_fwif_frag_regs, isp_bgobjvals, 40);
+OFFSET_CHECK(struct rogue_fwif_frag_regs, isp_aa, 44);
+OFFSET_CHECK(struct rogue_fwif_frag_regs, isp_xtp_pipe_enable, 48);
+OFFSET_CHECK(struct rogue_fwif_frag_regs, isp_ctl, 52);
+OFFSET_CHECK(struct rogue_fwif_frag_regs, tpu, 56);
+OFFSET_CHECK(struct rogue_fwif_frag_regs, event_pixel_pds_info, 60);
+OFFSET_CHECK(struct rogue_fwif_frag_regs, pixel_phantom, 64);
+OFFSET_CHECK(struct rogue_fwif_frag_regs, view_idx, 68);
+OFFSET_CHECK(struct rogue_fwif_frag_regs, event_pixel_pds_data, 72);
+OFFSET_CHECK(struct rogue_fwif_frag_regs, brn65101_event_pixel_pds_data, 76);
+OFFSET_CHECK(struct rogue_fwif_frag_regs, isp_oclqry_stride, 80);
+OFFSET_CHECK(struct rogue_fwif_frag_regs, isp_zls_pixels, 84);
+OFFSET_CHECK(struct rogue_fwif_frag_regs, rgx_cr_blackpearl_fix, 88);
+OFFSET_CHECK(struct rogue_fwif_frag_regs, isp_scissor_base, 96);
+OFFSET_CHECK(struct rogue_fwif_frag_regs, isp_dbias_base, 104);
+OFFSET_CHECK(struct rogue_fwif_frag_regs, isp_oclqry_base, 112);
+OFFSET_CHECK(struct rogue_fwif_frag_regs, isp_zlsctl, 120);
+OFFSET_CHECK(struct rogue_fwif_frag_regs, isp_zload_store_base, 128);
+OFFSET_CHECK(struct rogue_fwif_frag_regs, isp_stencil_load_store_base, 136);
+OFFSET_CHECK(struct rogue_fwif_frag_regs, fb_cdc_zls, 144);
+OFFSET_CHECK(struct rogue_fwif_frag_regs, pbe_word, 152);
+OFFSET_CHECK(struct rogue_fwif_frag_regs, tpu_border_colour_table, 344);
+OFFSET_CHECK(struct rogue_fwif_frag_regs, pds_bgnd, 352);
+OFFSET_CHECK(struct rogue_fwif_frag_regs, pds_bgnd_brn65101, 376);
+OFFSET_CHECK(struct rogue_fwif_frag_regs, pds_pr_bgnd, 400);
+OFFSET_CHECK(struct rogue_fwif_frag_regs, isp_dummy_stencil_store_base, 424);
+OFFSET_CHECK(struct rogue_fwif_frag_regs, isp_dummy_depth_store_base, 432);
+OFFSET_CHECK(struct rogue_fwif_frag_regs, rgnhdr_single_rt_size, 440);
+OFFSET_CHECK(struct rogue_fwif_frag_regs, rgnhdr_scratch_offset, 444);
+SIZE_CHECK(struct rogue_fwif_frag_regs, 448);
+
+OFFSET_CHECK(struct rogue_fwif_cmd_frag, cmd_shared, 0);
+OFFSET_CHECK(struct rogue_fwif_cmd_frag, regs, 16);
+OFFSET_CHECK(struct rogue_fwif_cmd_frag, flags, 464);
+OFFSET_CHECK(struct rogue_fwif_cmd_frag, zls_stride, 468);
+OFFSET_CHECK(struct rogue_fwif_cmd_frag, sls_stride, 472);
+OFFSET_CHECK(struct rogue_fwif_cmd_frag, execute_count, 476);
+SIZE_CHECK(struct rogue_fwif_cmd_frag, 480);
+
+OFFSET_CHECK(struct rogue_fwif_transfer_regs, isp_bgobjvals, 0);
+OFFSET_CHECK(struct rogue_fwif_transfer_regs, usc_pixel_output_ctrl, 4);
+OFFSET_CHECK(struct rogue_fwif_transfer_regs, usc_clear_register0, 8);
+OFFSET_CHECK(struct rogue_fwif_transfer_regs, usc_clear_register1, 12);
+OFFSET_CHECK(struct rogue_fwif_transfer_regs, usc_clear_register2, 16);
+OFFSET_CHECK(struct rogue_fwif_transfer_regs, usc_clear_register3, 20);
+OFFSET_CHECK(struct rogue_fwif_transfer_regs, isp_mtile_size, 24);
+OFFSET_CHECK(struct rogue_fwif_transfer_regs, isp_render_origin, 28);
+OFFSET_CHECK(struct rogue_fwif_transfer_regs, isp_ctl, 32);
+OFFSET_CHECK(struct rogue_fwif_transfer_regs, isp_xtp_pipe_enable, 36);
+OFFSET_CHECK(struct rogue_fwif_transfer_regs, isp_aa, 40);
+OFFSET_CHECK(struct rogue_fwif_transfer_regs, event_pixel_pds_info, 44);
+OFFSET_CHECK(struct rogue_fwif_transfer_regs, event_pixel_pds_code, 48);
+OFFSET_CHECK(struct rogue_fwif_transfer_regs, event_pixel_pds_data, 52);
+OFFSET_CHECK(struct rogue_fwif_transfer_regs, isp_render, 56);
+OFFSET_CHECK(struct rogue_fwif_transfer_regs, isp_rgn, 60);
+OFFSET_CHECK(struct rogue_fwif_transfer_regs, frag_screen, 64);
+OFFSET_CHECK(struct rogue_fwif_transfer_regs, pds_bgnd0_base, 72);
+OFFSET_CHECK(struct rogue_fwif_transfer_regs, pds_bgnd1_base, 80);
+OFFSET_CHECK(struct rogue_fwif_transfer_regs, pds_bgnd3_sizeinfo, 88);
+OFFSET_CHECK(struct rogue_fwif_transfer_regs, isp_mtile_base, 96);
+OFFSET_CHECK(struct rogue_fwif_transfer_regs, pbe_wordx_mrty, 104);
+SIZE_CHECK(struct rogue_fwif_transfer_regs, 176);
+
+OFFSET_CHECK(struct rogue_fwif_cmd_transfer, common, 0);
+OFFSET_CHECK(struct rogue_fwif_cmd_transfer, regs, 8);
+OFFSET_CHECK(struct rogue_fwif_cmd_transfer, flags, 184);
+SIZE_CHECK(struct rogue_fwif_cmd_transfer, 192);
+
+/*
+ * Not checked by Linux; offsets derived from the Linux definitions.
+ */
+OFFSET_CHECK(struct rogue_fwif_fwrendercontext, geom_context, 0);
+OFFSET_CHECK(struct rogue_fwif_fwrendercontext, frag_context, 152);
+OFFSET_CHECK(struct rogue_fwif_fwrendercontext, static_render_context_state,
+	304);
+OFFSET_CHECK(struct rogue_fwif_fwrendercontext, work_est_ccb_submitted, 672);
+OFFSET_CHECK(struct rogue_fwif_fwrendercontext, fw_render_ctx_flags, 676);
+SIZE_CHECK(struct rogue_fwif_fwrendercontext, 680);
+OFFSET_CHECK(struct rogue_fwif_fwccb_cmd_freelist_gs_data, freelist_id, 0);
+SIZE_CHECK(struct rogue_fwif_fwccb_cmd_freelist_gs_data, 4);
+OFFSET_CHECK(struct rogue_fwif_fwccb_cmd_freelists_reconstruction_data,
+	freelist_count, 0);
+OFFSET_CHECK(struct rogue_fwif_fwccb_cmd_freelists_reconstruction_data,
+	hwr_counter, 4);
+OFFSET_CHECK(struct rogue_fwif_fwccb_cmd_freelists_reconstruction_data,
+	freelist_ids, 8);
+SIZE_CHECK(struct rogue_fwif_fwccb_cmd_freelists_reconstruction_data, 80);
+
 #endif /* PVR_ROGUE_FWIF_CHECK_H */

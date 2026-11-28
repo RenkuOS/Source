@@ -15,6 +15,7 @@
 
 
 #include <new>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -783,17 +784,23 @@ powervr_control(void* cookie, uint32 op, void* buffer, size_t length)
 
 		case POWERVR_CREATE_CONTEXT:
 		{
+			// version 1 clients pass the request without the static state
+			const size_t version1Size
+				= offsetof(powervr_create_context, static_state);
 			powervr_create_context request;
-			status_t status = copy_in(request, buffer, length);
-			if (status != B_OK)
-				return status;
+			memset(&request, 0, sizeof(request));
+			if ((length != sizeof(request) && length != version1Size)
+				|| buffer == NULL || !IS_USER_ADDRESS(buffer)
+				|| user_memcpy(&request, buffer, length) != B_OK) {
+				return B_BAD_VALUE;
+			}
 			MutexLocker locker(sDevice->LockObject());
 			Context* context;
-			status = create_context(client, request, &context);
+			status_t status = create_context(client, request, &context);
 			if (status != B_OK)
 				return status;
 			request.handle = context->handle;
-			return copy_out(buffer, request);
+			return user_memcpy(buffer, &request, length);
 		}
 
 		case POWERVR_DELETE_CONTEXT:

@@ -366,6 +366,10 @@ PowerVRDevice::PowerVRDevice()
 	fLost(false),
 	fResetHook(NULL),
 	fResetCookie(NULL),
+	fEventHook(NULL),
+	fEventCookie(NULL),
+	fEventWorker(-1),
+	fEventWorkerQuit(false),
 	fRegisters(NULL),
 	fPMU(NULL),
 	fClocks(NULL),
@@ -939,6 +943,14 @@ PowerVRDevice::Start()
 		status = install_io_interrupt_handler(82, &_HandleInterrupt, this, 0);
 		fInterruptInstalled = status == B_OK;
 	}
+	if (status == B_OK) {
+		fEventWorkerQuit = false;
+		fEventWorker = spawn_kernel_thread(&_EventWorker,
+			"powervr firmware events", B_URGENT_DISPLAY_PRIORITY, this);
+		status = fEventWorker < 0 ? fEventWorker : resume_thread(fEventWorker);
+		if (status != B_OK)
+			fEventWorker = -1;
+	}
 	if (status != B_OK) {
 		POWERVR_TRACE("start failed: %s\n", strerror(status));
 		Stop();
@@ -956,6 +968,15 @@ PowerVRDevice::Start()
 void
 PowerVRDevice::Stop()
 {
+	if (fEventWorker >= 0) {
+		// the worker never blocks on the device lock, which the caller
+		// may hold
+		fEventWorkerQuit = true;
+		fEvent.NotifyAll();
+		status_t result;
+		wait_for_thread(fEventWorker, &result);
+		fEventWorker = -1;
+	}
 	if (fInterruptInstalled) {
 		_Write32(CR_MIPS_WRAPPER_IRQ_ENABLE, 0);
 		remove_io_interrupt_handler(82, &_HandleInterrupt, this);
@@ -994,6 +1015,29 @@ PowerVRDevice::_HandleInterrupt(void* data)
 	device->interrupts++;
 	device->fEvent.NotifyAll();
 	return B_INVOKE_SCHEDULER;
+}
+
+
+/*!	Services the firmware CCB as soon as the firmware writes to it: a
+	render can stall on a free list grow request until the host answers,
+	with nobody waiting on the device. It only tries the device lock, so
+	that Stop() can wait for it under the lock; whoever holds the lock
+	drains the CCB as well, or the next wake-up does.
+*/
+status_t
+PowerVRDevice::_EventWorker(void* data)
+{
+	PowerVRDevice* device = (PowerVRDevice*)data;
+	while (!device->fEventWorkerQuit) {
+		device->WaitForEvent(10000);
+		if (device->fEventWorkerQuit)
+			break;
+		if (mutex_trylock(&device->fLock) != B_OK)
+			continue;
+		device->ProcessFirmwareEvents();
+		mutex_unlock(&device->fLock);
+	}
+	return B_OK;
 }
 
 
@@ -1062,7 +1106,10 @@ PowerVRDevice::ProcessFirmwareEvents()
 					words[0] | (uint64)words[1] << 32);
 				break;
 			default:
-				POWERVR_TRACE("firmware event %" B_PRIu32 "\n", type);
+				if (fEventHook != NULL)
+					fEventHook(fEventCookie, type, words);
+				else
+					POWERVR_TRACE("firmware event %" B_PRIu32 "\n", type);
 				break;
 		}
 		readOffset = (readOffset + 1) & ccb.ctrl->wrap_mask;

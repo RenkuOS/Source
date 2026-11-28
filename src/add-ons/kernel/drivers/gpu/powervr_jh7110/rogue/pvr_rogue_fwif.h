@@ -943,7 +943,16 @@ enum rogue_fwif_kccb_cmd_type {
 	ROGUE_FWIF_KCCB_CMD_KICK = 101U | ROGUE_CMD_MAGIC_DWORD_SHIFTED,
 	ROGUE_FWIF_KCCB_CMD_MMUCACHE = 102U | ROGUE_CMD_MAGIC_DWORD_SHIFTED,
 	ROGUE_FWIF_KCCB_CMD_CLEANUP = 106U | ROGUE_CMD_MAGIC_DWORD_SHIFTED,
+	/* Freelist Grow done */
+	ROGUE_FWIF_KCCB_CMD_FREELIST_GROW_UPDATE
+		= 110U | ROGUE_CMD_MAGIC_DWORD_SHIFTED,
+	/* Freelists Reconstruction done */
+	ROGUE_FWIF_KCCB_CMD_FREELISTS_RECONSTRUCTION_UPDATE
+		= 112U | ROGUE_CMD_MAGIC_DWORD_SHIFTED,
 	ROGUE_FWIF_KCCB_CMD_HEALTH_CHECK = 115U | ROGUE_CMD_MAGIC_DWORD_SHIFTED,
+	/* There is a geometry and a fragment command in this single kick */
+	ROGUE_FWIF_KCCB_CMD_COMBINED_GEOM_FRAG_KICK
+		= 117U | ROGUE_CMD_MAGIC_DWORD_SHIFTED,
 };
 
 #define ROGUE_FWIF_MMUCACHEDATA_FLAGS_PT (0x1U) /* MMU_CTRL_INVAL_PT_EN */
@@ -1123,6 +1132,538 @@ struct rogue_fwif_cmd_compute {
 	u32 stream_start_offset;
 	/* Only used when feature GPU_MULTICORE_SUPPORT present. */
 	u32 execute_count;
+};
+
+
+/*
+ * Render contexts, free lists, HWRT data and the geometry, fragment and
+ * transfer commands. Added for pvr_render.cpp/pvr_stream.cpp, from
+ * pvr_rogue_defs.h, pvr_rogue_fwif_shared.h, pvr_rogue_fwif.h and
+ * pvr_rogue_fwif_client.h. Enum typed members of Linux are u32 here.
+ */
+
+/* pvr_rogue_defs.h */
+#define ROGUE_BIF_PM_PHYSICAL_PAGE_ALIGNSHIFT (12U)
+#define ROGUE_BIF_PM_PHYSICAL_PAGE_SIZE \
+	BIT(ROGUE_BIF_PM_PHYSICAL_PAGE_ALIGNSHIFT)
+#define ROGUE_BIF_PM_FREELIST_BASE_ADDR_ALIGNSIZE (16U)
+
+/* pvr_rogue_fwif_shared.h */
+#define ROGUE_FWIF_NUM_RTDATAS 2U
+#define ROGUE_FWIF_NUM_GEOMDATAS 1U
+#define ROGUE_FWIF_NUM_RTDATA_FREELISTS 2U
+#define ROGUE_NUM_GEOM_CORES 1U
+#define ROGUE_NUM_GEOM_CORES_SIZE 2U
+
+#define ROGUE_FWIF_PRBUFFER_ZSBUFFER (0)
+#define ROGUE_FWIF_PRBUFFER_MSAABUFFER (1)
+
+#define ROGUE_FW_LOCAL_FREELIST (0)
+#define ROGUE_FW_GLOBAL_FREELIST (1)
+#define ROGUE_FW_FREELIST_TYPE_LAST ROGUE_FW_GLOBAL_FREELIST
+#define ROGUE_FW_MAX_FREELISTS (ROGUE_FW_FREELIST_TYPE_LAST + 1U)
+
+struct rogue_fwif_cleanup_ctl {
+	/* Number of commands received by the FW */
+	u32 submitted_commands;
+	/* Number of commands executed by the FW */
+	u32 executed_commands;
+} __aligned(8);
+
+/*
+ * Geometry and fragment commands: block of FW addresses written by the
+ * kernel, shared between UM, KM and FW across all BVNCs.
+ */
+struct rogue_fwif_cmd_geom_frag_shared {
+	/* Common command attributes */
+	struct rogue_fwif_cmd_common cmn;
+	/* RTData associated with this command */
+	u32 hwrt_data_fw_addr;
+	/* Supported PR Buffers like Z/S/MSAA Scratch */
+	u32 pr_buffer_fw_addr[ROGUE_FWIF_PRBUFFER_MAXSUPPORTED];
+};
+
+struct rogue_fwif_geom_registers_caswitch {
+	u64 geom_reg_vdm_context_state_base_addr;
+	u64 geom_reg_vdm_context_state_resume_addr;
+	u64 geom_reg_ta_context_state_base_addr;
+
+	struct {
+		u64 geom_reg_vdm_context_store_task0;
+		u64 geom_reg_vdm_context_store_task1;
+		u64 geom_reg_vdm_context_store_task2;
+
+		/* VDM resume state update controls */
+		u64 geom_reg_vdm_context_resume_task0;
+		u64 geom_reg_vdm_context_resume_task1;
+		u64 geom_reg_vdm_context_resume_task2;
+
+		u64 geom_reg_vdm_context_store_task3;
+		u64 geom_reg_vdm_context_store_task4;
+
+		u64 geom_reg_vdm_context_resume_task3;
+		u64 geom_reg_vdm_context_resume_task4;
+	} geom_state[2];
+};
+
+struct rogue_fwif_static_rendercontext_state {
+	/* Geom registers for ctx switch */
+	struct rogue_fwif_geom_registers_caswitch
+		ctxswitch_regs[ROGUE_NUM_GEOM_CORES_SIZE] __aligned(8);
+};
+
+/* pvr_rogue_fwif.h: geometry context state and render context */
+#define ROGUE_NUM_GEOM_CORES_MAX 4
+
+struct rogue_fwif_geom_ctx_state_per_geom {
+	/* To store in mid-TA */
+	aligned_u64 geom_reg_vdm_call_stack_pointer;
+	/* Initial value (in case is 'lost' due to a lock-up */
+	aligned_u64 geom_reg_vdm_call_stack_pointer_init;
+	u32 geom_reg_vbs_so_prim[4];
+	u16 geom_current_idx;
+	u16 padding[3];
+} __aligned(8);
+
+struct rogue_fwif_geom_ctx_state {
+	/* FW-accessible TA state which must be written out on context store */
+	struct rogue_fwif_geom_ctx_state_per_geom
+		geom_core[ROGUE_NUM_GEOM_CORES_MAX];
+} __aligned(8);
+
+/* Firmware render context. */
+struct rogue_fwif_fwrendercontext {
+	/* Geometry firmware context. */
+	struct rogue_fwif_fwcommoncontext geom_context;
+	/* Fragment firmware context. */
+	struct rogue_fwif_fwcommoncontext frag_context;
+
+	struct rogue_fwif_static_rendercontext_state static_render_context_state;
+
+	/* Number of commands submitted to the WorkEst FW CCB */
+	u32 work_est_ccb_submitted;
+
+	/* Compatibility and other flags */
+	u32 fw_render_ctx_flags;
+} __aligned(8);
+
+/* pvr_rogue_fwif.h: KCCB payloads (written into rogue_fwif_kccb_cmd) */
+struct rogue_fwif_kccb_cmd_combined_geom_frag_kick_data {
+	struct rogue_fwif_kccb_cmd_kick_data geom_cmd_kick_data;
+	struct rogue_fwif_kccb_cmd_kick_data frag_cmd_kick_data;
+};
+
+struct rogue_fwif_freelist_gs_data {
+	/* Freelist FW address */
+	u32 freelist_fw_addr;
+	/* Amount of the Freelist change */
+	u32 delta_pages;
+	/* New amount of pages on the freelist (including ready pages) */
+	u32 new_pages;
+	/* Number of ready pages to be held in reserve until OOM */
+	u32 ready_pages;
+};
+
+#define MAX_FREELISTS_SIZE 3
+#define MAX_HW_GEOM_FRAG_CONTEXTS_SIZE 3
+
+#define ROGUE_FWIF_MAX_FREELISTS_TO_RECONSTRUCT \
+	(MAX_HW_GEOM_FRAG_CONTEXTS_SIZE * MAX_FREELISTS_SIZE * 2U)
+#define ROGUE_FWIF_FREELISTS_RECONSTRUCTION_FAILED_FLAG 0x80000000U
+
+struct rogue_fwif_freelists_reconstruction_data {
+	u32 freelist_count;
+	u32 freelist_ids[ROGUE_FWIF_MAX_FREELISTS_TO_RECONSTRUCT];
+};
+
+static_assert(sizeof(struct rogue_fwif_kccb_cmd_combined_geom_frag_kick_data)
+			<= PVR_FWIF_CCB_CMD_DATA_SIZE
+		&& sizeof(struct rogue_fwif_freelist_gs_data)
+			<= PVR_FWIF_CCB_CMD_DATA_SIZE
+		&& sizeof(struct rogue_fwif_freelists_reconstruction_data)
+			<= PVR_FWIF_CCB_CMD_DATA_SIZE,
+	"KCCB command payload larger than the opaque cmd_data block");
+
+/* pvr_rogue_fwif.h: FWCCB command types and payloads (cmd_data) */
+enum rogue_fwif_fwccb_cmd_type {
+	/* Requests ZSBuffer to be backed with physical pages */
+	ROGUE_FWIF_FWCCB_CMD_ZSBUFFER_BACKING
+		= 101U | ROGUE_CMD_MAGIC_DWORD_SHIFTED,
+	/* Requests ZSBuffer to be unbacked */
+	ROGUE_FWIF_FWCCB_CMD_ZSBUFFER_UNBACKING
+		= 102U | ROGUE_CMD_MAGIC_DWORD_SHIFTED,
+	/* Requests an on-demand freelist grow/shrink */
+	ROGUE_FWIF_FWCCB_CMD_FREELIST_GROW = 103U | ROGUE_CMD_MAGIC_DWORD_SHIFTED,
+	/* Requests freelists reconstruction */
+	ROGUE_FWIF_FWCCB_CMD_FREELISTS_RECONSTRUCTION
+		= 104U | ROGUE_CMD_MAGIC_DWORD_SHIFTED,
+	/* Notifies host of a HWR event on a context */
+	ROGUE_FWIF_FWCCB_CMD_CONTEXT_RESET_NOTIFICATION
+		= 105U | ROGUE_CMD_MAGIC_DWORD_SHIFTED,
+	/* Requests an on-demand debug dump */
+	ROGUE_FWIF_FWCCB_CMD_DEBUG_DUMP = 106U | ROGUE_CMD_MAGIC_DWORD_SHIFTED,
+	/* Requests an on-demand update on process stats */
+	ROGUE_FWIF_FWCCB_CMD_UPDATE_STATS = 107U | ROGUE_CMD_MAGIC_DWORD_SHIFTED,
+	ROGUE_FWIF_FWCCB_CMD_CORE_CLK_RATE_CHANGE
+		= 108U | ROGUE_CMD_MAGIC_DWORD_SHIFTED,
+	ROGUE_FWIF_FWCCB_CMD_REQUEST_GPU_RESTART
+		= 109U | ROGUE_CMD_MAGIC_DWORD_SHIFTED,
+	/* Notifies host of a FW pagefault */
+	ROGUE_FWIF_FWCCB_CMD_CONTEXT_FW_PF_NOTIFICATION
+		= 112U | ROGUE_CMD_MAGIC_DWORD_SHIFTED,
+};
+
+struct rogue_fwif_fwccb_cmd_freelist_gs_data {
+	u32 freelist_id;
+};
+
+struct rogue_fwif_fwccb_cmd_freelists_reconstruction_data {
+	u32 freelist_count;
+	u32 hwr_counter;
+	u32 freelist_ids[ROGUE_FWIF_MAX_FREELISTS_TO_RECONSTRUCT];
+};
+
+/* pvr_rogue_fwif.h: render target array control, free list, HWRT data */
+struct rogue_fwif_rta_ctl {
+	/* Render number */
+	u32 render_target_index;
+	/* index in RTA */
+	u32 current_render_target;
+	/* total active RTs */
+	u32 active_render_targets;
+	/* total active RTs from the first TA kick, for OOM */
+	u32 cumul_active_render_targets;
+	/* Array of valid RT indices */
+	u32 valid_render_targets_fw_addr;
+	/* Array of number of occurred partial renders per render target */
+	u32 rta_num_partial_renders_fw_addr;
+	/* Number of render targets in the array */
+	u32 max_rts;
+	/* Compatibility and other flags */
+	u32 rta_ctl_flags;
+} __aligned(8);
+
+struct rogue_fwif_freelist {
+	aligned_u64 freelist_dev_addr;
+	aligned_u64 current_dev_addr;
+	u32 current_stack_top;
+	u32 max_pages;
+	u32 grow_pages;
+	/* HW pages */
+	u32 current_pages;
+	u32 allocated_page_count;
+	u32 allocated_mmu_page_count;
+	u32 freelist_id;
+
+	bool grow_pending __aligned(4);
+	/* Pages that should be used only when OOM is reached */
+	u32 ready_pages;
+	/* Compatibility and other flags */
+	u32 freelist_flags;
+	/* PM Global PB on which Freelist is loaded */
+	u32 pm_global_pb;
+	u32 padding;
+} __aligned(8);
+
+/* HWRTData flags */
+#define HWRTDATA_HAS_LAST_GEOM BIT(2)
+#define HWRTDATA_PARTIAL_RENDERED BIT(3)
+#define HWRTDATA_DISABLE_TILE_REORDERING BIT(4)
+#define HWRTDATA_NEED_BRN65101_BLIT BIT(5)
+#define HWRTDATA_FIRST_BRN65101_STRIP BIT(6)
+#define HWRTDATA_NEED_BRN67182_2ND_RENDER BIT(7)
+
+enum rogue_fwif_rtdata_state {
+	ROGUE_FWIF_RTDATA_STATE_NONE = 0,
+	ROGUE_FWIF_RTDATA_STATE_KICK_GEOM,
+	ROGUE_FWIF_RTDATA_STATE_KICK_GEOM_FIRST,
+	ROGUE_FWIF_RTDATA_STATE_GEOM_FINISHED,
+	ROGUE_FWIF_RTDATA_STATE_KICK_FRAG,
+	ROGUE_FWIF_RTDATA_STATE_FRAG_FINISHED,
+	ROGUE_FWIF_RTDATA_STATE_FRAG_CONTEXT_STORED,
+	ROGUE_FWIF_RTDATA_STATE_GEOM_OUTOFMEM,
+	ROGUE_FWIF_RTDATA_STATE_PARTIALRENDERFINISHED,
+	ROGUE_FWIF_RTDATA_STATE_HWR,
+	ROGUE_FWIF_RTDATA_STATE_UNKNOWN = 0x7FFFFFFFU
+};
+
+struct rogue_fwif_hwrtdata_common {
+	bool geom_caches_need_zeroing __aligned(4);
+
+	u32 screen_pixel_max;
+	aligned_u64 multi_sample_ctl;
+	u64 flipped_multi_sample_ctl;
+	u32 tpc_stride;
+	u32 tpc_size;
+	u32 te_screen;
+	u32 mtile_stride;
+	u32 teaa;
+	u32 te_mtile1;
+	u32 te_mtile2;
+	u32 isp_merge_lower_x;
+	u32 isp_merge_lower_y;
+	u32 isp_merge_upper_x;
+	u32 isp_merge_upper_y;
+	u32 isp_merge_scale_x;
+	u32 isp_merge_scale_y;
+	u32 rgn_header_size;
+	u32 isp_mtile_size;
+	u32 padding;
+} __aligned(8);
+
+struct rogue_fwif_hwrtdata {
+	/* MList Data Store */
+	aligned_u64 pm_mlist_dev_addr;
+
+	aligned_u64 vce_cat_base[4];
+	aligned_u64 vce_last_cat_base[4];
+	aligned_u64 te_cat_base[4];
+	aligned_u64 te_last_cat_base[4];
+	aligned_u64 alist_cat_base;
+	aligned_u64 alist_last_cat_base;
+
+	aligned_u64 pm_alist_stack_pointer;
+	u32 pm_mlist_stack_pointer;
+
+	u32 hwrt_data_common_fw_addr;
+
+	u32 hwrt_data_flags;
+	u32 state;	/* enum rogue_fwif_rtdata_state */
+
+	u32 freelists_fw_addr[MAX_FREELISTS_SIZE] __aligned(8);
+	u32 freelist_hwr_snapshot[MAX_FREELISTS_SIZE];
+
+	aligned_u64 vheap_table_dev_addr;
+
+	struct rogue_fwif_rta_ctl rta_ctl;
+
+	aligned_u64 tail_ptrs_dev_addr;
+	aligned_u64 macrotile_array_dev_addr;
+	aligned_u64 rgn_header_dev_addr;
+	aligned_u64 rtc_dev_addr;
+
+	u32 owner_geom_not_used_by_host __aligned(8);
+
+	bool geom_caches_need_zeroing __aligned(4);
+
+	struct rogue_fwif_cleanup_ctl cleanup_state __aligned(64);
+} __aligned(64);
+
+/* pvr_rogue_fwif_client.h */
+#define ROGUE_PM_PAGE_SIZE SZ_4K
+#define ROGUE_PM_MAX_FREELIST_SIZE 0x80000000U	/* SZ_2G */
+
+/* Flags of the geometry command (rogue_fwif_cmd_geom::flags) */
+#define ROGUE_GEOM_FLAGS_FIRSTKICK BIT(0)
+#define ROGUE_GEOM_FLAGS_LASTKICK BIT(1)
+/* Use single core in a multi core setup. */
+#define ROGUE_GEOM_FLAGS_SINGLE_CORE BIT(3)
+
+/* Flags of the fragment command (rogue_fwif_cmd_frag::flags) */
+#define ROGUE_FRAG_FLAGS_SINGLE_CORE BIT(3)
+#define ROGUE_FRAG_FLAGS_GET_VIS_RESULTS BIT(5)
+#define ROGUE_FRAG_FLAGS_DEPTHBUFFER BIT(7)
+#define ROGUE_FRAG_FLAGS_STENCILBUFFER BIT(8)
+#define ROGUE_FRAG_FLAGS_DISABLE_PIXELMERGE BIT(15)
+#define ROGUE_FRAG_FLAGS_SCRATCHBUFFER BIT(19)
+#define ROGUE_FRAG_FLAGS_PREVENT_CDM_OVERLAP BIT(26)
+
+/* Flags of the transfer command (rogue_fwif_cmd_transfer::flags) */
+#define ROGUE_TRANSFER_FLAGS_SINGLE_CORE BIT(1)
+
+struct rogue_fwif_geom_regs {
+	u64 vdm_ctrl_stream_base;
+	u64 tpu_border_colour_table;
+
+	/* Only used when feature VDM_DRAWINDIRECT present. */
+	u64 vdm_draw_indirect0;
+	/* Only used when feature VDM_DRAWINDIRECT present. */
+	u32 vdm_draw_indirect1;
+
+	u32 ppp_ctrl;
+	u32 te_psg;
+	/* Only used when BRN 49927 present. */
+	u32 tpu;
+
+	u32 vdm_context_resume_task0_size;
+	/* Only used when feature VDM_OBJECT_LEVEL_LLS present. */
+	u32 vdm_context_resume_task3_size;
+
+	/* Only used when BRN 56279 or BRN 67381 present. */
+	u32 pds_ctrl;
+
+	u32 view_idx;
+
+	/* Only used when feature TESSELLATION present */
+	u32 pds_coeff_free_prog;
+
+	u32 padding;
+};
+
+/* Only used when BRN 44455 or BRN 63027 present. */
+struct rogue_fwif_dummy_rgnhdr_init_geom_regs {
+	u64 te_psgregion_addr;
+};
+
+struct rogue_fwif_cmd_geom {
+	/* must stay the first member: written by the kernel */
+	struct rogue_fwif_cmd_geom_frag_shared cmd_shared;
+
+	struct rogue_fwif_geom_regs regs __aligned(8);
+	u32 flags __aligned(8);
+
+	/*
+	 * Holds the geometry/fragment fence value to allow the fragment partial
+	 * render command to go through.
+	 */
+	struct rogue_fwif_ufo partial_render_geom_frag_fence;
+
+	/* Only used when BRN 44455 or BRN 63027 present. */
+	struct rogue_fwif_dummy_rgnhdr_init_geom_regs
+		dummy_rgnhdr_init_geom_regs __aligned(8);
+
+	/* Only used when BRN 61484 or BRN 66333 present. */
+	u32 brn61484_66333_live_rt;
+
+	u32 padding;
+};
+
+#define ROGUE_MAXIMUM_OUTPUT_REGISTERS_PER_PIXEL 8U
+#define ROGUE_PBE_WORDS_REQUIRED_FOR_RENDERS 3U
+
+struct rogue_fwif_frag_regs {
+	u32 usc_pixel_output_ctrl;
+
+	u32 usc_clear_register[ROGUE_MAXIMUM_OUTPUT_REGISTERS_PER_PIXEL];
+
+	u32 isp_bgobjdepth;
+	u32 isp_bgobjvals;
+	u32 isp_aa;
+	/* Only used when feature S7_TOP_INFRASTRUCTURE present. */
+	u32 isp_xtp_pipe_enable;
+
+	u32 isp_ctl;
+
+	/* Only used when BRN 49927 present. */
+	u32 tpu;
+
+	u32 event_pixel_pds_info;
+
+	/* Only used when feature CLUSTER_GROUPING present. */
+	u32 pixel_phantom;
+
+	u32 view_idx;
+
+	u32 event_pixel_pds_data;
+
+	/* Only used when BRN 65101 present. */
+	u32 brn65101_event_pixel_pds_data;
+
+	/* Only used when feature GPU_MULTICORE_SUPPORT or BRN 47217 present. */
+	u32 isp_oclqry_stride;
+
+	/* Only used when feature ZLS_SUBTILE present. */
+	u32 isp_zls_pixels;
+
+	/* Only used when feature ISP_ZLS_D24_S8_PACKING_OGL_MODE present. */
+	u32 rgx_cr_blackpearl_fix;
+
+	/* All values below the ALIGN(8) must be 64 bit. */
+	aligned_u64 isp_scissor_base;
+	u64 isp_dbias_base;
+	u64 isp_oclqry_base;
+	u64 isp_zlsctl;
+	u64 isp_zload_store_base;
+	u64 isp_stencil_load_store_base;
+
+	/* FBCDC_ALGORITHM < 3 or FB_CDC_V4 (REQUIRES_FB_CDC_ZLS_SETUP) */
+	u64 fb_cdc_zls;
+
+	u64 pbe_word[8U][ROGUE_PBE_WORDS_REQUIRED_FOR_RENDERS];
+	u64 tpu_border_colour_table;
+	u64 pds_bgnd[3U];
+
+	/* Only used when BRN 65101 present. */
+	u64 pds_bgnd_brn65101[3U];
+
+	u64 pds_pr_bgnd[3U];
+
+	/* Only used when BRN 62850 or 62865 present. */
+	u64 isp_dummy_stencil_store_base;
+
+	/* Only used when BRN 66193 present. */
+	u64 isp_dummy_depth_store_base;
+
+	/* Only used when BRN 67182 present. */
+	u32 rgnhdr_single_rt_size;
+	/* Only used when BRN 67182 present. */
+	u32 rgnhdr_scratch_offset;
+};
+
+struct rogue_fwif_cmd_frag {
+	struct rogue_fwif_cmd_geom_frag_shared cmd_shared __aligned(8);
+
+	struct rogue_fwif_frag_regs regs __aligned(8);
+	/* command control flags. */
+	u32 flags;
+	/* Stride IN BYTES for Z-Buffer in case of RTAs. */
+	u32 zls_stride;
+	/* Stride IN BYTES for S-Buffer in case of RTAs. */
+	u32 sls_stride;
+
+	/* Only used if feature GPU_MULTICORE_SUPPORT present. */
+	u32 execute_count;
+};
+
+#define ROGUE_PBE_WORDS_REQUIRED_FOR_TQS 3
+
+struct rogue_fwif_transfer_regs {
+	u32 isp_bgobjvals;
+
+	u32 usc_pixel_output_ctrl;
+	u32 usc_clear_register0;
+	u32 usc_clear_register1;
+	u32 usc_clear_register2;
+	u32 usc_clear_register3;
+
+	u32 isp_mtile_size;
+	u32 isp_render_origin;
+	u32 isp_ctl;
+
+	/* Only used when feature S7_TOP_INFRASTRUCTURE present. */
+	u32 isp_xtp_pipe_enable;
+	u32 isp_aa;
+
+	u32 event_pixel_pds_info;
+
+	u32 event_pixel_pds_code;
+	u32 event_pixel_pds_data;
+
+	u32 isp_render;
+	u32 isp_rgn;
+
+	/* Only used when feature GPU_MULTICORE_SUPPORT present. */
+	u32 frag_screen;
+
+	/* All values below the aligned_u64 must be 64 bit. */
+	aligned_u64 pds_bgnd0_base;
+	u64 pds_bgnd1_base;
+	u64 pds_bgnd3_sizeinfo;
+
+	u64 isp_mtile_base;
+	/* TQ_MAX_RENDER_TARGETS * PBE_STATE_SIZE */
+	u64 pbe_wordx_mrty[3U * ROGUE_PBE_WORDS_REQUIRED_FOR_TQS];
+};
+
+struct rogue_fwif_cmd_transfer {
+	/* Common command attributes */
+	struct rogue_fwif_cmd_common common __aligned(8);
+
+	struct rogue_fwif_transfer_regs regs __aligned(8);
+
+	u32 flags;
+
+	u32 padding;
 };
 
 

@@ -21,7 +21,9 @@
 
 
 #define POWERVR_JH7110_DEVICE		"/dev/gpu/powervr_jh7110"
-#define POWERVR_JH7110_API_VERSION	1
+#define POWERVR_JH7110_API_VERSION	2
+	// 2: render and transfer contexts, free lists, HWRT data sets and
+	// POWERVR_SUBMIT_JOBS; version 1 clients keep working
 
 // general heap of the GPU address space (pvr_rogue_heap_config.h)
 #define POWERVR_GENERAL_HEAP_BASE	0x8000000000ULL
@@ -39,6 +41,11 @@ enum {
 	POWERVR_SUBMIT_COMPUTE,
 	POWERVR_WAIT,
 	POWERVR_GET_STATISTICS,
+	POWERVR_CREATE_FREE_LIST,
+	POWERVR_DELETE_FREE_LIST,
+	POWERVR_CREATE_HWRT_DATASET,
+	POWERVR_DELETE_HWRT_DATASET,
+	POWERVR_SUBMIT_JOBS,
 };
 
 
@@ -85,6 +92,8 @@ struct powervr_unmap_buffer {
 
 enum {
 	POWERVR_CONTEXT_COMPUTE = 1,
+	POWERVR_CONTEXT_RENDER,			// geometry and fragment
+	POWERVR_CONTEXT_TRANSFER,		// transfer fragment
 };
 
 struct powervr_create_context {
@@ -92,6 +101,57 @@ struct powervr_create_context {
 	uint32		priority;			// 0 low, 1 normal, 2 high
 	int32		handle;				// out
 	uint32		reserved;
+	// version 2, optional for compute: the context's static state as
+	// Mesa's pvr driver packs it (the stream of DRM_PVR_STATIC_*, as
+	// drm_pvr_ioctl_create_context_args::static_context_state)
+	const void*	static_state;
+	uint32		static_state_size;
+	uint32		reserved2;
+	uint64		callstack_address;	// render: the VDM call stack
+};
+
+// A free list of the parameter buffer (drm_pvr_ioctl_create_free_list_args).
+// The driver allocates the pages and writes their addresses into the list
+// at free_list_address, a mapped range of at least max_pages entries.
+struct powervr_create_free_list {
+	uint64		free_list_address;
+	uint32		initial_pages;
+	uint32		max_pages;
+	uint32		grow_pages;
+	uint32		grow_threshold;		// percent
+	int32		handle;				// out
+	uint32		reserved;
+};
+
+#define POWERVR_HWRT_FREE_LIST_LOCAL	0
+#define POWERVR_HWRT_FREE_LIST_GLOBAL	1
+
+// Render target data (drm_pvr_ioctl_create_hwrt_dataset_args): two sets of
+// render data sharing one geometry data, so two frames can be in flight.
+struct powervr_create_hwrt_dataset {
+	uint64		tpc_address;
+	uint32		tpc_size;
+	uint32		tpc_stride;
+	uint64		vheap_table_address;
+	uint64		rtc_address;
+	struct {
+		uint64	pm_mlist_address;
+		uint64	macrotile_array_address;
+		uint64	region_header_address;
+	} rt_data[2];
+	int32		free_lists[2];		// POWERVR_HWRT_FREE_LIST_*
+	uint32		width;
+	uint32		height;
+	uint32		samples;
+	uint32		layers;
+	uint32		isp_merge_lower_x;
+	uint32		isp_merge_lower_y;
+	uint32		isp_merge_scale_x;
+	uint32		isp_merge_scale_y;
+	uint32		isp_merge_upper_x;
+	uint32		isp_merge_upper_y;
+	uint32		region_header_size;
+	int32		handle;				// out
 };
 
 // The CDM registers of a compute job (rogue_fwif_compute_regs), packed as
@@ -121,6 +181,55 @@ struct powervr_submit_compute {
 	// a job of the context was stopped by a hardware recovery and skipped
 #define POWERVR_WAIT_PAGE_FAULT		0x02
 	// ... because of a page fault, at fault_address
+
+enum {
+	POWERVR_JOB_GEOMETRY = 0,		// drm_pvr_job_type
+	POWERVR_JOB_FRAGMENT,
+	POWERVR_JOB_COMPUTE,
+	POWERVR_JOB_TRANSFER,
+};
+
+// flags of a job, as DRM_PVR_SUBMIT_JOB_*_CMD_*
+#define POWERVR_GEOMETRY_FIRST				0x01
+#define POWERVR_GEOMETRY_LAST				0x02
+#define POWERVR_GEOMETRY_SINGLE_CORE		0x04
+#define POWERVR_FRAGMENT_SINGLE_CORE		0x01
+#define POWERVR_FRAGMENT_DEPTH_BUFFER		0x02
+#define POWERVR_FRAGMENT_STENCIL_BUFFER		0x04
+#define POWERVR_FRAGMENT_PREVENT_CDM_OVERLAP	0x08
+#define POWERVR_FRAGMENT_SCRATCH_BUFFER		0x10
+#define POWERVR_FRAGMENT_GET_VIS_RESULTS	0x20
+#define POWERVR_FRAGMENT_PARTIAL_RENDER		0x40
+#define POWERVR_FRAGMENT_DISABLE_PIXEL_MERGE	0x80
+#define POWERVR_COMPUTE_PREVENT_ALL_OVERLAP	0x01
+#define POWERVR_COMPUTE_SINGLE_CORE			0x02
+#define POWERVR_TRANSFER_SINGLE_CORE		0x01
+
+// One job (drm_pvr_job): stream is the command stream Mesa's pvr driver
+// builds (pvr_rogue_fwif_stream.h); flags are DRM_PVR_SUBMIT_JOB_*_CMD_*.
+// A render is a geometry job, a partial render fragment job (run only if
+// the parameter buffer fills up) and optionally the fragment job, of the
+// same context and data set, in one submit, as Mesa's pvr driver does.
+struct powervr_job {
+	uint32		type;				// POWERVR_JOB_*
+	int32		context;
+	uint32		flags;
+	uint32		stream_size;
+	const void*	stream;
+	int32		hwrt_dataset;		// geometry and fragment, else -1
+	uint32		hwrt_index;			// 0 or 1
+	uint32		sequence;			// out: POWERVR_WAIT for this value
+	uint32		reserved;
+};
+
+// Jobs are queued in order without waiting; a context's sequence numbers
+// count all its jobs, and a completed sequence means every job of the
+// context up to it has completed.
+struct powervr_submit_jobs {
+	struct powervr_job* jobs;
+	uint32		count;
+	uint32		reserved;
+};
 
 struct powervr_wait {
 	int32		context;
