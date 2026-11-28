@@ -308,7 +308,6 @@ map_image(int fd, char const* path, image_t* image, bool fixed)
 	addr_t reservedAddress = 0;
 	addr_t loadAddress;
 	size_t reservedSize = 0;
-	size_t length = 0;
 	uint32 addressSpecifier = B_RANDOMIZED_ANY_ADDRESS;
 
 	for (uint32 i = 0; i < image->num_regions; i++) {
@@ -327,19 +326,21 @@ map_image(int fd, char const* path, image_t* image, bool fixed)
 			addressSpecifier = regionAddressSpecifier;
 		}
 
-		length += TO_PAGE_SIZE(image->regions[i].vmsize
-			+ (loadAddress % B_PAGE_SIZE));
+		// Reject an unreasonable amount of unused space before a region: more
+		// than twice MAX_PAGE_SIZE after the end of the regions before it.
+		// Aligning a segment to the linker's maximum page size leaves up to
+		// that much, before each of lld's usually four segments; the factor
+		// two is the margin this check has always allowed. The region for a
+		// segment's bss directly follows the segment's, so needs none.
+		if (i > 0 && loadAddress
+				> reservedAddress + reservedSize + MAX_PAGE_SIZE * 2)
+			return B_BAD_DATA;
 
 		size_t size = TO_PAGE_SIZE(loadAddress + image->regions[i].vmsize)
 			- reservedAddress;
 		if (size > reservedSize)
 			reservedSize = size;
 	}
-
-	// Check whether the segments have an unreasonable amount of unused space
-	// inbetween.
-	if (reservedSize > length + MAX_PAGE_SIZE * 2)
-		return B_BAD_DATA;
 
 	// reserve that space and allocate the areas from that one
 	if (_kern_reserve_address_range(&reservedAddress, addressSpecifier,
