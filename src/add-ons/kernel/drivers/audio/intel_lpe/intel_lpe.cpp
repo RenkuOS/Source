@@ -11,9 +11,13 @@
 // codec on I2C. This driver attaches to that codec (Realtek RT5640, ACPI
 // 10EC5640) and will drive the LPE as well.
 //
-// This first step brings up the codec: it switches on its master clock
-// through ACPI, checks and resets the chip, sets up jack detection and logs
-// when headphones are plugged in or out. The DSP and playback follow.
+// It brings up the codec (master clock through ACPI, reset, jack detection),
+// boots Sound Open Firmware on the DSP (sof_dsp.cpp) and publishes the
+// codec as a multi_audio device: 48 kHz, 16 bit stereo, two buffers of
+// 1024 frames, played through a fixed pipeline from memory to SSP0 and the
+// codec. Playback goes to the headphones while they are plugged in, else to
+// the speakers, and records from the internal microphone. Volume controls
+// are not done yet.
 
 
 #include <ACPI.h>
@@ -21,17 +25,29 @@
 #include <device_manager.h>
 #include <i2c.h>
 #include <kernel.h>
+#include <lock.h>
+#include <util/AutoLock.h>
+
+#include <hmulti_audio.h>
+
+#include <FindDirectory.h>
+#include <condition_variable.h>
 
 #include <new>
 
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
+#include "sof_dsp.h"
 
 
 #define DRIVER_NAME		"intel_lpe"
 #define INTEL_LPE_DRIVER_MODULE_NAME "drivers/audio/hmulti/intel_lpe/driver_v1"
+#define INTEL_LPE_DEVICE_MODULE_NAME "drivers/audio/hmulti/intel_lpe/device_v1"
+#define INTEL_LPE_DEVICE_PATH "audio/hmulti/intel_lpe/1"
 
 #define TRACE_ALWAYS(x...)	dprintf(DRIVER_NAME ": " x)
 
@@ -60,6 +76,40 @@
 
 #define JACK_POLL_INTERVAL			250000
 
+// The firmware is read from the boot volume, which may not be mounted yet
+// when the driver starts.
+#define FIRMWARE_NAME				"sof-byt.ri"
+#define FIRMWARE_WAIT				(120 * 1000000LL)
+#define FIRMWARE_MAX_SIZE			(1024 * 1024)
+
+// how long the first playback waits for the DSP to boot
+#define DSP_READY_WAIT				(15 * 1000000LL)
+
+#define DSP_BOOTING					0
+#define DSP_READY					1
+#define DSP_FAILED					2
+
+// The playback ring: two buffers of 1024 frames, one page each.
+#define PLAYBACK_RATE				48000
+#define PLAYBACK_CHANNELS			2
+#define PLAYBACK_SAMPLE_SIZE		2
+#define PLAYBACK_FRAME_SIZE			(PLAYBACK_CHANNELS * PLAYBACK_SAMPLE_SIZE)
+#define PLAYBACK_BUFFERS			2
+#define PLAYBACK_BUFFER_FRAMES		1024
+#define PLAYBACK_BUFFER_SIZE		(PLAYBACK_BUFFER_FRAMES * PLAYBACK_FRAME_SIZE)
+#define PLAYBACK_RING_SIZE			(PLAYBACK_BUFFERS * PLAYBACK_BUFFER_SIZE)
+#define PLAYBACK_BUFFER_TIME \
+	((bigtime_t)PLAYBACK_BUFFER_FRAMES * 1000000 / PLAYBACK_RATE)
+
+// How the playback thread waits for the next buffer: woken by the position
+// message of the DSP, or, without its interrupt, by polling: sleeping most
+// of a buffer after a change, then checking every POLL_INTERVAL.
+#define POLL_INTERVAL				500
+#define POLL_EARLY_WAKEUP			3000
+// short enough that a lost position message does not skip a buffer
+#define POSITION_TIMEOUT			(PLAYBACK_BUFFER_TIME / 4)
+#define EXCHANGE_TIMEOUT			500000
+
 
 struct intel_lpe_driver {
 	device_node*			node;
@@ -71,6 +121,44 @@ struct intel_lpe_driver {
 	thread_id				pollThread;
 	volatile bool			stopPolling;
 
+	// Protects the DSP mailboxes and doorbells.
+	mutex					dspLock;
+	lpe_dsp					dsp;
+	bool					dspInitialized;
+
+	// DSP_BOOTING until start_dsp() is done; dspBooted is notified then.
+	int32					dspState;
+	ConditionVariable		dspBooted;
+
+	// one ring per direction (LPE_PLAYBACK, LPE_CAPTURE)
+	area_id					ringArea[LPE_STREAM_COUNT];
+	uint8*					ring[LPE_STREAM_COUNT];
+	area_id					tableArea[LPE_STREAM_COUNT];
+	phys_addr_t				tablePhysical[LPE_STREAM_COUNT];
+
+	// Protects the fields below and the start and stop of playback.
+	mutex					lock;
+	int32					openCount;
+	int32					running;
+	thread_id				playbackThread;
+	sem_id					bufferReadySem;
+	sem_id					positionSem;
+	bool					capturing;
+
+	// Protects the output routing: speakers or headphones.
+	mutex					outputLock;
+	bool					headphonesPlugged;
+	bool					outputActive;
+	bool					headphoneAmpOn;
+
+	// Playback position, written by the playback thread.
+	spinlock				positionLock;
+	uint32					bufferCycle;
+	int64					framesCount;
+	bigtime_t				realTime;
+	uint32					recordCycle;
+	int64					recordedFrames;
+	bigtime_t				recordTime;
 };
 
 
@@ -192,6 +280,10 @@ rt5640_probe(intel_lpe_driver* driver)
 }
 
 
+static void start_dsp(intel_lpe_driver* driver);
+static void update_output(intel_lpe_driver* driver);
+
+
 static status_t
 jack_poll_thread(void* data)
 {
@@ -199,7 +291,14 @@ jack_poll_thread(void* data)
 	uint16 last = 0xffff;
 	uint16 lastJD2 = 0xffff;
 
+	start_dsp(driver);
+
 	while (!driver->stopPolling) {
+		if (driver->dspInitialized) {
+			MutexLocker dspLocker(driver->dspLock);
+			lpe_dsp_poll_messages(&driver->dsp);
+		}
+
 		uint16 status, gen2;
 		if (rt5640_read(driver, RT5640_INT_IRQ_ST, &status) == B_OK
 			&& rt5640_read(driver, RT5640_GEN_CTRL2, &gen2) == B_OK) {
@@ -209,11 +308,1074 @@ jack_poll_thread(void* data)
 					status, gen2);
 				last = status;
 				lastJD2 = gen2 & (1 << 11);
+
+				// JD1 is low while headphones are plugged in
+				MutexLocker outputLocker(driver->outputLock);
+				driver->headphonesPlugged = (status & RT5640_STATUS_JD) == 0;
+				update_output(driver);
 			}
 		}
 		snooze(JACK_POLL_INTERVAL);
 	}
 	return B_OK;
+}
+
+
+//	#pragma mark - DSP
+
+
+/*!	Reads the SOF firmware from data/firmware/intel/sof, where Linux keeps it
+	as well.
+*/
+static status_t
+read_firmware(uint8** _data, size_t* _size)
+{
+	static const directory_which kDirectories[] = {
+		B_SYSTEM_NONPACKAGED_DATA_DIRECTORY,
+		B_SYSTEM_DATA_DIRECTORY,
+	};
+
+	int fd = -1;
+	char path[B_PATH_NAME_LENGTH];
+	for (size_t i = 0; i < B_COUNT_OF(kDirectories) && fd < 0; i++) {
+		char base[B_PATH_NAME_LENGTH];
+		if (find_directory(kDirectories[i], -1, false, base, sizeof(base))
+				!= B_OK) {
+			continue;
+		}
+		snprintf(path, sizeof(path), "%s/firmware/intel/sof/%s", base,
+			FIRMWARE_NAME);
+		fd = open(path, O_RDONLY);
+	}
+	if (fd < 0)
+		return B_ENTRY_NOT_FOUND;
+
+	off_t size = lseek(fd, 0, SEEK_END);
+	lseek(fd, 0, SEEK_SET);
+	if (size <= 0 || size > FIRMWARE_MAX_SIZE) {
+		close(fd);
+		return B_BAD_DATA;
+	}
+
+	uint8* data = (uint8*)malloc(size);
+	if (data == NULL) {
+		close(fd);
+		return B_NO_MEMORY;
+	}
+	ssize_t bytesRead = read(fd, data, size);
+	close(fd);
+	if (bytesRead != size) {
+		free(data);
+		return B_IO_ERROR;
+	}
+
+	TRACE_ALWAYS("loaded %s (%" B_PRIdOFF " bytes)\n", path, size);
+	*_data = data;
+	*_size = size;
+	return B_OK;
+}
+
+
+/*!	Called from the DSP interrupt for each period a stream completed. */
+static void
+position_reported(void* cookie, uint32 direction)
+{
+	intel_lpe_driver* driver = (intel_lpe_driver*)cookie;
+	if (direction == LPE_PLAYBACK)
+		release_sem_etc(driver->positionSem, 1, B_DO_NOT_RESCHEDULE);
+
+	static int32 sFirst = 0;
+	if (atomic_add(&sFirst, 1) == 0)
+		TRACE_ALWAYS("position messages from the DSP arrive\n");
+}
+
+
+static status_t
+boot_dsp(intel_lpe_driver* driver)
+{
+	uint8* image = NULL;
+	size_t size = 0;
+	status_t status;
+	bigtime_t timeout = system_time() + FIRMWARE_WAIT;
+	while ((status = read_firmware(&image, &size)) == B_ENTRY_NOT_FOUND
+		&& system_time() < timeout && !driver->stopPolling) {
+		snooze(1000000);
+	}
+	if (status != B_OK) {
+		TRACE_ALWAYS("no SOF firmware (%s): %s\n", FIRMWARE_NAME,
+			strerror(status));
+		return status;
+	}
+
+	MutexLocker dspLocker(driver->dspLock);
+	status = lpe_dsp_init(&driver->dsp);
+	driver->dsp.positionHook = position_reported;
+	driver->dsp.hookCookie = driver;
+	if (status == B_OK) {
+		driver->dspInitialized = true;
+		status = lpe_dsp_boot(&driver->dsp, image, size);
+	}
+	dspLocker.Unlock();
+	free(image);
+
+	if (status != B_OK)
+		TRACE_ALWAYS("DSP did not boot: %s\n", strerror(status));
+	return status;
+}
+
+
+/*!	Boots the DSP once the firmware can be read from the boot volume, and
+	records the outcome for wait_for_dsp().
+*/
+static void
+start_dsp(intel_lpe_driver* driver)
+{
+	status_t status = boot_dsp(driver);
+	atomic_set(&driver->dspState, status == B_OK ? DSP_READY : DSP_FAILED);
+	driver->dspBooted.NotifyAll();
+}
+
+
+/*!	Waits until start_dsp() is done. Called without driver->lock held, so
+	that open and close are not blocked meanwhile.
+*/
+static status_t
+wait_for_dsp(intel_lpe_driver* driver)
+{
+	if (atomic_get(&driver->dspState) == DSP_BOOTING) {
+		ConditionVariableEntry entry;
+		driver->dspBooted.Add(&entry);
+		if (atomic_get(&driver->dspState) == DSP_BOOTING) {
+			status_t status = entry.Wait(B_CAN_INTERRUPT | B_RELATIVE_TIMEOUT,
+				DSP_READY_WAIT);
+			if (status == B_INTERRUPTED)
+				return status;
+		}
+	}
+	return atomic_get(&driver->dspState) == DSP_READY ? B_OK : B_DEV_NOT_READY;
+}
+
+
+//	#pragma mark - codec playback setup
+
+
+struct rt5640_register_value {
+	uint8	reg;
+	uint16	value;
+};
+
+// The codec as Android set it up while it played through the speakers
+// (register dump of the stock Android on this tablet), in a safe order:
+// PLL, then clocks and interfaces, mixers, power, and the speaker last.
+// AIF1 is an I2S consumer with 24 bit data; the system clock comes from
+// the PLL (MCLK 25 MHz * 59 / 60 = 24.576 MHz = 512 * 48 kHz).
+static const rt5640_register_value kSpeakerPlayback[] = {
+	{ 0x81, 0x1c82 },	// PLL: N = 57, K = 2
+	{ 0x82, 0xd000 },	// PLL: M = 13
+	{ 0x64, 0x0200 },	// power: PLL
+	{ 0x80, 0x4000 },	// system clock from the PLL, PLL from MCLK
+	{ 0x83, 0x9a00 },	// ASRC
+	{ 0x84, 0xf820 },	// ASRC for the filters, the DAC stereo filter too:
+						// SSP0 runs from 19.2 MHz, MCLK is 25 MHz
+	{ 0x85, 0x0008 },
+	{ 0x89, 0x0000 },
+	{ 0x8a, 0x0000 },
+	{ 0x70, 0x8000 },	// I2S1: consumer, 16 bit, I2S (the 16 most
+						// significant bits of the 25 bit slots)
+	{ 0x71, 0x8000 },
+	{ 0x72, 0x8000 },
+	{ 0x73, 0x0014 },
+	{ 0x74, 0x0c00 },
+	{ 0x75, 0x1d00 },
+	{ 0x02, 0xa7a7 },	// headphone volume, muted
+	{ 0x03, 0xc8c8 },
+	{ 0x04, 0x8000 },
+	{ 0x05, 0x0000 },
+	{ 0x0d, 0x0540 },
+	{ 0x0e, 0x0500 },
+	{ 0x0f, 0x0808 },
+	{ 0x19, 0xafaf },	// DAC1 digital volume, 0 dB
+	{ 0x1a, 0xaaaa },
+	{ 0x1b, 0x0000 },
+	{ 0x1c, 0x8080 },
+	{ 0x1d, 0x2f2f },
+	{ 0x1e, 0x0000 },
+	{ 0x27, 0x7060 },
+	{ 0x28, 0x7070 },
+	{ 0x29, 0x8080 },	// DAC mixer: interface 1 to DAC1
+	{ 0x2a, 0x1414 },	// stereo DAC mixer: DAC L1/R1
+	{ 0x2b, 0x5454 },
+	{ 0x2c, 0xaa00 },
+	{ 0x2d, 0x0000 },
+	{ 0x2e, 0x0c00 },
+	{ 0x2f, 0x0100 },
+	{ 0x3b, 0x0000 },
+	{ 0x3c, 0x007b },
+	{ 0x3d, 0x0000 },
+	{ 0x3e, 0x007b },
+	{ 0x45, 0xc000 },
+	{ 0x46, 0x0036 },	// speaker mixer: DAC L1
+	{ 0x47, 0x0036 },	// speaker mixer: DAC R1
+	{ 0x48, 0xe800 },
+	{ 0x49, 0x2800 },
+	{ 0x4a, 0x0004 },
+	{ 0x4c, 0xfc00 },
+	{ 0x4d, 0x0000 },
+	{ 0x4e, 0x0000 },
+	{ 0x4f, 0x01fe },
+	{ 0x50, 0x0000 },
+	{ 0x51, 0x0000 },
+	{ 0x52, 0x01fe },
+	{ 0x53, 0xf000 },
+	{ 0x8b, 0x0600 },
+	{ 0x8c, 0x0334 },
+	{ 0x8d, 0x3000 },	// class D: ratio 2x
+	{ 0x8e, 0x0009 },
+	{ 0x8f, 0x3100 },
+	{ 0x90, 0x0646 },
+	{ 0x91, 0x0f00 },
+	{ 0x92, 0x0000 },
+	{ 0x93, 0x3410 },
+	{ 0xb0, 0x2080 },
+	{ 0xb1, 0x0000 },
+	{ 0xb2, 0x0000 },
+	{ 0xb4, 0x2206 },
+	{ 0xb5, 0x1f00 },
+	{ 0xb6, 0x0000 },
+	{ 0xb7, 0x0000 },
+	{ 0xb8, 0x034b },
+	{ 0xb9, 0x0066 },
+	{ 0xba, 0x000b },
+	{ 0xd0, 0x0680 },
+	{ 0xd1, 0x1c17 },
+	{ 0xd2, 0x8c00 },
+	{ 0xd3, 0xaa20 },
+	{ 0xd6, 0x0400 },
+	{ 0xd7, 0x0000 },
+	{ 0xd9, 0x0809 },
+	{ 0xda, 0x0000 },
+	{ 0x61, 0x9801 },	// power: I2S1, DAC L1/R1
+	{ 0x62, 0x0000 },
+	{ 0x65, 0x3000 },	// power: speaker mixers
+	{ 0x66, 0xc000 },	// power: speaker volumes
+	{ 0x01, 0x8888 },	// speaker volume, muted until the output is chosen
+};
+
+// private registers (index MX-6A, data MX-6C) that the Realtek drivers set
+// at initialization
+static const rt5640_register_value kPrivateInit[] = {
+	{ 0x3d, 0x3600 },
+	{ 0x12, 0x0aa8 },
+	{ 0x14, 0x0aaa },
+	{ 0x21, 0xe0e0 },
+	{ 0x23, 0x1804 },
+};
+
+#define RT5640_PRIVATE_INDEX		0x6a
+#define RT5640_PRIVATE_DATA			0x6c
+
+#define RT5640_SPEAKER_VOLUME		0x01
+#define RT5640_SPEAKER_ON			0x0808	// 0 dB
+#define RT5640_SPEAKER_MUTED		0x8888
+#define RT5640_HEADPHONE_VOLUME		0x02
+#define RT5640_HEADPHONE_ON			0x0c0c	// -6 dB
+#define RT5640_HEADPHONE_MUTE		0x8080
+#define RT5640_POWER_ANALOG1		0x63
+#define RT5640_POWER_MIXER			0x65
+#define RT5640_POWER_VOLUME			0x66
+#define RT5640_DEPOP_1				0x8e
+#define RT5640_DEPOP_2				0x8f
+#define RT5640_DEPOP_3				0x90
+#define RT5640_CHARGE_PUMP			0x91
+
+// MX-63
+#define RT5640_POWER_FV1			(1 << 14)
+#define RT5640_POWER_HP_L			(1 << 7)
+#define RT5640_POWER_HP_R			(1 << 6)
+#define RT5640_POWER_HP_AMP			(1 << 5)
+#define RT5640_POWER_FV2			(1 << 3)
+// MX-65, MX-66
+#define RT5640_POWER_OUT_MIX		(3 << 14)
+#define RT5640_POWER_HP_VOLUME		(3 << 10)
+// private registers
+#define RT5640_PR_CHARGE_PUMP_1		0x24
+#define RT5640_PR_MAIN_AMP_2		0x37
+#define RT5640_PR_HP_DCC_1			0x77
+
+static void
+rt5640_update(intel_lpe_driver* driver, uint8 reg, uint16 mask, uint16 value)
+{
+	uint16 old;
+	if (rt5640_read(driver, reg, &old) == B_OK)
+		rt5640_write(driver, reg, (old & ~mask) | (value & mask));
+}
+
+
+static void
+rt5640_write_private(intel_lpe_driver* driver, uint8 reg, uint16 value)
+{
+	rt5640_write(driver, RT5640_PRIVATE_INDEX, reg);
+	rt5640_write(driver, RT5640_PRIVATE_DATA, value);
+}
+
+
+static void
+rt5640_update_private(intel_lpe_driver* driver, uint8 reg, uint16 mask,
+	uint16 value)
+{
+	uint16 old;
+	rt5640_write(driver, RT5640_PRIVATE_INDEX, reg);
+	if (rt5640_read(driver, RT5640_PRIVATE_DATA, &old) == B_OK)
+		rt5640_write(driver, RT5640_PRIVATE_DATA,
+			(old & ~mask) | (value & mask));
+}
+
+
+/*!	Powers the headphone path up: output mixers and headphone volumes,
+	then the amplifier with its charge pump in the order the codec needs to
+	avoid a pop, then the volume. The order and the depop values follow
+	what Linux does for this codec (rt5640.c, used as a description).
+*/
+static void
+headphone_on(intel_lpe_driver* driver)
+{
+	rt5640_update(driver, RT5640_POWER_MIXER, RT5640_POWER_OUT_MIX,
+		RT5640_POWER_OUT_MIX);
+	rt5640_update(driver, RT5640_POWER_VOLUME, RT5640_POWER_HP_VOLUME,
+		RT5640_POWER_HP_VOLUME);
+	rt5640_update(driver, RT5640_POWER_ANALOG1,
+		RT5640_POWER_HP_L | RT5640_POWER_HP_R,
+		RT5640_POWER_HP_L | RT5640_POWER_HP_R);
+
+	// amplifier: manual depop, charge pump up, soft generator off
+	rt5640_update_private(driver, RT5640_PR_CHARGE_PUMP_1, 0x0700, 0x0200);
+	rt5640_update(driver, RT5640_DEPOP_2, 1 << 13, 1 << 13);
+	rt5640_update(driver, RT5640_DEPOP_1, (1 << 3) | (1 << 2) | 1,
+		(1 << 3) | 1);
+	rt5640_write_private(driver, RT5640_PR_HP_DCC_1, 0x9f00);
+	rt5640_update(driver, RT5640_POWER_ANALOG1,
+		RT5640_POWER_FV1 | RT5640_POWER_FV2, 0);
+	rt5640_update(driver, RT5640_POWER_ANALOG1, RT5640_POWER_HP_AMP,
+		RT5640_POWER_HP_AMP);
+	snooze(12000);
+	rt5640_update(driver, RT5640_POWER_ANALOG1,
+		RT5640_POWER_FV1 | RT5640_POWER_FV2,
+		RT5640_POWER_FV1 | RT5640_POWER_FV2);
+
+	// then automatic depop: digital depop on, charge pump in high voltage
+	// mode with its clocks (192 kHz, 12 kHz, 192 kHz), soft generator on
+	rt5640_update(driver, RT5640_DEPOP_2, (1 << 13) | (1 << 6), 1 << 6);
+	rt5640_update(driver, RT5640_CHARGE_PUMP, 3 << 8, 2 << 8);
+	rt5640_update(driver, RT5640_DEPOP_3, 0x0777, 0x0737);
+	rt5640_write_private(driver, RT5640_PR_MAIN_AMP_2, 0x1c00);
+	rt5640_update(driver, RT5640_DEPOP_1, (1 << 3) | (1 << 2), 1 << 2);
+	rt5640_update_private(driver, RT5640_PR_CHARGE_PUMP_1, 0x0700, 0x0400);
+
+	rt5640_write(driver, RT5640_HEADPHONE_VOLUME, RT5640_HEADPHONE_ON);
+	snooze(80000);
+	driver->headphoneAmpOn = true;
+}
+
+
+static void
+headphone_off(intel_lpe_driver* driver)
+{
+	rt5640_update(driver, RT5640_HEADPHONE_VOLUME, RT5640_HEADPHONE_MUTE,
+		RT5640_HEADPHONE_MUTE);
+	snooze(70000);
+	rt5640_update(driver, RT5640_POWER_ANALOG1,
+		RT5640_POWER_HP_L | RT5640_POWER_HP_R | RT5640_POWER_HP_AMP, 0);
+	rt5640_update(driver, RT5640_POWER_VOLUME, RT5640_POWER_HP_VOLUME, 0);
+	rt5640_update(driver, RT5640_POWER_MIXER, RT5640_POWER_OUT_MIX, 0);
+	driver->headphoneAmpOn = false;
+}
+
+
+/*!	Routes playback to the headphones while they are plugged in, else to
+	the speakers; both are off when nothing plays. Called with outputLock
+	held.
+*/
+static void
+update_output(intel_lpe_driver* driver)
+{
+	bool speaker = driver->outputActive && !driver->headphonesPlugged;
+	bool headphones = driver->outputActive && driver->headphonesPlugged;
+
+	if (!speaker)
+		rt5640_write(driver, RT5640_SPEAKER_VOLUME, RT5640_SPEAKER_MUTED);
+	if (!headphones && driver->headphoneAmpOn)
+		headphone_off(driver);
+
+	if (headphones && !driver->headphoneAmpOn)
+		headphone_on(driver);
+	if (speaker)
+		rt5640_write(driver, RT5640_SPEAKER_VOLUME, RT5640_SPEAKER_ON);
+}
+
+
+// Recording from the internal microphone, a differential microphone on IN3
+// (Android: "IN3 Mode Control Differential", "Int Mic Switch On"). Its boost
+// (MX-0D) and the record mixers (MX-3B..3E) come with the playback setup;
+// this powers the path and opens the ADC.
+#define RT5640_PWR_DIG2				0x62
+#define RT5640_STEREO_ADC_MIXER		0x27
+#define RT5640_ADC_VOLUME			0x1c
+
+#define RT5640_POWER_ADC			(3 << 1)	// MX-61: ADC L, R
+#define RT5640_POWER_ADC_FILTER		(1 << 15)	// MX-62
+#define RT5640_POWER_BOOST_IN3		(1 << 14)	// MX-64
+#define RT5640_POWER_MICBIAS1		(1 << 11)	// MX-64
+#define RT5640_POWER_LDO2			(1 << 2)	// MX-63, supplies IN1..IN3
+#define RT5640_POWER_RECORD_MIX		(3 << 10)	// MX-65: RECMIX L, R
+#define RT5640_MUTE_ADC1			((1 << 14) | (1 << 6))
+// The gains of the Linux UCM profile for this codec: IN3 boost at its
+// maximum (52 dB) and the ADC at +9 dB (0x2f is 0 dB, 0.375 dB a step).
+#define RT5640_BOOST_IN3_MASK		(0xf << 8)	// MX-0D
+#define RT5640_BOOST_IN3_52DB		(8 << 8)
+#define RT5640_ADC_ON				0x4747		// +9 dB, unmuted
+#define RT5640_ADC_MUTED			0xafaf
+
+
+/*!	Takes outputLock: the headphone path updates the same power registers
+	from the jack thread.
+*/
+static void
+microphone_on(intel_lpe_driver* driver)
+{
+	MutexLocker outputLocker(driver->outputLock);
+	rt5640_update(driver, RT5640_POWER_ANALOG1, RT5640_POWER_LDO2,
+		RT5640_POWER_LDO2);
+	rt5640_update(driver, RT5640_IN1_IN2, RT5640_BOOST_IN3_MASK,
+		RT5640_BOOST_IN3_52DB);
+	rt5640_update(driver, RT5640_PWR_ANLG2,
+		RT5640_POWER_BOOST_IN3 | RT5640_POWER_MICBIAS1,
+		RT5640_POWER_BOOST_IN3 | RT5640_POWER_MICBIAS1);
+	rt5640_update(driver, RT5640_POWER_MIXER, RT5640_POWER_RECORD_MIX,
+		RT5640_POWER_RECORD_MIX);
+	rt5640_update(driver, RT5640_PWR_DIG1, RT5640_POWER_ADC,
+		RT5640_POWER_ADC);
+	rt5640_update(driver, RT5640_PWR_DIG2, RT5640_POWER_ADC_FILTER,
+		RT5640_POWER_ADC_FILTER);
+	rt5640_update(driver, RT5640_STEREO_ADC_MIXER, RT5640_MUTE_ADC1, 0);
+	rt5640_write(driver, RT5640_ADC_VOLUME, RT5640_ADC_ON);
+}
+
+
+static void
+microphone_off(intel_lpe_driver* driver)
+{
+	MutexLocker outputLocker(driver->outputLock);
+	rt5640_write(driver, RT5640_ADC_VOLUME, RT5640_ADC_MUTED);
+	rt5640_update(driver, RT5640_STEREO_ADC_MIXER, RT5640_MUTE_ADC1,
+		RT5640_MUTE_ADC1);
+	rt5640_update(driver, RT5640_PWR_DIG2, RT5640_POWER_ADC_FILTER, 0);
+	rt5640_update(driver, RT5640_PWR_DIG1, RT5640_POWER_ADC, 0);
+	rt5640_update(driver, RT5640_POWER_MIXER, RT5640_POWER_RECORD_MIX, 0);
+	rt5640_update(driver, RT5640_PWR_ANLG2,
+		RT5640_POWER_BOOST_IN3 | RT5640_POWER_MICBIAS1, 0);
+	rt5640_update(driver, RT5640_POWER_ANALOG1, RT5640_POWER_LDO2, 0);
+}
+
+
+static status_t
+setup_speaker_playback(intel_lpe_driver* driver)
+{
+	for (size_t i = 0; i < B_COUNT_OF(kPrivateInit); i++) {
+		rt5640_write(driver, RT5640_PRIVATE_INDEX, kPrivateInit[i].reg);
+		rt5640_write(driver, RT5640_PRIVATE_DATA, kPrivateInit[i].value);
+	}
+
+	for (size_t i = 0; i < B_COUNT_OF(kSpeakerPlayback); i++) {
+		status_t status = rt5640_write(driver, kSpeakerPlayback[i].reg,
+			kSpeakerPlayback[i].value);
+		if (status != B_OK) {
+			TRACE_ALWAYS("writing MX-%02X failed: %s\n",
+				kSpeakerPlayback[i].reg, strerror(status));
+			return status;
+		}
+		if (kSpeakerPlayback[i].reg == 0x64)
+			snooze(1000);
+	}
+	return B_OK;
+}
+
+
+//	#pragma mark - playback
+
+
+static uint32
+current_buffer(intel_lpe_driver* driver, uint32 direction)
+{
+	sof_ipc_stream_posn position;
+	if (lpe_dsp_read_position(&driver->dsp, direction, &position) != B_OK)
+		return PLAYBACK_BUFFERS;
+	return (uint32)(position.host_posn / PLAYBACK_BUFFER_SIZE)
+		% PLAYBACK_BUFFERS;
+}
+
+
+/*!	Follows the host positions, which the firmware writes into the stream
+	mailbox every millisecond. Each change of the playback buffer means a
+	buffer finished playing; buffer_exchange() then hands that buffer to the
+	media add-on, together with the record buffer that was last filled.
+*/
+static int32
+playback_thread(void* data)
+{
+	intel_lpe_driver* driver = (intel_lpe_driver*)data;
+	uint32 last = 0;
+
+	while (atomic_get(&driver->running) != 0) {
+		sof_ipc_stream_posn position;
+		if (lpe_dsp_read_position(&driver->dsp, LPE_PLAYBACK, &position)
+				!= B_OK) {
+			snooze(POLL_INTERVAL);
+			continue;
+		}
+		uint32 current = (uint32)(position.host_posn / PLAYBACK_BUFFER_SIZE)
+			% PLAYBACK_BUFFERS;
+		if (current == last) {
+			if (driver->dsp.interruptsEnabled) {
+				acquire_sem_etc(driver->positionSem, 1, B_RELATIVE_TIMEOUT,
+					POSITION_TIMEOUT);
+			} else
+				snooze(POLL_INTERVAL);
+			continue;
+		}
+		last = current;
+		bigtime_t now = system_time();
+
+		// Both streams run off the same SSP clock, so each playback buffer
+		// change comes with one complete record buffer: the one the DSP is
+		// not writing into.
+		uint32 record = PLAYBACK_BUFFERS;
+		if (driver->capturing)
+			record = current_buffer(driver, LPE_CAPTURE);
+
+		cpu_status state = disable_interrupts();
+		acquire_spinlock(&driver->positionLock);
+		driver->bufferCycle = current;
+		driver->framesCount += PLAYBACK_BUFFER_FRAMES;
+		driver->realTime = now;
+		if (record < PLAYBACK_BUFFERS) {
+			driver->recordCycle = (record + 1) % PLAYBACK_BUFFERS;
+			driver->recordedFrames += PLAYBACK_BUFFER_FRAMES;
+			driver->recordTime = now;
+		}
+		release_spinlock(&driver->positionLock);
+		restore_interrupts(state);
+
+		release_sem_etc(driver->bufferReadySem, 1, B_DO_NOT_RESCHEDULE);
+		if (!driver->dsp.interruptsEnabled)
+			snooze(PLAYBACK_BUFFER_TIME - POLL_EARLY_WAKEUP);
+	}
+	return 0;
+}
+
+
+static status_t
+playback_start(intel_lpe_driver* driver)
+{
+	if (atomic_get(&driver->dspState) != DSP_READY)
+		return B_DEV_NOT_READY;
+
+	int32 count;
+	if (get_sem_count(driver->bufferReadySem, &count) == B_OK && count > 0)
+		acquire_sem_etc(driver->bufferReadySem, count, B_RELATIVE_TIMEOUT, 0);
+	if (get_sem_count(driver->positionSem, &count) == B_OK && count > 0)
+		acquire_sem_etc(driver->positionSem, count, B_RELATIVE_TIMEOUT, 0);
+
+	status_t status;
+	{
+		MutexLocker outputLocker(driver->outputLock);
+		status = setup_speaker_playback(driver);
+		// the setup leaves the headphone amplifier off
+		driver->headphoneAmpOn = false;
+	}
+	if (status != B_OK)
+		return status;
+
+	driver->bufferCycle = 0;
+	driver->framesCount = 0;
+	driver->realTime = system_time();
+	driver->recordCycle = 0;
+	driver->recordedFrames = 0;
+	driver->recordTime = driver->realTime;
+
+	lpe_stream_buffer buffer;
+	buffer.pageTable = driver->tablePhysical[LPE_PLAYBACK];
+	buffer.pageCount = PLAYBACK_RING_SIZE / B_PAGE_SIZE;
+	buffer.size = PLAYBACK_RING_SIZE;
+	buffer.periodBytes = PLAYBACK_BUFFER_SIZE;
+	{
+		MutexLocker dspLocker(driver->dspLock);
+		status = lpe_dsp_start_stream(&driver->dsp, LPE_PLAYBACK, &buffer);
+	}
+	if (status != B_OK)
+		return status;
+
+	// recording runs along with playback; if it does not start, playback
+	// still does
+	microphone_on(driver);
+	buffer.pageTable = driver->tablePhysical[LPE_CAPTURE];
+	{
+		MutexLocker dspLocker(driver->dspLock);
+		driver->capturing = lpe_dsp_start_stream(&driver->dsp, LPE_CAPTURE,
+			&buffer) == B_OK;
+	}
+	if (!driver->capturing) {
+		TRACE_ALWAYS("recording did not start\n");
+		microphone_off(driver);
+	}
+
+	{
+		MutexLocker outputLocker(driver->outputLock);
+		driver->outputActive = true;
+		update_output(driver);
+	}
+
+	driver->running = 1;
+	driver->playbackThread = spawn_kernel_thread(playback_thread,
+		"intel_lpe playback", B_REAL_TIME_DISPLAY_PRIORITY, driver);
+	if (driver->playbackThread < 0) {
+		status = driver->playbackThread;
+		driver->running = 0;
+		{
+			MutexLocker outputLocker(driver->outputLock);
+			driver->outputActive = false;
+			update_output(driver);
+		}
+		MutexLocker dspLocker(driver->dspLock);
+		lpe_dsp_stop_stream(&driver->dsp, LPE_PLAYBACK);
+		if (driver->capturing) {
+			lpe_dsp_stop_stream(&driver->dsp, LPE_CAPTURE);
+			driver->capturing = false;
+			dspLocker.Unlock();
+			microphone_off(driver);
+		}
+		return status;
+	}
+	resume_thread(driver->playbackThread);
+	return B_OK;
+}
+
+
+static void
+playback_stop(intel_lpe_driver* driver)
+{
+	if (!driver->running)
+		return;
+
+	atomic_set(&driver->running, 0);
+	status_t result;
+	wait_for_thread(driver->playbackThread, &result);
+	driver->playbackThread = -1;
+
+	{
+		MutexLocker outputLocker(driver->outputLock);
+		driver->outputActive = false;
+		update_output(driver);
+	}
+	{
+		MutexLocker dspLocker(driver->dspLock);
+		lpe_dsp_stop_stream(&driver->dsp, LPE_PLAYBACK);
+		if (driver->capturing)
+			lpe_dsp_stop_stream(&driver->dsp, LPE_CAPTURE);
+	}
+	if (driver->capturing) {
+		driver->capturing = false;
+		microphone_off(driver);
+	}
+
+	// wake a buffer_exchange() that is still waiting
+	release_sem_etc(driver->bufferReadySem, 1, 0);
+	TRACE_ALWAYS("playback stopped after %" B_PRId64 " frames\n",
+		driver->framesCount);
+}
+
+
+//	#pragma mark - multi_audio
+
+
+static multi_channel_info sChannels[] = {
+	{ 0, B_MULTI_OUTPUT_CHANNEL, B_CHANNEL_LEFT | B_CHANNEL_STEREO_BUS, 0 },
+	{ 1, B_MULTI_OUTPUT_CHANNEL, B_CHANNEL_RIGHT | B_CHANNEL_STEREO_BUS, 0 },
+	{ 2, B_MULTI_OUTPUT_BUS, B_CHANNEL_LEFT | B_CHANNEL_STEREO_BUS,
+		B_CHANNEL_ANALOG_HEADER },
+	{ 3, B_MULTI_OUTPUT_BUS, B_CHANNEL_RIGHT | B_CHANNEL_STEREO_BUS,
+		B_CHANNEL_ANALOG_HEADER },
+	{ 4, B_MULTI_INPUT_CHANNEL, B_CHANNEL_LEFT | B_CHANNEL_STEREO_BUS, 0 },
+	{ 5, B_MULTI_INPUT_CHANNEL, B_CHANNEL_RIGHT | B_CHANNEL_STEREO_BUS, 0 },
+	{ 6, B_MULTI_INPUT_BUS, B_CHANNEL_LEFT | B_CHANNEL_STEREO_BUS,
+		B_CHANNEL_MINI_JACK_STEREO },
+	{ 7, B_MULTI_INPUT_BUS, B_CHANNEL_RIGHT | B_CHANNEL_STEREO_BUS,
+		B_CHANNEL_MINI_JACK_STEREO },
+};
+
+
+static status_t
+get_description(intel_lpe_driver* driver, multi_description* data)
+{
+	data->interface_version = B_CURRENT_INTERFACE_VERSION;
+	data->interface_minimum = B_CURRENT_INTERFACE_VERSION;
+
+	strlcpy(data->friendly_name, "Intel LPE audio (RT5640)",
+		sizeof(data->friendly_name));
+	strlcpy(data->vendor_info, "Renku", sizeof(data->vendor_info));
+
+	data->output_channel_count = PLAYBACK_CHANNELS;
+	data->output_bus_channel_count = PLAYBACK_CHANNELS;
+	data->input_channel_count = PLAYBACK_CHANNELS;
+	data->input_bus_channel_count = PLAYBACK_CHANNELS;
+	data->aux_bus_channel_count = 0;
+
+	if (data->request_channel_count >= (int32)B_COUNT_OF(sChannels))
+		memcpy(data->channels, sChannels, sizeof(sChannels));
+
+	data->output_rates = B_SR_48000;
+	data->input_rates = B_SR_48000;
+	data->max_cvsr_rate = 0;
+	data->min_cvsr_rate = 0;
+	data->output_formats = B_FMT_16BIT;
+	data->input_formats = B_FMT_16BIT;
+	data->lock_sources = B_MULTI_LOCK_INTERNAL;
+	data->timecode_sources = 0;
+	data->interface_flags
+		= B_MULTI_INTERFACE_PLAYBACK | B_MULTI_INTERFACE_RECORD;
+	data->start_latency = 30000;
+	data->control_panel[0] = '\0';
+	return B_OK;
+}
+
+
+static status_t
+get_enabled_channels(intel_lpe_driver* driver, multi_channel_enable* data)
+{
+	data->lock_source = B_MULTI_LOCK_INTERNAL;
+	// the playback and the record channels
+	for (int32 i = 0; i < 2 * PLAYBACK_CHANNELS; i++)
+		B_SET_CHANNEL(data->enable_bits, i, true);
+	return B_OK;
+}
+
+
+static status_t
+get_global_format(intel_lpe_driver* driver, multi_format_info* data)
+{
+	data->output_latency = 0;
+	data->input_latency = 0;
+	data->timecode_kind = 0;
+	data->output.format = B_FMT_16BIT;
+	data->output.rate = B_SR_48000;
+	data->input.format = B_FMT_16BIT;
+	data->input.rate = B_SR_48000;
+	return B_OK;
+}
+
+
+static status_t
+set_global_format(intel_lpe_driver* driver, multi_format_info* data)
+{
+	// there is only one format; report it back
+	return get_global_format(driver, data);
+}
+
+
+static status_t
+list_mix_controls(intel_lpe_driver* driver, multi_mix_control_info* data)
+{
+	// no gain controls yet; the system mixer sets the volume
+	data->control_count = 0;
+	return B_OK;
+}
+
+
+static status_t
+list_mix_connections(intel_lpe_driver* driver,
+	multi_mix_connection_info* data)
+{
+	return B_ERROR;
+}
+
+
+static status_t
+list_mix_channels(intel_lpe_driver* driver, multi_mix_channel_info* data)
+{
+	return B_ERROR;
+}
+
+
+static status_t
+get_mix(intel_lpe_driver* driver, multi_mix_value_info* data)
+{
+	return B_OK;
+}
+
+
+static status_t
+set_mix(intel_lpe_driver* driver, multi_mix_value_info* data)
+{
+	return B_OK;
+}
+
+
+static status_t
+describe_ring(uint8* ring, buffer_desc** buffers)
+{
+	for (int32 i = 0; i < PLAYBACK_BUFFERS; i++) {
+		buffer_desc descs[PLAYBACK_CHANNELS];
+		memset(descs, 0, sizeof(descs));
+		for (int32 channel = 0; channel < PLAYBACK_CHANNELS; channel++) {
+			descs[channel].base = (char*)ring
+				+ i * PLAYBACK_BUFFER_SIZE + channel * PLAYBACK_SAMPLE_SIZE;
+			descs[channel].stride = PLAYBACK_FRAME_SIZE;
+		}
+		if (!IS_USER_ADDRESS(buffers[i])
+			|| user_memcpy(buffers[i], descs, sizeof(descs)) != B_OK) {
+			return B_BAD_ADDRESS;
+		}
+	}
+	return B_OK;
+}
+
+
+/*!	The ring layout is fixed, so the requested buffer count and size are
+	ignored. Playback and recording use the same layout.
+*/
+static status_t
+get_buffers(intel_lpe_driver* driver, multi_buffer_list* data)
+{
+	MutexLocker locker(driver->lock);
+
+	if (!driver->running) {
+		for (int32 i = 0; i < LPE_STREAM_COUNT; i++)
+			memset(driver->ring[i], 0, PLAYBACK_RING_SIZE);
+	}
+
+	data->flags = B_MULTI_BUFFER_PLAYBACK | B_MULTI_BUFFER_RECORD;
+	data->return_playback_buffers = PLAYBACK_BUFFERS;
+	data->return_playback_channels = PLAYBACK_CHANNELS;
+	data->return_playback_buffer_size = PLAYBACK_BUFFER_FRAMES;
+	data->return_record_buffers = PLAYBACK_BUFFERS;
+	data->return_record_channels = PLAYBACK_CHANNELS;
+	data->return_record_buffer_size = PLAYBACK_BUFFER_FRAMES;
+
+	if (data->request_playback_buffers < PLAYBACK_BUFFERS
+		|| data->request_playback_channels < PLAYBACK_CHANNELS) {
+		return B_BAD_VALUE;
+	}
+
+	status_t status = describe_ring(driver->ring[LPE_PLAYBACK],
+		data->playback_buffers);
+	if (status != B_OK)
+		return status;
+
+	// the record buffers are optional
+	if (data->request_record_buffers < PLAYBACK_BUFFERS
+		|| data->request_record_channels < PLAYBACK_CHANNELS) {
+		data->flags = B_MULTI_BUFFER_PLAYBACK;
+		data->return_record_buffers = 0;
+		data->return_record_channels = 0;
+		data->return_record_buffer_size = 0;
+		return B_OK;
+	}
+	return describe_ring(driver->ring[LPE_CAPTURE], data->record_buffers);
+}
+
+
+static status_t
+buffer_exchange(intel_lpe_driver* driver, multi_buffer_info* data)
+{
+	multi_buffer_info info;
+	if (!IS_USER_ADDRESS(data)
+		|| user_memcpy(&info, data, sizeof(info)) != B_OK) {
+		return B_BAD_ADDRESS;
+	}
+
+	if (!driver->running) {
+		status_t status = wait_for_dsp(driver);
+		if (status != B_OK)
+			return status;
+	}
+
+	{
+		MutexLocker locker(driver->lock);
+		if (!driver->running) {
+			status_t status = playback_start(driver);
+			if (status != B_OK) {
+				TRACE_ALWAYS("playback did not start: %s\n",
+					strerror(status));
+				return status;
+			}
+		}
+	}
+
+	status_t status = acquire_sem_etc(driver->bufferReadySem, 1,
+		B_CAN_INTERRUPT | B_RELATIVE_TIMEOUT, EXCHANGE_TIMEOUT);
+	if (status != B_OK)
+		return status;
+
+	cpu_status state = disable_interrupts();
+	acquire_spinlock(&driver->positionLock);
+	info.playback_buffer_cycle = driver->bufferCycle;
+	info.played_real_time = driver->realTime;
+	info.played_frames_count = driver->framesCount;
+	if (driver->capturing) {
+		info.record_buffer_cycle = driver->recordCycle;
+		info.recorded_real_time = driver->recordTime;
+		info.recorded_frames_count = driver->recordedFrames;
+	} else {
+		info.record_buffer_cycle = -1;
+		info.recorded_real_time = 0;
+		info.recorded_frames_count = 0;
+	}
+	release_spinlock(&driver->positionLock);
+	restore_interrupts(state);
+
+	if (user_memcpy(data, &info, sizeof(info)) != B_OK)
+		return B_BAD_ADDRESS;
+	return B_OK;
+}
+
+
+static status_t
+buffer_force_stop(intel_lpe_driver* driver)
+{
+	MutexLocker locker(driver->lock);
+	playback_stop(driver);
+	return B_OK;
+}
+
+
+#define cookie_type intel_lpe_driver
+#include "../generic/multi.c"
+
+
+//	#pragma mark - setup
+
+
+/*!	The ring the media add-on writes into (playback) or reads from
+	(recording), and the page table through which the DSP reaches it.
+*/
+static status_t
+create_ring(intel_lpe_driver* driver, uint32 direction)
+{
+	void* address;
+	driver->ringArea[direction] = create_area(direction == LPE_PLAYBACK
+			? "intel_lpe playback" : "intel_lpe record", &address,
+		B_ANY_KERNEL_ADDRESS, PLAYBACK_RING_SIZE, B_32_BIT_CONTIGUOUS,
+		B_READ_AREA | B_WRITE_AREA);
+	if (driver->ringArea[direction] < 0)
+		return driver->ringArea[direction];
+	driver->ring[direction] = (uint8*)address;
+	memset(address, 0, PLAYBACK_RING_SIZE);
+
+	driver->tableArea[direction] = create_area("intel_lpe page table",
+		&address, B_ANY_KERNEL_ADDRESS, B_PAGE_SIZE, B_32_BIT_CONTIGUOUS,
+		B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA);
+	if (driver->tableArea[direction] < 0)
+		return driver->tableArea[direction];
+	memset(address, 0, B_PAGE_SIZE);
+
+	physical_entry entry;
+	status_t status = get_memory_map(address, B_PAGE_SIZE, &entry, 1);
+	if (status != B_OK)
+		return status;
+	driver->tablePhysical[direction] = entry.address;
+
+	phys_addr_t pages[PLAYBACK_RING_SIZE / B_PAGE_SIZE];
+	status = get_memory_map(driver->ring[direction], PLAYBACK_RING_SIZE,
+		&entry, 1);
+	if (status != B_OK)
+		return status;
+	for (size_t i = 0; i < B_COUNT_OF(pages); i++)
+		pages[i] = entry.address + i * B_PAGE_SIZE;
+	lpe_fill_page_table((uint8*)address, pages, B_COUNT_OF(pages));
+	return B_OK;
+}
+
+
+static void
+delete_rings(intel_lpe_driver* driver)
+{
+	for (int32 i = 0; i < LPE_STREAM_COUNT; i++) {
+		if (driver->tableArea[i] >= 0)
+			delete_area(driver->tableArea[i]);
+		if (driver->ringArea[i] >= 0)
+			delete_area(driver->ringArea[i]);
+	}
+}
+
+
+//	#pragma mark - device module API
+
+
+static status_t
+intel_lpe_init_device(void* driverCookie, void** _deviceCookie)
+{
+	*_deviceCookie = driverCookie;
+	return B_OK;
+}
+
+
+static void
+intel_lpe_uninit_device(void* deviceCookie)
+{
+}
+
+
+static status_t
+intel_lpe_open(void* deviceCookie, const char* path, int openMode,
+	void** _cookie)
+{
+	intel_lpe_driver* driver = (intel_lpe_driver*)deviceCookie;
+	MutexLocker locker(driver->lock);
+	driver->openCount++;
+	*_cookie = driver;
+	return B_OK;
+}
+
+
+static status_t
+intel_lpe_close(void* cookie)
+{
+	return B_OK;
+}
+
+
+static status_t
+intel_lpe_free(void* cookie)
+{
+	intel_lpe_driver* driver = (intel_lpe_driver*)cookie;
+	MutexLocker locker(driver->lock);
+	if (--driver->openCount == 0)
+		playback_stop(driver);
+	return B_OK;
+}
+
+
+static status_t
+intel_lpe_read(void* cookie, off_t position, void* buffer, size_t* _length)
+{
+	*_length = 0;
+	return B_NOT_ALLOWED;
+}
+
+
+static status_t
+intel_lpe_write(void* cookie, off_t position, const void* buffer,
+	size_t* _length)
+{
+	*_length = 0;
+	return B_NOT_ALLOWED;
+}
+
+
+static status_t
+intel_lpe_control(void* cookie, uint32 op, void* buffer, size_t length)
+{
+	return multi_audio_control_generic((intel_lpe_driver*)cookie, op, buffer,
+		length);
 }
 
 
@@ -259,12 +1421,21 @@ intel_lpe_register_device(device_node* node)
 static status_t
 intel_lpe_init_driver(device_node* node, void** _driverCookie)
 {
-	intel_lpe_driver* driver = new(std::nothrow) intel_lpe_driver;
+	// value-initialized: every field starts at zero
+	intel_lpe_driver* driver = new(std::nothrow) intel_lpe_driver();
 	if (driver == NULL)
 		return B_NO_MEMORY;
-	memset(driver, 0, sizeof(*driver));
 	driver->node = node;
 	driver->pollThread = -1;
+	driver->playbackThread = -1;
+	for (int32 i = 0; i < LPE_STREAM_COUNT; i++)
+		driver->ringArea[i] = driver->tableArea[i] = -1;
+	driver->bufferReadySem = driver->positionSem = -1;
+	mutex_init(&driver->lock, "intel_lpe");
+	mutex_init(&driver->dspLock, "intel_lpe dsp");
+	mutex_init(&driver->outputLock, "intel_lpe output");
+	B_INITIALIZE_SPINLOCK(&driver->positionLock);
+	driver->dspBooted.Init(driver, "intel_lpe dsp boot");
 
 	device_node* parent = sDeviceManager->get_parent_node(node);
 	uint64 handle = 0;
@@ -278,8 +1449,28 @@ intel_lpe_init_driver(device_node* node, void** _driverCookie)
 
 	if (status == B_OK)
 		status = rt5640_probe(driver);
+	if (status == B_OK)
+		status = create_ring(driver, LPE_PLAYBACK);
+	if (status == B_OK)
+		status = create_ring(driver, LPE_CAPTURE);
+	if (status == B_OK) {
+		driver->bufferReadySem = create_sem(0, "intel_lpe buffer ready");
+		if (driver->bufferReadySem < 0)
+			status = driver->bufferReadySem;
+	}
+	if (status == B_OK) {
+		driver->positionSem = create_sem(0, "intel_lpe position");
+		if (driver->positionSem < 0)
+			status = driver->positionSem;
+	}
 	if (status != B_OK) {
 		TRACE_ALWAYS("probe failed: %s\n", strerror(status));
+		if (driver->bufferReadySem >= 0)
+			delete_sem(driver->bufferReadySem);
+		delete_rings(driver);
+		mutex_destroy(&driver->outputLock);
+		mutex_destroy(&driver->dspLock);
+		mutex_destroy(&driver->lock);
 		delete driver;
 		return status;
 	}
@@ -298,12 +1489,33 @@ static void
 intel_lpe_uninit_driver(void* driverCookie)
 {
 	intel_lpe_driver* driver = (intel_lpe_driver*)driverCookie;
+	mutex_lock(&driver->lock);
+	playback_stop(driver);
+	mutex_unlock(&driver->lock);
+
 	if (driver->pollThread >= 0) {
 		driver->stopPolling = true;
 		status_t result;
 		wait_for_thread(driver->pollThread, &result);
 	}
+	if (driver->dspInitialized)
+		lpe_dsp_uninit(&driver->dsp);
+	delete_sem(driver->bufferReadySem);
+	delete_sem(driver->positionSem);
+	delete_rings(driver);
+	mutex_destroy(&driver->outputLock);
+	mutex_destroy(&driver->dspLock);
+	mutex_destroy(&driver->lock);
 	delete driver;
+}
+
+
+static status_t
+intel_lpe_register_child_devices(void* driverCookie)
+{
+	intel_lpe_driver* driver = (intel_lpe_driver*)driverCookie;
+	return sDeviceManager->publish_device(driver->node, INTEL_LPE_DEVICE_PATH,
+		INTEL_LPE_DEVICE_MODULE_NAME);
 }
 
 
@@ -318,9 +1530,33 @@ driver_module_info intel_lpe_driver_module = {
 	intel_lpe_register_device,
 	intel_lpe_init_driver,
 	intel_lpe_uninit_driver,
-	NULL,	// register_child_devices
+	intel_lpe_register_child_devices,
 	NULL,	// rescan
 	NULL,	// removed
+};
+
+
+struct device_module_info intel_lpe_device_module = {
+	{
+		INTEL_LPE_DEVICE_MODULE_NAME,
+		0,
+		NULL
+	},
+
+	intel_lpe_init_device,
+	intel_lpe_uninit_device,
+	NULL,	// removed
+
+	intel_lpe_open,
+	intel_lpe_close,
+	intel_lpe_free,
+	intel_lpe_read,
+	intel_lpe_write,
+	NULL,	// io
+	intel_lpe_control,
+
+	NULL,	// select
+	NULL	// deselect
 };
 
 
@@ -332,5 +1568,6 @@ module_dependency module_dependencies[] = {
 
 module_info* modules[] = {
 	(module_info*)&intel_lpe_driver_module,
+	(module_info*)&intel_lpe_device_module,
 	NULL
 };
