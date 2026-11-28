@@ -323,7 +323,7 @@ malloc_usable_size(void *ptr)
 	if (ptr == NULL)
 		return 0;
 
-	status_t res = sCurrentHeap->get_allocation_info(ptr, &size, &thread);
+	status_t res = heap_debug_get_allocation_info(ptr, &size, &thread);
 
 	if (res != B_OK)
 		return 0;

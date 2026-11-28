@@ -2080,6 +2080,9 @@ malloc_usable_size(void *ptr)
 	size_t r;
 	int saved_errno = errno;
 
+	if (ptr == NULL)
+		return 0;
+
 	d = getpool();
 	_MALLOC_LOCK(d->mutex);
 	d->active++;

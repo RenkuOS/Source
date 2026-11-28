@@ -1092,6 +1092,47 @@ guarded_heap_dump_heaps(bool dumpAreas, bool dumpBins)
 
 
 static status_t
+guarded_heap_get_allocation_info(void* address, size_t* size,
+	thread_id* thread)
+{
+	guarded_heap_area* area = guarded_heap_get_locked_area_for(sGuardedHeap,
+		address);
+	if (area != NULL) {
+		MutexLocker locker(area->lock, true);
+
+		// A pointer to a free, guard or non-first page panics, as for free(),
+		// and the message says "tried to free". The check is still needed:
+		// with debugger calls disabled, panic() only prints and returns.
+		size_t pageIndex = guarded_heap_area_page_index_for(*area, address);
+		if (pageIndex >= area->page_count)
+			return B_BAD_VALUE;
+
+		guarded_heap_page& page = area->pages[pageIndex];
+		if (page.allocation_base != address)
+			return B_BAD_VALUE;
+
+		if (size != NULL)
+			*size = page.allocation_size;
+		if (thread != NULL)
+			*thread = page.allocating_thread;
+		return B_OK;
+	}
+
+	area_id allocationArea;
+	guarded_heap_page* page = guarded_heap_area_allocation_for(address,
+		allocationArea);
+	if (page == NULL)
+		return B_ENTRY_NOT_FOUND;
+
+	if (size != NULL)
+		*size = page->allocation_size;
+	if (thread != NULL)
+		*thread = page->allocating_thread;
+	return B_OK;
+}
+
+
+static status_t
 guarded_heap_set_dump_allocations_on_exit(bool enabled)
 {
 	sDumpAllocationsOnExit = enabled;
@@ -1249,7 +1290,7 @@ heap_implementation __mallocGuardedHeap = {
 	guarded_heap_dump_heaps,
 	heap_malloc,
 
-	NULL,	// get_allocation_info
+	guarded_heap_get_allocation_info,
 
 	guarded_heap_set_dump_allocations_on_exit,
 	guarded_heap_set_stack_trace_depth
