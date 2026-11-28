@@ -7,6 +7,8 @@
  */
 
 #include <USBKit.h>
+
+#include <errno.h>
 #include <usb_raw.h>
 #include <unistd.h>
 #include <string.h>
@@ -214,6 +216,110 @@ BUSBEndpoint::IsochronousTransfer(void *data, size_t length,
 		return B_ERROR;
 
 	return command.isochronous.length;
+}
+
+
+status_t
+BUSBEndpoint::StartIsochronousStream(size_t packetSize,
+	uint32 packetsPerTransfer, uint32 transferCount, size_t bufferSize) const
+{
+	// usb_raw takes them as 32 bit values: do not let a larger one wrap
+	if (packetSize > UINT32_MAX || bufferSize > UINT32_MAX)
+		return B_BAD_VALUE;
+
+	usb_raw_command command;
+	command.stream_start.interface = fInterface->Index();
+	command.stream_start.endpoint = fIndex;
+	command.stream_start.packet_size = packetSize;
+	command.stream_start.packets_per_transfer = packetsPerTransfer;
+	command.stream_start.transfer_count = transferCount;
+	command.stream_start.buffer_size = bufferSize;
+
+	if (ioctl(fRawFD, B_USB_RAW_COMMAND_ISOCHRONOUS_STREAM_START, &command,
+			sizeof(command)) != 0) {
+		return errno;
+	}
+
+	switch (command.stream_start.status) {
+		case B_USB_RAW_STATUS_SUCCESS:
+			return B_OK;
+		case B_USB_RAW_STATUS_NO_MEMORY:
+			return B_NO_MEMORY;
+		case B_USB_RAW_STATUS_INVALID_ENDPOINT:
+		case B_USB_RAW_STATUS_INVALID_INTERFACE:
+			return B_BAD_VALUE;
+		default:
+			return B_ERROR;
+	}
+}
+
+
+ssize_t
+BUSBEndpoint::ReadIsochronousStream(void *data, size_t length,
+	bigtime_t timeout) const
+{
+	// This endpoint's stream: a device may stream on several endpoints. A
+	// usb_raw without the command knows only one stream per device.
+	usb_raw_command command;
+	command.stream_read_endpoint.interface = fInterface->Index();
+	command.stream_read_endpoint.endpoint = fIndex;
+	command.stream_read_endpoint.data = data;
+	command.stream_read_endpoint.length = length;
+	command.stream_read_endpoint.timeout = timeout;
+
+	if (ioctl(fRawFD, B_USB_RAW_COMMAND_ISOCHRONOUS_STREAM_READ_ENDPOINT,
+			&command, sizeof(command)) == 0) {
+		switch (command.stream_read_endpoint.status) {
+			case B_USB_RAW_STATUS_SUCCESS:
+				return command.stream_read_endpoint.length;
+			case B_USB_RAW_STATUS_TIMEOUT:
+				return B_TIMED_OUT;
+			default:
+				return B_DEV_NOT_READY;
+		}
+	}
+	if (errno != B_DEV_INVALID_IOCTL)
+		return errno;
+
+	command.stream_read.data = data;
+	command.stream_read.length = length;
+	command.stream_read.timeout = timeout;
+
+	if (ioctl(fRawFD, B_USB_RAW_COMMAND_ISOCHRONOUS_STREAM_READ, &command,
+			sizeof(command)) != 0) {
+		return errno;
+	}
+
+	switch (command.stream_read.status) {
+		case B_USB_RAW_STATUS_SUCCESS:
+			return command.stream_read.length;
+		case B_USB_RAW_STATUS_TIMEOUT:
+			return B_TIMED_OUT;
+		default:
+			return B_DEV_NOT_READY;
+	}
+}
+
+
+status_t
+BUSBEndpoint::StopIsochronousStream() const
+{
+	usb_raw_command command;
+	command.stream_stop_endpoint.interface = fInterface->Index();
+	command.stream_stop_endpoint.endpoint = fIndex;
+	if (ioctl(fRawFD, B_USB_RAW_COMMAND_ISOCHRONOUS_STREAM_STOP_ENDPOINT,
+			&command, sizeof(command)) == 0) {
+		return B_OK;
+	}
+	if (errno != B_DEV_INVALID_IOCTL)
+		return errno;
+
+	if (ioctl(fRawFD, B_USB_RAW_COMMAND_ISOCHRONOUS_STREAM_STOP, &command,
+			sizeof(command)) != 0) {
+		return errno;
+	}
+
+	return B_OK;
 }
 
 
