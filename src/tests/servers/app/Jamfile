@@ -269,6 +269,7 @@ SubInclude HAIKU_TOP src tests servers app lock_focus ;
 SubInclude HAIKU_TOP src tests servers app look_and_feel ;
 SubInclude HAIKU_TOP src tests servers app menu_crash ;
 SubInclude HAIKU_TOP src tests servers app no_pointer_history ;
+SubInclude HAIKU_TOP src tests servers app offscreen_event_target ;
 SubInclude HAIKU_TOP src tests servers app painter ;
 SubInclude HAIKU_TOP src tests servers app playground ;
 SubInclude HAIKU_TOP src tests servers app pulsed_drawing ;
