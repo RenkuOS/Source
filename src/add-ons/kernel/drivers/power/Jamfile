@@ -10,3 +10,4 @@ SubInclude HAIKU_TOP src add-ons kernel drivers power axp288 ;
 SubInclude HAIKU_TOP src add-ons kernel drivers power intel_energy ;
 SubInclude HAIKU_TOP src add-ons kernel drivers power jh7110_thermal ;
 SubInclude HAIKU_TOP src add-ons kernel drivers power pch_thermal ;
+SubInclude HAIKU_TOP src add-ons kernel drivers power sony_snc ;
