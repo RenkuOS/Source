@@ -182,6 +182,8 @@ virtual	uint32						Type() const
 
 virtual	bool						IsConnected();
 
+virtual	uint32						MaxPixelClock();
+
 protected:
 virtual addr_t						_PortRegister();
 };

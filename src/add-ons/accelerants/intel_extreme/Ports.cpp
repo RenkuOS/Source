@@ -26,6 +26,7 @@
 #include "FlexibleDisplayInterface.h"
 #include "PanelFitter.h"
 #include "TigerLakePLL.h"
+#include "ValleyViewPLL.h"
 
 #include <new>
 
@@ -1560,18 +1561,27 @@ DigitalPort::SetDisplayMode(display_mode* target, uint32 colorMode)
 		link->Train(&target->timing, lanes);
 	}
 
-	pll_divisors divisors;
-	compute_pll_divisors(&target->timing, &divisors, false);
-
-	uint32 extraPLLFlags = 0;
-	if (gInfo->shared_info->device_type.Generation() >= 3)
-		extraPLLFlags |= DISPLAY_PLL_MODE_NORMAL | DISPLAY_PLL_2X_CLOCK;
-
 	// Program general pipe config
 	fPipe->Configure(target);
 
-	// Program pipe PLL's
-	fPipe->ConfigureClocks(divisors, target->timing.pixel_clock, extraPLLFlags);
+	if (gInfo->shared_info->device_type.InGroup(INTEL_GROUP_VLV)) {
+		// The Valleyview PLL and PHY sit behind the DPIO sideband.
+		status_t status = vlv_set_hdmi_clock(fPipe->Index(), PortIndex(),
+			_PortRegister(), target->timing.pixel_clock);
+		if (status != B_OK)
+			return status;
+	} else {
+		pll_divisors divisors;
+		compute_pll_divisors(&target->timing, &divisors, false);
+
+		uint32 extraPLLFlags = 0;
+		if (gInfo->shared_info->device_type.Generation() >= 3)
+			extraPLLFlags |= DISPLAY_PLL_MODE_NORMAL | DISPLAY_PLL_2X_CLOCK;
+
+		// Program pipe PLL's
+		fPipe->ConfigureClocks(divisors, target->timing.pixel_clock,
+			extraPLLFlags);
+	}
 
 	// Program target display mode
 	fPipe->ConfigureTimings(target);
@@ -1632,6 +1642,15 @@ HDMIPort::IsConnected()
 		return false;
 
 	return HasEDID();
+}
+
+
+uint32
+HDMIPort::MaxPixelClock()
+{
+	if (gInfo->shared_info->device_type.InGroup(INTEL_GROUP_VLV))
+		return VLV_HDMI_MAX_PIXEL_CLOCK;
+	return 0;
 }
 
 
