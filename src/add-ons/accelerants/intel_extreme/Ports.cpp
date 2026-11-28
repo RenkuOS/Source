@@ -1560,18 +1560,25 @@ DigitalPort::SetDisplayMode(display_mode* target, uint32 colorMode)
 		link->Train(&target->timing, lanes);
 	}
 
-	pll_divisors divisors;
-	compute_pll_divisors(&target->timing, &divisors, false);
-
-	uint32 extraPLLFlags = 0;
-	if (gInfo->shared_info->device_type.Generation() >= 3)
-		extraPLLFlags |= DISPLAY_PLL_MODE_NORMAL | DISPLAY_PLL_2X_CLOCK;
-
 	// Program general pipe config
 	fPipe->Configure(target);
 
-	// Program pipe PLL's
-	fPipe->ConfigureClocks(divisors, target->timing.pixel_clock, extraPLLFlags);
+	// shortcut: there is no Valleyview DPLL programming (it sits behind the
+	// DPIO sideband), so keep the clock the firmware set up; the mode list
+	// only offers the firmware's mode there (create_mode_list()). Upgrade
+	// once compute_pll_divisors() handles Valleyview.
+	if (!gInfo->shared_info->device_type.InGroup(INTEL_GROUP_VLV)) {
+		pll_divisors divisors;
+		compute_pll_divisors(&target->timing, &divisors, false);
+
+		uint32 extraPLLFlags = 0;
+		if (gInfo->shared_info->device_type.Generation() >= 3)
+			extraPLLFlags |= DISPLAY_PLL_MODE_NORMAL | DISPLAY_PLL_2X_CLOCK;
+
+		// Program pipe PLL's
+		fPipe->ConfigureClocks(divisors, target->timing.pixel_clock,
+			extraPLLFlags);
+	}
 
 	// Program target display mode
 	fPipe->ConfigureTimings(target);
