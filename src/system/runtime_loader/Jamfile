@@ -29,6 +29,13 @@ for architectureObject in [ MultiArchSubDirSetup ] {
 			USING_LIBGCC=1
 		;
 
+		# arm64 gets memmove from libruntime_loader_arm64.a instead.
+		local memmoveObject
+			= <src!system!libroot!posix!musl!string!$(architecture)>memmove.o ;
+		if $(TARGET_ARCH) = arm64 {
+			memmoveObject = ;
+		}
+
 		AddResources [ MultiArchDefaultGristFiles runtime_loader ]
 			: runtime_loader.rdef ;
 
@@ -53,7 +60,7 @@ for architectureObject in [ MultiArchSubDirSetup ] {
 			<src!system!libroot!posix!locale!$(architecture)>LocaleData.o
 
 			<src!system!libroot!posix!musl!string!$(architecture)>memchr.o
-			<src!system!libroot!posix!musl!string!$(architecture)>memmove.o
+			$(memmoveObject)
 			<src!system!libroot!posix!musl!string!$(architecture)>stpcpy.o
 			<src!system!libroot!posix!musl!string!$(architecture)>strcat.o
 			<src!system!libroot!posix!musl!string!$(architecture)>strchr.o

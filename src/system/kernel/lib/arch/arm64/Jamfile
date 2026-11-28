@@ -18,7 +18,6 @@ KernelMergeObject kernel_os_arch_$(TARGET_ARCH).o :
 ;
 
 SEARCH_SOURCE += [ FDirName $(posixSources) arch $(TARGET_ARCH) ] ;
-SEARCH_SOURCE += [ FDirName $(posixSources) string arch generic ] ;
 SEARCH_SOURCE += [ FDirName $(posixSources) string arch $(TARGET_ARCH) ] ;
 
 KernelMergeObject kernel_lib_posix_arch_$(TARGET_ARCH).o :
@@ -27,8 +26,8 @@ KernelMergeObject kernel_lib_posix_arch_$(TARGET_ARCH).o :
 	kernel_longjmp_return.c
 	kernel_setjmp_save_sigs.c
 
-	generic_memset.c
-	generic_memcpy.c
+	memcpy.S
+	memset.S
 
 	: $(TARGET_KERNEL_PIC_CCFLAGS)
 ;

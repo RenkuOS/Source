@@ -59,9 +59,12 @@ remap_frame_buffer(framebuffer_info& info, addr_t physicalBase, uint32 width,
 	addr_t base = physicalBase;
 	size_t size = bytesPerRow * height;
 
+	// Write combining from the start: the kernel console uses memmove() and
+	// memset() on it as soon as frame_buffer_update() returns, and those
+	// fault on arm64 Device memory (B_UNCACHED_MEMORY).
 	area_id area = map_physical_memory("framebuffer buffer", base,
-		size, B_ANY_KERNEL_ADDRESS, B_READ_AREA | B_WRITE_AREA,
-		(void**)&frameBuffer);
+		size, B_ANY_KERNEL_ADDRESS | B_WRITE_COMBINING_MEMORY,
+		B_READ_AREA | B_WRITE_AREA, (void**)&frameBuffer);
 	if (area < 0)
 		return area;
 
