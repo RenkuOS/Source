@@ -14,7 +14,9 @@ class AHCIController {
 public:
 							AHCIController(device_node *node,
 								pci_device_module_info *pciModule,
-								pci_device *pciDevice);
+								pci_device *pciDevice,
+								phys_addr_t regsAddress, size_t regsSize,
+								uint32 irq);
 							~AHCIController();
 
 			status_t		Init();
@@ -30,6 +32,7 @@ public:
 			device_node *	DeviceNode() { return fNode; }
 
 private:
+			status_t		InitPCI(phys_addr_t *_address, size_t *_size);
 			bool			IsDevicePresent(uint device);
 			status_t		ResetController();
 			void			FlushPostedWrites();
@@ -46,6 +49,8 @@ private:
 	uint16					fPCIDeviceID;
 	uint32					fFlags;
 
+	phys_addr_t				fRegsAddress;
+	size_t					fRegsSize;
 	volatile ahci_hba *		fRegs;
 	area_id					fRegsArea;
 	int						fCommandSlotCount;

@@ -2,6 +2,8 @@ SubDir HAIKU_TOP src add-ons kernel busses scsi ahci ;
 
 UsePrivateHeaders drivers ;
 UsePrivateKernelHeaders ;
+SubDirHdrs $(HAIKU_TOP) src add-ons kernel bus_managers acpi acpica include ;
+SubDirHdrs $(HAIKU_TOP) src add-ons kernel bus_managers acpi acpica include platform ;
 UseHeaders
 	[ FDirName $(HAIKU_TOP) src add-ons kernel bus_managers ata ] : true ;
 
