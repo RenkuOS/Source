@@ -597,8 +597,13 @@ EHCI::EHCI(pci_info *info, pci_device_module_info* pci, pci_device* device, Stac
 	}
 
 	// Create the isochronous finisher service thread
+	// Above the real-time threads of media applications (audio runs at up
+	// to 115, MIDI at 120), as xHCI's finisher: this thread runs the
+	// completions that queue the next isochronous transfers (streams
+	// requeue from their callback), and while it waits the endpoint has
+	// holes of several milliseconds that a camera fills with lost data.
 	fFinishIsochronousThread = spawn_kernel_thread(FinishIsochronousThread,
-		"ehci isochronous finish thread", B_URGENT_DISPLAY_PRIORITY,
+		"ehci isochronous finish thread", B_URGENT_PRIORITY - 1,
 		(void *)this);
 	resume_thread(fFinishIsochronousThread);
 
@@ -1320,32 +1325,59 @@ EHCI::SubmitIsochronous(Transfer *transfer)
 
 		// Chain off THIS pipe's previous transfer, not a controller-global
 		// anchor: see the iso_anchor comment in the header.
-		int32 anchor = GetIsoAnchor(pipe);
-		if (fFirstIsochronousTransfer != NULL && anchor != -1)
-			currentFrame = anchor;
-		else {
-			uint32 threshold = fThreshold;
-			TRACE("threshold: %" B_PRIu32 "\n", threshold);
+		//
+		// The frame a new transfer would start at: one frame more than the
+		// threshold, because the descriptors are linked after this read,
+		// and a controller that caches a whole frame (IST) had often fetched
+		// the first one's frame already, so its first packet never ran (a
+		// fifth of a microphone's transactions on an AC100, whose transfers
+		// are four packets).
+		uint32 frameIndex = ReadOpReg(EHCI_FRINDEX);
+		uint32 now = (frameIndex / 8) & (EHCI_FRAMELIST_ENTRIES_COUNT - 1);
+		uint32 firstFree = ((frameIndex + fThreshold) / 8 + 1)
+			& (EHCI_FRAMELIST_ENTRIES_COUNT - 1);
+		TRACE("threshold: %" B_PRIu32 "\n", fThreshold);
 
-			// find the first available frame with enough bandwidth.
-			// This should always be the case, as defining the starting frame
-			// number in the driver makes no sense for many reason, one of which
-			// is that frame numbers value are host controller specific, and the
-			// driver does not know which host controller is running.
-			currentFrame = ((ReadOpReg(EHCI_FRINDEX) + threshold) / 8)
+		int32 anchor = GetIsoAnchor(pipe);
+		if (anchor != -1 && fFirstIsochronousTransfer != NULL) {
+			// The anchor must not be before the frame a new transfer would
+			// start at. A transfer queued after its predecessor's last frame
+			// had passed was linked into frames the controller had left: its
+			// first descriptors stayed active, were not seen by the
+			// finisher, which only looks a few frames back, and ran a whole
+			// frame list later into the buffer of a transfer that was long
+			// finished.
+			// Frames are counted modulo the whole frame list, so a transfer
+			// queued up to a virtual frame list ahead (128 ms; a sound card
+			// keeps about 100 ms queued) is not mistaken for one whose
+			// frames have passed.
+			uint32 ahead = ((uint32)anchor - now)
 				& (EHCI_FRAMELIST_ENTRIES_COUNT - 1);
+			uint32 margin = (firstFree - now)
+				& (EHCI_FRAMELIST_ENTRIES_COUNT - 1);
+			if (ahead < margin || ahead >= EHCI_VFRAMELIST_ENTRIES_COUNT)
+				anchor = -1;
 		}
 
-		// Make sure that:
-		// 1. We are at least 5ms ahead the controller
-		// 2. We stay in the range 0-127
-		// 3. There is enough bandwidth in the first entry
-		currentFrame &= EHCI_VFRAMELIST_ENTRIES_COUNT - 1;
+		// find the first available frame with enough bandwidth.
+		// This should always be the case, as defining the starting frame
+		// number in the driver makes no sense for many reason, one of which
+		// is that frame numbers value are host controller specific, and the
+		// driver does not know which host controller is running.
+		if (fFirstIsochronousTransfer != NULL && anchor != -1)
+			currentFrame = anchor;
+		else
+			currentFrame = firstFree;
 	} else {
 		// Find out if the frame number specified has enough bandwidth,
 		// otherwise find the first next available frame with enough bandwidth
-		currentFrame = *isochronousData->starting_frame_number;
+		currentFrame = *isochronousData->starting_frame_number
+			& (EHCI_FRAMELIST_ENTRIES_COUNT - 1);
 	}
+
+	// currentFrame counts frames modulo the whole frame list, so the anchor
+	// it leaves tells which turn of the controller the transfer belongs to;
+	// only the virtual frame list's tables are indexed modulo their size.
 
 	TRACE("isochronous starting frame=%d\n", currentFrame);
 
@@ -1468,12 +1500,14 @@ EHCI::SubmitIsochronous(Transfer *transfer)
 
 		if (!LockIsochronous())
 			continue;
-		itd->frame = currentFrame;
-		LinkITDescriptors(itd, &fItdEntries[currentFrame]);
+		uint16 virtualFrame
+			= currentFrame & (EHCI_VFRAMELIST_ENTRIES_COUNT - 1);
+		itd->frame = virtualFrame;
+		LinkITDescriptors(itd, &fItdEntries[virtualFrame]);
 		UnlockIsochronous();
-		fFrameBandwidth[currentFrame] -= bandwidth;
+		fFrameBandwidth[virtualFrame] -= bandwidth;
 		currentFrame = (currentFrame + frameStride)
-			& (EHCI_VFRAMELIST_ENTRIES_COUNT - 1);
+			& (EHCI_FRAMELIST_ENTRIES_COUNT - 1);
 		frameCount++;
 	}
 
@@ -3401,6 +3435,9 @@ EHCI::GetIsoAnchor(Pipe *pipe)
 void
 EHCI::SetIsoAnchor(Pipe *pipe, int32 frame)
 {
+	// The frame counts modulo the whole frame list (see SubmitIsochronous()).
+	frame &= EHCI_FRAMELIST_ENTRIES_COUNT - 1;
+
 	int free = -1;
 	for (int i = 0; i < kIsoAnchorCount; i++) {
 		if (fIsoAnchors[i].pipe == pipe) {
