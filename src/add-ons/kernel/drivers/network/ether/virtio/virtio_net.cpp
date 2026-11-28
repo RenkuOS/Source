@@ -256,8 +256,14 @@ virtio_net_ctrl_exec_cmd(virtio_net_driver_info* info, int cmd, bool value)
 	if (status != B_OK)
 		return status;
 
-	while (!info->virtio->queue_dequeue(info->ctrlQueue, NULL, NULL))
+	// Give up if the host never completes the control command.
+	// A stuck control queue otherwise spins forever and kills the link.
+	bigtime_t deadline = system_time() + 100000;	// 100 ms
+	while (!info->virtio->queue_dequeue(info->ctrlQueue, NULL, NULL)) {
+		if (system_time() > deadline)
+			return B_TIMED_OUT;
 		spin(10);
+	}
 
 	return s.ack == VIRTIO_NET_OK ? B_OK : B_IO_ERROR;
 }
