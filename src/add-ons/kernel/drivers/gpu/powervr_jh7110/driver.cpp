@@ -27,6 +27,7 @@
 #include <team.h>
 #include <util/AutoLock.h>
 #include <util/DoublyLinkedList.h>
+#include <util/iovec_support.h>
 #include <vm/vm.h>
 
 #include <powervr_jh7110.h>
@@ -45,6 +46,9 @@ extern "C" {
 	// a compute job takes 184 bytes of the 32 KB client CCB; the CCB space
 	// check of the submit catches the larger render and transfer commands
 #define MAX_SUBMIT_JOBS		8
+#define UNCACHED_DDR_ALIAS	0x400000000ULL
+	// JH7110 TRM table 2-4: the DDR seen through the system port, past the
+	// L2 cache (the display controller reads the frame buffer there)
 #define MAX_STREAM_SIZE		4096
 #define MAX_STATIC_STATE_SIZE	1024
 #define RENDER_JOB_RING		256
@@ -200,6 +204,7 @@ static inline bool
 needs_sync(Buffer* buffer)
 {
 	return buffer->mappingCount > 0
+		&& (buffer->flags & POWERVR_BUFFER_UNCACHED) == 0
 		&& ((buffer->flags & POWERVR_BUFFER_SYNC_WHEN_MAPPED) == 0
 			|| buffer->cpuAccessCount > 0);
 }
@@ -247,7 +252,8 @@ create_buffer(Client* client, uint64 size, uint32 flags, Buffer** _buffer,
 	void** _address)
 {
 	if (size == 0 || size > 512 * 1024 * 1024
-		|| (flags & ~POWERVR_BUFFER_SYNC_WHEN_MAPPED) != 0) {
+		|| (flags & ~(POWERVR_BUFFER_SYNC_WHEN_MAPPED
+			| POWERVR_BUFFER_UNCACHED)) != 0) {
 		return B_BAD_VALUE;
 	}
 	size = ROUNDUP(size, B_PAGE_SIZE);
@@ -289,9 +295,29 @@ create_buffer(Client* client, uint64 size, uint32 flags, Buffer** _buffer,
 	sync_buffer(buffer);
 
 	buffer->team = team_get_current_team_id();
-	buffer->userArea = vm_clone_area(buffer->team, "powervr buffer",
-		_address, B_ANY_ADDRESS, B_READ_AREA | B_WRITE_AREA,
-		REGION_NO_PRIVATE_MAP, buffer->kernelArea, true);
+	if ((flags & POWERVR_BUFFER_UNCACHED) != 0) {
+		// the same pages through the uncached port
+		generic_io_vec* vecs = (generic_io_vec*)malloc(
+			runCount * sizeof(generic_io_vec));
+		if (vecs == NULL) {
+			free(buffer->runs);
+			delete_area(buffer->kernelArea);
+			return B_NO_MEMORY;
+		}
+		for (uint32 i = 0; i < runCount; i++) {
+			vecs[i].base = buffer->runs[i].address + UNCACHED_DDR_ALIAS;
+			vecs[i].length = buffer->runs[i].size;
+		}
+		addr_t mappedSize = size;
+		buffer->userArea = vm_map_physical_memory_vecs(buffer->team,
+			"powervr buffer", _address, B_ANY_ADDRESS, &mappedSize,
+			B_READ_AREA | B_WRITE_AREA, vecs, runCount);
+		free(vecs);
+	} else {
+		buffer->userArea = vm_clone_area(buffer->team, "powervr buffer",
+			_address, B_ANY_ADDRESS, B_READ_AREA | B_WRITE_AREA,
+			REGION_NO_PRIVATE_MAP, buffer->kernelArea, true);
+	}
 	if (buffer->userArea < 0) {
 		status = buffer->userArea;
 		free(buffer->runs);
@@ -1529,9 +1555,15 @@ powervr_control(void* cookie, uint32 op, void* buffer, size_t length)
 			MutexLocker locker(sDevice->LockObject());
 			Buffer* found = find_buffer(client, request.handle);
 			if (found == NULL
-				|| (found->flags & POWERVR_BUFFER_SYNC_WHEN_MAPPED) == 0
+				|| (found->flags & (POWERVR_BUFFER_SYNC_WHEN_MAPPED
+					| POWERVR_BUFFER_UNCACHED)) == 0
 				|| (request.access == 0 && found->cpuAccessCount == 0)) {
 				return B_BAD_VALUE;
+			}
+			if ((found->flags & POWERVR_BUFFER_UNCACHED) != 0) {
+				// nothing in the caches to keep in step
+				found->cpuAccessCount += request.access != 0 ? 1 : -1;
+				return B_OK;
 			}
 			// The first and the last access sync the buffer: stale lines go
 			// before the CPU reads what the GPU wrote, and what the CPU

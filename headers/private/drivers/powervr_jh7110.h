@@ -68,6 +68,9 @@ struct powervr_info {
 	// the caches are only kept in step with the GPU while the client says
 	// it accesses the buffer with the CPU (POWERVR_SET_BUFFER_CPU_ACCESS);
 	// without it, every mapped buffer is synced around every job
+#define POWERVR_BUFFER_UNCACHED			0x02
+	// the clone in the caller's team bypasses the CPU caches (the uncached
+	// port of the DDR): never synced, fast for the CPU to write, slow to read
 
 struct powervr_create_buffer {
 	uint64		size;				// rounded up to pages
