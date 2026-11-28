@@ -1703,6 +1703,34 @@ BPlusTree::_SplitNode(bplustree_node* node, off_t nodeOffset,
 }
 
 
+/*!	Returns whether a key of \a keyLength may go into this tree.
+	A tree of a fixed-size type compares every key as a whole value of that
+	type (QueryParser::compareKeys()). A shorter key would be compared using
+	bytes that are not its own: it would sort in the wrong place and could
+	not be found again. Longer keys compare by their start, as they always
+	have, so they stay allowed.
+*/
+bool
+BPlusTree::_IsValidKeyLength(uint16 keyLength) const
+{
+	if (keyLength < BPLUSTREE_MIN_KEY_LENGTH
+		|| keyLength > BPLUSTREE_MAX_KEY_LENGTH)
+		return false;
+
+	switch (fHeader.DataType()) {
+		case BPLUSTREE_INT32_TYPE:
+		case BPLUSTREE_UINT32_TYPE:
+		case BPLUSTREE_FLOAT_TYPE:
+			return keyLength >= sizeof(int32);
+		case BPLUSTREE_INT64_TYPE:
+		case BPLUSTREE_UINT64_TYPE:
+		case BPLUSTREE_DOUBLE_TYPE:
+			return keyLength >= sizeof(int64);
+	}
+	return true;
+}
+
+
 /*!	This inserts a key into the tree. The changes made to the tree will
 	all be part of the \a transaction.
 	You need to have the inode write locked.
@@ -1711,8 +1739,7 @@ status_t
 BPlusTree::Insert(Transaction& transaction, const uint8* key, uint16 keyLength,
 	off_t value)
 {
-	if (keyLength < BPLUSTREE_MIN_KEY_LENGTH
-		|| keyLength > BPLUSTREE_MAX_KEY_LENGTH)
+	if (!_IsValidKeyLength(keyLength))
 		RETURN_ERROR(B_BAD_VALUE);
 #ifdef DEBUG
 	if (value < 0)
@@ -2131,8 +2158,7 @@ status_t
 BPlusTree::Remove(Transaction& transaction, const uint8* key, uint16 keyLength,
 	off_t value)
 {
-	if (keyLength < BPLUSTREE_MIN_KEY_LENGTH
-		|| keyLength > BPLUSTREE_MAX_KEY_LENGTH)
+	if (!_IsValidKeyLength(keyLength))
 		RETURN_ERROR(B_BAD_VALUE);
 
 	ASSERT_WRITE_LOCKED_INODE(fStream);
@@ -2397,6 +2423,13 @@ BPlusTree::_ValidateChildren(TreeCheck& check, uint32 level, off_t offset,
 	for (uint32 i = 0; i < count; i++) {
 		uint16 keyLength;
 		uint8* key = parent->KeyAt(i, &keyLength);
+		if (!_IsValidKeyLength(keyLength)) {
+			// e.g. a short key that went in before Insert() refused them
+			dprintf("inode %" B_PRIdOFF ": node %" B_PRIdOFF " key %"
+				B_PRIu32 " has invalid length %" B_PRIu16 "!\n",
+				fStream->ID(), offset, i, keyLength);
+			check.FoundError();
+		}
 		if (largestKey != NULL) {
 			int result = _CompareKeys(key, keyLength, largestKey,
 				largestKeyLength);

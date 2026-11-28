@@ -9,8 +9,6 @@
 
 #include "Index.h"
 
-#include <file_systems/QueryParserUtils.h>
-
 #include "Debug.h"
 #include "Volume.h"
 #include "Inode.h"
@@ -231,14 +229,15 @@ Index::Update(Transaction& transaction, const char* name, int32 type,
 	if (type == B_MIME_STRING_TYPE)
 		type = B_STRING_TYPE;
 
-	// If the two keys are identical, don't do anything - only compare if the
-	// type has been set, until we have a real type code, we can't do much
-	// about the comparison here
+	// If the two keys are identical, don't do anything. They are compared
+	// as bytes: "type" is the new attribute type, not the index type, so
+	// comparing by it could call keys of different sizes or values equal
+	// and leave the old key in the tree.
 	if (oldLength == 0) {
 		if (newLength == 0)
 			return B_OK;
-	} else if (newLength != 0 && !QueryParser::compareKeys(type,
-			oldKey, oldLength, newKey, newLength)) {
+	} else if (newLength == oldLength
+		&& memcmp(oldKey, newKey, oldLength) == 0) {
 		return B_OK;
 	}
 
@@ -268,6 +267,9 @@ Index::Update(Transaction& transaction, const char* name, int32 type,
 		if (status == B_ENTRY_NOT_FOUND) {
 			// That's not nice, but no reason to let the whole thing fail
 			INFORM(("Could not find value in index \"%s\"!\n", name));
+		} else if (status == B_BAD_VALUE) {
+			// Too short for this index: the tree never took it (see
+			// BPlusTree::_IsValidKeyLength()), and the new key still goes in
 		} else if (status != B_OK)
 			return status;
 	}
