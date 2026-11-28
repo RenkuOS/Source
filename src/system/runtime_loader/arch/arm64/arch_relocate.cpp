@@ -8,6 +8,7 @@
 #include <stdlib.h>
 
 #include "arch_elf.h"
+#include "elf_tls.h"
 #include "runtime_loader_private.h"
 
 #include <runtime_loader.h>
@@ -19,6 +20,25 @@
 #else
 #	define TRACE(x) ;
 #endif
+
+
+// TLS descriptor resolvers, in arch_tlsdesc.S
+extern "C" void __arch_tlsdesc_dynamic() __attribute__((visibility("hidden")));
+extern "C" void __arch_tlsdesc_undefined_weak()
+	__attribute__((visibility("hidden")));
+
+
+/*!	Called by __arch_tlsdesc_dynamic() with the descriptor's argument: the
+	module (DSO) in its high and the offset into the module's TLS block in its
+	low 32 bits.
+	Packing both into the descriptor, which is in the image's GOT, means there
+	is nothing to allocate or free with the image.
+*/
+extern "C" __attribute__((visibility("hidden"))) void*
+__arch_tlsdesc_get_address(uint64 argument)
+{
+	return get_tls_address(argument >> 32, (uint32)argument);
+}
 
 
 static status_t
@@ -69,6 +89,29 @@ relocate_rela(image_t* rootImage, image_t* image, Elf64_Rela* rel,
 			case R_AARCH64_TLS_DTPREL64:
 				relocValue = symAddr;
 				break;
+			case R_AARCH64_TLSDESC:
+			{
+				// There is no static TLS, so the variable's address is always
+				// looked up in the thread's dynamic thread vector.
+				Elf64_Addr* descriptor = (Elf64_Addr*)relocAddr;
+				if (symIndex != 0 && symbolImage == NULL) {
+					descriptor[0] = (Elf64_Addr)__arch_tlsdesc_undefined_weak;
+					descriptor[1] = rel[i].r_addend;
+					continue;
+				}
+
+				unsigned dso = symbolImage == NULL
+					? image->dso_tls_id : symbolImage->dso_tls_id;
+				Elf64_Addr offset = symAddr + rel[i].r_addend;
+				if (dso == unsigned(-1) || offset > UINT32_MAX) {
+					TRACE(("bad TLS descriptor: dso %u, offset %#lx\n", dso,
+						offset));
+					return B_BAD_DATA;
+				}
+				descriptor[0] = (Elf64_Addr)__arch_tlsdesc_dynamic;
+				descriptor[1] = (Elf64_Addr)dso << 32 | offset;
+				continue;
+			}
 			default:
 				TRACE(("unhandled relocation type %d\n", type));
 				return B_BAD_DATA;
