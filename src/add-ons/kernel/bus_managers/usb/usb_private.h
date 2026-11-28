@@ -702,6 +702,7 @@ private:
 		uint8							fPowerCycleAttempts[USB_MAX_PORT_COUNT];
 		bigtime_t						fIgnoredUntil[USB_MAX_PORT_COUNT];
 		uint8							fRearmCount[USB_MAX_PORT_COUNT];
+		uint8							fOverCurrentRepowers[USB_MAX_PORT_COUNT];
 };
 
 

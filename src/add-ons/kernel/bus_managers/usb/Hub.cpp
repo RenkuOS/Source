@@ -62,6 +62,14 @@ static const uint8 kMaxPortPowerCycleAttempts = 2;
 static const bigtime_t kPortIgnoreCooldown = 5000000;
 static const uint8 kMaxPortRearms = 3;
 
+// After an over-current, the hub (or the xHCI root port) switches the port
+// power off and leaves it off. Once the condition is gone, the port is
+// powered again after a cool down, as Linux's hub_event() does; a port that
+// keeps tripping stays off after kMaxOverCurrentRepowers attempts, until a
+// device is disconnected from it.
+static const bigtime_t kOverCurrentCoolDown = 100000;
+static const uint8 kMaxOverCurrentRepowers = 3;
+
 
 Hub::Hub(Object *parent, int8 hubAddress, uint8 hubPort,
 	usb_device_descriptor &desc, int8 deviceAddress, usb_speed speed,
@@ -79,6 +87,7 @@ Hub::Hub(Object *parent, int8 hubAddress, uint8 hubPort,
 		fPowerCycleAttempts[i] = 0;
 		fIgnoredUntil[i] = 0;
 		fRearmCount[i] = 0;
+		fOverCurrentRepowers[i] = 0;
 	}
 
 	if (!fInitOK) {
@@ -560,6 +569,7 @@ Hub::Explore(change_item **changeList)
 				fFailedAttempts[i] = 0;
 				fPowerCycleAttempts[i] = 0;
 				fRearmCount[i] = 0;
+				fOverCurrentRepowers[i] = 0;
 			}
 		}
 
@@ -586,6 +596,24 @@ Hub::Explore(change_item **changeList)
 			DefaultPipe()->SendRequest(USB_REQTYPE_CLASS | USB_REQTYPE_OTHER_OUT,
 				USB_REQUEST_CLEAR_FEATURE, C_PORT_OVER_CURRENT, i + 1,
 				0, NULL, 0, NULL);
+
+			uint16 status = fPortStatus[i].status;
+			if ((status & PORT_STATUS_OVER_CURRENT) == 0
+				&& (status & (PORT_STATUS_POWER | PORT_STATUS_SS_POWER)) == 0
+				&& fOverCurrentRepowers[i] < kMaxOverCurrentRepowers) {
+				fOverCurrentRepowers[i]++;
+				snooze(kOverCurrentCoolDown);
+				status_t result = DefaultPipe()->SendRequest(
+					USB_REQTYPE_CLASS | USB_REQTYPE_OTHER_OUT,
+					USB_REQUEST_SET_FEATURE, PORT_POWER, i + 1, 0, NULL, 0,
+					NULL);
+				TRACE_ALWAYS("port %" B_PRId32 " powered again after the "
+					"over-current (%u of %u): %s\n", i,
+					fOverCurrentRepowers[i], kMaxOverCurrentRepowers,
+					strerror(result));
+				if (result == B_OK)
+					snooze(USB_DELAY_HUB_POWER_UP);
+			}
 		}
 
 		if (fPortStatus[i].change & PORT_STATUS_RESET) {
