@@ -24,11 +24,14 @@ KernelAddon powervr_jh7110 :
 	pvr_context.cpp
 	pvr_fwif_init.cpp
 	pvr_mmu.cpp
+	pvr_render.cpp
+	pvr_stream.cpp
 
 	$(libFDTSources)
 ;
 
-SEARCH on [ FGristFiles pvr_context.cpp pvr_fwif_init.cpp pvr_mmu.cpp ]
+SEARCH on [ FGristFiles pvr_context.cpp pvr_fwif_init.cpp pvr_mmu.cpp
+		pvr_render.cpp pvr_stream.cpp ]
 	= [ FDirName $(SUBDIR) rogue ] ;
 SEARCH on [ FGristFiles $(libFDTSources) ]
 	= [ FDirName $(HAIKU_TOP) src libs libfdt ] ;

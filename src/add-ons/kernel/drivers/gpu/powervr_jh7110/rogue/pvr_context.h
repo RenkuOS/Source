@@ -261,6 +261,8 @@ status_t pvr_kccb_wait_for_completion(const pvr_ctx_env& env,
 	senders, so a true result stays valid until it sends.
 */
 bool pvr_kccb_slot_available(const pvr_ctx_env& env, pvr_fwif_state* fwif);
+/*!	Number of commands that can be sent to the KCCB now. */
+uint32 pvr_kccb_free_slots(const pvr_ctx_env& env, pvr_fwif_state* fwif);
 
 
 //	#pragma mark - FW objects (pvr_gem.c, pvr_fw.c)
@@ -355,7 +357,10 @@ uint32 pvr_cccb_cmd_size(uint32 size);
 */
 bool pvr_cccb_cmdseq_fits(const pvr_ctx_env& env, pvr_gpu_context* context,
 	uint32 size);
-/*!	pvr_cccb_cmdseq_can_fit(): whether it fits in an empty CCCB at all. */
+/*!	pvr_cccb_cmdseq_can_fit(): whether the sequence is at most half the
+	CCCB (padding command included), the limit Linux puts on one job so it
+	can always be queued eventually.
+*/
 bool pvr_cccb_cmdseq_can_fit(const pvr_gpu_context* context, uint32 size);
 
 /*!	pvr_cccb_send_kccb_kick(): syncs the CCCB and sends

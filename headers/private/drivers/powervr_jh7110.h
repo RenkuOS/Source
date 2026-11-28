@@ -139,7 +139,9 @@ struct powervr_create_hwrt_dataset {
 		uint64	macrotile_array_address;
 		uint64	region_header_address;
 	} rt_data[2];
-	int32		free_lists[2];		// POWERVR_HWRT_FREE_LIST_*
+	int32		free_lists[2];		// POWERVR_HWRT_FREE_LIST_*, both
+									// required (the render target's and
+									// the global one it grows from)
 	uint32		width;
 	uint32		height;
 	uint32		samples;

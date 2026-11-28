@@ -191,8 +191,8 @@ pvr_kccb_send_cmd(const pvr_ctx_env& env, pvr_fwif_state* fwif,
 }
 
 
-bool
-pvr_kccb_slot_available(const pvr_ctx_env& env, pvr_fwif_state* fwif)
+uint32
+pvr_kccb_free_slots(const pvr_ctx_env& env, pvr_fwif_state* fwif)
 {
 	pvr_fwif_ccb& kccb = fwif->kccb;
 	volatile rogue_fwif_ccb_ctl* vctrl = kccb.ctrl;
@@ -200,8 +200,15 @@ pvr_kccb_slot_available(const pvr_ctx_env& env, pvr_fwif_state* fwif)
 	env.sync(env.cookie,
 		kccb.ctrl_phys + offsetof(rogue_fwif_ccb_ctl, read_offset),
 		CACHE_LINE);
-	uint32 newWriteOffset = (vctrl->write_offset + 1) & vctrl->wrap_mask;
-	return newWriteOffset != vctrl->read_offset;
+	// one slot always stays empty (write + 1 == read means full)
+	return (vctrl->read_offset - vctrl->write_offset - 1) & vctrl->wrap_mask;
+}
+
+
+bool
+pvr_kccb_slot_available(const pvr_ctx_env& env, pvr_fwif_state* fwif)
+{
+	return pvr_kccb_free_slots(env, fwif) > 0;
 }
 
 
@@ -615,9 +622,10 @@ pvr_cccb_cmdseq_fits(const pvr_ctx_env& env, pvr_gpu_context* context,
 bool
 pvr_cccb_cmdseq_can_fit(const pvr_gpu_context* context, uint32 size)
 {
-	// pvr_cccb_cmdseq_can_fit(): the CCCB size minus the padding command
-	// (an empty CCCB holds cccb_size - 1 bytes, see get_ccb_space())
-	return (uint64)size + PADDING_COMMAND_SIZE <= context->cccb_size - 1;
+	// pvr_cccb_cmdseq_can_fit(): half the capacity, so that the sequence
+	// can always be queued either at the end or, after a padding command,
+	// at the beginning of the CCCB
+	return (uint64)size + PADDING_COMMAND_SIZE <= context->cccb_size / 2;
 }
 
 

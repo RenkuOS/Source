@@ -17,7 +17,10 @@
  * separately and written into that block).
  *
  * The context, client CCB and compute command definitions at the end come
- * from pvr_rogue_fwif.h, pvr_rogue_fwif_shared.h and pvr_rogue_fwif_client.h.
+ * from pvr_rogue_fwif.h, pvr_rogue_fwif_shared.h and pvr_rogue_fwif_client.h,
+ * followed by the render context, free list, HWRT data, FWCCB request and
+ * geometry/fragment/transfer command definitions used by pvr_render.cpp and
+ * pvr_stream.cpp.
  */
 #ifndef PVR_ROGUE_FWIF_H
 #define PVR_ROGUE_FWIF_H

@@ -6,7 +6,9 @@
  * device information, a buffer mapped into the GPU address space, a compute
  * context, compute jobs one by one and in batches, a job whose control stream
  * is not mapped (the GPU MMU has to fault, the firmware to recover) and jobs
- * after that recovery.
+ * after that recovery. With interface version 2 it also creates and destroys
+ * the objects of rendering: free lists, HWRT data sets, render and transfer
+ * contexts, also with a client that goes away holding them.
  *
  * The jobs are the smallest the compute data master runs: a control stream
  * of one STREAM_TERMINATE word (Mesa csbgen/rogue/cdm.xml). There is no
@@ -34,7 +36,12 @@ static const uint64 kUnmappedAddress = POWERVR_GENERAL_HEAP_BASE + 0x40000000;
 static const uint32 kStreamTerminate = 0x80000000;
 	// CDMCTRL STREAM_TERMINATE: block_type 2 in bits 31:30
 
+static const uint64 kRenderAddress = POWERVR_GENERAL_HEAP_BASE + 0x1000000;
+static const uint32 kRenderBufferSize = 1024 * 1024;
+
 static int sFailures;
+static const char* sStep = "";
+	// the step of create_render_objects() that failed
 
 
 #define CHECK(condition, ...) \
@@ -131,6 +138,208 @@ print_statistics(int fd, const char* label)
 		statistics.jobs_submitted, statistics.jobs_completed,
 		statistics.interrupts, statistics.mmu_page_faults,
 		statistics.hardware_recoveries, statistics.firmware_restarts);
+}
+
+
+/*!	A render context static state as Mesa's pvr driver packs it
+	(pvr_drm_render_ctx_static_state_init()): the KMD stream header (length
+	in bytes), the VDM and geometry context state addresses and the store
+	and resume tasks of the two geometry states, all zero here.
+*/
+static uint32
+render_static_state(uint64* stream, uint64 stateAddress)
+{
+	uint32 count = 0;
+	stream[count++] = 0;
+	stream[count++] = stateAddress;
+	stream[count++] = 0;
+	stream[count++] = stateAddress + 0x1000;
+	for (int i = 0; i < 2 * 10; i++)
+		stream[count++] = 0;
+	stream[0] = count * sizeof(uint64);
+	return count * sizeof(uint64);
+}
+
+
+/*!	Creates the objects of a render in the client fd: a buffer mapped at
+	kRenderAddress holding the free list (offset 0) and the data the HWRT
+	data set points to, a free list, a data set and render and transfer
+	contexts. The handles are returned; nothing runs on the GPU.
+*/
+static status_t
+create_render_objects(int fd, int32* _buffer, int32* _globalList,
+	int32* _freeList, int32* _dataset, int32* _renderContext,
+	int32* _transferContext)
+{
+	powervr_create_buffer buffer;
+	memset(&buffer, 0, sizeof(buffer));
+	buffer.size = kRenderBufferSize;
+	sStep = "CREATE_BUFFER";
+	status_t status = control(fd, POWERVR_CREATE_BUFFER, &buffer,
+		sizeof(buffer));
+	if (status != B_OK)
+		return status;
+	*_buffer = buffer.handle;
+
+	powervr_map_buffer map;
+	memset(&map, 0, sizeof(map));
+	map.handle = buffer.handle;
+	map.device_address = kRenderAddress;
+	sStep = "MAP_BUFFER";
+	status = control(fd, POWERVR_MAP_BUFFER, &map, sizeof(map));
+	if (status != B_OK)
+		return status;
+
+	// the device wide free list a render target list grows from (Mesa's
+	// global free list)
+	powervr_create_free_list globalList;
+	memset(&globalList, 0, sizeof(globalList));
+	globalList.free_list_address = kRenderAddress + 0x4000;
+	globalList.initial_pages = 64;
+	globalList.max_pages = 256;
+	globalList.grow_pages = 32;
+	globalList.grow_threshold = 13;
+	sStep = "CREATE_FREE_LIST global";
+	status = control(fd, POWERVR_CREATE_FREE_LIST, &globalList,
+		sizeof(globalList));
+	if (status != B_OK)
+		return status;
+	*_globalList = globalList.handle;
+
+	powervr_create_free_list freeList;
+	memset(&freeList, 0, sizeof(freeList));
+	freeList.free_list_address = kRenderAddress;
+	freeList.initial_pages = 64;
+	freeList.max_pages = 256;
+	freeList.grow_pages = 32;
+	freeList.grow_threshold = 13;
+	sStep = "CREATE_FREE_LIST";
+	status = control(fd, POWERVR_CREATE_FREE_LIST, &freeList,
+		sizeof(freeList));
+	if (status != B_OK)
+		return status;
+	*_freeList = freeList.handle;
+
+	powervr_create_hwrt_dataset dataset;
+	memset(&dataset, 0, sizeof(dataset));
+	dataset.tpc_address = kRenderAddress + 0x10000;
+	dataset.tpc_size = 0x10000;
+	dataset.tpc_stride = 0x400;
+	dataset.vheap_table_address = kRenderAddress + 0x20000;
+	dataset.rtc_address = kRenderAddress + 0x30000;
+	for (int i = 0; i < 2; i++) {
+		uint64 base = kRenderAddress + 0x40000 + i * 0x20000;
+		dataset.rt_data[i].pm_mlist_address = base;
+		dataset.rt_data[i].macrotile_array_address = base + 0x8000;
+		dataset.rt_data[i].region_header_address = base + 0x10000;
+	}
+	dataset.free_lists[POWERVR_HWRT_FREE_LIST_LOCAL] = freeList.handle;
+	dataset.free_lists[POWERVR_HWRT_FREE_LIST_GLOBAL] = globalList.handle;
+	dataset.width = 256;
+	dataset.height = 256;
+	dataset.samples = 1;
+	dataset.layers = 1;
+	dataset.isp_merge_scale_x = 0x3f800000;	// 1.0f
+	dataset.isp_merge_scale_y = 0x3f800000;
+	dataset.region_header_size = 0x8000;
+	sStep = "CREATE_HWRT_DATASET";
+	status = control(fd, POWERVR_CREATE_HWRT_DATASET, &dataset,
+		sizeof(dataset));
+	if (status != B_OK)
+		return status;
+	*_dataset = dataset.handle;
+
+	uint64 staticState[32];
+	powervr_create_context context;
+	memset(&context, 0, sizeof(context));
+	context.type = POWERVR_CONTEXT_RENDER;
+	context.priority = 1;
+	context.static_state = staticState;
+	context.static_state_size = render_static_state(staticState,
+		kRenderAddress + 0x80000);
+	context.callstack_address = kRenderAddress + 0x90000;
+	sStep = "CREATE_CONTEXT render";
+	status = control(fd, POWERVR_CREATE_CONTEXT, &context, sizeof(context));
+	if (status != B_OK)
+		return status;
+	*_renderContext = context.handle;
+
+	memset(&context, 0, sizeof(context));
+	context.type = POWERVR_CONTEXT_TRANSFER;
+	context.priority = 1;
+	sStep = "CREATE_CONTEXT transfer";
+	status = control(fd, POWERVR_CREATE_CONTEXT, &context, sizeof(context));
+	if (status != B_OK)
+		return status;
+	*_transferContext = context.handle;
+	return B_OK;
+}
+
+
+static void
+test_render_objects(int cycles)
+{
+	int fd = open(POWERVR_JH7110_DEVICE, O_RDWR);
+	CHECK(fd >= 0, "second open: %s", strerror(errno));
+	if (fd < 0)
+		return;
+
+	bigtime_t start = system_time();
+	int created = 0;
+	for (int cycle = 0; cycle < cycles; cycle++) {
+		int32 buffer = -1, globalList = -1, freeList = -1, dataset = -1,
+			renderContext = -1, transferContext = -1;
+		status_t status = create_render_objects(fd, &buffer, &globalList,
+			&freeList, &dataset, &renderContext, &transferContext);
+		CHECK(status == B_OK, "render objects, cycle %d, %s: %s", cycle,
+			sStep, strerror(status));
+		if (status != B_OK)
+			break;
+
+		// in use: a free list by its data set, nothing else
+		status = control(fd, POWERVR_DELETE_FREE_LIST, &freeList,
+			sizeof(freeList));
+		CHECK(status == B_BUSY, "DELETE_FREE_LIST of a used list: %s",
+			strerror(status));
+
+		status = control(fd, POWERVR_DELETE_CONTEXT, &transferContext,
+			sizeof(transferContext));
+		CHECK(status == B_OK, "DELETE_CONTEXT transfer: %s",
+			strerror(status));
+		status = control(fd, POWERVR_DELETE_CONTEXT, &renderContext,
+			sizeof(renderContext));
+		CHECK(status == B_OK, "DELETE_CONTEXT render: %s", strerror(status));
+		status = control(fd, POWERVR_DELETE_HWRT_DATASET, &dataset,
+			sizeof(dataset));
+		CHECK(status == B_OK, "DELETE_HWRT_DATASET: %s", strerror(status));
+		status = control(fd, POWERVR_DELETE_FREE_LIST, &freeList,
+			sizeof(freeList));
+		CHECK(status == B_OK, "DELETE_FREE_LIST: %s", strerror(status));
+		status = control(fd, POWERVR_DELETE_FREE_LIST, &globalList,
+			sizeof(globalList));
+		CHECK(status == B_OK, "DELETE_FREE_LIST global: %s",
+			strerror(status));
+
+		powervr_unmap_buffer unmap;
+		unmap.device_address = kRenderAddress;
+		unmap.size = 0;
+		status = control(fd, POWERVR_UNMAP_BUFFER, &unmap, sizeof(unmap));
+		CHECK(status == B_OK, "UNMAP_BUFFER render: %s", strerror(status));
+		status = control(fd, POWERVR_DELETE_BUFFER, &buffer, sizeof(buffer));
+		CHECK(status == B_OK, "DELETE_BUFFER render: %s", strerror(status));
+		created++;
+	}
+	printf("render objects created and destroyed %d times in %" B_PRId64
+		" ms\n", created, (system_time() - start) / 1000);
+
+	// a client that goes away with all of them: the driver cleans up
+	int32 buffer, globalList, freeList, dataset, renderContext,
+		transferContext;
+	status_t status = create_render_objects(fd, &buffer, &globalList,
+		&freeList, &dataset, &renderContext, &transferContext);
+	CHECK(status == B_OK, "render objects before close, %s: %s", sStep,
+		strerror(status));
+	close(fd);
 }
 
 
@@ -381,6 +590,9 @@ main(int argc, char** argv)
 	status = control(fd, POWERVR_DELETE_BUFFER, &create.handle,
 		sizeof(create.handle));
 	CHECK(status == B_OK, "DELETE_BUFFER: %s", strerror(status));
+
+	if (info.api_version >= 2)
+		test_render_objects(20);
 
 	print_statistics(fd, "at the end");
 	close(fd);
