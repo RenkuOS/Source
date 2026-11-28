@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: MIT
+
+SubDir HAIKU_TOP src add-ons kernel drivers audio intel_hdmi_lpe ;
+
+SubDirC++Flags -fno-rtti ;
+
+UsePrivateHeaders audio ;
+UsePrivateKernelHeaders ;
+
+KernelAddon intel_hdmi_lpe :
+	intel_hdmi_lpe.cpp
+;

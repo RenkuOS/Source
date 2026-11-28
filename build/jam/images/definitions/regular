@@ -281,6 +281,7 @@ SYSTEM_ADD_ONS_DRIVERS_AUDIO +=
 	es1370
 	hda
 	ice1712
+	intel_hdmi_lpe@x86,x86_64
 	usb_audio
 	sis7018
 ;
