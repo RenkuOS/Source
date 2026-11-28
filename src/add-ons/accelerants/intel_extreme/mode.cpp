@@ -271,6 +271,34 @@ limit_modes_for_ports(display_mode* mode)
 	return limit == 0 || mode->timing.pixel_clock <= limit;
 }
 
+/*!	Valleyview cannot set a pixel clock yet (see DigitalPort::SetDisplayMode()),
+	so only the timing a pipe runs with from the firmware can be shown.
+*/
+static bool
+limit_modes_to_firmware_timing(display_mode* mode)
+{
+	if (!limit_modes_for_ports(mode))
+		return false;
+
+	for (uint32 pipe = 0; pipe < 2; pipe++) {
+		uint32 offset = pipe * INTEL_DISPLAY_OFFSET;
+		if ((read32(INTEL_DISPLAY_A_PIPE_CONTROL + offset) & INTEL_PIPE_ENABLED)
+				== 0) {
+			continue;
+		}
+		uint32 horizontal = read32(INTEL_DISPLAY_A_HTOTAL + offset);
+		uint32 vertical = read32(INTEL_DISPLAY_A_VTOTAL + offset);
+		if (mode->timing.h_display == (horizontal & 0xffff) + 1
+			&& mode->timing.h_total == (horizontal >> 16) + 1
+			&& mode->timing.v_display == (vertical & 0xffff) + 1
+			&& mode->timing.v_total == (vertical >> 16) + 1) {
+			return true;
+		}
+	}
+	return false;
+}
+
+
 /*!	Creates the initial mode list of the primary accelerant.
 	It's called from intel_init_accelerant().
 */
@@ -339,10 +367,23 @@ create_mode_list(void)
 			supportedSpaces, colorSpaceCount, limitModes, &list, &count);
 	} else {
 		// Otherwise return the 'real' list of modes
+		check_display_mode_hook limitModes
+			= max_port_pixel_clock() != 0 ? limit_modes_for_ports : NULL;
+		if (gInfo->shared_info->device_type.InGroup(INTEL_GROUP_VLV))
+			limitModes = limit_modes_to_firmware_timing;
+
 		gInfo->mode_list_area = create_display_modes("intel extreme modes",
 			gInfo->has_edid ? &gInfo->edid_info : NULL, NULL, 0,
-			supportedSpaces, colorSpaceCount,
-			max_port_pixel_clock() != 0 ? limit_modes_for_ports : NULL, &list, &count);
+			supportedSpaces, colorSpaceCount, limitModes, &list, &count);
+		if (gInfo->mode_list_area >= B_OK && count == 0
+			&& limitModes == limit_modes_to_firmware_timing) {
+			ERROR("%s: no EDID mode matches the firmware's timing\n", __func__);
+			delete_area(gInfo->mode_list_area);
+			gInfo->mode_list_area = create_display_modes("intel extreme modes",
+				gInfo->has_edid ? &gInfo->edid_info : NULL, NULL, 0,
+				supportedSpaces, colorSpaceCount, limit_modes_for_ports, &list,
+				&count);
+		}
 	}
 
 	if (gInfo->mode_list_area < B_OK)
