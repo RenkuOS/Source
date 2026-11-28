@@ -733,9 +733,8 @@ powervr_control(void* cookie, uint32 op, void* buffer, size_t length)
 					% B_PAGE_SIZE != 0
 				|| request.offset > found->size
 				|| size > found->size - request.offset || size == 0
-				|| request.device_address < POWERVR_GENERAL_HEAP_BASE
-				|| request.device_address + size > POWERVR_GENERAL_HEAP_BASE
-					+ POWERVR_GENERAL_HEAP_SIZE
+				|| pvr_find_heap_containing(request.device_address, size)
+					== NULL
 				|| (request.flags & ~POWERVR_MAP_READ_ONLY) != 0) {
 				return B_BAD_VALUE;
 			}

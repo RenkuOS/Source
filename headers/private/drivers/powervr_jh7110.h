@@ -70,7 +70,10 @@ struct powervr_map_buffer {
 	uint32		flags;				// POWERVR_MAP_*
 	uint64		offset;				// into the buffer, page aligned
 	uint64		size;				// page granular, 0 = rest of the buffer
-	uint64		device_address;		// in the general heap, page aligned
+	uint64		device_address;		// page aligned, inside one of the heaps
+									// of the Rogue layout: general, PDS
+									// code and data, USC code, transfer
+									// fragment, vis test
 };
 
 #define POWERVR_MAP_READ_ONLY		0x01
