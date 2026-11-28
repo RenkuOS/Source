@@ -21,6 +21,7 @@ public:
 								ColorMenuItem(const char* label, rgb_color color,
 									BMessage* message);
 			rgb_color			Color() { return fItemColor; };
+			void				SetColor(rgb_color color);
 
 protected:
 	virtual	void				Draw();

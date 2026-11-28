@@ -24,6 +24,15 @@ ColorMenuItem::ColorMenuItem(const char* label, rgb_color color, BMessage* messa
 
 
 void
+ColorMenuItem::SetColor(rgb_color color)
+{
+	fItemColor = color;
+	Message()->ReplaceData("color", B_RGB_COLOR_TYPE, &color,
+		sizeof(rgb_color));
+}
+
+
+void
 ColorMenuItem::Draw()
 {
 	BMenu* menu = Menu();

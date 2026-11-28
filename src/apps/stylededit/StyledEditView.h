@@ -27,6 +27,7 @@ public:
 	virtual				~StyledEditView();
 
 	virtual	void		FrameResized(float width, float height);
+	virtual	void		MessageReceived(BMessage* message);
 	virtual	void		DeleteText(int32 start, int32 finish);
 	virtual	void		InsertText(const char* text, int32 length,
 							int32 offset,
@@ -44,6 +45,7 @@ public:
 
 private:
 			void		_UpdateStatus();
+			void		_FollowTextColor();
 
 			BMessenger*	fMessenger;
 			bool		fSuppressChanges;

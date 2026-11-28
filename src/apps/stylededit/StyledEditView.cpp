@@ -65,6 +65,16 @@ StyledEditView::FrameResized(float width, float height)
 
 
 void
+StyledEditView::MessageReceived(BMessage* message)
+{
+	if (message->what == B_COLORS_UPDATED)
+		_FollowTextColor();
+
+	BTextView::MessageReceived(message);
+}
+
+
+void
 StyledEditView::DeleteText(int32 start, int32 finish)
 {
 	if (!fSuppressChanges)
@@ -212,6 +222,48 @@ StyledEditView::GetEncoding() const
 		return set->GetFontID();
 
 	return 0;
+}
+
+
+/*!	Text in the document text color follows it when the colors change, as
+	when a dark theme is applied; text given a color of its own keeps it.
+*/
+void
+StyledEditView::_FollowTextColor()
+{
+	const rgb_color color = ui_color(B_DOCUMENT_TEXT_COLOR);
+	const rgb_color previous = fInitialColor;
+	if (color == previous)
+		return;
+	fInitialColor = color;
+
+	const int32 length = TextLength();
+	if (length > 0) {
+		text_run_array* runs = RunArray(0, length);
+		if (runs != NULL) {
+			bool changed = false;
+			for (int32 i = 0; i < runs->count; i++) {
+				if (runs->runs[i].color == previous) {
+					runs->runs[i].color = color;
+					changed = true;
+				}
+			}
+			if (changed)
+				SetRunArray(0, length, runs);
+			FreeRunArray(runs);
+		}
+	}
+
+	// what is typed next
+	int32 start, finish;
+	GetSelection(&start, &finish);
+	if (start == finish) {
+		BFont font;
+		rgb_color typed;
+		GetFontAndColor(&font, NULL, &typed);
+		if (typed == previous)
+			SetFontAndColor(&font, 0, &color);
+	}
 }
 
 
