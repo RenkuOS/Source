@@ -415,6 +415,9 @@ process_spawnattr(const posix_spawnattr_t *_attr)
 		action.sa_userdata = NULL;
 		sigemptyset(&action.sa_mask);
 		for (int i = 1; i <= MAX_SIGNAL_NUMBER; i++) {
+			// sigaction() rejects these, and they are always at SIG_DFL
+			if (i == SIGKILL || i == SIGKILLTHR || i == SIGSTOP)
+				continue;
 			if (sigismember(&attr->sigdefault, i) == 1
 				&& sigaction(i, &action, NULL) != 0) {
 				return errno;
