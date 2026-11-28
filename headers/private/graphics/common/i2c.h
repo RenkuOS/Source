@@ -63,6 +63,7 @@ extern "C" {
 #endif
 
 // send and receive data via i2c bus
+// (a part of length 0 is left out: send only, or receive only)
 status_t i2c_send_receive_callback(const i2c_bus *bus, uint32 slave_address,
 	const uint8 *writeBuffer, size_t writeLength, uint8 *readBuffer,
 	size_t readLength);

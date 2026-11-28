@@ -48,7 +48,7 @@ get_accelerant_hook(uint32 feature, void* data)
 		case B_GET_EDID_INFO:
 			return (void*)intel_get_edid_info;
 
-		/* laptop panel backlight */
+		/* laptop panel backlight, or the monitor's own brightness (DDC/CI) */
 		case B_SET_BRIGHTNESS:
 			if (gInfo->shared_info->device_type.IsMobile())
 				return (void*)intel_set_brightness;

@@ -21,6 +21,14 @@ void ddc2_init_timing(i2c_bus *bus);
 status_t ddc2_read_edid1(const i2c_bus *bus, edid1_info *edid, 
 	void **vdif, size_t *vdifLength);
 
+// DDC/CI: read and set a VCP feature of the monitor (VESA MCCS).
+// The monitor needs 50 ms between two commands; the caller sees to that.
+#define DDC_VCP_LUMINANCE	0x10
+
+status_t ddc2_get_vcp_feature(const i2c_bus *bus, uint8 code, uint16 *_value,
+	uint16 *_maximum);
+status_t ddc2_set_vcp_feature(const i2c_bus *bus, uint8 code, uint16 value);
+
 #ifdef __cplusplus
 }
 #endif

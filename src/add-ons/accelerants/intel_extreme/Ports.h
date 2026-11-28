@@ -49,6 +49,8 @@ virtual	uint32						Type() const = 0;
 										{ return fPortIndex; }
 
 virtual	bool						IsConnected() = 0;
+								// a panel built into the machine
+virtual	bool						IsInternalPanel() { return false; }
 
 virtual	status_t					SetPipe(Pipe* pipe);
 		::Pipe*						GetPipe()
@@ -141,6 +143,7 @@ virtual	uint32						Type() const
 										{ return INTEL_PORT_TYPE_LVDS; }
 
 virtual	bool						IsConnected();
+virtual	bool						IsInternalPanel() { return true; }
 
 virtual status_t					SetDisplayMode(display_mode* mode,
 										uint32 colorMode);
@@ -223,6 +226,7 @@ virtual	uint32						Type() const
 										{ return INTEL_PORT_TYPE_eDP; }
 
 virtual	bool						IsConnected();
+virtual	bool						IsInternalPanel() { return true; }
 };
 
 
@@ -242,6 +246,7 @@ virtual	status_t					SetupI2c(i2c_bus *bus);
 virtual status_t					SetupI2cFallback(struct i2c_bus *bus);
 
 virtual	bool						IsConnected();
+virtual	bool						IsInternalPanel() { return _IsInternalPanel(); }
 
 virtual status_t					SetDisplayMode(display_mode* mode,
 										uint32 colorMode);

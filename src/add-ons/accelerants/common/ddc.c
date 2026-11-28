@@ -193,3 +193,101 @@ ddc2_read_edid1(const i2c_bus *bus, edid1_info *edid,
 
 	return B_OK;
 }
+
+
+//	#pragma mark - DDC/CI (monitor control, VESA MCCS)
+
+
+#define DDC_CI_ADDRESS			0x37
+#define DDC_CI_HOST_ADDRESS		0x51
+#define DDC_CI_REPLY_CHECKSUM	0x50
+	// what the checksum of a monitor's reply starts with
+#define DDC_CI_REPLY_DELAY		40000
+	// microseconds the monitor is given to prepare its reply
+
+#define DDC_CI_GET_VCP			0x01
+#define DDC_CI_GET_VCP_REPLY	0x02
+#define DDC_CI_SET_VCP			0x03
+
+
+/*!	Sends a command to the monitor: the host's address, the length, the
+	command, and a checksum over all of it and the monitor's address
+*/
+static status_t
+ddc_ci_send(const i2c_bus *bus, const uint8 *command, uint8 length)
+{
+	uint8 buffer[8];
+	uint8 checksum = DDC_CI_ADDRESS << 1;
+	uint8 i;
+
+	if (length > sizeof(buffer) - 3)
+		return B_BAD_VALUE;
+
+	buffer[0] = DDC_CI_HOST_ADDRESS;
+	buffer[1] = 0x80 | length;
+	for (i = 0; i < length; i++)
+		buffer[i + 2] = command[i];
+	for (i = 0; i < length + 2; i++)
+		checksum ^= buffer[i];
+	buffer[length + 2] = checksum;
+
+	return call_send_receive(bus, DDC_CI_ADDRESS, buffer, length + 3, NULL, 0);
+}
+
+
+/*!	Reads the present and the maximum value of a VCP feature of the monitor.
+	Request and reply are two transfers with a pause between them.
+*/
+status_t
+ddc2_get_vcp_feature(const i2c_bus *bus, uint8 code, uint16 *_value,
+	uint16 *_maximum)
+{
+	uint8 request[2];
+	uint8 reply[11];
+	uint8 checksum = DDC_CI_REPLY_CHECKSUM;
+	size_t i;
+	status_t status;
+
+	request[0] = DDC_CI_GET_VCP;
+	request[1] = code;
+	status = ddc_ci_send(bus, request, sizeof(request));
+	if (status != B_OK)
+		return status;
+
+	snooze(DDC_CI_REPLY_DELAY);
+
+	status = call_send_receive(bus, DDC_CI_ADDRESS, NULL, 0, reply,
+		sizeof(reply));
+	if (status != B_OK)
+		return status;
+
+	// the monitor's address, the length, "VCP reply", result, VCP code, type,
+	// maximum (2 bytes), present value (2 bytes), checksum
+	for (i = 0; i < sizeof(reply) - 1; i++)
+		checksum ^= reply[i];
+	if (reply[1] != 0x88 || reply[2] != DDC_CI_GET_VCP_REPLY
+		|| reply[4] != code || reply[10] != checksum) {
+		TRACE("%s: no valid reply for VCP feature 0x%02x\n", __func__, code);
+		return B_BAD_DATA;
+	}
+	if (reply[3] != 0)
+		return B_UNSUPPORTED;
+
+	*_maximum = (reply[6] << 8) | reply[7];
+	*_value = (reply[8] << 8) | reply[9];
+	return B_OK;
+}
+
+
+//!	Sets a VCP feature of the monitor
+status_t
+ddc2_set_vcp_feature(const i2c_bus *bus, uint8 code, uint16 value)
+{
+	uint8 command[4];
+
+	command[0] = DDC_CI_SET_VCP;
+	command[1] = code;
+	command[2] = value >> 8;
+	command[3] = value & 0xff;
+	return ddc_ci_send(bus, command, sizeof(command));
+}

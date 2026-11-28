@@ -801,6 +801,121 @@ intel_get_backlight_register(bool period)
 }
 
 
+static const bigtime_t kMonitorCommandInterval = 50000;
+	// DDC/CI: what a monitor needs between two commands
+static const bigtime_t kMonitorBrightnessLifetime = 2000000;
+	// how long the monitor's answer, or its silence, is taken for granted
+
+static i2c_bus sMonitorBus;
+static status_t sMonitorBusStatus = B_NO_INIT;
+static bigtime_t sMonitorCommandTime = 0;
+static status_t sMonitorBrightnessStatus = B_NO_INIT;
+static bigtime_t sMonitorBrightnessTime = 0;
+static uint16 sMonitorBrightness = 0;
+static uint16 sMonitorMaxBrightness = 0;
+
+
+/*!	Without a built-in panel, the brightness is the monitor's own, set over DDC/CI.
+	Sets up the channel to the first monitor that can have one.
+*/
+static status_t
+init_monitor_bus()
+{
+	for (uint32 i = 0; i < gInfo->port_count; i++) {
+		if (gInfo->ports[i] != NULL && gInfo->ports[i]->IsInternalPanel())
+			return B_UNSUPPORTED;
+	}
+
+	for (uint32 i = 0; i < gInfo->port_count; i++) {
+		Port* port = gInfo->ports[i];
+		// only the DDC pins of a TMDS sink (HDMI, DVI): DDC/CI over a DisplayPort AUX
+		// channel is untested
+		if (port == NULL || (port->Type() != INTEL_PORT_TYPE_DVI
+				&& port->Type() != INTEL_PORT_TYPE_HDMI)) {
+			continue;
+		}
+		if (port->SetupI2c(&sMonitorBus) == B_OK && sMonitorBus.send_receive == NULL)
+			return B_OK;
+	}
+	return B_UNSUPPORTED;
+}
+
+
+static void
+wait_for_monitor()
+{
+	bigtime_t wait = sMonitorCommandTime + kMonitorCommandInterval - system_time();
+	if (wait > 0)
+		snooze(wait);
+}
+
+
+/*!	Asks the monitor for its brightness, unless its last answer is recent.
+	The caller holds the accelerant lock.
+*/
+static status_t
+update_monitor_brightness()
+{
+	if (sMonitorBusStatus == B_NO_INIT)
+		sMonitorBusStatus = init_monitor_bus();
+	if (sMonitorBusStatus != B_OK)
+		return sMonitorBusStatus;
+
+	if (sMonitorBrightnessStatus != B_NO_INIT
+		&& system_time() - sMonitorBrightnessTime < kMonitorBrightnessLifetime) {
+		return sMonitorBrightnessStatus;
+	}
+
+	uint16 value = 0;
+	uint16 maximum = 0;
+	wait_for_monitor();
+	status_t status = ddc2_get_vcp_feature(&sMonitorBus, DDC_VCP_LUMINANCE, &value, &maximum);
+	sMonitorCommandTime = system_time();
+	if (status == B_OK && maximum == 0)
+		status = B_BAD_DATA;
+
+	if (status == B_OK) {
+		sMonitorBrightness = std::min(value, maximum);
+		sMonitorMaxBrightness = maximum;
+	} else if (sMonitorBrightnessStatus == B_OK) {
+		// a monitor that has answered keeps the brightness, at its last known value
+		status = B_OK;
+	}
+	if (status != sMonitorBrightnessStatus) {
+		if (status == B_OK) {
+			TRACE("%s: the monitor's brightness is %u of %u (DDC/CI)\n", __func__, value,
+				maximum);
+		} else {
+			TRACE("%s: the monitor gives no brightness over DDC/CI: %s\n", __func__,
+				strerror(status));
+		}
+	}
+	sMonitorBrightnessStatus = status;
+	sMonitorBrightnessTime = system_time();
+	return status;
+}
+
+
+//! The caller holds the accelerant lock, and update_monitor_brightness() succeeded.
+static status_t
+set_monitor_brightness(float brightness)
+{
+	uint16 value = (uint16)(brightness * sMonitorMaxBrightness + 0.5f);
+	if (value == sMonitorBrightness)
+		return B_OK;
+
+	wait_for_monitor();
+	status_t status = ddc2_set_vcp_feature(&sMonitorBus, DDC_VCP_LUMINANCE, value);
+	sMonitorCommandTime = system_time();
+	if (status != B_OK)
+		return status;
+
+	sMonitorBrightness = value;
+	sMonitorBrightnessTime = sMonitorCommandTime;
+	return B_OK;
+}
+
+
 status_t
 intel_set_brightness(float brightness)
 {
@@ -808,6 +923,12 @@ intel_set_brightness(float brightness)
 
 	if (brightness < 0 || brightness > 1)
 		return B_BAD_VALUE;
+
+	{
+		Autolock locker(gInfo->shared_info->accelerant_lock);
+		if (update_monitor_brightness() == B_OK)
+			return set_monitor_brightness(brightness);
+	}
 
 	// The "duty cycle" is a proportion of the period (0 = backlight off,
 	// period = maximum brightness).
@@ -884,6 +1005,14 @@ intel_get_brightness(float* brightness)
 
 	if (brightness == NULL)
 		return B_BAD_VALUE;
+
+	{
+		Autolock locker(gInfo->shared_info->accelerant_lock);
+		if (update_monitor_brightness() == B_OK) {
+			*brightness = (float)sMonitorBrightness / sMonitorMaxBrightness;
+			return B_OK;
+		}
+	}
 
 	uint32_t duty;
 	uint32_t period;
