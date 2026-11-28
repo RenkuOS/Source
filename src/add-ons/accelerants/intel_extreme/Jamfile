@@ -23,5 +23,6 @@ Addon intel_extreme.accelerant :
 	Ports.cpp
 	Pipes.cpp
 	TigerLakePLL.cpp
+	ValleyViewPLL.cpp
 	: be $(TARGET_LIBSTDC++) libaccelerantscommon.a
 ;

@@ -26,6 +26,7 @@
 #include "FlexibleDisplayInterface.h"
 #include "PanelFitter.h"
 #include "TigerLakePLL.h"
+#include "ValleyViewPLL.h"
 
 #include <new>
 
@@ -1531,11 +1532,13 @@ DigitalPort::SetDisplayMode(display_mode* target, uint32 colorMode)
 	// Program general pipe config
 	fPipe->Configure(target);
 
-	// shortcut: there is no Valleyview DPLL programming (it sits behind the
-	// DPIO sideband), so keep the clock the firmware set up; the mode list
-	// only offers the firmware's mode there (create_mode_list()). Upgrade
-	// once compute_pll_divisors() handles Valleyview.
-	if (!gInfo->shared_info->device_type.InGroup(INTEL_GROUP_VLV)) {
+	if (gInfo->shared_info->device_type.InGroup(INTEL_GROUP_VLV)) {
+		// The Valleyview PLL and PHY sit behind the DPIO sideband.
+		status_t status = vlv_set_hdmi_clock(fPipe->Index(), PortIndex(),
+			_PortRegister(), target->timing.pixel_clock);
+		if (status != B_OK)
+			return status;
+	} else {
 		pll_divisors divisors;
 		compute_pll_divisors(&target->timing, &divisors, false);
 
@@ -1607,6 +1610,15 @@ HDMIPort::IsConnected()
 		return false;
 
 	return HasEDID();
+}
+
+
+uint32
+HDMIPort::MaxPixelClock()
+{
+	if (gInfo->shared_info->device_type.InGroup(INTEL_GROUP_VLV))
+		return VLV_HDMI_MAX_PIXEL_CLOCK;
+	return 0;
 }
 
 
