@@ -27,7 +27,12 @@
  */
 
 
-#define MAX_NODE_INFOS 10
+// This listed 10 live physical nodes at most, and a device found after the
+// tenth was invisible here. A device republished under a new name gets a new
+// node and the old one lives on (the FA-101 makes one per channel count
+// change), so a machine had 11 physical outputs, the newest FA-101 the
+// eleventh, and the default stayed on HD Audio.
+#define MAX_NODE_INFOS 64
 #define MAX_INPUT_INFOS 10
 
 const uint32 kMsgHeader = 'sepx';
