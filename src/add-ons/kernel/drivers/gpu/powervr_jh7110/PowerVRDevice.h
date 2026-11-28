@@ -113,6 +113,9 @@ public:
 			uint16				FirmwareMinor() const { return fFirmwareMinor; }
 			uint32				FirmwareBuild() const { return fFirmwareBuild; }
 			uint32				CoreClock() const { return fCoreClock; }
+			// a GPU register, while the device runs
+			uint32				ReadRegister(uint32 offset) const
+									{ return _Read32(offset); }
 
 			// write back and invalidate the L2 cache lines of a range
 			void				Sync(phys_addr_t physical, size_t size);

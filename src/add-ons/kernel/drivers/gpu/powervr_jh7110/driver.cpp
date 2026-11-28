@@ -1784,6 +1784,33 @@ powervr_control(void* cookie, uint32 op, void* buffer, size_t length)
 			return status;
 		}
 
+		case POWERVR_GET_PERF_COUNTERS:
+		{
+			// ROGUE_CR_PERF_* (pvr_rogue_cr_defs.h)
+			if (length != sizeof(powervr_perf_counters)
+				|| !IS_USER_ADDRESS(buffer)) {
+				return B_BAD_VALUE;
+			}
+			MutexLocker locker(sDevice->LockObject());
+			if (!sDevice->IsRunning())
+				return B_DEV_NOT_READY;
+			powervr_perf_counters counters;
+			memset(&counters, 0, sizeof(counters));
+			counters.time = system_time();
+			counters.core_clock_mhz = sDevice->CoreClock() / 1000000;
+			counters.ta_phases = sDevice->ReadRegister(0x6008);
+			counters.fragment_phases = sDevice->ReadRegister(0x6010);
+			counters.compute_phases = sDevice->ReadRegister(0x6018);
+			counters.ta_cycles = sDevice->ReadRegister(0x6020);
+			counters.fragment_cycles = sDevice->ReadRegister(0x6028);
+			counters.compute_cycles = sDevice->ReadRegister(0x6030);
+			counters.ta_or_fragment_cycles = sDevice->ReadRegister(0x6038);
+			counters.slc_read_stalls = sDevice->ReadRegister(0x60b8);
+			counters.slc_write_stalls = sDevice->ReadRegister(0x60c0);
+			locker.Unlock();
+			return copy_out(buffer, counters);
+		}
+
 		case POWERVR_GET_STATISTICS:
 		{
 			if (length != sizeof(powervr_statistics)

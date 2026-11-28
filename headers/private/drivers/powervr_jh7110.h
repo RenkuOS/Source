@@ -47,6 +47,7 @@ enum {
 	POWERVR_DELETE_HWRT_DATASET,
 	POWERVR_SUBMIT_JOBS,
 	POWERVR_SET_BUFFER_CPU_ACCESS,
+	POWERVR_GET_PERF_COUNTERS,
 };
 
 
@@ -255,6 +256,26 @@ struct powervr_wait {
 	uint32		reset_reason;		// out: rogue_context_reset_reason
 	uint32		reserved;
 	uint64		fault_address;		// out
+};
+
+// The free running performance counters of the GPU (ROGUE_CR_PERF_*):
+// 32 bit, they wrap around every few seconds at the core clock. Phases count
+// the geometry (TA), fragment (3D) and compute jobs run, cycles the clock
+// cycles the GPU spent in each, stalls the cycles a cache (SLC) bank waited
+// for memory.
+struct powervr_perf_counters {
+	bigtime_t	time;				// when they were read
+	uint32		core_clock_mhz;
+	uint32		ta_phases;
+	uint32		fragment_phases;
+	uint32		compute_phases;
+	uint32		ta_cycles;
+	uint32		fragment_cycles;
+	uint32		compute_cycles;
+	uint32		ta_or_fragment_cycles;
+	uint32		slc_read_stalls;
+	uint32		slc_write_stalls;
+	uint32		reserved[6];
 };
 
 struct powervr_statistics {

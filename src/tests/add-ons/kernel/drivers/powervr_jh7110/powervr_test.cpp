@@ -17,6 +17,8 @@
  *
  *   powervr_test [jobs]
  *   powervr_test stats		only prints the device's counters
+ *   powervr_test perf [s]	samples the GPU's performance counters every
+ *							second for s seconds (default 10)
  */
 
 
@@ -357,6 +359,48 @@ main(int argc, char** argv)
 		if (fd < 0)
 			return 1;
 		print_statistics(fd, "device");
+		close(fd);
+		return 0;
+	}
+
+	if (argc > 1 && strcmp(argv[1], "perf") == 0) {
+		int seconds = argc > 2 ? atoi(argv[2]) : 10;
+		int fd = open(POWERVR_JH7110_DEVICE, O_RDWR);
+		if (fd < 0)
+			return 1;
+		powervr_perf_counters previous, current;
+		if (control(fd, POWERVR_GET_PERF_COUNTERS, &previous,
+				sizeof(previous)) != B_OK) {
+			printf("no performance counters\n");
+			return 1;
+		}
+		printf("   TA busy  3D busy  TA|3D   TA jobs 3D jobs  SLC rd/wr "
+			"stall (%% of the cycles)\n");
+		for (int i = 0; i < seconds; i++) {
+			snooze(1000000);
+			if (control(fd, POWERVR_GET_PERF_COUNTERS, &current,
+					sizeof(current)) != B_OK) {
+				break;
+			}
+			// the counters wrap: unsigned differences over one second
+			double cycles = (current.time - previous.time)
+				* (double)current.core_clock_mhz;
+			printf("   %6.1f%%  %6.1f%%  %6.1f%%  %6" B_PRIu32 "  %6"
+				B_PRIu32 "  %5.1f%% %5.1f%%\n",
+				100.0 * (uint32)(current.ta_cycles - previous.ta_cycles)
+					/ cycles,
+				100.0 * (uint32)(current.fragment_cycles
+					- previous.fragment_cycles) / cycles,
+				100.0 * (uint32)(current.ta_or_fragment_cycles
+					- previous.ta_or_fragment_cycles) / cycles,
+				(uint32)(current.ta_phases - previous.ta_phases),
+				(uint32)(current.fragment_phases - previous.fragment_phases),
+				100.0 * (uint32)(current.slc_read_stalls
+					- previous.slc_read_stalls) / cycles,
+				100.0 * (uint32)(current.slc_write_stalls
+					- previous.slc_write_stalls) / cycles);
+			previous = current;
+		}
 		close(fd);
 		return 0;
 	}
