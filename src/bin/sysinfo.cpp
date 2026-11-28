@@ -719,6 +719,8 @@ dump_cpus(system_info *info)
 	enum cpu_vendor cpuVendor = B_CPU_VENDOR_UNKNOWN;
 	uint32 cpuModel = 0;
 	uint64 frequency = 0;
+	uint32 isaLevel = 0;
+	bool coreFound = false;
 	for (uint32 i = 0; i < topologyNodeCount; i++) {
 		switch (topology[i].type) {
 			case B_TOPOLOGY_ROOT:
@@ -727,10 +729,14 @@ dump_cpus(system_info *info)
 
 			case B_TOPOLOGY_PACKAGE:
 				cpuVendor = topology[i].data.package.vendor;
+				isaLevel = topology[i].data.package.isa_level;
 				break;
 
 			case B_TOPOLOGY_CORE:
-				cpuModel = topology[i].data.core.model;
+				// the first core's: cores may differ (big.LITTLE)
+				if (!coreFound)
+					cpuModel = topology[i].data.core.model;
+				coreFound = true;
 				frequency = topology[i].data.core.default_frequency;
 				break;
 
@@ -751,12 +757,13 @@ dump_cpus(system_info *info)
 		snprintf(modelString, 32, "(Unknown %" B_PRIx32 ")", cpuModel);
 	}
 
-	printf("%" B_PRId32 " %s%s%s, revision %04" B_PRIx32 " running at %"
-		B_PRIu64 "MHz\n\n",
-		info->cpu_count,
-		vendor ? vendor : "", vendor ? " " : "", model,
-		cpuModel,
-		frequency / 1000000);
+	const char *isa = get_cpu_isa_string(platform, isaLevel);
+	printf("%" B_PRId32 " %s%s%s%s%s, revision %04" B_PRIx32, info->cpu_count,
+		vendor ? vendor : "", vendor ? " " : "", model, isa ? " · " : "",
+		isa ? isa : "", cpuModel);
+	if (frequency != 0)
+		printf(" running at %" B_PRIu64 "MHz", frequency / 1000000);
+	printf("\n\n");
 
 #if defined(__i386__) || defined(__x86_64__)
 	for (uint32 cpu = 0; cpu < info->cpu_count; cpu++)

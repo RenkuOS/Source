@@ -74,6 +74,7 @@
 #define	CPU_IMPL_APM		0x50
 #define	CPU_IMPL_QUALCOMM	0x51
 #define	CPU_IMPL_MARVELL	0x56
+#define	CPU_IMPL_APPLE		0x61
 #define	CPU_IMPL_INTEL		0x69
 
 #define	CPU_PART_THUNDER	0x0A1
@@ -149,6 +150,8 @@ namespace BKernel {
 
 typedef struct arch_cpu_info {
 	uint64						mpidr;
+	uint32						midr;
+	uint32						isa_level;
 	BKernel::Thread*			last_vfp_user;
 } arch_cpu_info;
 #endif

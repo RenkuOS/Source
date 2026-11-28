@@ -7,6 +7,7 @@
 #include <KernelExport.h>
 
 #include <arch/cpu.h>
+#include <arm64_isa_level.h>
 #include <boot/kernel_args.h>
 #include <commpage.h>
 #include <elf.h>
@@ -43,6 +44,28 @@ arch_cpu_init_percpu(kernel_args *args, int curr_cpu)
 	WRITE_SPECIALREG(TCR_EL1, tcr);
 
 	gCPU[curr_cpu].arch.mpidr = READ_SPECIALREG(MPIDR_EL1);
+	gCPU[curr_cpu].arch.midr = READ_SPECIALREG(MIDR_EL1);
+
+	// Generic names, as older assemblers lack ISAR2 and ZFR0; unallocated
+	// ID registers read as zero.
+	arm64_id_regs idRegs;
+	idRegs.isar0 = READ_SPECIALREG(S3_0_C0_C6_0);
+	idRegs.isar1 = READ_SPECIALREG(S3_0_C0_C6_1);
+	idRegs.isar2 = READ_SPECIALREG(S3_0_C0_C6_2);
+	idRegs.mmfr2 = READ_SPECIALREG(S3_0_C0_C7_2);
+	idRegs.pfr0 = READ_SPECIALREG(S3_0_C0_C4_0);
+	idRegs.pfr1 = READ_SPECIALREG(S3_0_C0_C4_1);
+	idRegs.zfr0 = READ_SPECIALREG(S3_0_C0_C4_4);
+	gCPU[curr_cpu].arch.isa_level = arm64_isa_level(&idRegs);
+	if (curr_cpu == 0) {
+		dprintf("arm64: MIDR %#" B_PRIx32 " ISAR0 %#" B_PRIx64 " ISAR1 %#"
+			B_PRIx64 " ISAR2 %#" B_PRIx64 " MMFR2 %#" B_PRIx64 " PFR0 %#"
+			B_PRIx64 " PFR1 %#" B_PRIx64 " ZFR0 %#" B_PRIx64 " -> ARMv%"
+			B_PRIu32 ".%" B_PRIu32 "-A\n", gCPU[curr_cpu].arch.midr,
+			idRegs.isar0, idRegs.isar1, idRegs.isar2, idRegs.mmfr2, idRegs.pfr0,
+			idRegs.pfr1, idRegs.zfr0, gCPU[curr_cpu].arch.isa_level >> 8,
+			gCPU[curr_cpu].arch.isa_level & 0xff);
+	}
 
 	return 0;
 }
