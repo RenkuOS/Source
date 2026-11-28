@@ -767,6 +767,11 @@ CheckVisitor::_AddInodeToIndex(Inode* inode)
 			if (inode->ReadAttribute(index->name, B_ANY_TYPE, 0, key,
 					&keyLength) == B_OK) {
 				status = tree->Insert(transaction, key, keyLength, inode->ID());
+				if (status == B_BAD_VALUE) {
+					// Too short for this index (see
+					// BPlusTree::_IsValidKeyLength()): not indexed
+					status = B_OK;
+				}
 			}
 		}
 

@@ -8,6 +8,10 @@ SimpleTest bfs_attribute_iterator_test :
 	bfs_attribute_iterator_test.cpp
 	: be ;
 
+SimpleTest bfs_index_key_size_test :
+	bfs_index_key_size_test.cpp
+;
+
 SubInclude HAIKU_TOP src tests add-ons kernel file_systems bfs array ;
 SubInclude HAIKU_TOP src tests add-ons kernel file_systems bfs bufferPool ;
 SubInclude HAIKU_TOP src tests add-ons kernel file_systems bfs btree ;

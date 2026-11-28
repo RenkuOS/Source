@@ -321,6 +321,7 @@ private:
 									const uint8* key, uint16 keyLength,
 									uint16* index = NULL, off_t* next = NULL);
 #if !_BOOT_MODE
+			bool				_IsValidKeyLength(uint16 keyLength) const;
 			status_t			_SeekDown(Stack<node_and_key>& stack,
 									const uint8* key, uint16 keyLength);
 
