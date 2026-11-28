@@ -63,6 +63,7 @@ struct image;					// defined in image.c
 struct io_context;
 struct realtime_sem_context;	// defined in realtime_sem.cpp
 struct select_info;
+struct team_arg;				// defined in team.cpp
 struct user_thread;				// defined in libroot/user_thread.h
 struct VMAddressSpace;
 struct user_mutex_context;		// defined in user_mutex.cpp
@@ -461,6 +462,7 @@ struct Team : TeamThreadIteratorEntry<team_id>, KernelReferenceable,
 	struct realtime_sem_context	*realtime_sem_context;
 	struct xsi_sem_context *xsi_sem_context;
 	struct team_death_entry *death_entry;	// protected by fLock
+	struct team_arg *exec_args;	// protected by fLock
 	ThreadDeathEntryList	dead_threads;
 
 	// protected by the team's fLock
