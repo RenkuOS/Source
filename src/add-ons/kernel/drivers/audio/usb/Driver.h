@@ -31,6 +31,10 @@ const uint32 kMaxPacketsPerBuffer = 384;
 // they size on-stack arrays in the ioctl handler (the multi_audio add-on
 // requests 32).
 const int32 kMaxRequestBuffers = 32;
+// Upper bound for the values one B_MULTI_GET_MIX or B_MULTI_SET_MIX request may
+// carry. The multi_audio add-on lists up to 128 controls (MAX_CONTROLS) and
+// requests at most 2 values at a time.
+const int32 kMaxMixValues = 128;
 // Default and maximum number of sub-buffers cycled between the driver and the
 // media server (B_MULTI_GET_BUFFERS may request fewer). Unlike a
 // PCI DMA card -- whose hardware loops over its buffers and hands each one back at

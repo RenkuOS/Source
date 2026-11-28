@@ -588,11 +588,23 @@ Device::Control(uint32 op, void* buffer, size_t length)
 			if (user_memcpy(&info, buffer, sizeof(multi_mix_value_info)) != B_OK)
 				return B_BAD_ADDRESS;
 
+			// The count sizes the buffer below and comes straight from
+			// userland, as does the array pointer.
+			if (info.item_count < 0 || info.item_count > kMaxMixValues)
+				return B_BAD_VALUE;
+			if (!IS_USER_ADDRESS(info.values))
+				return B_BAD_ADDRESS;
+
 			multi_mix_value* originalValues = info.values;
 			size_t mixValueSize = info.item_count * sizeof(multi_mix_value);
-			multi_mix_value* values = (multi_mix_value*)alloca(mixValueSize);
-			if (user_memcpy(values, info.values, mixValueSize) != B_OK)
+			multi_mix_value* values
+				= (multi_mix_value*)malloc(max_c(mixValueSize, 1));
+			if (values == NULL)
+				return B_NO_MEMORY;
+			if (user_memcpy(values, info.values, mixValueSize) != B_OK) {
+				free(values);
 				return B_BAD_ADDRESS;
+			}
 			info.values = values;
 
 			status_t status;
@@ -600,10 +612,11 @@ Device::Control(uint32 op, void* buffer, size_t length)
 				status = _MultiGetMix(&info);
 			else
 				status = _MultiSetMix(&info);
-			if (status != B_OK)
-				return status;
 			// the multi_mix_value_info is not modified
-			return user_memcpy(originalValues, values, mixValueSize);
+			if (status == B_OK)
+				status = user_memcpy(originalValues, values, mixValueSize);
+			free(values);
+			return status;
 		}
 
 		case B_MULTI_LIST_MIX_CHANNELS:
@@ -713,10 +726,10 @@ Device::Control(uint32 op, void* buffer, size_t length)
 
 		case B_MULTI_SET_BUFFERS:
 		{
-			// Our client (the multi_audio media add-on) clones our buffer
-			// areas into its team and tells us its base addresses here
+			// A client that clones our buffer areas into its team (the
+			// stock multi_audio add-on does not) tells us its addresses here
 			// (informational - the client reads/writes the pages through its
-			// clone; the driver reads them through the original area VA).
+			// clone; the driver accesses them through its kernel clone).
 			// The layout inside the area is unchanged - we only need
 			// buffer[0][0].base per direction.
 			multi_buffer_list list;
