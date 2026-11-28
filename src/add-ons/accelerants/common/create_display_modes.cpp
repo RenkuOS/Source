@@ -303,8 +303,8 @@ ModeList::AddModes(edid1_info* info)
 		if (hasRanges) {
 			uint32 verticalFrequency = 1000 * mode.timing.pixel_clock
 				/ (mode.timing.h_total * mode.timing.v_total);
-			uint32 horizontalFrequency = mode.timing.h_total * verticalFrequency
-				/ 1000;
+			uint32 horizontalFrequency = mode.timing.pixel_clock
+				/ mode.timing.h_total;
 
 			if (minHorizontalFrequency > horizontalFrequency
 				|| maxHorizontalFrequency < horizontalFrequency
