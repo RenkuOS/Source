@@ -293,9 +293,11 @@ arch_setup_signal_frame(Thread *thread, struct sigaction *sa,
 	// prepare the user stack frame for a function call to the signal handler wrapper function
 	addr_t commpageAddr = (addr_t)thread->team->commpage_address;
 	addr_t signalHandlerAddr;
-	ASSERT(user_memcpy(&signalHandlerAddr,
+	res = user_memcpy(&signalHandlerAddr,
 		&((addr_t*)commpageAddr)[COMMPAGE_ENTRY_ARM_SIGNAL_HANDLER],
-		sizeof(signalHandlerAddr)) >= B_OK);
+		sizeof(signalHandlerAddr));
+	if (res < B_OK)
+		return res;
 	signalHandlerAddr += commpageAddr;
 
 	frame->usr_lr = frame->pc;
