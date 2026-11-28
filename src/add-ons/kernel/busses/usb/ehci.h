@@ -38,6 +38,10 @@ typedef struct isochronous_transfer_data {
 	// linked to each other in a queue like in every other
 	// transfer type
 	ehci_itd **					descriptors;
+	// A full or low speed endpoint behind a transaction translator is served
+	// by split transaction descriptors instead, one per packet; exactly one of
+	// descriptors and split_descriptors is set.
+	ehci_sitd **				split_descriptors;
 	uint16						last_to_process;
 	bool						incoming;
 	bool						is_active;
@@ -104,7 +108,8 @@ static	int32						InterruptPollThread(void *data);
 										Transfer *transfer,
 										ehci_itd **isoRequest, uint32 lastIndex,
 										bool directionIn, addr_t bufferPhy,
-										void *bufferLog, size_t bufferSize);
+										void *bufferLog, size_t bufferSize,
+										ehci_sitd **splitRequest = NULL);
 		status_t					CancelAllPendingTransfers();
 
 
@@ -117,6 +122,21 @@ static	int32						CleanupThread(void *data);
 static int32						FinishIsochronousThread(void *data);
 		void						FinishIsochronousTransfers();
 		isochronous_transfer_data *	FindIsochronousTransfer(ehci_itd *itd);
+		isochronous_transfer_data *	FindIsochronousTransfer(ehci_sitd *sitd);
+		status_t					_FillSplitIsochronous(Transfer *transfer,
+										ehci_sitd **descriptors,
+										uint32 descriptorCount,
+										uint16 &currentFrame,
+										phys_addr_t bufferPhy,
+										uint16 bandwidth,
+										bool usePacketLengths,
+										uint32 &filled);
+		size_t						_ReadSplitIsochronous(
+										isochronous_transfer_data *transfer);
+		void						_UnlinkIsochronousDescriptors(
+										isochronous_transfer_data *transfer);
+		void						_FreeIsochronousDescriptors(
+										isochronous_transfer_data *transfer);
 		void						LinkITDescriptors(ehci_itd *itd,
 										ehci_itd **last);
 		void						LinkSITDescriptors(ehci_sitd *sitd,

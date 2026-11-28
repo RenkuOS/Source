@@ -176,18 +176,12 @@ typedef struct ehci_itd {
 
 // Split Transaction Isochronous Transfer Descriptors (siTD, EHCI Spec 3.3)
 typedef struct ehci_sitd {
-	// Hardware Part
+	// Hardware Part (EHCI 1.0, 3.4), one dword per field group: the
+	// controller reads them as little endian 32 bit words.
 	uint32		next_phy;
-	uint8		port_number;
-	uint8		hub_address;
-	uint8		endpoint;
-	uint8		device_address;
-	uint16		reserved1;
-	uint8		cmask;
-	uint8		smask;
-	uint16		transfer_length;
-	uint8		cprogmask;
-	uint8		status;
+	uint32		endpoint;		// direction, port, hub, endpoint, device
+	uint32		schedule;		// C-mask and S-mask
+	uint32		state;			// IOC, page select, bytes, C-prog-mask, status
 	uint32		buffer_phy[2];
 	uint32		back_phy;
 	uint32		ext_buffer_phy[2];
@@ -196,9 +190,39 @@ typedef struct ehci_sitd {
 	uint32		this_phy;
 	struct ehci_sitd *next;
 	struct ehci_sitd *prev;
-	size_t		buffer_size;
-	void		*buffer_log;
+	// The periodic-schedule frame this sitd is linked into, as for ehci_itd.
+	uint32		frame;
+	// The number of bytes programmed into this transaction.
+	uint32		length;
 } _PACKED ehci_sitd;
+
+// siTD endpoint capabilities/characteristics (dword 1)
+#define EHCI_SITD_DIR_IN			(1U << 31)
+#define EHCI_SITD_PORT(x)			(((x) & 0x7f) << 24)
+#define EHCI_SITD_HUB(x)			(((x) & 0x7f) << 16)
+#define EHCI_SITD_ENDPOINT(x)		(((x) & 0xf) << 8)
+#define EHCI_SITD_ADDRESS(x)		((x) & 0x7f)
+// siTD micro-frame schedule control (dword 2)
+#define EHCI_SITD_SMASK(x)			((x) & 0xff)
+#define EHCI_SITD_CMASK(x)			(((x) & 0xff) << 8)
+// siTD transfer state (dword 3)
+#define EHCI_SITD_IOC				(1U << 31)
+#define EHCI_SITD_BYTES(x)			(((x) & 0x3ff) << 16)
+#define EHCI_SITD_BYTES_GET(x)		(((x) >> 16) & 0x3ff)
+#define EHCI_SITD_STATUS_ACTIVE		(1 << 7)
+#define EHCI_SITD_STATUS_ERR		(1 << 6)	// ERR handshake from the TT
+#define EHCI_SITD_STATUS_BUFFER		(1 << 5)	// Data Buffer Error
+#define EHCI_SITD_STATUS_BABBLE		(1 << 4)	// Babble Detected
+#define EHCI_SITD_STATUS_TERROR		(1 << 3)	// Transaction Error
+#define EHCI_SITD_STATUS_MISSED		(1 << 2)	// Missed Micro-Frame
+#define EHCI_SITD_STATUS_SPLIT		(1 << 1)	// Split Transaction State
+#define EHCI_SITD_STATUS_MASK		0xfc
+// siTD buffer page 1 (dword 5), OUT only
+#define EHCI_SITD_TP_ALL			(0 << 3)	// the whole packet in one split
+#define EHCI_SITD_TP_BEGIN			(1 << 3)	// the first of several
+#define EHCI_SITD_TCOUNT(x)			((x) & 0x7)
+// A start-split carries at most this many bytes (USB 2.0, 11.18.4)
+#define EHCI_SITD_SPLIT_BYTES		188
 
 // Queue Element Transfer Descriptors (qTD, EHCI Spec 3.5)
 typedef struct ehci_qtd {
@@ -295,7 +319,7 @@ typedef struct {
 	ehci_sitd	sitd;
 
 #ifdef B_HAIKU_64_BIT
-	uint32		padding[14]; // align on 64
+	uint32		padding[16]; // align on 64
 #else
 	uint32 		padding[2]; // align on 64
 #endif

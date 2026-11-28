@@ -597,8 +597,13 @@ EHCI::EHCI(pci_info *info, pci_device_module_info* pci, pci_device* device, Stac
 	}
 
 	// Create the isochronous finisher service thread
+	// Above the real-time threads of media applications (audio runs at up
+	// to 115, MIDI at 120), as xHCI's finisher: this thread runs the
+	// completions that queue the next isochronous transfers (streams
+	// requeue from their callback), and while it waits the endpoint has
+	// holes of several milliseconds that a camera fills with lost data.
 	fFinishIsochronousThread = spawn_kernel_thread(FinishIsochronousThread,
-		"ehci isochronous finish thread", B_URGENT_DISPLAY_PRIORITY,
+		"ehci isochronous finish thread", B_URGENT_PRIORITY - 1,
 		(void *)this);
 	resume_thread(fFinishIsochronousThread);
 
@@ -1301,9 +1306,17 @@ EHCI::SubmitIsochronous(Transfer *transfer)
 	const uint32 itdCount
 		= (uint32)((packetsNeeded + packetsPerItd - 1) / packetsPerItd);
 
-	ehci_itd **isoRequest
-		= new(std::nothrow) ehci_itd *[itdCount];
-	if (isoRequest == NULL) {
+	// A full or low speed endpoint is reached through a transaction
+	// translator, with split transactions: one siTD per packet instead of
+	// iTDs, whose transactions are high speed only.
+	const bool split = pipe->Speed() != USB_SPEED_HIGHSPEED;
+	ehci_itd **isoRequest = NULL;
+	ehci_sitd **splitRequest = NULL;
+	if (split)
+		splitRequest = new(std::nothrow) ehci_sitd *[packetsNeeded];
+	else
+		isoRequest = new(std::nothrow) ehci_itd *[itdCount];
+	if (isoRequest == NULL && splitRequest == NULL) {
 		TRACE("failed to create isoRequest array!\n");
 		return B_NO_MEMORY;
 	}
@@ -1320,32 +1333,59 @@ EHCI::SubmitIsochronous(Transfer *transfer)
 
 		// Chain off THIS pipe's previous transfer, not a controller-global
 		// anchor: see the iso_anchor comment in the header.
-		int32 anchor = GetIsoAnchor(pipe);
-		if (fFirstIsochronousTransfer != NULL && anchor != -1)
-			currentFrame = anchor;
-		else {
-			uint32 threshold = fThreshold;
-			TRACE("threshold: %" B_PRIu32 "\n", threshold);
+		//
+		// The frame a new transfer would start at: one frame more than the
+		// threshold, because the descriptors are linked after this read,
+		// and a controller that caches a whole frame (IST) had often fetched
+		// the first one's frame already, so its first packet never ran (a
+		// fifth of a microphone's transactions on an AC100, whose transfers
+		// are four packets).
+		uint32 frameIndex = ReadOpReg(EHCI_FRINDEX);
+		uint32 now = (frameIndex / 8) & (EHCI_FRAMELIST_ENTRIES_COUNT - 1);
+		uint32 firstFree = ((frameIndex + fThreshold) / 8 + 1)
+			& (EHCI_FRAMELIST_ENTRIES_COUNT - 1);
+		TRACE("threshold: %" B_PRIu32 "\n", fThreshold);
 
-			// find the first available frame with enough bandwidth.
-			// This should always be the case, as defining the starting frame
-			// number in the driver makes no sense for many reason, one of which
-			// is that frame numbers value are host controller specific, and the
-			// driver does not know which host controller is running.
-			currentFrame = ((ReadOpReg(EHCI_FRINDEX) + threshold) / 8)
+		int32 anchor = GetIsoAnchor(pipe);
+		if (anchor != -1 && fFirstIsochronousTransfer != NULL) {
+			// The anchor must not be before the frame a new transfer would
+			// start at. A transfer queued after its predecessor's last frame
+			// had passed was linked into frames the controller had left: its
+			// first descriptors stayed active, were not seen by the
+			// finisher, which only looks a few frames back, and ran a whole
+			// frame list later into the buffer of a transfer that was long
+			// finished.
+			// Frames are counted modulo the whole frame list, so a transfer
+			// queued up to a virtual frame list ahead (128 ms; a sound card
+			// keeps about 100 ms queued) is not mistaken for one whose
+			// frames have passed.
+			uint32 ahead = ((uint32)anchor - now)
 				& (EHCI_FRAMELIST_ENTRIES_COUNT - 1);
+			uint32 margin = (firstFree - now)
+				& (EHCI_FRAMELIST_ENTRIES_COUNT - 1);
+			if (ahead < margin || ahead >= EHCI_VFRAMELIST_ENTRIES_COUNT)
+				anchor = -1;
 		}
 
-		// Make sure that:
-		// 1. We are at least 5ms ahead the controller
-		// 2. We stay in the range 0-127
-		// 3. There is enough bandwidth in the first entry
-		currentFrame &= EHCI_VFRAMELIST_ENTRIES_COUNT - 1;
+		// find the first available frame with enough bandwidth.
+		// This should always be the case, as defining the starting frame
+		// number in the driver makes no sense for many reason, one of which
+		// is that frame numbers value are host controller specific, and the
+		// driver does not know which host controller is running.
+		if (fFirstIsochronousTransfer != NULL && anchor != -1)
+			currentFrame = anchor;
+		else
+			currentFrame = firstFree;
 	} else {
 		// Find out if the frame number specified has enough bandwidth,
 		// otherwise find the first next available frame with enough bandwidth
-		currentFrame = *isochronousData->starting_frame_number;
+		currentFrame = *isochronousData->starting_frame_number
+			& (EHCI_FRAMELIST_ENTRIES_COUNT - 1);
 	}
+
+	// currentFrame counts frames modulo the whole frame list, so the anchor
+	// it leaves tells which turn of the controller the transfer belongs to;
+	// only the virtual frame list's tables are indexed modulo their size.
 
 	TRACE("isochronous starting frame=%d\n", currentFrame);
 
@@ -1356,6 +1396,7 @@ EHCI::SubmitIsochronous(Transfer *transfer)
 	if (fStack->AllocateChunk(&bufferLog, &bufferPhy, dataLength) != B_OK) {
 		TRACE_ERROR("unable to allocate itd buffer\n");
 		delete[] isoRequest;
+		delete[] splitRequest;
 		return B_NO_MEMORY;
 	}
 
@@ -1379,6 +1420,7 @@ EHCI::SubmitIsochronous(Transfer *transfer)
 				"out data\n");
 			fStack->FreeChunk(bufferLog, bufferPhy, dataLength);
 			delete[] isoRequest;
+			delete[] splitRequest;
 			return accessStatus;
 		}
 
@@ -1396,10 +1438,50 @@ EHCI::SubmitIsochronous(Transfer *transfer)
 				TRACE_ERROR("failed to copy isochronous out data\n");
 				fStack->FreeChunk(bufferLog, bufferPhy, dataLength);
 				delete[] isoRequest;
+				delete[] splitRequest;
 				return copyStatus;
 			}
 			bufferOffset += length;
 		}
+	}
+
+	if (split) {
+		uint32 filled = 0;
+		result = _FillSplitIsochronous(transfer, splitRequest,
+			(uint32)packetsNeeded, currentFrame, bufferPhy, bandwidth,
+			usePacketLengths, filled);
+		if (result == B_OK && filled > 0) {
+			result = AddPendingIsochronousTransfer(transfer, NULL, filled - 1,
+				directionIn, bufferPhy, bufferLog, transfer->DataLength(),
+				splitRequest);
+		} else if (result == B_OK)
+			result = B_BAD_VALUE;
+		if (result != B_OK) {
+			TRACE_ERROR("failed to queue a split isochronous transfer: %s\n",
+				strerror(result));
+			if (LockIsochronous()) {
+				for (uint32 i = 0; i < filled; i++) {
+					ehci_sitd *sitd = splitRequest[i];
+					if (sitd->prev != NULL) {
+						UnlinkSITDescriptors(sitd, &fSitdEntries[sitd->frame]);
+						sitd->prev = sitd->next = NULL;
+					}
+				}
+				UnlockIsochronous();
+			}
+			// the controller may still be looking at the frames just left
+			snooze(2000);
+			for (uint32 i = 0; i < filled; i++)
+				FreeDescriptor(splitRequest[i]);
+			delete[] splitRequest;
+			fStack->FreeChunk(bufferLog, bufferPhy, transfer->DataLength());
+			return result;
+		}
+
+		SetIsoAnchor(pipe, currentFrame);
+		release_sem_etc(fFinishIsochronousTransfersSem, 1,
+			B_DO_NOT_RESCHEDULE);
+		return B_OK;
 	}
 
 	phys_addr_t currentPhy = bufferPhy;
@@ -1468,12 +1550,14 @@ EHCI::SubmitIsochronous(Transfer *transfer)
 
 		if (!LockIsochronous())
 			continue;
-		itd->frame = currentFrame;
-		LinkITDescriptors(itd, &fItdEntries[currentFrame]);
+		uint16 virtualFrame
+			= currentFrame & (EHCI_VFRAMELIST_ENTRIES_COUNT - 1);
+		itd->frame = virtualFrame;
+		LinkITDescriptors(itd, &fItdEntries[virtualFrame]);
 		UnlockIsochronous();
-		fFrameBandwidth[currentFrame] -= bandwidth;
+		fFrameBandwidth[virtualFrame] -= bandwidth;
 		currentFrame = (currentFrame + frameStride)
-			& (EHCI_VFRAMELIST_ENTRIES_COUNT - 1);
+			& (EHCI_FRAMELIST_ENTRIES_COUNT - 1);
 		frameCount++;
 	}
 
@@ -1516,13 +1600,25 @@ EHCI::FindIsochronousTransfer(ehci_itd *itd)
 {
 	// Simply check every last descriptor of the isochronous transfer list
 	isochronous_transfer_data *transfer = fFirstIsochronousTransfer;
-	if (transfer) {
-		while (transfer->descriptors[transfer->last_to_process]
-			!= itd) {
-			transfer = transfer->link;
-			if (!transfer)
-				break;
-		}
+	while (transfer != NULL) {
+		if (transfer->descriptors != NULL
+			&& transfer->descriptors[transfer->last_to_process] == itd)
+			break;
+		transfer = transfer->link;
+	}
+	return transfer;
+}
+
+
+isochronous_transfer_data *
+EHCI::FindIsochronousTransfer(ehci_sitd *sitd)
+{
+	isochronous_transfer_data *transfer = fFirstIsochronousTransfer;
+	while (transfer != NULL) {
+		if (transfer->split_descriptors != NULL
+			&& transfer->split_descriptors[transfer->last_to_process] == sitd)
+			break;
+		transfer = transfer->link;
 	}
 	return transfer;
 }
@@ -1896,9 +1992,9 @@ EHCI::AddPendingTransfer(Transfer *transfer, ehci_qh *queueHead,
 status_t
 EHCI::AddPendingIsochronousTransfer(Transfer *transfer, ehci_itd **isoRequest,
 	uint32 lastIndex, bool directionIn, addr_t bufferPhy, void* bufferLog,
-	size_t bufferSize)
+	size_t bufferSize, ehci_sitd **splitRequest)
 {
-	if (!transfer || !isoRequest)
+	if (transfer == NULL || (isoRequest == NULL) == (splitRequest == NULL))
 		return B_BAD_VALUE;
 
 	isochronous_transfer_data *data
@@ -1908,6 +2004,7 @@ EHCI::AddPendingIsochronousTransfer(Transfer *transfer, ehci_itd **isoRequest,
 
 	data->transfer = transfer;
 	data->descriptors = isoRequest;
+	data->split_descriptors = splitRequest;
 	data->last_to_process = lastIndex;
 	data->incoming = directionIn;
 	data->is_active = true;
@@ -2025,16 +2122,7 @@ EHCI::CancelQueuedIsochronousTransfers(Pipe *pipe, bool force)
 			// schedule. Retiring a descriptor clears its prev, so a non-NULL
 			// prev means it is still chained to the frame it recorded at
 			// submit time.
-			for (uint32 i = 0; i <= current->last_to_process; i++) {
-				ehci_itd *itd = current->descriptors[i];
-				if (itd != NULL && itd->prev != NULL) {
-					UnlinkITDescriptors(itd,
-						&fItdEntries[itd->frame
-							& (EHCI_VFRAMELIST_ENTRIES_COUNT - 1)]);
-					itd->prev = NULL;
-					itd->next = NULL;
-				}
-			}
+			_UnlinkIsochronousDescriptors(current);
 
 			if (previous != NULL)
 				previous->link = next;
@@ -2078,10 +2166,7 @@ EHCI::CancelQueuedIsochronousTransfers(Pipe *pipe, bool force)
 		if (!force)
 			transfer->transfer->Finished(B_CANCELED, 0);
 
-		for (uint32 i = 0; i <= transfer->last_to_process; i++)
-			FreeDescriptor(transfer->descriptors[i]);
-
-		delete [] transfer->descriptors;
+		_FreeIsochronousDescriptors(transfer);
 		delete transfer->transfer;
 		fStack->FreeChunk(transfer->buffer_log,
 			(phys_addr_t)transfer->buffer_phy, transfer->buffer_size);
@@ -2531,6 +2616,54 @@ EHCI::FinishIsochronousTransfers()
 				}
 			}
 
+			// The split isochronous transfers of full and low speed endpoints
+			// sit in the same frame, in the siTD chain that follows the iTDs.
+			ehci_sitd *sitd = fSitdEntries[currentFrame];
+			while (sitd->prev != NULL) {
+				ehci_sitd *previous = sitd->prev;
+				isochronous_transfer_data *transfer
+					= FindIsochronousTransfer(sitd);
+				if (transfer != NULL && transfer->is_active
+					&& finishedCount >= kMaxFinished) {
+					// leave it linked: the next pass over this frame
+					// finishes it
+					break;
+				}
+				UnlinkSITDescriptors(sitd, &fSitdEntries[currentFrame]);
+				sitd->prev = sitd->next = NULL;
+
+				if (transfer != NULL && transfer->is_active) {
+					status_t status = B_OK;
+					if (transfer->incoming)
+						status = transfer->transfer->PrepareKernelAccess();
+					size_t actualLength = status == B_OK
+						? _ReadSplitIsochronous(transfer) : 0;
+
+					if (transfer == fFirstIsochronousTransfer) {
+						fFirstIsochronousTransfer = transfer->link;
+						if (transfer == fLastIsochronousTransfer)
+							fLastIsochronousTransfer = NULL;
+					} else {
+						isochronous_transfer_data *temp
+							= fFirstIsochronousTransfer;
+						while (temp != NULL && transfer != temp->link)
+							temp = temp->link;
+						if (transfer == fLastIsochronousTransfer)
+							fLastIsochronousTransfer = temp;
+						if (temp != NULL && temp->link != NULL)
+							temp->link = temp->link->link;
+					}
+					transfer->link = NULL;
+
+					finished[finishedCount] = transfer;
+					finishedStatus[finishedCount] = status;
+					finishedLength[finishedCount] = actualLength;
+					finishedCount++;
+					transferDone = true;
+				}
+				sitd = previous;
+			}
+
 			// The finisher is time-based: each wakeup it starts a few frames
 			// behind the controller and stops after finalising one transfer,
 			// so over a long stream it can land mid-transfer and leave
@@ -2542,19 +2675,8 @@ EHCI::FinishIsochronousTransfers()
 			// UnlinkITDescriptors() walks a garbage prev. Detach them here,
 			// while the lock is still held. A non-NULL prev means the
 			// descriptor is still chained, because retiring one clears it.
-			for (uint32 f = 0; f < finishedCount; f++) {
-				isochronous_transfer_data *ft = finished[f];
-				for (uint32 i = 0; i <= ft->last_to_process; i++) {
-					ehci_itd *desc = ft->descriptors[i];
-					if (desc != NULL && desc->prev != NULL) {
-						UnlinkITDescriptors(desc,
-							&fItdEntries[desc->frame
-								& (EHCI_VFRAMELIST_ENTRIES_COUNT - 1)]);
-						desc->prev = NULL;
-						desc->next = NULL;
-					}
-				}
-			}
+			for (uint32 f = 0; f < finishedCount; f++)
+				_UnlinkIsochronousDescriptors(finished[f]);
 
 			UnlockIsochronous();
 
@@ -2569,12 +2691,9 @@ EHCI::FinishIsochronousTransfers()
 				transfer->transfer->Finished(finishedStatus[f],
 					finishedLength[f]);
 
-				for (uint32 i = 0; i <= transfer->last_to_process; i++)
-					FreeDescriptor(transfer->descriptors[i]);
-
+				_FreeIsochronousDescriptors(transfer);
 				TRACE("FinishIsochronousTransfers descriptors freed\n");
 
-				delete [] transfer->descriptors;
 				delete transfer->transfer;
 				fStack->FreeChunk(transfer->buffer_log,
 					(phys_addr_t)transfer->buffer_phy,
@@ -3401,6 +3520,9 @@ EHCI::GetIsoAnchor(Pipe *pipe)
 void
 EHCI::SetIsoAnchor(Pipe *pipe, int32 frame)
 {
+	// The frame counts modulo the whole frame list (see SubmitIsochronous()).
+	frame &= EHCI_FRAMELIST_ENTRIES_COUNT - 1;
+
 	int free = -1;
 	for (int i = 0; i < kIsoAnchorCount; i++) {
 		if (fIsoAnchors[i].pipe == pipe) {
@@ -3430,6 +3552,237 @@ EHCI::ClearIsoAnchor(Pipe *pipe)
 			fIsoAnchors[i].next_frame = -1;
 		}
 	}
+}
+
+
+/*!	Queues the packets of a full or low speed isochronous transfer as split
+	transactions through the endpoint's transaction translator (EHCI 1.0,
+	3.4 and 4.12.3; USB 2.0, 11.18): one siTD per packet, one packet per
+	service interval, from \a currentFrame on. \a filled tells how many
+	descriptors were created and linked, also on error.
+*/
+status_t
+EHCI::_FillSplitIsochronous(Transfer *transfer, ehci_sitd **descriptors,
+	uint32 descriptorCount, uint16 &currentFrame, phys_addr_t bufferPhy,
+	uint16 bandwidth, bool usePacketLengths, uint32 &filled)
+{
+	Pipe *pipe = transfer->TransferPipe();
+	const bool directionIn = pipe->Direction() == Pipe::In;
+	usb_isochronous_data *isochronousData = transfer->IsochronousData();
+	const size_t packetSize
+		= transfer->DataLength() / isochronousData->packet_count;
+	filled = 0;
+
+	// the transaction translator of the hub in front of the device, as for
+	// the queue heads (see InitQueueHead())
+	const uint32 endpoint = (directionIn ? EHCI_SITD_DIR_IN : 0)
+		| EHCI_SITD_PORT(pipe->HubPort()) | EHCI_SITD_HUB(pipe->HubAddress())
+		| EHCI_SITD_ENDPOINT(pipe->EndpointAddress())
+		| EHCI_SITD_ADDRESS(pipe->DeviceAddress());
+
+	// An IN packet is completed two micro-frames after its start-split, over
+	// as many micro-frames as the full speed transaction can take plus two,
+	// all in this frame, as the back pointer to the previous frame is not
+	// used. OUT start-splits go from micro-frame 0 on (below), so the IN
+	// packet is started in micro-frame 2, or earlier when it is too large
+	// to complete in the frame otherwise: its complete-splits then come
+	// after the OUT start-splits of a headset that plays and records at the
+	// same time. Started in micro-frame 0 too, the IN packets of such a
+	// headset came back with a few bytes instead of 192, and the OUT
+	// packets reached it distorted.
+	uint32 inSMask = 0;
+	uint32 inCMask = 0;
+	if (directionIn) {
+		uint32 transactions = (pipe->MaxPacketSize()
+			+ EHCI_SITD_SPLIT_BYTES - 1) / EHCI_SITD_SPLIT_BYTES;
+		if (transactions == 0)
+			transactions = 1;
+		if (transactions > 4) {
+			TRACE_ERROR("split isochronous IN packets of %" B_PRIuSIZE
+				" bytes do not fit in a frame\n", pipe->MaxPacketSize());
+			return B_BAD_VALUE;
+		}
+		uint32 start = min_c(2, 4 - transactions);
+		inSMask = 1u << start;
+		inCMask = ((1u << (transactions + 2)) - 1) << (start + 2);
+	}
+
+	// A full speed isochronous endpoint's interval counts frames.
+	uint32 frameStride = 1;
+	if (pipe->Interval() > 1)
+		frameStride = 1u << min_c(pipe->Interval() - 1, 5);
+
+	const usb_iso_packet_descriptor *packetDescriptors
+		= isochronousData->packet_descriptors;
+	size_t dataLength = transfer->DataLength();
+	phys_addr_t currentPhy = bufferPhy;
+	for (uint32 packet = 0; packet < descriptorCount && dataLength > 0;
+			packet++) {
+		size_t length = usePacketLengths
+				&& packet < isochronousData->packet_count
+			? min_c(dataLength, (size_t)packetDescriptors[packet].request_length)
+			: min_c(dataLength, packetSize);
+
+		ehci_sitd *sitd = CreateSitdDescriptor();
+		if (sitd == NULL)
+			return B_NO_MEMORY;
+		descriptors[filled] = sitd;
+
+		sitd->endpoint = endpoint;
+		uint32 page1 = (uint32)((currentPhy + length) & ~(phys_addr_t)0xfff);
+		if (directionIn) {
+			sitd->schedule = EHCI_SITD_SMASK(inSMask)
+				| EHCI_SITD_CMASK(inCMask);
+		} else {
+			// One start-split per 188 bytes, in consecutive micro-frames
+			// from micro-frame 0; an OUT packet has no complete-split.
+			uint32 splits = (length + EHCI_SITD_SPLIT_BYTES - 1)
+				/ EHCI_SITD_SPLIT_BYTES;
+			if (splits == 0)
+				splits = 1;
+			sitd->schedule = EHCI_SITD_SMASK((1u << splits) - 1);
+			page1 |= (splits > 1 ? EHCI_SITD_TP_BEGIN : EHCI_SITD_TP_ALL)
+				| EHCI_SITD_TCOUNT(splits);
+		}
+		sitd->buffer_phy[0] = (uint32)currentPhy;
+		sitd->buffer_phy[1] = page1;
+		sitd->ext_buffer_phy[0] = 0;
+		sitd->ext_buffer_phy[1] = 0;
+		sitd->back_phy = EHCI_ITEM_TERMINATE;
+		sitd->length = length;
+		dataLength -= length;
+		sitd->state = EHCI_SITD_BYTES(length) | EHCI_SITD_STATUS_ACTIVE
+			| (dataLength == 0 || packet + 1 == descriptorCount
+				? EHCI_SITD_IOC : 0);
+
+		if (!LockIsochronous())
+			return B_ERROR;
+		uint16 virtualFrame
+			= currentFrame & (EHCI_VFRAMELIST_ENTRIES_COUNT - 1);
+		sitd->frame = virtualFrame;
+		LinkSITDescriptors(sitd, &fSitdEntries[virtualFrame]);
+		UnlockIsochronous();
+		filled++;
+
+		fFrameBandwidth[virtualFrame] -= bandwidth;
+		currentFrame = (currentFrame + frameStride)
+			& (EHCI_FRAMELIST_ENTRIES_COUNT - 1);
+		// IN packets keep their place in the buffer, see
+		// _ReadSplitIsochronous()
+		currentPhy += directionIn ? packetSize : length;
+	}
+
+	return B_OK;
+}
+
+
+/*!	Fills in the packet descriptors of a finished split isochronous transfer
+	and, for an IN transfer, copies the data to the caller, each packet at its
+	own place, as ReadIsochronousDescriptorChain() does. Returns the number of
+	bytes transferred.
+*/
+size_t
+EHCI::_ReadSplitIsochronous(isochronous_transfer_data *transfer)
+{
+	usb_isochronous_data *isochronousData
+		= transfer->transfer->IsochronousData();
+	generic_io_vec *vector = transfer->transfer->Vector();
+	size_t vectorCount = transfer->transfer->VectorCount();
+	const bool physical = transfer->transfer->IsPhysical();
+	const size_t packetSize = transfer->transfer->DataLength()
+		/ isochronousData->packet_count;
+
+	size_t totalLength = 0;
+	size_t bufferOffset = 0;
+	for (uint32 i = 0; i <= transfer->last_to_process
+			&& i < isochronousData->packet_count; i++) {
+		ehci_sitd *sitd = transfer->split_descriptors[i];
+		uint32 status = sitd->state & EHCI_SITD_STATUS_MASK;
+		size_t remaining = EHCI_SITD_BYTES_GET(sitd->state);
+		size_t length = 0;
+		if (status == 0 && remaining <= sitd->length)
+			length = sitd->length - remaining;
+
+		usb_iso_packet_descriptor &descriptor
+			= isochronousData->packet_descriptors[i];
+		descriptor.actual_length = length;
+		if (status == 0)
+			descriptor.status = B_OK;
+		else if ((status & EHCI_SITD_STATUS_ACTIVE) != 0)
+			descriptor.status = B_DEV_TIMEOUT;
+		else
+			descriptor.status = B_DEV_CRC_ERROR;
+		totalLength += length;
+
+		if (transfer->incoming && length > 0) {
+			// copy to the caller's vectors at this packet's offset
+			size_t offset = bufferOffset;
+			size_t copied = 0;
+			for (size_t v = 0; v < vectorCount && copied < length; v++) {
+				if (offset >= vector[v].length) {
+					offset -= vector[v].length;
+					continue;
+				}
+				size_t chunk = min_c(length - copied,
+					(size_t)vector[v].length - offset);
+				generic_memcpy(vector[v].base + offset, physical,
+					(generic_addr_t)transfer->buffer_log + bufferOffset
+						+ copied, false, chunk);
+				copied += chunk;
+				offset = 0;
+			}
+		}
+
+		bufferOffset += transfer->incoming ? packetSize : sitd->length;
+	}
+
+	return totalLength;
+}
+
+
+/*!	Takes every descriptor of \a transfer still in the periodic schedule out
+	of it. The caller holds the isochronous lock. A non-NULL prev means the
+	descriptor is still chained, as retiring one clears it.
+*/
+void
+EHCI::_UnlinkIsochronousDescriptors(isochronous_transfer_data *transfer)
+{
+	for (uint32 i = 0; i <= transfer->last_to_process; i++) {
+		if (transfer->split_descriptors != NULL) {
+			ehci_sitd *sitd = transfer->split_descriptors[i];
+			if (sitd != NULL && sitd->prev != NULL) {
+				UnlinkSITDescriptors(sitd, &fSitdEntries[sitd->frame
+					& (EHCI_VFRAMELIST_ENTRIES_COUNT - 1)]);
+				sitd->prev = sitd->next = NULL;
+			}
+			continue;
+		}
+
+		ehci_itd *itd = transfer->descriptors[i];
+		if (itd != NULL && itd->prev != NULL) {
+			UnlinkITDescriptors(itd, &fItdEntries[itd->frame
+				& (EHCI_VFRAMELIST_ENTRIES_COUNT - 1)]);
+			itd->prev = NULL;
+			itd->next = NULL;
+		}
+	}
+}
+
+
+//!	Frees the descriptors of \a transfer, which are out of the schedule.
+void
+EHCI::_FreeIsochronousDescriptors(isochronous_transfer_data *transfer)
+{
+	for (uint32 i = 0; i <= transfer->last_to_process; i++) {
+		if (transfer->split_descriptors != NULL)
+			FreeDescriptor(transfer->split_descriptors[i]);
+		else
+			FreeDescriptor(transfer->descriptors[i]);
+	}
+	delete[] transfer->descriptors;
+	delete[] transfer->split_descriptors;
+	transfer->descriptors = NULL;
+	transfer->split_descriptors = NULL;
 }
 
 
