@@ -27,6 +27,9 @@ public:
 
 			status_t			SetName(const char* name);
 			status_t			SetIcon(const uchar* icon);
+									// 16x16, B_CMAP8
+			status_t			SetIcon(const uint8* data, size_t size);
+									// a vector icon, drawn at any size
 			status_t			SetMenu(const BMenu* menu,
 									const BMessenger target);
 

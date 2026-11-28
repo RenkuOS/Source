@@ -102,6 +102,17 @@ BInputServerMethod::SetIcon(const uchar *icon)
 
 
 /**
+ *  Method: BInputServerMethod::SetIcon()
+ *   Descr: A vector icon, which is drawn at any size. NULL removes it.
+ */
+status_t
+BInputServerMethod::SetIcon(const uint8 *data, size_t size)
+{
+    return fOwner->SetVectorIcon(data, size);
+}
+
+
+/**
  *  Method: BInputServerMethod::SetMenu()
  *   Descr: 
  */
@@ -208,6 +219,11 @@ _BMethodAddOn_::SetIcon(const uchar* icon)
 		memcpy(fIcon, icon, 16*16*1);
 	else
 		memset(fIcon, 0x1d, 16*16*1);
+
+	// the icon set last is the one shown
+	free(fVectorIcon);
+	fVectorIcon = NULL;
+	fVectorIconSize = 0;
 
 	BMessage msg(IS_UPDATE_ICON);
 	msg.AddInt32("cookie", fCookie);
